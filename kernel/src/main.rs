@@ -401,8 +401,10 @@ unsafe extern "C" fn vtd_quarantine_requester(
 }
 
 static VT_D_REQUESTER_OWNER:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(u32::MAX);
-fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
- let requester_key=((requester.bus as u32)<<8)|((requester.device as u32)<<3)|requester.function as u32;
+fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
+ if path.segment!=0{return false}
+ let requester_key=((path.segment as u32)<<16)|((path.endpoint_bus as u32)<<8)
+    |((path.endpoint_device as u32)<<3)|path.endpoint_function as u32;
  if dma::iommu::vtd::is_enabled(){
   return dma::iommu::available()&&VT_D_REQUESTER_OWNER.load(core::sync::atomic::Ordering::Acquire)==requester_key;
  }
@@ -412,37 +414,33 @@ fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
   Ok(t)=>t,Err(_)=>{unsafe{serial_write(b"VT-d: ACPI DMAR table not found; DMA remains fail-closed.\r\n");}return false}
  };
  let info=match acpi::parse_dmar(table){Ok(v)=>v,Err(_)=>{unsafe{serial_write(b"VT-d: malformed DMAR table; DMA remains fail-closed.\r\n");}return false}};
- // Select only a DRHD whose include-all flag or parsed PCI endpoint scope
- // explicitly owns this xHCI requester. Never infer ownership from bus 0.
- let Some(unit)=info.units.iter().take(info.unit_count)
-  .find(|u|acpi::dmar_unit_covers_requester(u,0,requester.bus,requester.device,requester.function)) else{
-  unsafe{serial_write(b"VT-d: no DRHD scope covers the xHCI requester; DMA remains fail-closed.\r\n");}
-  for u in info.units.iter().take(info.unit_count){unsafe{
-   serial_write(b"VT-d DRHD segment=");serial_write_hex(u.segment as u64);
-   serial_write(b" include_all=");serial_write_hex(u.include_all as u64);
-   serial_write(b" scopes=");serial_write_hex(u.scope_count as u64);serial_write(b"\r\n");
-   for scope in u.scopes.iter().take(u.scope_count as usize){
-    serial_write(b"VT-d scope type=");serial_write_hex(scope.scope_type as u64);
-    serial_write(b" bus=");serial_write_hex(scope.start_bus as u64);
-    serial_write(b" path0=");if scope.path_count>0{serial_write_hex(((scope.path[0].device as u64)<<3)|scope.path[0].function as u64);}
-    serial_write(b"\r\n");
-   }
-  }}
+ let count=path.path_count as usize;
+ if count==0||count>8{return false}
+ let mut dmar_path=[acpi::DmarPath{device:0,function:0};8];
+ for i in 0..count {
+  dmar_path[i]=acpi::DmarPath{device:path.path[i].device,function:path.path[i].function};
+ }
+ let Some(unit)=acpi::select_dmar_unit(&info,path.segment,path.root_bus,&dmar_path[..count]).ok() else{
+  unsafe{serial_write(b"VT-d: no DRHD scope owns the complete xHCI PCI path; DMA remains fail-closed.\r\n");}
   return false
  };
+ if acpi::dmar_rmrr_covers_path(&info.rmrr,path.segment,path.root_bus,&dmar_path[..count]){
+  unsafe{serial_write(b"VT-d: xHCI requester is RMRR-scoped; reserved-region handoff is not yet available, DMA remains disabled.\r\n");}
+  return false
+ }
  let ops=dma::iommu::vtd::PlatformOps{
   size:core::mem::size_of::<dma::iommu::vtd::PlatformOps>() as u32,
   context:core::ptr::null_mut(),alloc_table:Some(vtd_alloc_table),free_table:Some(vtd_free_table),
   map_mmio:Some(vtd_map_mmio),unmap_mmio:Some(vtd_unmap_mmio),clean_cache:Some(vtd_clean_cache),
   quarantine_requester:Some(vtd_quarantine_requester),
  };
- let status=unsafe{dma::iommu::vtd::initialize(&ops,unit.register_base,0x1000)};
+ let status=unsafe{dma::iommu::vtd::initialize_for_pci_path(&ops,&info,path,0x1000)};
  if status!=dma::iommu::vtd::STATUS_SUCCESS||!dma::iommu::available(){
   unsafe{serial_write(b"VT-d: initialization or generic DMA backend registration failed; DMA remains fail-closed status=");serial_write_hex(status as u32 as u64);serial_write(b"\r\n");}
   return false
  }
  VT_D_REQUESTER_OWNER.store(requester_key,core::sync::atomic::Ordering::Release);
- unsafe{serial_write(b"VT-d: translation enabled; generic DMA backend registered for validated xHCI requester.\r\n");}
+ unsafe{serial_write(b"VT-d: exact DMAR DRHD selected from the full PCI bridge path; translation enabled.\r\n");}
  true
 }
 
