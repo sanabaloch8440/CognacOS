@@ -870,20 +870,31 @@ pub fn self_test() -> bool {
  if crate::pagefile::is_active() {
   SELF_TEST_PHASE.store(6,Ordering::Release);
   if free_pages(p,3).is_err(){return self_test_fail(line!());}
-  let swap_test=match allocate_pageable_pages(1){Ok(v)=>v,Err(_)=>{let _=free_pages(p,3);return self_test_fail(line!())}};
-  unsafe{swap_test.write(0xD3);swap_test.add(4095).write(0x6B);}
-  if protect_pages(swap_test as u64,1,false,true).is_err(){let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
-  if !reclaim_pageable_address(swap_test as u64) {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
-  let swap_index=((swap_test as u64-BASE)/PAGE) as usize;
-  let is_swapped={let _g=Guard::lock();let bits=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0};
-  if !is_swapped {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
-  // These reads deliberately trigger a real protection/page-not-present fault
-  // and must restore bytes from the ATA-backed pagefile slot.
-  let restored=unsafe{swap_test.read()}==0xD3 && unsafe{swap_test.add(4095).read()}==0x6B;
-  let is_resident={let _g=Guard::lock();let bits=unsafe{&*MAPPED_BITS.0.get()};let swaps=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0 && swaps[swap_index/64]&(1u64<<(swap_index%64))==0};
-  let restored_protection=unsafe{crate::memory::inspect_mapping(root,swap_test as u64)};
-  let protection_ok=matches!(restored_protection,Ok(m) if !m.writable&&m.executable&&!m.user_accessible);
-  if !restored||!is_resident||!protection_ok||free_pages(swap_test,1).is_err(){let _=free_pages(p,3);return self_test_fail(line!());}
+  // Round-trip all supported W^X permission combinations. The saved
+  // PAGE_FLAGS metadata must survive eviction and be reapplied to the new PFN.
+  for (writable, executable, first, last) in [
+   (true, false, 0xD3u8, 0x6B_u8),  // RW/NX
+   (false, false, 0xA4u8, 0x39_u8), // RO/NX
+   (false, true, 0x7E_u8, 0xC2_u8), // RO/RX
+  ] {
+   let swap_test=match allocate_pageable_pages(1){Ok(v)=>v,Err(_)=>{let _=free_pages(p,3);return self_test_fail(line!())}};
+   unsafe{swap_test.write(first);swap_test.add(4095).write(last);}
+   if protect_pages(swap_test as u64,1,writable,executable).is_err(){let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
+   if !reclaim_pageable_address(swap_test as u64) {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
+   let swap_index=((swap_test as u64-BASE)/PAGE) as usize;
+   let is_swapped={let _g=Guard::lock();let bits=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0};
+   if !is_swapped {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
+   // The first access must fault the page back in from its allocated slot.
+   let restored=unsafe{swap_test.read()}==first && unsafe{swap_test.add(4095).read()}==last;
+   let is_resident={let _g=Guard::lock();let bits=unsafe{&*MAPPED_BITS.0.get()};let swaps=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0 && swaps[swap_index/64]&(1u64<<(swap_index%64))==0};
+   let restored_protection=unsafe{crate::memory::inspect_mapping(root,swap_test as u64)};
+   let protection_ok=matches!(restored_protection,Ok(m) if m.writable==writable&&m.executable==executable&&!m.user_accessible);
+   let write_ok=if writable {
+    unsafe{swap_test.write(first.wrapping_add(1));}
+    unsafe{swap_test.read()}==first.wrapping_add(1)
+   } else { true };
+   if !restored||!is_resident||!protection_ok||!write_ok||free_pages(swap_test,1).is_err(){let _=free_pages(p,3);return self_test_fail(line!());}
+  }
  }
  SELF_TEST_PHASE.store(7,Ordering::Release);
  let freed=if crate::pagefile::is_active(){allocation_pages(p).is_none()}else{free_pages(p,3).is_ok()&&allocation_pages(p).is_none()};
