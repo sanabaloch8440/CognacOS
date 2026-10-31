@@ -155,7 +155,7 @@ mod context_encoding_tests {
 /// mappings are installed. No identity mapping is created.
 unsafe fn initialize_segment(ops:&PlatformOps,register_pa:u64,register_len:u64,segment:u16)->i32{
  if ops.size<core::mem::size_of::<PlatformOps>() as u32||ops.alloc_table.is_none()||ops.free_table.is_none()||ops.map_mmio.is_none()||ops.unmap_mmio.is_none()||ops.clean_cache.is_none()||ops.quarantine_requester.is_none()||register_pa==0||register_len<0x1000||register_pa.checked_add(register_len).is_none(){return STATUS_INVALID_PARAMETER}
- let _g=LOCK.lock();let units=unsafe{&mut*UNITS.0.get()};let Some(unit_index)=units.iter().position(|u|!u.enabled) else{return STATUS_INSUFFICIENT_RESOURCES};let u=&mut units[unit_index];
+ let _g=LOCK.lock();let units=unsafe{&mut*UNITS.0.get()};if units.iter().any(|u|u.enabled&&u.segment==segment){return STATUS_DEVICE_BUSY}let Some(unit_index)=units.iter().position(|u|!u.enabled) else{return STATUS_INSUFFICIENT_RESOURCES};let u=&mut units[unit_index];
  let mut mmio=0; if unsafe{(ops.map_mmio.unwrap())(ops.context,register_pa,register_len,&mut mmio)}!=0||mmio==0{return STATUS_NOT_SUPPORTED}
  let cap=unsafe{r64(mmio,CAP)};let ecap=unsafe{r64(mmio,ECAP)};let iro=((ecap>>8)&0x3ff) as usize*16;
  let Some(max_domains)=supported_domain_count(cap) else{unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_NOT_SUPPORTED};
@@ -363,7 +363,7 @@ fn poison_domain(u:&Unit,id:RequesterId){
  let Some(quarantine)=u.ops.quarantine_requester else {
   loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
  };
- if unsafe{quarantine(u.ops.context,0,id.bus,id.device,id.function)}!=0 {
+ if unsafe{quarantine(u.ops.context,id.segment,id.bus,id.device,id.function)}!=0 {
   loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
  }
 }
@@ -445,7 +445,7 @@ pub unsafe fn map_pages(id:RequesterId,iova:u64,physical:u64,length:u64,permissi
 pub unsafe fn unmap_pages(id:RequesterId,iova:u64,length:u64)->i32{
  if iova==0||length==0||iova&0xfff!=0||length&0xfff!=0||iova.checked_add(length).is_none_or(|e|e>SL_MAX){return STATUS_INVALID_PARAMETER}
  let _guard=LOCK.lock();
- let u=unsafe{&*UNIT.0.get()};if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let units=unsafe{&*UNITS.0.get()};let Some(unit_index)=unit_slot(id.segment) else{return STATUS_DEVICE_NOT_READY};let u=&units[unit_index];
  let domains=unsafe{&*DOMAINS.0.get()};
  let Some(domain)=domains.iter().find(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
  if domain.poisoned{return STATUS_DEVICE_NOT_READY}
@@ -493,7 +493,7 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
  // A firmware RMRR remains part of the live requester contract. It must be
  // explicitly unmapped after bus mastering is revoked before the context can go.
  if DMA_MAPS.lock().iter().any(|m|m.used&&m.cookie==0
-    &&requester_for_device(m.device).is_some_and(|r|r.bus==id.bus&&r.device==id.device&&r.function==id.function)) {
+    &&requester_for_device(m.device).is_some_and(|r|r.segment==id.segment&&r.bus==id.bus&&r.device==id.device&&r.function==id.function)) {
     return STATUS_DEVICE_BUSY;
  }
  let _guard=LOCK.lock();
@@ -648,7 +648,7 @@ pub unsafe fn map_rmrr_identity(device:usize,id:RequesterId,base:u64,length:u64)
  if device==0||base==0||base&0xfff!=0||length==0||length&0xfff!=0
     ||base.checked_add(length).is_none_or(|end|end>SL_MAX){return STATUS_INVALID_PARAMETER}
  let Some(registered)=requester_for_device(device) else{return STATUS_NOT_SUPPORTED};
- if registered.bus!=id.bus||registered.device!=id.device||registered.function!=id.function {
+ if registered.segment!=id.segment||registered.bus!=id.bus||registered.device!=id.device||registered.function!=id.function {
     return STATUS_INVALID_PARAMETER;
  }
  if !requester_domain_exists(id) {
@@ -731,8 +731,7 @@ pub unsafe fn initialize_for_dmar_path(
     endpoint_path:&[cognacos_acpi::DmarPath],
     register_len:u64,
 )->i32 {
-    // The current domain/context stores are per-bus and therefore support only
-    // segment zero. Never silently alias another segment's bus numbers.
+    // Domain and context-table stores are keyed by PCI segment as well as BDF.
     if endpoint_path.is_empty()||endpoint_path.len()>8 {
         return STATUS_NOT_SUPPORTED;
     }
