@@ -2580,5 +2580,48 @@ mod tests {
     }
 
     #[test]
+    fn mlkem_cng_public_and_private_seed_blobs_interoperate() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let provider_name=wide("ML-KEM");
+        let parameter_name=wide("ParameterSetName");
+        let parameter=wide("768");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,provider_name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut pair=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateKeyPair(provider,&mut pair,0,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSetProperty(pair,parameter_name.as_ptr(),parameter.as_ptr() as *const u8,(parameter.len()*2) as u32,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptFinalizeKeyPair(pair,0)},STATUS_SUCCESS);
+
+        let public_name=wide("MLKEM_PUBLIC_BLOB");
+        let mut public_size=0u32;
+        assert_eq!(unsafe{BCryptExportKey(pair,ptr::null_mut(),public_name.as_ptr(),ptr::null_mut(),0,&mut public_size,0)},STATUS_SUCCESS);
+        let mut public_blob=vec![0u8;public_size as usize];
+        assert_eq!(unsafe{BCryptExportKey(pair,ptr::null_mut(),public_name.as_ptr(),public_blob.as_mut_ptr(),public_size,&mut public_size,0)},STATUS_SUCCESS);
+        let mut imported_public=ptr::null_mut();
+        assert_eq!(unsafe{BCryptImportKeyPair(provider,ptr::null_mut(),public_name.as_ptr(),&mut imported_public,public_blob.as_ptr(),public_blob.len() as u32,0)},STATUS_SUCCESS);
+
+        let private_name=wide("MLKEM_PRIVATE_SEED_BLOB");
+        let mut private_size=0u32;
+        assert_eq!(unsafe{BCryptExportKey(pair,ptr::null_mut(),private_name.as_ptr(),ptr::null_mut(),0,&mut private_size,0)},STATUS_SUCCESS);
+        let mut private_blob=vec![0u8;private_size as usize];
+        assert_eq!(unsafe{BCryptExportKey(pair,ptr::null_mut(),private_name.as_ptr(),private_blob.as_mut_ptr(),private_size,&mut private_size,0)},STATUS_SUCCESS);
+        let mut imported_private=ptr::null_mut();
+        assert_eq!(unsafe{BCryptImportKeyPair(provider,ptr::null_mut(),private_name.as_ptr(),&mut imported_private,private_blob.as_ptr(),private_blob.len() as u32,0)},STATUS_SUCCESS);
+
+        let mut secret_size=0u32;let mut ciphertext_size=0u32;
+        assert_eq!(unsafe{BCryptEncapsulate(imported_public,ptr::null_mut(),0,&mut secret_size,ptr::null_mut(),0,&mut ciphertext_size,0)},STATUS_SUCCESS);
+        let mut ciphertext=vec![0u8;ciphertext_size as usize];let mut sender=[0u8;32];
+        assert_eq!(unsafe{BCryptEncapsulate(imported_public,sender.as_mut_ptr(),32,&mut secret_size,ciphertext.as_mut_ptr(),ciphertext_size,&mut ciphertext_size,0)},STATUS_SUCCESS);
+        let mut receiver=[0u8;32];let mut receiver_size=0u32;
+        assert_eq!(unsafe{BCryptDecapsulate(imported_private,ciphertext.as_mut_ptr(),ciphertext_size,receiver.as_mut_ptr(),32,&mut receiver_size,0)},STATUS_SUCCESS);
+        assert_eq!(sender,receiver);
+
+        assert_eq!(unsafe{BCryptDestroyKey(imported_private)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(imported_public)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(pair)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
 }
