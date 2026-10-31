@@ -18,3 +18,15 @@ Deliberate limitations:
 - This does not make bcrypt.dll generally Windows-compatible; unsupported exports continue to return `STATUS_NOT_IMPLEMENTED`.
 
 Tests cover round-tripping AES-128/192/256 keys, preserving the provider's chaining mode, duplicate handles, and malformed headers/lengths.
+
+
+## P-256 ECDH public-key blobs
+
+The ECDH provider accepts and exports the Windows `EccPublicBlob` format for
+P-256 keys. The blob is validated for the `BCRYPT_ECDH_PUBLIC_P256_MAGIC`
+value, 32-byte coordinate size, exact 72-byte length, and a valid uncompressed
+SEC1 point. `BCryptSecretAgreement` requires a finalized local private key and
+an imported peer public key; the resulting shared secret is held in a
+zeroizing CNG secret handle and can be consumed by the existing `TRUNCATE`
+raw-secret KDF. P-384/P-521 and private ECC blob import/export are not yet
+implemented.
