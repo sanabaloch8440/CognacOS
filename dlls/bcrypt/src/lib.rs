@@ -309,9 +309,42 @@ unsafe fn auth_info(info:*mut c_void)->Result<(Vec<u8>,Vec<u8>,*mut u8,usize),NT
  if i.cbSize as usize!=core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()||i.dwInfoVersion!=1||i.pbNonce.is_null()||i.cbNonce!=12||i.pbTag.is_null()||i.cbTag!=16||(i.pbAuthData.is_null()&&i.cbAuthData!=0)||!i.pbMacContext.is_null()||i.cbMacContext!=0||i.dwFlags!=0{return Err(STATUS_INVALID_PARAMETER);}
  let nonce=unsafe{core::slice::from_raw_parts(i.pbNonce,12)}.to_vec();let aad=if i.cbAuthData==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(i.pbAuthData,i.cbAuthData as usize)}.to_vec()};Ok((nonce,aad,i.pbTag,i.cbTag as usize))
 }
+
+fn aes_cbc_crypt(key: &[u8], input: &[u8], iv: &mut [u8;16], encrypt: bool, padding: bool) -> Result<Vec<u8>, NTSTATUS> {
+    if key.len()!=16 && key.len()!=24 && key.len()!=32 { return Err(STATUS_INVALID_PARAMETER); }
+    if !encrypt && (input.is_empty() || input.len()%16!=0) { return Err(STATUS_INVALID_PARAMETER); }
+    let mut data=input.to_vec();
+    if encrypt && padding { let n=(16-data.len()%16) as u8; data.resize(data.len()+n as usize,n); }
+    if data.len()%16!=0 { return Err(STATUS_INVALID_PARAMETER); }
+    let mut chain=*iv;
+    for chunk in data.chunks_exact_mut(16) {
+        let mut block=[0u8;16]; block.copy_from_slice(chunk);
+        if encrypt {
+            for i in 0..16 { block[i]^=chain[i]; }
+            let b=GenericArray::from_mut_slice(&mut block);
+            match key.len() {16=>Aes128::new_from_slice(key).map_err(|_|STATUS_INVALID_PARAMETER)?.encrypt_block(b),24=>Aes192::new_from_slice(key).map_err(|_|STATUS_INVALID_PARAMETER)?.encrypt_block(b),_=>Aes256::new_from_slice(key).map_err(|_|STATUS_INVALID_PARAMETER)?.encrypt_block(b)};
+            chunk.copy_from_slice(&block); chain=block;
+        } else {
+            let ciphertext=block; let b=GenericArray::from_mut_slice(&mut block);
+            match key.len() {16=>Aes128::new_from_slice(key).map_err(|_|STATUS_INVALID_PARAMETER)?.decrypt_block(b),24=>Aes192::new_from_slice(key).map_err(|_|STATUS_INVALID_PARAMETER)?.decrypt_block(b),_=>Aes256::new_from_slice(key).map_err(|_|STATUS_INVALID_PARAMETER)?.decrypt_block(b)};
+            for i in 0..16 { chunk[i]=block[i]^chain[i]; } chain=ciphertext;
+        }
+    }
+    if !encrypt && padding { let n=*data.last().ok_or(STATUS_INVALID_PARAMETER)? as usize; if n==0||n>16||n>data.len()||!data[data.len()-n..].iter().all(|x|*x==n as u8){data.zeroize();return Err(STATUS_INVALID_PARAMETER);} data.truncate(data.len()-n); }
+    *iv=chain; Ok(data)
+}
+unsafe fn bcrypt_cbc(key:*mut c_void,input:*mut u8,input_len:ULONG,iv:*mut u8,iv_len:ULONG,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG,encrypt:bool)->NTSTATUS {
+    if result_len.is_null()||(input.is_null()&&input_len!=0)||iv.is_null()||iv_len!=16||flags&!BCRYPT_BLOCK_PADDING!=0{return STATUS_INVALID_PARAMETER;}
+    let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e}; let mut chain=[0u8;16]; unsafe{ptr::copy_nonoverlapping(iv,chain.as_mut_ptr(),16)};
+    let source=if input_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}};
+    let result=match aes_cbc_crypt(&k.key,source,&mut chain,encrypt,flags&BCRYPT_BLOCK_PADDING!=0){Ok(v)=>v,Err(e)=>return e};
+    unsafe{result_len.write(result.len() as ULONG)};if output.is_null()||output_len as usize<result.len(){return STATUS_BUFFER_TOO_SMALL;}
+    if !result.is_empty(){unsafe{ptr::copy_nonoverlapping(result.as_ptr(),output,result.len())};} unsafe{ptr::copy_nonoverlapping(chain.as_ptr(),iv,16)}; STATUS_SUCCESS
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn BCryptEncrypt(key:*mut c_void,input:*mut u8,input_len:ULONG,padding_info:*mut c_void,iv:*mut u8,iv_len:ULONG,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
- if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};let(nonce,aad,tag,_)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if output.is_null()||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
+ if padding_info.is_null(){return unsafe{bcrypt_cbc(key,input,input_len,iv,iv_len,output,output_len,result_len,flags,true)};}\n if padding_info.is_null(){return unsafe{bcrypt_cbc(key,input,input_len,iv,iv_len,output,output_len,result_len,flags,false)};}\n if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};let(nonce,aad,tag,_)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if output.is_null()||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
  let alg=match k.key.len(){16=>&aead::AES_128_GCM,32=>&aead::AES_256_GCM,_=>return STATUS_INVALID_PARAMETER};let unbound=match aead::UnboundKey::new(alg,&k.key){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let less=aead::LessSafeKey::new(unbound);let nonce=match aead::Nonce::try_assume_unique_for_key(&nonce){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
  let mut buf=if input_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}.to_vec()};let t=match less.seal_in_place_separate_tag(nonce,aead::Aad::from(aad.as_slice()),&mut buf){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};unsafe{ptr::copy_nonoverlapping(buf.as_ptr(),output,input_len as usize);ptr::copy_nonoverlapping(t.as_ref().as_ptr(),tag,16);let info=&mut *padding_info.cast::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>();info.cbAAD=info.cbAuthData;info.cbData=input_len as u64};STATUS_SUCCESS
 }
@@ -362,7 +395,7 @@ mod tests {
 
     #[test]
     fn duplicate_hash_preserves_incremental_state() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false, gcm: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false, gcm: false, cbc: false })).unwrap();
         let mut original = ptr::null_mut();
         assert_eq!(unsafe { BCryptCreateHash(provider.cast(), &mut original, ptr::null_mut(), 0, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptHashData(original, b"ab".as_ptr(), 2, 0) }, STATUS_SUCCESS);
