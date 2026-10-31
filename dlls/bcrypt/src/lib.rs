@@ -462,11 +462,11 @@ mod tests {
         assert_eq!(cipher, [0x03,0x88,0xda,0xce,0x60,0xb6,0xa3,0x92,0xf3,0x28,0xc2,0xb9,0x71,0xb2,0xfe,0x78]);
         assert_eq!(tag, [0xab,0x6e,0x47,0xd4,0x2c,0xec,0x13,0xbd,0xf5,0x3a,0x67,0xb2,0x12,0x57,0xbd,0xdf]);
         let mut recovered = [0u8; 16];
-        assert_eq!(unsafe { BCryptDecrypt(key, cipher.as_mut_ptr(), 16, (&mut info as *mut _).cast(), ptr::null_mut(), 0, recovered.as_mut_ptr(), 16, &mut written, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDecrypt(key, cipher.as_mut_ptr(), 16, (&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(), ptr::null_mut(), 0, recovered.as_mut_ptr(), 16, &mut written, 0) }, STATUS_SUCCESS);
         assert_eq!(recovered, plain);
         tag[0] ^= 1;
         let mut rejected = [0u8; 16];
-        assert_eq!(unsafe { BCryptDecrypt(key, cipher.as_mut_ptr(), 16, (&mut info as *mut _).cast(), ptr::null_mut(), 0, rejected.as_mut_ptr(), 16, &mut written, 0) }, STATUS_AUTH_TAG_MISMATCH);
+        assert_eq!(unsafe { BCryptDecrypt(key, cipher.as_mut_ptr(), 16, (&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(), ptr::null_mut(), 0, rejected.as_mut_ptr(), 16, &mut written, 0) }, STATUS_AUTH_TAG_MISMATCH);
         assert_eq!(unsafe { BCryptDestroyKey(key) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider, 0) }, STATUS_SUCCESS);
     }
