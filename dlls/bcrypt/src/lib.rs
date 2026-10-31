@@ -6,7 +6,7 @@
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Digest;
-use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::{hazmat::{PrehashVerifier, PrehashSigner}, SignatureEncoding}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
+use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey, elliptic_curve::sec1::ToEncodedPoint};\nuse rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::{hazmat::{PrehashVerifier, PrehashSigner}, SignatureEncoding}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
@@ -85,7 +85,7 @@ fn derive_pbkdf2(algorithm: HashAlgorithm, iterations: NonZeroU32, salt: &[u8], 
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, reusable: bool, cipher: bool, kdf: bool, rsa: bool, rng: bool, gcm: bool, cbc: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, reusable: bool, cipher: bool, kdf: bool, rsa: bool, ecdh: bool, rng: bool, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8>, gcm: bool, cbc: bool }
 #[derive(Clone)]
@@ -130,7 +130,7 @@ fn remove_handle(token: *mut c_void, expected: u8) -> NTSTATUS {
         (Some(RegisteredHandle::Hash(_)), 1) |
         (Some(RegisteredHandle::MultiHash(_)), 1) |
         (Some(RegisteredHandle::Key(_)), 2) | (Some(RegisteredHandle::RsaPublic(_)), 2) |
-        (Some(RegisteredHandle::KdfKey(_)), 3) | (Some(RegisteredHandle::KdfKey(_)), 2) | (Some(RegisteredHandle::RsaPrivate(_)), 2));
+        (Some(RegisteredHandle::KdfKey(_)), 3) | (Some(RegisteredHandle::KdfKey(_)), 2) | (Some(RegisteredHandle::RsaPrivate(_)), 2) | (Some(RegisteredHandle::EcdhPublic(_)), 2) | (Some(RegisteredHandle::EcdhPrivate(_)), 2));
     if !valid { return STATUS_INVALID_PARAMETER; }
     table.remove(&key);
     STATUS_SUCCESS
@@ -183,13 +183,13 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
         let mut provider=Vec::new(); for i in 0..64 { let u=unsafe{implementation.add(i).read()}; if u==0 { break; } provider.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
         match String::from_utf16(&provider).ok().as_deref() { Some("Microsoft Primitive Provider")=>{}, _=>return 0xC0000225_u32 as i32 }
     }
-    let (algorithm,cipher,kdf,rsa_provider,rng_provider)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false,false) }
+    let ecdh_provider = name == "ECDH_P256";\n    let (algorithm,cipher,kdf,rsa_provider,rng_provider)=if ecdh_provider { (HashAlgorithm::Sha256,false,false,false,false) }\n    else if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false,false) }
     else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true,false,false) }
     else if name=="RSA" || name=="RSA_SIGN" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true,false) }
     else if name=="RNG" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,false,true) }
     else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false,false),Err(e)=>return e } };
     if flags&BCRYPT_HASH_REUSABLE_FLAG!=0 && (cipher||kdf||rsa_provider||rng_provider) { return STATUS_NOT_SUPPORTED; }
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,reusable:flags&BCRYPT_HASH_REUSABLE_FLAG!=0,cipher,kdf,rsa:rsa_provider,rng:rng_provider,gcm:false,cbc:cipher})) {Ok(v)=>v,Err(e)=>return e};
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,reusable:flags&BCRYPT_HASH_REUSABLE_FLAG!=0,cipher,kdf,rsa:rsa_provider,ecdh:ecdh_provider,rng:rng_provider,gcm:false,cbc:cipher})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
