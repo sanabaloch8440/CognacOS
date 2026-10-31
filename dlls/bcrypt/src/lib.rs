@@ -283,10 +283,28 @@ pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *m
     match rand::fill(unsafe { core::slice::from_raw_parts_mut(buffer, length as usize) }) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_NOT_SUPPORTED }
 }
 
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct BcryptKeyLengths { dwMinLength:ULONG, dwMaxLength:ULONG, dwIncrement:ULONG }
+
 #[no_mangle]
 pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*const u16,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
     if property.is_null() || result_len.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
     let name = match unsafe { read_property_name(property) } { Ok(v) => v, Err(e) => return e };
+    if name=="KeyLengths" {
+        if let Ok(provider)=algorithm_handle(object) {
+            let lengths=if provider.cipher {Some(BcryptKeyLengths{dwMinLength:128,dwMaxLength:256,dwIncrement:64})}
+                else if provider.rsa {Some(BcryptKeyLengths{dwMinLength:512,dwMaxLength:16384,dwIncrement:64})}
+                else {None};
+            if let Some(lengths)=lengths {
+                let required=core::mem::size_of::<BcryptKeyLengths>() as ULONG;
+                unsafe{result_len.write(required)};
+                if output.is_null()||output_len<required{return STATUS_BUFFER_TOO_SMALL;}
+                unsafe{ptr::write_unaligned(output.cast::<BcryptKeyLengths>(),lengths)};
+                return STATUS_SUCCESS;
+            }
+        }
+    }
     let (kind, value, wide) = if let Ok(k) = key_handle(object) {
         match name.as_str() {
             "ObjectLength" => (0, 0, ""),
@@ -925,6 +943,19 @@ mod tests {
             BCryptFreeBuffer(providers.cast());
         }
         assert_eq!(String::from_utf16(&name).unwrap(), "Microsoft Primitive Provider");
+    }
+
+    #[test]
+    fn aes_and_rsa_providers_report_windows_key_length_ranges() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        for (algorithm,expected) in [("AES",BcryptKeyLengths{dwMinLength:128,dwMaxLength:256,dwIncrement:64}),("RSA",BcryptKeyLengths{dwMinLength:512,dwMaxLength:16384,dwIncrement:64})] {
+            let name=wide(algorithm);let property=wide("KeyLengths");let mut provider=ptr::null_mut();
+            assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+            let mut actual=BcryptKeyLengths{dwMinLength:0,dwMaxLength:0,dwIncrement:0};let mut required=0;
+            assert_eq!(unsafe{BCryptGetProperty(provider,property.as_ptr(),(&mut actual as *mut _).cast(),12,&mut required,0)},STATUS_SUCCESS);
+            assert_eq!(required,12);assert_eq!(actual.dwMinLength,expected.dwMinLength);assert_eq!(actual.dwMaxLength,expected.dwMaxLength);assert_eq!(actual.dwIncrement,expected.dwIncrement);
+            assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+        }
     }
 
     #[test]
