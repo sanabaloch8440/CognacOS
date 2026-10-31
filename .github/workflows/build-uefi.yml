@@ -44,9 +44,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo run --manifest-path tools/rust/Cargo.toml -- validate-ntoskrnl-manifest
-          cargo run --manifest-path tools/rust/Cargo.toml -- check-ntdll-def
-          cargo run --manifest-path tools/rust/Cargo.toml -- check-csrsrv-def
+          cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-ntoskrnl-manifest
+          cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-ntdll-def
+          cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-csrsrv-def
       - name: Ensure third-party filesystem sources are absent
         shell: bash
         run: |
@@ -445,7 +445,7 @@ jobs:
           rustc --edition=2024 --test kernel/src/ntoskrnl/alpc_resources.rs -o /tmp/cognacos-alpc-resource-tests
           /tmp/cognacos-alpc-resource-tests
       - name: Test Rust-native build and PE tooling
-        run: cargo test --manifest-path tools/rust/Cargo.toml
+        run: cargo test --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml
       - name: Validate CSRSRV export contract inventory
         run: python3 tools/check_csrsrv_exports.py
       - name: Build separate native PE32+ HAL and driver images
@@ -473,11 +473,11 @@ jobs:
           build_driver i8042prt drivers/i8042prt i8042prt 0xffff800160000000 i8042prt.sys
           build_driver usbxhci drivers/usbxhci usbxhci 0xffff800180000000 usbxhci.sys
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/storahci.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-storahci --release --bin storahci
-          cargo run --quiet --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-storahci/x86_64-unknown-none/release/storahci build/drivers/storahci.sys --image-base=0xffff800110000000 --dll
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-storahci/x86_64-unknown-none/release/storahci build/drivers/storahci.sys --image-base=0xffff800110000000 --dll
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/stornvme.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-stornvme --release --bin stornvme
-          cargo run --quiet --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-stornvme/x86_64-unknown-none/release/stornvme build/drivers/stornvme.sys --image-base=0xffff800120000000 --dll
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-stornvme/x86_64-unknown-none/release/stornvme build/drivers/stornvme.sys --image-base=0xffff800120000000 --dll
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/disk.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-disk --release --bin disk
-          cargo run --quiet --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-disk/x86_64-unknown-none/release/disk build/drivers/disk.sys --image-base=0xffff800130000000 --dll
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-disk/x86_64-unknown-none/release/disk build/drivers/disk.sys --image-base=0xffff800130000000 --dll
           python3 - <<'PY'
           import struct
           from pathlib import Path
@@ -578,8 +578,8 @@ jobs:
           python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
           python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel-release.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
           file build/cognacos-kernel.exe build/cognacos-kernel-release.exe
-          cargo run --quiet --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
-          cargo run --quiet --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
           python3 - <<'PY'
           import struct
           p = open("build/cognacos-kernel.exe", "rb").read()
