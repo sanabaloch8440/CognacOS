@@ -364,6 +364,9 @@ extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
     let Some(r)=ntoskrnl::pnp::xhci_resources() else{return false};
     if device_object==0||device_object!=r.device_object||r.segment!=0{return false}
     if enabled{
+        let owner_key=((r.segment as u32)<<16)|((r.bus as u32)<<8)
+            |((r.device as u32)<<3)|r.function as u32;
+        if VT_D_REQUESTER_OWNER.load(core::sync::atomic::Ordering::Acquire)!=owner_key{return false}
         if r.state<ntoskrnl::pnp::STATE_DMA_READY||r.interrupt_vector==0
             ||!hal::device_interrupt_handler_registered(r.interrupt_vector)
             ||!dma::iommu::available()
