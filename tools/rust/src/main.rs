@@ -88,12 +88,13 @@ mod dll_exports;
 mod elf_pe;
 mod pe_exports;
 mod qemu_trace;
+mod qemu_ps2;
 mod source_contract;
 mod windows_exports;
 
 fn main() {
     let mut args = env::args_os().skip(1);
-    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports|check-wdm-source-contracts|check-xstate-source-contracts|verify-dll-exports|verify-windows-exports|resolve-qemu-trace> [arguments]"));
+    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports|check-wdm-source-contracts|check-xstate-source-contracts|verify-dll-exports|verify-windows-exports|resolve-qemu-trace|qemu-ps2-smoke> [arguments]"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     match command.to_string_lossy().as_ref() {
         "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
@@ -101,7 +102,7 @@ fn main() {
         "check-csrsrv-def" => check_csrsrv_def(&args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"))),
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
-        "resolve-qemu-trace" => {
+        "qemu-ps2-smoke" => {\n            let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();\n            qemu_ps2::run(&values).unwrap_or_else(|e| fail!("PS/2 QEMU smoke failed: {e}"));\n        }\n        "resolve-qemu-trace" => {
             let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();
             qemu_trace::run(&values).unwrap_or_else(|e| fail!("QEMU trace resolution failed: {e}"));
         }
