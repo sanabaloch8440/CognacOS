@@ -181,9 +181,8 @@ pub unsafe extern "win64" fn I8042StopDevice() -> i32 {
     let Some(ext) = handoff() else { return STATUS_DEVICE_NOT_READY; };
     let Some(device) = (unsafe { ext.device.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
     let Some(hal) = (unsafe { ext.hal.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
-    let _guard = Guard::acquire();
     let mut io = HalPort { hal };
-    let port = unsafe { &mut *PORT.get() };
+    let port = unsafe { &mut *PORT.0.get() };
     let suspend_failed = port.state() == KeyboardPortState::Running && port.suspend(&mut io, 100_000).is_err();
     RUNNING.store(false, Ordering::Release);
     if let Some(unregister) = device.unregister_interrupt {
