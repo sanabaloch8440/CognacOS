@@ -388,6 +388,22 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
             }
         }
     }
+    if name=="KEMSharedSecretLength" || name=="KEMCiphertextLength" {
+        let material=match handle_table().lock() {
+            Ok(table)=>match table.get(&(object as usize)) {
+                Some(RegisteredHandle::MlKem(v)) if mlkem_is_finalized(v)=>v.clone(),
+                Some(RegisteredHandle::MlKem(_))=>return STATUS_INVALID_PARAMETER,
+                _=>return STATUS_NOT_SUPPORTED,
+            },
+            Err(_)=>return STATUS_NO_MEMORY,
+        };
+        let value=if name=="KEMSharedSecretLength"{32}else{mlkem_ciphertext_len(&material) as u32};
+        unsafe{result_len.write(4);}
+        if output.is_null(){return STATUS_SUCCESS;}
+        if output_len<4{return STATUS_BUFFER_TOO_SMALL;}
+        unsafe{write_u32(output,value);}
+        return STATUS_SUCCESS;
+    }
     if name=="AuthTagLength" {
         let is_gcm=key_handle(object).map(|k|k.gcm).unwrap_or_else(|_|algorithm_handle(object).map(|p|p.cipher&&p.gcm).unwrap_or(false));
         if !is_gcm{return STATUS_NOT_SUPPORTED;}
