@@ -5,6 +5,7 @@
 //! its real initialization path. The graph is monotonic for one boot session.
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use cognacos_storage::Geometry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -60,6 +61,10 @@ pub fn is_ready(stage: Stage) -> bool {
     READY.load(Ordering::Acquire) & bit(stage) != 0
 }
 
+pub fn validate_storage_geometry(sector_count: u64, logical_sector_size: u32, physical_sector_size: u32) -> bool {
+    Geometry { sector_count, logical_sector_size, physical_sector_size }.validate().is_ok()
+}
+
 pub fn readiness_snapshot() -> u32 {
     READY.load(Ordering::Acquire)
 }
@@ -80,6 +85,13 @@ mod tests {
         assert_eq!(prerequisites(Stage::ExtFilesystem), STORAGE);
         assert_eq!(prerequisites(Stage::PciXhciResources), ACPI);
         assert_eq!(prerequisites(Stage::VtdRequester), ACPI | PCI);
+    }
+
+    #[test]
+    fn storage_contract_rejects_invalid_sector_geometry() {
+        assert!(validate_storage_geometry(4096, 512, 4096));
+        assert!(!validate_storage_geometry(0, 512, 512));
+        assert!(!validate_storage_geometry(4096, 4096, 512));
     }
 
     #[test]
