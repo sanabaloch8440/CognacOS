@@ -21,7 +21,10 @@ pub fn query_service<'h,'b>(hive:&'h Hive<'h>,service_name:&[u16],path_buf:&'b m
  let key=hive.find_path(&path[..n]).map_err(|e|if e==HiveError::NotFound{Error::MissingService}else{Error::Hive(e)})?;
  let start=dword(key,&[83,116,97,114,116]).map_err(|e|if e==Error::Hive(HiveError::NotFound){Error::MissingStart}else{e})?;
  let service_type=dword(key,&[84,121,112,101]).map_err(|e|if e==Error::Hive(HiveError::NotFound){Error::MissingType}else{e})?;
- let error_control=match key.find_value(&[69,114,114,111,114,67,111,110,116,114,111,108]){\n  Ok(_)=>dword(key,&[69,114,114,111,114,67,111,110,116,114,111,108])?,\n  Err(HiveError::NotFound)=>0,Err(e)=>return Err(Error::Hive(e))\n };
+ let error_control=match key.find_value(&[69,114,114,111,114,67,111,110,116,114,111,108]){
+  Ok(_)=>dword(key,&[69,114,114,111,114,67,111,110,116,114,111,108])?,
+  Err(HiveError::NotFound)=>0,Err(e)=>return Err(Error::Hive(e))
+ };
  let value=key.find_value(&[73,109,97,103,101,80,97,116,104]).map_err(|e|if e==HiveError::NotFound{Error::MissingImagePath}else{Error::Hive(e)})?;
  if value.kind!=1&&value.kind!=2{return Err(Error::InvalidImagePath)}
  let bytes_len=value.data_len as usize;if bytes_len<2||bytes_len%2!=0||bytes_len/2>path_buf.len(){return Err(Error::BufferTooSmall)}
