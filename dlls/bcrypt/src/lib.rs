@@ -935,7 +935,7 @@ const _: [(); 8] = [(); core::mem::size_of::<BcryptPkcs1PaddingInfo>()];
 /// ipad/opad expansion for output longer than one digest block.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*mut c_void,output:*mut u8,output_len:ULONG,flags:ULONG)->NTSTATUS {
-    if output.is_null() || output_len==0 || output_len>128 || flags!=0 {return STATUS_INVALID_PARAMETER;}
+    if output.is_null() || output_len==0 || flags!=0 {return STATUS_INVALID_PARAMETER;}
     // The target algorithm is an ALG_ID encoded in the historical handle slot;
     // this primitive does not inspect provider state through that value.
     let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
@@ -944,6 +944,7 @@ pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*m
         let key=hmac::Key::new(state.algorithm.hmac_algorithm(),&state.secret);
         hmac::sign(&key,&state.data).as_ref().to_vec()
     }else{state.algorithm.digest(&state.data).as_ref().to_vec()};
+    if output_len as usize>digest.len().saturating_mul(2){return STATUS_INVALID_PARAMETER;}
     let mut material=Vec::with_capacity(output_len as usize);
     material.extend_from_slice(&digest);
     if output_len as usize>digest.len(){
@@ -1572,6 +1573,24 @@ mod tests {
         assert_eq!(unsafe{BCryptDestroyKey(handle)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptGetProperty(duplicate,property.as_ptr(),(&mut bits as *mut u32).cast(),4,&mut required,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(duplicate)},STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn local_provider_registration_query_and_enumeration_roundtrip() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("Cognac Test Provider");
+        let reg=CryptProviderReg{cAliases:0,rgpszAliases:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()};
+        assert_eq!(unsafe{BCryptRegisterProvider(name.as_ptr(),0,&reg)},STATUS_SUCCESS);
+        let mut size=0;let mut providers=ptr::null_mut();
+        assert_eq!(unsafe{BCryptEnumRegisteredProviders(&mut size,&mut providers)},STATUS_SUCCESS);
+        assert!(size>core::mem::size_of::<CryptProviders>() as ULONG);
+        let list=unsafe{&*providers};assert!(list.cProviders>=2);
+        let mut query_size=0;let mut queried=ptr::null_mut();
+        assert_eq!(unsafe{BCryptQueryProviderRegistration(name.as_ptr(),4,2,&mut query_size,&mut queried)},STATUS_SUCCESS);
+        assert_eq!(query_size,core::mem::size_of::<CryptProviderReg>() as ULONG);
+        unsafe{BCryptFreeBuffer(providers.cast());BCryptFreeBuffer(queried.cast())};
+        assert_eq!(unsafe{BCryptUnregisterProvider(name.as_ptr())},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptUnregisterProvider(name.as_ptr())},STATUS_NOT_FOUND);
     }
 
     #[test]
