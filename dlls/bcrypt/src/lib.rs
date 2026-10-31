@@ -38,7 +38,7 @@ impl HashAlgorithm {
             _ => Err(STATUS_NOT_SUPPORTED),
         }
     }
-    fn hmac_algorithm(self) -> &'static hmac::Algorithm { match self { Self::Sha256 => hmac::HMAC_SHA256, Self::Sha384 => hmac::HMAC_SHA384, Self::Sha512 => hmac::HMAC_SHA512 } }
+    fn hmac_algorithm(self) -> hmac::Algorithm { match self { Self::Sha256 => hmac::HMAC_SHA256, Self::Sha384 => hmac::HMAC_SHA384, Self::Sha512 => hmac::HMAC_SHA512 } }
     fn pbkdf2_algorithm(self) -> pbkdf2::Algorithm { match self { Self::Sha256 => pbkdf2::PBKDF2_HMAC_SHA256, Self::Sha384 => pbkdf2::PBKDF2_HMAC_SHA384, Self::Sha512 => pbkdf2::PBKDF2_HMAC_SHA512 } }
     fn provider_name(self) -> &'static str { match self { Self::Sha256 => "SHA256", Self::Sha384 => "SHA384", Self::Sha512 => "SHA512" } }
     fn digest(self, bytes: &[u8]) -> digest::Digest { match self { Self::Sha256 => digest::digest(&digest::SHA256, bytes), Self::Sha384 => digest::digest(&digest::SHA384, bytes), Self::Sha512 => digest::digest(&digest::SHA512, bytes) } }
@@ -192,7 +192,7 @@ mod tests {
     fn pbkdf2_sha256_known_answer() {
         let mut out = [0u8; 32];
         pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256, NonZeroU32::new(1).unwrap(), b"salt", b"password", &mut out);
-        assert_eq!(out, [0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xbe,0x17,0xb7]);
+        assert_eq!(out, [0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xe1,0x7b]);
     }
     #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
