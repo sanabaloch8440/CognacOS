@@ -767,9 +767,7 @@ jobs:
       - name: Validate source-level QEMU crash resolver
         run: |
           set -euo pipefail
-          python3 -m py_compile tools/resolve_qemu_trace.py tools/test_resolve_qemu_trace.py
-          python3 tools/resolve_qemu_trace.py --help >/dev/null
-          python3 tools/test_resolve_qemu_trace.py
+          cargo test --quiet --manifest-path tools/rust/Cargo.toml --target x86_64-unknown-linux-gnu qemu_trace::tests
       - name: Boot smoke test under OVMF/QEMU
         shell: bash
         run: |
@@ -1018,7 +1016,7 @@ jobs:
           if result.returncode:
               print(f"llvm-symbolizer exit status: {result.returncode}")
           PY
-            python3 tools/resolve_qemu_trace.py \
+            cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- resolve-qemu-trace \
               --trace build/qemu-debug.log \
               --serial build/serial.log \
               --kernel target/x86_64-unknown-none/debug/cognacos-kernel \
