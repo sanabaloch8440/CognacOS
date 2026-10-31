@@ -4,6 +4,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use aws_lc_rs::{aead, digest, hmac, pbkdf2, rand};
+use aes::{Aes128, Aes192, Aes256};
+use cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 use core::num::NonZeroU32;
 use zeroize::Zeroize;
 use core::{ffi::c_void, ptr};
@@ -21,6 +23,7 @@ pub const STATUS_NO_MEMORY: NTSTATUS = 0xC0000017_u32 as i32;
 pub const STATUS_AUTH_TAG_MISMATCH: NTSTATUS = 0xC000A002_u32 as i32;
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: ULONG = 0x00000002;
 const BCRYPT_ALG_HANDLE_HMAC_FLAG: ULONG = 0x00000008;
+const BCRYPT_BLOCK_PADDING: ULONG = 0x00000001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HashAlgorithm { Sha256, Sha384, Sha512 }
@@ -49,7 +52,7 @@ impl HashAlgorithm {
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, cipher: bool, gcm: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, cipher: bool, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8> }
 impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
@@ -123,7 +126,7 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     let name=match String::from_utf16(&units){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
     let (algorithm,cipher)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true) }
     else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false),Err(e)=>return e } };
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,cipher,gcm:false})) {Ok(v)=>v,Err(e)=>return e};
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,cipher,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
@@ -285,8 +288,8 @@ pub unsafe extern "system" fn BCryptFreeBuffer(buffer: *mut c_void) {
 #[no_mangle]
 pub unsafe extern "system" fn BCryptSetProperty(object:*mut c_void,property:*const u16,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
  if property.is_null()||input.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let n=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};if n!="ChainingMode"{return STATUS_NOT_SUPPORTED;}
- let val=unsafe{core::slice::from_raw_parts(input,input_len as usize)};let expected:Vec<u16>="ChainingModeGCM".encode_utf16().chain(core::iter::once(0)).collect();if val.len()!=expected.len()*2{return STATUS_NOT_SUPPORTED;}for(i,u)in expected.iter().enumerate(){if unsafe{ptr::read_unaligned(input.add(i*2).cast::<u16>())}!=*u{return STATUS_NOT_SUPPORTED;}}
- let Ok(mut t)=handle_table().lock()else{return STATUS_NO_MEMORY;};let Some(RegisteredHandle::Algorithm(a))=t.get_mut(&(object as usize))else{return STATUS_INVALID_PARAMETER;};if !a.cipher{return STATUS_INVALID_PARAMETER;}a.gcm=true;STATUS_SUCCESS
+ let val=unsafe{core::slice::from_raw_parts(input,input_len as usize)};let gcm:Vec<u16>="ChainingModeGCM".encode_utf16().chain(core::iter::once(0)).collect();let cbc:Vec<u16>="ChainingModeCBC".encode_utf16().chain(core::iter::once(0)).collect();let matches=|v:&[u16]| val.len()==v.len()*2 && v.iter().enumerate().all(|(i,u)|unsafe{ptr::read_unaligned(input.add(i*2).cast::<u16>())}==*u);let is_gcm=matches(&gcm);let is_cbc=matches(&cbc);if !is_gcm&&!is_cbc{return STATUS_NOT_SUPPORTED;}
+ let Ok(mut t)=handle_table().lock()else{return STATUS_NO_MEMORY;};let Some(RegisteredHandle::Algorithm(a))=t.get_mut(&(object as usize))else{return STATUS_INVALID_PARAMETER;};if !a.cipher{return STATUS_INVALID_PARAMETER;}a.gcm=is_gcm;a.cbc=is_cbc;STATUS_SUCCESS
 }
 
 #[repr(C)]
@@ -298,7 +301,7 @@ pub struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
- if out.is_null()||!object.is_null()||object_len!=0||secret.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if !p.cipher||!p.gcm||!(secret_len==16||secret_len==32){return STATUS_NOT_SUPPORTED;}
+ if out.is_null()||!object.is_null()||object_len!=0||secret.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if !p.cipher||!(p.gcm && (secret_len==16||secret_len==32) || p.cbc && (secret_len==16||secret_len==24||secret_len==32)){return STATUS_NOT_SUPPORTED;}
  let key=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();let token=match register_handle(RegisteredHandle::Key(KeyHandle{key})){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
 }
 unsafe fn auth_info(info:*mut c_void)->Result<(Vec<u8>,Vec<u8>,*mut u8,usize),NTSTATUS>{
@@ -345,7 +348,7 @@ mod tests {
     }
     #[test]
     fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false, gcm: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false, gcm: false, cbc: false })).unwrap();
         let input = b"abc";
         let mut output = [0u8; 32];
         let status = unsafe { BCryptHash(provider, ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
