@@ -426,10 +426,6 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
   unsafe{serial_write(b"VT-d: no DRHD scope owns the complete xHCI PCI path; DMA remains fail-closed.\r\n");}
   return false
  };
- if acpi::dmar_rmrr_covers_path(&info.rmrr,path.segment,path.root_bus,&dmar_path[..count]){
-  unsafe{serial_write(b"VT-d: xHCI requester is RMRR-scoped; reserved-region handoff is not yet available, DMA remains disabled.\r\n");}
-  return false
- }
  let ops=dma::iommu::vtd::PlatformOps{
   size:core::mem::size_of::<dma::iommu::vtd::PlatformOps>() as u32,
   context:core::ptr::null_mut(),alloc_table:Some(vtd_alloc_table),free_table:Some(vtd_free_table),
