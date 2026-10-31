@@ -139,6 +139,29 @@ const IRP_MN_QUERY_STOP_DEVICE: u8 = 0x05;
 const IRP_MN_CANCEL_STOP_DEVICE: u8 = 0x06;
 const IRP_MN_SURPRISE_REMOVAL: u8 = 0x17;
 
+unsafe fn raw_ahci_memory_resource_present(resources: *const u8, minimum_length: u64) -> bool {
+    if resources.is_null() { return false; }
+    let full_count = unsafe { core::ptr::read_unaligned(resources.cast::<u32>()) };
+    if full_count == 0 || full_count > 8 { return false; }
+    let mut cursor = 4usize;
+    for _ in 0..full_count {
+        let partial_count = unsafe { core::ptr::read_unaligned(resources.add(cursor + 12).cast::<u32>()) };
+        if partial_count > 64 { return false; }
+        let mut descriptor = cursor + 16;
+        for _ in 0..partial_count {
+            let kind = unsafe { *resources.add(descriptor) };
+            if kind == 3 {
+                let length = unsafe { core::ptr::read_unaligned(resources.add(descriptor + 12).cast::<u32>()) } as u64;
+                if length >= minimum_length { return true; }
+            }
+            descriptor += 16;
+        }
+        cursor = descriptor;
+        if cursor > 4096 { return false; }
+    }
+    false
+}
+
 unsafe fn translated_ahci_bar_matches(resources: *const u8, physical: u64, minimum_length: u64) -> bool {
     if resources.is_null() { return false; }
     let full_count = unsafe { core::ptr::read_unaligned(resources.cast::<u32>()) };
@@ -170,8 +193,10 @@ unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE
     let status = match unsafe { (*stack).minor_function } {
         IRP_MN_START_DEVICE => {
             let Some(ext) = handoff() else { return STATUS_DEVICE_NOT_READY; };
+            let raw = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<*const u8>()) };
             let translated = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<*const u8>()) };
-            if unsafe { translated_ahci_bar_matches(translated, ext.mmio_physical, ext.mmio_length) } {
+            if unsafe { raw_ahci_memory_resource_present(raw, ext.mmio_length)
+                && translated_ahci_bar_matches(translated, ext.mmio_physical, ext.mmio_length) } {
                 START_RESOURCES_VALID.store(true, Ordering::Release);
                 let result = unsafe { CognacStorAhciPrepareController() };
                 if result != STATUS_SUCCESS { START_RESOURCES_VALID.store(false, Ordering::Release); }
