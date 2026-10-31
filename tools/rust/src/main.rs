@@ -99,7 +99,11 @@ fn main() {
         "check-csrsrv-def" => check_csrsrv_def(&args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"))),
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
-        "verify-dll-exports" => {\n            let specs: Vec<String> = args.collect::<Vec<_>>().into_iter().map(|x| x.to_string_lossy().into_owned()).collect();\n            dll_exports::run(&specs).unwrap_or_else(|e| fail!("DLL export verification failed: {e}"));\n        }\n        "validate-pe-exports" => {
+        "verify-dll-exports" => {
+            let specs: Vec<String> = args.collect::<Vec<_>>().into_iter().map(|x| x.to_string_lossy().into_owned()).collect();
+            dll_exports::run(&specs).unwrap_or_else(|e| fail!("DLL export verification failed: {e}"));
+        }
+        "validate-pe-exports" => {
             let pe = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing PE image"));
             let manifest = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing export manifest"));
             let required: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();
