@@ -642,6 +642,7 @@ pub unsafe extern "system" fn BCryptKeyDerivation(key:*mut c_void,params:*mut Bc
     if desc.ulVersion!=0 || desc.cBuffers==0 || desc.cBuffers>16 || desc.pBuffers.is_null() { return STATUS_INVALID_PARAMETER; }
     let mut algorithm:Option<HashAlgorithm>=None;
     let mut salt:Option<Vec<u8>>=None;
+    let mut iteration_seen=false;
     let mut iterations:u64=10_000;
     for i in 0..desc.cBuffers as usize {
         let b=unsafe{ptr::read_unaligned(desc.pBuffers.add(i))};
@@ -650,7 +651,8 @@ pub unsafe extern "system" fn BCryptKeyDerivation(key:*mut c_void,params:*mut Bc
             KDF_HASH_ALGORITHM => {
                 if algorithm.is_some() || b.pvBuffer.is_null() || b.cbBuffer<2 || b.cbBuffer%2!=0 { return STATUS_INVALID_PARAMETER; }
                 let units=unsafe{core::slice::from_raw_parts(b.pvBuffer.cast::<u16>(),(b.cbBuffer/2) as usize)};
-                let end=units.iter().position(|u|*u==0).unwrap_or(units.len());
+                let Some(end)=units.iter().position(|u|*u==0) else{return STATUS_INVALID_PARAMETER;};
+                if end+1!=units.len(){return STATUS_INVALID_PARAMETER;}
                 let name=match String::from_utf16(&units[..end]) { Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER };
                 algorithm=Some(match name.as_str() {"SHA256"=>HashAlgorithm::Sha256,"SHA384"=>HashAlgorithm::Sha384,"SHA512"=>HashAlgorithm::Sha512,_=>return STATUS_NOT_SUPPORTED});
             }
@@ -659,14 +661,15 @@ pub unsafe extern "system" fn BCryptKeyDerivation(key:*mut c_void,params:*mut Bc
                 salt=Some(if b.cbBuffer==0 {Vec::new()} else {unsafe{core::slice::from_raw_parts(b.pvBuffer.cast::<u8>(),b.cbBuffer as usize)}.to_vec()});
             }
             KDF_ITERATION_COUNT => {
-                if b.pvBuffer.is_null() || b.cbBuffer!=8 { return STATUS_INVALID_PARAMETER; }
+                if iteration_seen || b.pvBuffer.is_null() || b.cbBuffer!=8 { return STATUS_INVALID_PARAMETER; }
+                iteration_seen=true;
                 iterations=unsafe{ptr::read_unaligned(b.pvBuffer.cast::<u64>())};
             }
             _ => return STATUS_NOT_SUPPORTED,
         }
     }
     let Some(alg)=algorithm else{return STATUS_INVALID_PARAMETER};
-    let Some(salt)=salt else{return STATUS_INVALID_PARAMETER};
+    let salt=salt.unwrap_or_default();
     if iterations==0 || iterations>u32::MAX as u64 || iterations>10_000_000 { return STATUS_INVALID_PARAMETER; }
     let nz=match NonZeroU32::new(iterations as u32){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
     let out=unsafe{core::slice::from_raw_parts_mut(output,output_len as usize)};
