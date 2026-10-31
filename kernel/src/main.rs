@@ -439,8 +439,28 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
   unsafe{serial_write(b"VT-d: initialization or generic DMA backend registration failed; DMA remains fail-closed status=");serial_write_hex(status as u32 as u64);serial_write(b"\r\n");}
   return false
  }
+ let Some(resources)=ntoskrnl::pnp::xhci_resources() else{return false};
+ let Some(requester)=dma::iommu::vtd::RequesterId::new(path.endpoint_bus,path.endpoint_device,path.endpoint_function) else{return false};
+ // Only firmware-reserved RAM may be identity-mapped as an RMRR. Conventional
+ // memory is rejected because the allocator may already have issued its pages.
+ for region in info.rmrr.regions.iter().take(info.rmrr.count) {
+  if region.segment!=path.segment {continue}
+  let scoped=region.scopes.iter().take(region.scope_count as usize)
+    .any(|scope|acpi::dmar_scope_matches_path(scope,path.root_bus,&dmar_path[..count]));
+  if !scoped {continue}
+  let Some(length)=region.limit.checked_sub(region.base).and_then(|n|n.checked_add(1)) else{return false};
+  if !memory::is_firmware_reserved_ram_range(region.base,length) {
+   unsafe{serial_write(b"VT-d: RMRR intersects non-reserved or conventional RAM; refusing unsafe identity mapping.\r\n");}
+   return false
+  }
+  let status=unsafe{dma::iommu::vtd::map_rmrr_identity(resources.device_object as usize,requester,region.base,length)};
+  if status!=dma::iommu::vtd::STATUS_SUCCESS {
+   unsafe{serial_write(b"VT-d: failed to publish scoped RMRR identity mapping; requester remains bus-master-disabled status=");serial_write_hex(status as u32 as u64);serial_write(b"\r\n");}
+   return false
+  }
+ }
  VT_D_REQUESTER_OWNER.store(requester_key,core::sync::atomic::Ordering::Release);
- unsafe{serial_write(b"VT-d: exact DMAR DRHD selected from the full PCI bridge path; translation enabled.\r\n");}
+ unsafe{serial_write(b"VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.\r\n");}
  true
 }
 
