@@ -4,7 +4,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use aws_lc_rs::{digest, hmac, pbkdf2, rand};
-use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey}, signature::hazmat::PrehashVerifier, traits::PublicKeyParts, BigUint, RsaPublicKey};
+use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::hazmat::{PrehashVerifier, PrehashSigner}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
+use rand::rngs::OsRng;
 use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{aead::AeadInPlace, AesGcm};
@@ -67,7 +68,7 @@ struct KdfKeyHandle { secret: Vec<u8> }
 impl Drop for KdfKeyHandle { fn drop(&mut self) { self.secret.zeroize(); } }
 impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
 #[derive(Clone)]
-enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey) }
+enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey), RsaPrivate(RsaPrivateKey) }
 static HANDLE_TABLE: OnceLock<Mutex<HashMap<usize, RegisteredHandle>>> = OnceLock::new();
 static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x10000);
 fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
@@ -102,7 +103,7 @@ fn remove_handle(token: *mut c_void, expected: u8) -> NTSTATUS {
         (Some(RegisteredHandle::Hash(_)), 1) |
         (Some(RegisteredHandle::MultiHash(_)), 1) |
         (Some(RegisteredHandle::Key(_)), 2) | (Some(RegisteredHandle::RsaPublic(_)), 2) |
-        (Some(RegisteredHandle::KdfKey(_)), 3) | (Some(RegisteredHandle::KdfKey(_)), 2));
+        (Some(RegisteredHandle::KdfKey(_)), 3) | (Some(RegisteredHandle::KdfKey(_)), 2) | (Some(RegisteredHandle::RsaPrivate(_)), 2));
     if !valid { return STATUS_INVALID_PARAMETER; }
     table.remove(&key);
     STATUS_SUCCESS
@@ -723,6 +724,7 @@ pub unsafe extern "system" fn BCryptDuplicateKey(key:*mut c_void,out:*mut *mut c
             Some(RegisteredHandle::Key(v))=>RegisteredHandle::Key(v.clone()),
             Some(RegisteredHandle::KdfKey(v))=>RegisteredHandle::KdfKey(v.clone()),
             Some(RegisteredHandle::RsaPublic(v))=>RegisteredHandle::RsaPublic(v.clone()),
+            Some(RegisteredHandle::RsaPrivate(v))=>RegisteredHandle::RsaPrivate(v.clone()),
             _=>return STATUS_INVALID_PARAMETER,
         },
         Err(_)=>return STATUS_NO_MEMORY,
@@ -847,6 +849,56 @@ pub unsafe extern "system" fn BCryptDeriveKey(secret:*mut c_void,kdf:*const u16,
 struct BcryptRsaBlobHeader { magic:ULONG, bit_length:ULONG, cb_public_exp:ULONG, cb_modulus:ULONG, cb_prime1:ULONG, cb_prime2:ULONG }
 
 /// Imports a Windows BCRYPT_RSAPUBLIC_BLOB into an opaque RSA public-key handle.
+/// Creates an unfinalized RSA key pair. The private material remains in a
+/// zeroizing backend-owned key object; caller-supplied key-object storage is not
+/// used by this implementation.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*mut *mut c_void,bits:ULONG,flags:ULONG)->NTSTATUS {
+    if out.is_null() || flags!=0 || !(512..=16384).contains(&bits) || bits%8!=0 { return STATUS_INVALID_PARAMETER; }
+    let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
+    if !provider.rsa { return STATUS_NOT_SUPPORTED; }
+    let private=match RsaPrivateKey::new(&mut OsRng,bits as usize){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
+    let token=match register_handle(RegisteredHandle::RsaPrivate(private)){Ok(v)=>v,Err(e)=>return e};
+    unsafe{out.write(token)};STATUS_SUCCESS
+}
+
+/// Completes a generated RSA key pair. RSA generation in this provider creates
+/// a mathematically complete backend key immediately; this call seals the CNG
+/// lifecycle and rejects duplicate finalization.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptFinalizeKeyPair(key:*mut c_void,flags:ULONG)->NTSTATUS {
+    if flags!=0 || key.is_null(){return STATUS_INVALID_PARAMETER;}
+    match handle_table().lock(){
+        Ok(table)=>match table.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(_))=>STATUS_SUCCESS,_=>STATUS_INVALID_PARAMETER},
+        Err(_)=>STATUS_NO_MEMORY,
+    }
+}
+
+/// Signs a precomputed SHA-2 digest using RSA PKCS#1 v1.5.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptSignHash(key:*mut c_void,padding_info:*mut c_void,input:*mut u8,input_len:ULONG,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
+    const BCRYPT_PAD_PKCS1:ULONG=0x00000002;
+    if result_len.is_null() || input.is_null() || flags!=BCRYPT_PAD_PKCS1 || padding_info.is_null(){return STATUS_INVALID_PARAMETER;}
+    let info=unsafe{&*padding_info.cast::<BcryptPkcs1PaddingInfo>()};
+    let alg=match unsafe{HashAlgorithm::from_utf16(info.pszAlgId)}{Ok(v)=>v,Err(e)=>return e};
+    if input_len!=alg.digest_len(){return STATUS_INVALID_PARAMETER;}
+    let private=match handle_table().lock(){
+        Ok(t)=>match t.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(v))=>v.clone(),_=>return STATUS_INVALID_PARAMETER},
+        Err(_)=>return STATUS_NO_MEMORY,
+    };
+    let required=private.size() as ULONG;
+    unsafe{result_len.write(required)};
+    if output.is_null(){return STATUS_SUCCESS;}
+    if output_len<required{return STATUS_BUFFER_TOO_SMALL;}
+    let digest=unsafe{core::slice::from_raw_parts(input,input_len as usize)};
+    let signature=match alg{
+        HashAlgorithm::Sha256=>match SigningKey::<Sha256>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+        HashAlgorithm::Sha384=>match SigningKey::<Sha384>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+        HashAlgorithm::Sha512=>match SigningKey::<Sha512>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+    };
+    unsafe{ptr::copy_nonoverlapping(signature.as_ptr(),output,signature.len())};STATUS_SUCCESS
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_key:*mut c_void,blob_type:*const u16,out:*mut *mut c_void,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
     const BCRYPT_RSAPUBLIC_MAGIC:ULONG=0x31415352;
