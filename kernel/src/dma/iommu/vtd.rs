@@ -722,9 +722,8 @@ pub unsafe fn initialize_for_dmar_path(
     let unit=match cognacos_acpi::select_dmar_unit(dmar,segment,root_bus,endpoint_path) {
         Ok(v)=>v,Err(_)=>return STATUS_NOT_SUPPORTED,
     };
-    if cognacos_acpi::dmar_rmrr_covers_path(&dmar.rmrr,segment,root_bus,endpoint_path) {
-        return STATUS_NOT_SUPPORTED;
-    }
+    // Matching RMRRs are installed as pinned identity mappings by the PnP
+    // caller before the controller is handed to its driver.
     if unit.register_base==0||unit.register_base&0xfff!=0 {
         return STATUS_INVALID_PARAMETER;
     }
