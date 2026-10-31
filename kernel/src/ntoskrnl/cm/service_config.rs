@@ -190,7 +190,7 @@ pub fn query_service_group_order(hive:&Hive<'_>,out:&mut[u16])->Result<usize,Ext
     if out[units-1]!=0||out[units-2]!=0{return Err(ExtendedConfigError::InvalidDependencies)}
     let mut iter=MultiSzIter::new(&out[..units]);
     while let Some(group)=iter.next(){
-        if group.is_empty()||group.len()>128||group.iter().any(|c|*c==b'\\\\' as u16||*c==b'/' as u16){return Err(ExtendedConfigError::InvalidGroup)}
+        if group.is_empty()||group.len()>128||group.iter().any(|c|*c==b'\\' as u16||*c==b'/' as u16){return Err(ExtendedConfigError::InvalidGroup)}
     }
     Ok(units)
 }
