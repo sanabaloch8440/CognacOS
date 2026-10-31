@@ -1403,6 +1403,55 @@ include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 mod tests {
     use super::*;
     #[test]
+    fn p256_ecdh_agreement_matches_both_parties_and_exports_windows_blob() {
+        let wide = |s: &str| s.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let algorithm = wide("ECDH_P256");
+        let blob = wide("EccPublicBlob");
+        let truncate = wide("TRUNCATE");
+        let mut provider = ptr::null_mut();
+        assert_eq!(unsafe { BCryptOpenAlgorithmProvider(&mut provider, algorithm.as_ptr(), ptr::null(), 0) }, STATUS_SUCCESS);
+        let mut alice = ptr::null_mut();
+        let mut bob = ptr::null_mut();
+        assert_eq!(unsafe { BCryptGenerateKeyPair(provider, &mut alice, 256, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptGenerateKeyPair(provider, &mut bob, 256, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptFinalizeKeyPair(alice, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptFinalizeKeyPair(bob, 0) }, STATUS_SUCCESS);
+        let mut alice_len = 0;
+        let mut bob_len = 0;
+        assert_eq!(unsafe { BCryptExportKey(alice, ptr::null_mut(), blob.as_ptr(), ptr::null_mut(), 0, &mut alice_len, 0) }, STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(unsafe { BCryptExportKey(bob, ptr::null_mut(), blob.as_ptr(), ptr::null_mut(), 0, &mut bob_len, 0) }, STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(alice_len, 72);
+        assert_eq!(bob_len, 72);
+        let mut alice_blob = vec![0u8; alice_len as usize];
+        let mut bob_blob = vec![0u8; bob_len as usize];
+        assert_eq!(unsafe { BCryptExportKey(alice, ptr::null_mut(), blob.as_ptr(), alice_blob.as_mut_ptr(), alice_len, &mut alice_len, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptExportKey(bob, ptr::null_mut(), blob.as_ptr(), bob_blob.as_mut_ptr(), bob_len, &mut bob_len, 0) }, STATUS_SUCCESS);
+        let mut alice_public = ptr::null_mut();
+        let mut bob_public = ptr::null_mut();
+        assert_eq!(unsafe { BCryptImportKeyPair(provider, ptr::null_mut(), blob.as_ptr(), &mut alice_public, alice_blob.as_ptr(), alice_len, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptImportKeyPair(provider, ptr::null_mut(), blob.as_ptr(), &mut bob_public, bob_blob.as_ptr(), bob_len, 0) }, STATUS_SUCCESS);
+        let mut alice_secret = ptr::null_mut();
+        let mut bob_secret = ptr::null_mut();
+        assert_eq!(unsafe { BCryptSecretAgreement(alice, bob_public, &mut alice_secret, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptSecretAgreement(bob, alice_public, &mut bob_secret, 0) }, STATUS_SUCCESS);
+        let mut alice_raw = [0u8; 32];
+        let mut bob_raw = [0u8; 32];
+        let mut alice_written = 0;
+        let mut bob_written = 0;
+        assert_eq!(unsafe { BCryptDeriveKey(alice_secret, truncate.as_ptr(), ptr::null_mut(), alice_raw.as_mut_ptr(), 32, &mut alice_written, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDeriveKey(bob_secret, truncate.as_ptr(), ptr::null_mut(), bob_raw.as_mut_ptr(), 32, &mut bob_written, 0) }, STATUS_SUCCESS);
+        assert_eq!(alice_written, 32);
+        assert_eq!(bob_written, 32);
+        assert_eq!(alice_raw, bob_raw);
+        assert_eq!(unsafe { BCryptDestroySecret(alice_secret) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDestroySecret(bob_secret) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDestroyKey(alice_public) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDestroyKey(bob_public) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDestroyKey(alice) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDestroyKey(bob) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider, 0) }, STATUS_SUCCESS);
+    }
+
     #[test]
     fn config_change_notifications_register_signal_and_unregister() {
         let mut event = ptr::null_mut();
@@ -1420,6 +1469,7 @@ mod tests {
         assert_eq!(unsafe { BCryptRegisterConfigChangeNotify(ptr::null_mut()) }, STATUS_INVALID_PARAMETER);
     }
 
+    #[test]
     fn bcrypt_raw_secret_derivation_and_destroy() {
         let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let provider_name=wide("PBKDF2");
