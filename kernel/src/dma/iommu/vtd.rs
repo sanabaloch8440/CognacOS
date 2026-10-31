@@ -207,6 +207,7 @@ pub unsafe fn invalidate_iotlb()->i32{
  if any{STATUS_SUCCESS}else{STATUS_DEVICE_NOT_READY}
 }
 pub fn is_enabled()->bool{unsafe{(&*UNITS.0.get()).iter().any(|u|u.enabled)}}
+pub fn segment_is_enabled(segment:u16)->bool{unit_slot(segment).is_some()}
 pub fn root_table_physical()->Option<u64>{unsafe{(&*UNITS.0.get()).iter().find(|u|u.enabled).map(|u|u.root_phys)}}
 
 
