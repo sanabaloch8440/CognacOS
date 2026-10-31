@@ -57,7 +57,7 @@ setup_toolchain() {
 }
 
 install_targets() {
-  rustup target add x86_64-unknown-linux-gnu x86_64-unknown-none x86_64-unknown-uefi x86_64-pc-windows-msvc
+  rustup target add x86_64-unknown-linux-gnu x86_64-unknown-none x86_64-unknown-uefi x86_64-pc-windows-msvc x86_64-pc-windows-gnu
 }
 
 check_toolchain() {
