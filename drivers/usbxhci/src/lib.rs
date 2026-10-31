@@ -364,7 +364,7 @@ pub trait XhciPlatform: XhciRegisterIo {
     /// being mistaken for a device-visible IOVA.
     fn dma_mapping_ready(&self, _allocation: DmaAllocation) -> bool { false }
     fn allocate_dma(&mut self, size: u64, alignment: u64, max_device_address: u64) -> Result<DmaAllocation, ()>;
-    fn free_dma(&mut self, allocation: DmaAllocation);
+    fn free_dma(&mut self, allocation: DmaAllocation) -> Result<(), ()>;
     fn register_interrupt(&mut self) -> Result<(), ()>;
     fn unregister_interrupt(&mut self);
     fn set_interrupt_enabled(&mut self, enabled: bool) -> Result<(), ()>;
@@ -404,7 +404,13 @@ unsafe fn zero_dma(a: DmaAllocation, size: usize) {
     unsafe { core::ptr::write_bytes(a.cpu_address as *mut u8, 0, size); }
 }
 fn free_allocations<P: XhciPlatform>(p: &mut P, a: [Option<DmaAllocation>; 4]) {
-    for allocation in a.into_iter().flatten().rev() { p.free_dma(allocation); }
+    for allocation in a.into_iter().flatten().rev() {
+        if p.free_dma(allocation).is_err() {
+            // An IOTLB timeout means the device may still reach the pages.
+            // Never return to an allocator that could recycle that memory.
+            loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+        }
+    }
 }
 /// Allocate and initialize the controller-owned DMA structures, register the
 /// interrupt before enabling the controller, then perform the bounded reset/run
@@ -424,7 +430,7 @@ pub fn start_controller<P: XhciPlatform>(
         let a = match platform.allocate_dma(sizes[i], aligns[i], u64::MAX) {
             Ok(a) if valid_allocation(a, sizes[i], aligns[i], u64::MAX)
                 && platform.dma_mapping_ready(a) => a,
-            Ok(a) => { platform.free_dma(a); free_allocations(platform, allocations); return Err(RuntimeStartError::InvalidAllocation); }
+            Ok(a) => { if platform.free_dma(a).is_err() { loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } } } free_allocations(platform, allocations); return Err(RuntimeStartError::InvalidAllocation); }
             Err(()) => { free_allocations(platform, allocations); return Err(RuntimeStartError::AllocationFailed); }
         };
         allocations[i] = Some(a);
@@ -537,7 +543,7 @@ where P: XhciRegisterIo, F: FnMut(Trb) {
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RuntimeStopError { InterruptDisableFailed, RegisterIoFailure, ControllerDidNotHalt }
+pub enum RuntimeStopError { InterruptDisableFailed, RegisterIoFailure, ControllerDidNotHalt, DmaTeardownFailed }
 /// Quiesce the controller before releasing DMA memory. On timeout, allocations
 /// intentionally remain owned by the caller because hardware may still DMA into them.
 pub fn stop_controller<P: XhciPlatform>(
@@ -560,10 +566,10 @@ pub fn stop_controller<P: XhciPlatform>(
     // Once halted, revoke PCI bus mastering before tearing down IOMMU mappings.
     platform.set_bus_master(false).map_err(|_| RuntimeStopError::InterruptDisableFailed)?;
     if resources.interrupt_registered { platform.unregister_interrupt(); }
-    platform.free_dma(resources.erst);
-    platform.free_dma(resources.event_ring);
-    platform.free_dma(resources.command_ring);
-    platform.free_dma(resources.dcbaa);
+    platform.free_dma(resources.erst).map_err(|_| RuntimeStopError::DmaTeardownFailed)?;
+    platform.free_dma(resources.event_ring).map_err(|_| RuntimeStopError::DmaTeardownFailed)?;
+    platform.free_dma(resources.command_ring).map_err(|_| RuntimeStopError::DmaTeardownFailed)?;
+    platform.free_dma(resources.dcbaa).map_err(|_| RuntimeStopError::DmaTeardownFailed)?;
     Ok(())
 }
 
@@ -777,10 +783,10 @@ impl XhciPlatform for HalBackedXhciPlatform {
         if status.code != 0 { return Err(()); }
         Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
     }
-    fn free_dma(&mut self, allocation: DmaAllocation) {
-        if let Some(free) = self.table().free_dma {
-            let _ = unsafe { free(self.device_object, allocation.cpu_address, allocation.device_address, allocation.size) };
-        }
+    fn free_dma(&mut self, allocation: DmaAllocation) -> Result<(), ()> {
+        let free = self.table().free_dma.ok_or(())?;
+        let status = unsafe { free(self.device_object, allocation.cpu_address, allocation.device_address, allocation.size) };
+        if status.code == 0 { Ok(()) } else { Err(()) }
     }
     fn register_interrupt(&mut self) -> Result<(), ()> {
         if self.registered { return Err(()); }
@@ -1223,7 +1229,7 @@ mod controller_power_tests {
    let a=DmaAllocation{cpu_address:unsafe{self.dma.0.as_mut_ptr().add(self.next)} as u64,device_address:0x10000+self.next as u64,size};
    self.next=end;Ok(a)
   }
-  fn free_dma(&mut self,_:DmaAllocation){}
+  fn free_dma(&mut self,_:DmaAllocation)->Result<(),()>{Ok(())}
   fn register_interrupt(&mut self)->Result<(),()>{self.irq_registered=true;Ok(())}
   fn unregister_interrupt(&mut self){self.irq_registered=false;self.irq_enabled=false;}
   fn set_interrupt_enabled(&mut self,e:bool)->Result<(),()>{if e&&!self.irq_registered{return Err(())}self.irq_enabled=e;Ok(())}
