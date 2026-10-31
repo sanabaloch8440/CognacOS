@@ -725,6 +725,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
           mkdir -p build
           gdb -q -batch target/x86_64-unknown-none/release/cognacos-kernel \
             -x tools/gdb/cognacos-forensics.gdb \
@@ -1001,8 +1002,8 @@ jobs:
           GDB
             set +e
             gdb -q -batch -x build/gdb-diagnose.gdb > build/gdb-state.txt 2>&1
-            if [[ -f cognacos-gdb-forensics.txt ]]; then cp cognacos-gdb-forensics.txt build/; fi
             gdb_status=$?
+            if [[ -f cognacos-gdb-forensics.txt ]]; then cp cognacos-gdb-forensics.txt build/; fi
             set -e
             echo "=== GDB live failure snapshot (status=$gdb_status) ==="
             cat build/gdb-state.txt || true
