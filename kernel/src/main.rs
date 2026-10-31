@@ -439,14 +439,19 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
  }
  let Some(resources)=ntoskrnl::pnp::xhci_resources() else{return false};
  let Some(requester)=dma::iommu::vtd::RequesterId::new_segment(path.segment,path.endpoint_bus,path.endpoint_device,path.endpoint_function) else{return false};
- // Only firmware-reserved RAM may be identity-mapped as an RMRR. Conventional
- // memory is rejected because the allocator may already have issued its pages.
+ // Only firmware-described RAM that the early physical allocator has already
+ // excluded may be identity-mapped. MMIO, unusable pages and kernel-image pages fail closed.
  for region in info.rmrr.regions.iter().take(info.rmrr.count) {
   if region.segment!=path.segment {continue}
   let scoped=region.scopes.iter().take(region.scope_count as usize)
     .any(|scope|acpi::dmar_scope_matches_path(scope,path.root_bus,&dmar_path[..count]));
   if !scoped {continue}
   let Some(length)=region.limit.checked_sub(region.base).and_then(|n|n.checked_add(1)) else{return false};
+  let Some(region_end)=region.base.checked_add(length) else{return false};
+  if info.kernel_physical_sections.iter().take(info.kernel_physical_section_count)
+      .any(|(start,end)|region.base<*end&&*start<region_end) {
+   return false;
+  }
   if !memory::is_firmware_reserved_ram_range(region.base,length) {
    unsafe{serial_write(b"VT-d: RMRR intersects non-reserved or conventional RAM; refusing unsafe identity mapping.\r\n");}
    return false
