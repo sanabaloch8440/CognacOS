@@ -736,7 +736,8 @@ impl HalBackedXhciPlatform {
             || interrupt_vector == 0 || isr.is_none() { return Err(()); }
         // SAFETY: caller guarantees the table pointer is readable.
         let table = unsafe { &*services };
-        if !table.compatible() || !table.has_dma() || !table.has_interrupts() { return Err(()); }
+        if !table.compatible() || !table.has_dma() || !table.has_dma_validation()
+            || !table.has_interrupts() || !table.has_bus_master() { return Err(()); }
         Ok(Self { services, device_object, mmio_base, mmio_length, interrupt_vector,
             interrupt_context, isr, dpc, registered: false })
     }
@@ -771,8 +772,11 @@ impl XhciPlatform for HalBackedXhciPlatform {
         // HAL DMA allocation is the authority that creates the requester-specific
         // IOMMU mapping. Requiring both lifetime callbacks prevents accepting a
         // bare address from an incomplete/legacy service table.
-        self.table().has_dma() && allocation.cpu_address != 0
-            && allocation.device_address != 0 && allocation.size != 0
+        let Some(validate)=self.table().validate_dma else{return false};
+        if allocation.cpu_address==0||allocation.device_address==0||allocation.size==0{return false}
+        let status=unsafe{validate(self.device_object,allocation.cpu_address,
+            allocation.device_address,allocation.size)};
+        status.code==0
     }
     fn allocate_dma(&mut self, size: u64, alignment: u64, max_device_address: u64) -> Result<DmaAllocation, ()> {
         if size == 0 || alignment < 16 || !alignment.is_power_of_two() { return Err(()); }
