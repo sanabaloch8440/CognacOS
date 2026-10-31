@@ -1,0 +1,13 @@
+# Rust/Cargo build products
+/target/
+/build/
+
+# Local tooling and editor state
+/.idea/
+/.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Generated debug and runtime logs
+*.log
