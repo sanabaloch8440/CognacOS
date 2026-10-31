@@ -4,7 +4,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use aws_lc_rs::{digest, hmac, pbkdf2, rand};
-use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::hazmat::{PrehashVerifier, PrehashSigner}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
+use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::{hazmat::{PrehashVerifier, PrehashSigner}, SignatureEncoding}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
 use rand::rngs::OsRng;
 use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
@@ -896,7 +896,7 @@ pub unsafe extern "system" fn BCryptSignHash(key:*mut c_void,padding_info:*mut c
     if output_len<required{return STATUS_BUFFER_TOO_SMALL;}
     let digest=unsafe{core::slice::from_raw_parts(input,input_len as usize)};
     let signature=match alg{
-        HashAlgorithm::Sha256=>match SigningKey::<Sha256>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+        HashAlgorithm::Sha256=>match SigningKey::<Sha256>::new(private).sign_prehash(digest){Ok(v)=>v.to_bytes().to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
         HashAlgorithm::Sha384=>match SigningKey::<Sha384>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
         HashAlgorithm::Sha512=>match SigningKey::<Sha512>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
     };
