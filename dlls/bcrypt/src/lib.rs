@@ -1190,6 +1190,7 @@ unsafe extern "system" {
     fn CloseHandle(handle: *mut c_void) -> i32;
 }
 fn signal_config_change() {
+    CONFIG_CHANGE_GENERATION.fetch_add(1, Ordering::Release);
     let events = match config_change_events().lock() { Ok(v) => v.iter().copied().collect::<Vec<_>>(), Err(_) => return };
     #[cfg(windows)]
     for event in events { unsafe { let _ = SetEvent(event as *mut c_void); } }
@@ -1831,11 +1832,11 @@ mod tests {
             }
         }
         unsafe { BCryptFreeBuffer(list.cast()) };
-        // Secret agreement is not advertised; RSA signing is enumerated
-        // separately under the Windows signature interface.
+        // P-256 ECDH is advertised under the Windows secret-agreement interface.
         assert_eq!(unsafe { BCryptEnumAlgorithms(8, &mut count, &mut list, 0) }, STATUS_SUCCESS);
-        assert_eq!(count, 0);
-        assert!(list.is_null());
+        assert_eq!(count, 1);
+        assert_eq!(unsafe { (*list).class }, 4);
+        unsafe { BCryptFreeBuffer(list.cast()) };
         assert_eq!(unsafe { BCryptEnumAlgorithms(16, &mut count, &mut list, 0) }, STATUS_SUCCESS);
         assert_eq!(count, 1);
         assert_eq!(unsafe { (*list).class }, 5);
