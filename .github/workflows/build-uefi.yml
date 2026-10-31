@@ -348,7 +348,7 @@ jobs:
           pub extern "C" fn cognac_ntdll_empty_archive_member() {}
           RS
           rustc --edition=2021 --target x86_64-pc-windows-msvc --crate-type lib --emit=obj -o "$RUNNER_TEMP/ntdll-empty.obj" "$RUNNER_TEMP/ntdll-empty.rs"
-          ar rcs ntdll/ntdll.lib "$RUNNER_TEMP/ntdll-empty.obj"
+          llvm-ar rcs ntdll/ntdll.lib "$RUNNER_TEMP/ntdll-empty.obj"
           trap 'rm -f ntdll/ntdll.lib "$RUNNER_TEMP/ntdll-empty.obj" "$RUNNER_TEMP/ntdll-empty.rs"' EXIT
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           dll=target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll
@@ -387,14 +387,14 @@ jobs:
           RS
           rustc --edition=2021 --target x86_64-pc-windows-msvc --crate-type lib --emit=obj -o "$RUNNER_TEMP/cognacos-dll-empty.obj" "$RUNNER_TEMP/cognacos-dll-empty.rs"
           mkdir -p dlls/kernel32 dlls/kernelbase dlls/shell32 dlls/msvcrt
-          ar rcs dlls/kernel32/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/kernelbase/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/kernelbase/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/shell32/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/kernel32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/msvcrt/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/msvcrt/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/kernel32/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/kernelbase/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/kernelbase/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/shell32/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/kernel32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/msvcrt/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/msvcrt/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/kernel32/exports/kernel32-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/kernel32" cargo build --manifest-path dlls/kernel32/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/kernelbase/exports/kernelbase-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/kernelbase" cargo build --manifest-path dlls/kernelbase/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/kernelbase.dll build/dlls/kernelbase.dll
@@ -413,8 +413,8 @@ jobs:
             --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv \
             --dll msvcrt,build/dlls/msvcrt.dll,dlls/msvcrt/exports/windows-11-x64-exports.tsv
           mkdir -p dlls/syssetup build/dlls
-          ar rcs dlls/syssetup/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/syssetup/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/syssetup/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          llvm-ar rcs dlls/syssetup/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:cognac_syssetup_dll_entry -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/syssetup/exports/syssetup-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/syssetup" cargo build --manifest-path dlls/syssetup/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/syssetup.dll build/dlls/syssetup.dll
           file build/dlls/syssetup.dll | grep -q 'PE32+.*DLL'
