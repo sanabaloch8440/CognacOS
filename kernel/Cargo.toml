@@ -11,6 +11,7 @@ diagnostic-vm = []
 
 [dependencies]
 cognacos-nt-abi = { path = "../shared/nt-abi" }
+cognacos-storage = { path = "../drivers/storage" }
 cognacos-acpi = { path = "../drivers/acpi" }
 cognacos-pci = { path = "../drivers/pci" }
 cognacos-hal-contract = { path = "../drivers/hal" }
