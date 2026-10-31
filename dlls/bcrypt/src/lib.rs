@@ -47,6 +47,7 @@ impl HashAlgorithm {
     fn block_len(self) -> u32 { match self { Self::Sha256 => 64, Self::Sha384 | Self::Sha512 => 128 } }
 }
 
+#[derive(Clone)]
 struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, cipher: bool, gcm: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8> }
