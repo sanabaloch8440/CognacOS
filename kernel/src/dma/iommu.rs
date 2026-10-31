@@ -296,7 +296,7 @@ pub unsafe extern "system" fn RdotDmaRegisterDeviceRequester(
 pub unsafe extern "system" fn RdotDmaUnregisterDeviceRequester(device: *mut c_void) -> i32 {
     if device.is_null() { return INVALID; }
     let handle = device as usize;
-    if device_busy(handle) || super::vtd::requester_has_reserved_rmrr(handle) {
+    if device_busy(handle) || vtd::requester_has_reserved_rmrr(handle) {
         return 0xC000_00A2u32 as i32; // STATUS_DEVICE_BUSY
     }
     let mut entries = REQUESTERS.lock();
