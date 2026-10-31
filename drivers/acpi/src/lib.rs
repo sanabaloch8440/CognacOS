@@ -518,7 +518,7 @@ pub fn parse_dmar_rmrr(bytes:&[u8])->Result<DmarRmrrInfo,AcpiError>{
             if size<24||out.count==out.regions.len(){return Err(AcpiError::MalformedEntry)}
             let base=u64::from_le_bytes(bytes[off+8..off+16].try_into().map_err(|_|AcpiError::Truncated)?);
             let limit=u64::from_le_bytes(bytes[off+16..off+24].try_into().map_err(|_|AcpiError::Truncated)?);
-            if base==0||base&0xfff!=0||limit<base||limit&0xfff!=0||limit.checked_add(1).is_none(){
+            if base==0||base&0xfff!=0||limit<base||limit&0xfff!=0x0fff||limit.checked_add(1).is_none(){
                 return Err(AcpiError::MalformedEntry)
             }
             let mut region=DmarRmrr::EMPTY;
