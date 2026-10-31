@@ -370,6 +370,15 @@ mod function_header_tests {
         assert!(h.is_xhci());assert_eq!(h.command,6);
     }
     #[test]
+    fn class_codes_identify_ahci_and_nvme_without_enabling_devices() {
+        let ahci = PciFunctionHeader { class_code: 0x01, subclass: 0x06, programming_interface: 0x01, ..Default::default() };
+        let nvme = PciFunctionHeader { class_code: 0x01, subclass: 0x08, programming_interface: 0x02, ..Default::default() };
+        assert!(ahci.is_ahci());
+        assert!(!ahci.is_nvme());
+        assert!(nvme.is_nvme());
+        assert!(!nvme.is_ahci());
+    }
+    #[test]
     fn common_header_rejects_absent_and_truncated_functions(){
         assert_eq!(PciFunctionHeader::parse(&[0;8]),Err(PciError::InvalidOffset));
         let mut b=[0u8;16];b[0..2].copy_from_slice(&0xffffu16.to_le_bytes());
