@@ -87,7 +87,7 @@ mod tests {
   let e=0x200;b[e+16..e+20].copy_from_slice(&1u32.to_le_bytes());b[e+20..e+24].copy_from_slice(&2u32.to_le_bytes());b[e+24..e+28].copy_from_slice(&1u32.to_le_bytes());b[e+28..e+32].copy_from_slice(&0x1040u32.to_le_bytes());b[e+32..e+36].copy_from_slice(&0x1048u32.to_le_bytes());b[e+36..e+40].copy_from_slice(&0x104cu32.to_le_bytes());
   b[0x240..0x244].copy_from_slice(&0x2000u32.to_le_bytes());b[0x244..0x248].copy_from_slice(&0x1060u32.to_le_bytes());
   b[0x248..0x24c].copy_from_slice(&0x1050u32.to_le_bytes());b[0x24c..0x24e].copy_from_slice(&0u16.to_le_bytes());
-  b[0x250..0x25c].copy_from_slice(b"NamedExport\\0");b[0x260..0x270].copy_from_slice(b"KERNEL32.Sleep\\0");
+  b[0x250..0x25c].copy_from_slice(b"NamedExport\\0");b[0x260..0x26f].copy_from_slice(b"KERNEL32.Sleep\\0");
   let got=parse_pe(&b).unwrap();assert_eq!(got.get(&1).unwrap().name.as_deref(),Some("NamedExport"));
   assert_eq!(got.get(&2).unwrap().name,None);assert_eq!(got.get(&2).unwrap().forwarder.as_deref(),Some("KERNEL32.Sleep"));
  }
