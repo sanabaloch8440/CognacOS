@@ -431,5 +431,50 @@ mod tests {
     }
 
     #[test]
+    fn enum_algorithms_returns_only_implemented_classes_and_frees() {
+        let mut count = 0;
+        let mut list = ptr::null_mut();
+        let status = unsafe { BCryptEnumAlgorithms(0x2 | 0x20, &mut count, &mut list, 0) };
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(count, 4);
+        let names: Vec<String> = (0..count as usize).map(|i| unsafe {
+            let entry = &*list.add(i);
+            let mut n = Vec::new();
+            for j in 0..32 {
+                let c = entry.name.add(j).read_unaligned();
+                if c == 0 { break; }
+                n.push(c);
+            }
+            String::from_utf16(&n).unwrap()
+        }).collect();
+        assert_eq!(names, ["SHA256", "SHA384", "SHA512", "RNG"]);
+        unsafe { BCryptFreeBuffer(list.cast()) };
+        assert_eq!(enum_buffers().lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn enum_providers_returns_single_provider_and_frees() {
+        let mut count = 0;
+        let mut providers = ptr::null_mut();
+        assert_eq!(unsafe { BCryptEnumProviders(&mut count, &mut providers, 0) }, STATUS_SUCCESS);
+        assert_eq!(count, 1);
+        let mut name = Vec::new();
+        unsafe {
+            for i in 0..64 {
+                let unit = (*providers).name.add(i).read_unaligned();
+                if unit == 0 { break; }
+                name.push(unit);
+            }
+            BCryptFreeBuffer(providers.cast());
+        }
+        assert_eq!(String::from_utf16(&name).unwrap(), "CognacOS AWS-LC Provider");
+    }
+
+    #[test]
+    fn free_buffer_ignores_unknown_pointer() {
+        unsafe { BCryptFreeBuffer(1usize as *mut c_void) };
+    }
+
+    #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
 }
