@@ -149,7 +149,11 @@ fn main() {
         },
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
-        "qemu-ps2-smoke" => {\n            let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();\n            qemu_ps2::run(&values).unwrap_or_else(|e| fail!("PS/2 QEMU smoke failed: {e}"));\n        }\n        "resolve-qemu-trace" => {
+        "qemu-ps2-smoke" => {
+            let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();
+            qemu_ps2::run(&values).unwrap_or_else(|e| fail!("PS/2 QEMU smoke failed: {e}"));
+        }
+        "resolve-qemu-trace" => {
             let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();
             qemu_trace::run(&values).unwrap_or_else(|e| fail!("QEMU trace resolution failed: {e}"));
         }
