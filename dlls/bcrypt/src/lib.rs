@@ -127,6 +127,11 @@ struct HashHandle { algorithm: HashAlgorithm, hmac: bool, secret: Vec<u8>, data:
 struct MultiHashHandle { states: Vec<HashHandle> }
 impl Drop for HashHandle { fn drop(&mut self) { self.secret.zeroize(); self.data.zeroize(); } }
 
+#[inline]
+fn valid_object_buffer(object:*mut u8,object_len:ULONG)->bool {
+    object.is_null()==(object_len==0)
+}
+
 unsafe fn write_u32(out: *mut u8, value: u32) { unsafe { ptr::copy_nonoverlapping(value.to_ne_bytes().as_ptr(), out, 4) }; }
 unsafe fn write_wide(out: *mut u8, value: &str) { for (i, unit) in value.encode_utf16().chain(core::iter::once(0)).enumerate() { unsafe { ptr::write_unaligned(out.add(i * 2).cast::<u16>(), unit) }; } }
 unsafe fn read_property_name(ptr: *const u16) -> Result<String, NTSTATUS> {
@@ -166,7 +171,7 @@ pub unsafe extern "system" fn BCryptCloseAlgorithmProvider(handle:*mut c_void,fl
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptCreateHash(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
- if out.is_null()||!object.is_null()||object_len!=0||(secret.is_null()&&secret_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
+ if out.is_null()||!valid_object_buffer(object,object_len)||(secret.is_null()&&secret_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
  let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e}; if p.cipher{return STATUS_INVALID_PARAMETER;} if !p.hmac&&secret_len!=0{return STATUS_INVALID_PARAMETER;}
  let key=if secret_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec()};
  let h=HashHandle{algorithm:p.algorithm,hmac:p.hmac,secret:key,data:Vec::new()};
@@ -195,7 +200,7 @@ pub unsafe extern "system" fn BCryptFinishHash(hash:*mut c_void,output:*mut u8,o
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDuplicateHash(hash:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,flags:ULONG)->NTSTATUS {
- if out.is_null()||!object.is_null()||object_len!=0||flags!=0{return STATUS_INVALID_PARAMETER;}let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
+ if out.is_null()||!valid_object_buffer(object,object_len)||flags!=0{return STATUS_INVALID_PARAMETER;}let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
  let token=match register_handle(RegisteredHandle::Hash(state)){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
 }
 
@@ -209,7 +214,7 @@ struct BcryptMultiHashOperation { iHash: ULONG, hashOperation: ULONG, pbBuffer: 
 /// accepted yet; the state is held in the opaque handle table.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptCreateMultiHash(algorithm:*mut c_void,out:*mut *mut c_void,count:ULONG,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
-    if out.is_null() || count==0 || count>64 || !object.is_null() || object_len!=0 || (secret.is_null()&&secret_len!=0) || flags!=0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() || count==0 || count>4096 || !valid_object_buffer(object,object_len) || (secret.is_null()&&secret_len!=0) || flags!=0 { return STATUS_INVALID_PARAMETER; }
     let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
     if provider.cipher || !provider.multi || (!provider.hmac&&secret_len!=0) { return STATUS_INVALID_PARAMETER; }
     let key=if secret_len==0 { Vec::new() } else { unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec() };
@@ -568,7 +573,7 @@ struct BcryptKeyDataBlobHeader { dwMagic: ULONG, dwVersion: ULONG, cbKeyData: UL
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDuplicateKey(key:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,flags:ULONG)->NTSTATUS {
-    if out.is_null() || !object.is_null() || object_len != 0 || flags != 0 || key.is_null() { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() || !valid_object_buffer(object,object_len) || flags != 0 || key.is_null() { return STATUS_INVALID_PARAMETER; }
     let duplicate=match handle_table().lock() {
         Ok(table)=>match table.get(&(key as usize)) {
             Some(RegisteredHandle::Key(v))=>RegisteredHandle::Key(v.clone()),
@@ -583,7 +588,7 @@ pub unsafe extern "system" fn BCryptDuplicateKey(key:*mut c_void,out:*mut *mut c
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptImportKey(algorithm:*mut c_void,import_key:*mut c_void,blob_type:*const u16,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,input:*mut u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
-    if out.is_null() || blob_type.is_null() || !import_key.is_null() || !object.is_null() || object_len != 0 || input.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() || blob_type.is_null() || !import_key.is_null() || !valid_object_buffer(object,object_len) || input.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
     let name = match unsafe { read_property_name(blob_type) } { Ok(v) => v, Err(e) => return e };
     if name != BCRYPT_KEY_DATA_BLOB { return STATUS_NOT_SUPPORTED; }
     let provider = match algorithm_handle(algorithm) { Ok(v) => v, Err(e) => return e };
