@@ -6,7 +6,8 @@
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Digest;
-use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey, elliptic_curve::sec1::ToEncodedPoint};\nuse rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::{hazmat::{PrehashVerifier, PrehashSigner}, SignatureEncoding}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
+use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey, elliptic_curve::sec1::ToEncodedPoint};
+use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::{hazmat::{PrehashVerifier, PrehashSigner}, SignatureEncoding}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
@@ -1153,7 +1154,8 @@ fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.
 
 
 static CONFIG_CHANGE_EVENTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
-static NEXT_CONFIG_EVENT: AtomicUsize = AtomicUsize::new(0xC0000);\nstatic CONFIG_CHANGE_GENERATION: AtomicUsize = AtomicUsize::new(0);
+static NEXT_CONFIG_EVENT: AtomicUsize = AtomicUsize::new(0xC0000);
+static CONFIG_CHANGE_GENERATION: AtomicUsize = AtomicUsize::new(0);
 fn config_change_events() -> &'static Mutex<HashSet<usize>> {
     CONFIG_CHANGE_EVENTS.get_or_init(|| Mutex::new(HashSet::new()))
 }
