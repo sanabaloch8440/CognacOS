@@ -620,12 +620,69 @@ unsafe extern "system" fn generic_dma_sync(
  if device==0||logical==0||length==0{return STATUS_INVALID_PARAMETER}
  let end=match logical.checked_add(length as u64){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
  let maps=DMA_MAPS.lock();
- if !maps.iter().any(|m|m.used&&m.ready&&!m.busy&&m.device==device
+ if !maps.iter().any(|m|m.used&&m.ready&&!m.busy&&m.cookie!=0&&m.device==device
   &&logical>=m.iova&&end<=m.iova.saturating_add(m.span)){return STATUS_INVALID_PARAMETER}
  drop(maps);
  fence(Ordering::SeqCst);
  unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}
  STATUS_SUCCESS
+}
+
+
+/// Install the ACPI DMAR reserved-memory identity mapping for one scoped device.
+/// The physical pages remain owned by firmware/ACPI and are never allocated or
+/// freed by this mapper. A cookie of zero marks the IOVA reservation so ordinary
+/// DMA allocations cannot overlap it and ordinary DMA unmap cannot remove it.
+pub unsafe fn map_rmrr_identity(device:usize,id:RequesterId,base:u64,length:u64)->i32 {
+ if device==0||base==0||base&0xfff!=0||length==0||length&0xfff!=0
+    ||base.checked_add(length).is_none_or(|end|end>SL_MAX){return STATUS_INVALID_PARAMETER}
+ let Some(registered)=requester_for_device(device) else{return STATUS_NOT_SUPPORTED};
+ if registered.bus!=id.bus||registered.device!=id.device||registered.function!=id.function {
+    return STATUS_INVALID_PARAMETER;
+ }
+ if !requester_domain_exists(id) {
+    if unsafe{create_requester_domain(id)}.is_err(){return STATUS_INSUFFICIENT_RESOURCES}
+ } else if !requester_domain_usable(id) {return STATUS_DEVICE_NOT_READY}
+ let index={
+    let mut maps=DMA_MAPS.lock();
+    if maps.iter().any(|m|m.used&&m.device==device&&m.cookie==0&&m.iova==base&&m.span==length&&m.ready) {
+        return STATUS_SUCCESS;
+    }
+    let end=base+length;
+    if maps.iter().any(|m|m.used&&base<m.iova.saturating_add(m.span)&&m.iova<end) {
+        return STATUS_DEVICE_BUSY;
+    }
+    let Some(index)=maps.iter().position(|m|!m.used) else{return STATUS_INSUFFICIENT_RESOURCES};
+    maps[index]=DmaMap{used:true,ready:false,busy:true,device,iova:base,span:length,cookie:0};
+    index
+ };
+ let status=unsafe{map_pages(id,base,base,length,3)};
+ let mut maps=DMA_MAPS.lock();
+ if status==STATUS_SUCCESS {
+    maps[index].ready=true;maps[index].busy=false;
+ } else if requester_domain_usable(id) {
+    maps[index]=DmaMap::EMPTY;
+ } // Otherwise retain the reservation while the poisoned domain is quarantined.
+ status
+}
+
+/// Remove an RMRR identity mapping only after the caller has stopped the device
+/// and revoked bus mastering. Firmware-owned pages are not freed by this API.
+pub unsafe fn unmap_rmrr_identity(device:usize,id:RequesterId,base:u64,length:u64)->i32 {
+ if device==0||base==0||length==0{return STATUS_INVALID_PARAMETER}
+ let index={
+    let mut maps=DMA_MAPS.lock();
+    if maps.iter().any(|m|m.used&&m.device==device&&m.cookie!=0){return STATUS_DEVICE_BUSY}
+    let Some((i,m))=maps.iter_mut().enumerate().find(|(_,m)|m.used&&m.device==device
+        &&m.cookie==0&&m.iova==base&&m.span==length&&m.ready&&!m.busy) else {
+        return STATUS_INVALID_PARAMETER
+    };
+    m.busy=true;i
+ };
+ let status=unsafe{unmap_pages(id,base,length)};
+ let mut maps=DMA_MAPS.lock();
+ if status==STATUS_SUCCESS{maps[index]=DmaMap::EMPTY;}else{maps[index].busy=false;}
+ status
 }
 
 /// Register the VT-d mapper as the generic DMA backend. Call only after
