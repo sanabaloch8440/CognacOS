@@ -1103,12 +1103,11 @@ pub unsafe extern "system" fn BCryptEncapsulate(
         return if secret.is_null() && ciphertext.is_null() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER };
     }
     if secret_len<32 || ciphertext_len<required_ciphertext as ULONG { return STATUS_BUFFER_TOO_SMALL; }
-    let (ct, shared) = match material {
-        MlKemKeyHandle::Pair512{ek,..} => { let (ct,ss)=ek.encapsulate(); (ct.as_ref().to_vec(),ss.as_ref().to_vec()) },
-        MlKemKeyHandle::Pair768{ek,..} => { let (ct,ss)=ek.encapsulate(); (ct.as_ref().to_vec(),ss.as_ref().to_vec()) },
-        MlKemKeyHandle::Pair1024{ek,..} => { let (ct,ss)=ek.encapsulate(); (ct.as_ref().to_vec(),ss.as_ref().to_vec()) },
-    };
-    unsafe { ptr::copy_nonoverlapping(shared.as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ptr(),ciphertext,ct.len()); }
+    match material {
+        MlKemKeyHandle::Pair512{ek,..} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
+        MlKemKeyHandle::Pair768{ek,..} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
+        MlKemKeyHandle::Pair1024{ek,..} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
+    }
     STATUS_SUCCESS
 }
 
@@ -1135,12 +1134,12 @@ pub unsafe extern "system" fn BCryptDecapsulate(
     if secret.is_null() { return STATUS_SUCCESS; }
     if secret_len<32 { return STATUS_BUFFER_TOO_SMALL; }
     let bytes=unsafe{core::slice::from_raw_parts(ciphertext,ciphertext_len as usize)};
-    let shared=match material {
-        MlKemKeyHandle::Pair512{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>v.as_ref().to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
-        MlKemKeyHandle::Pair768{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>v.as_ref().to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
-        MlKemKeyHandle::Pair1024{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>v.as_ref().to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+    let copied=match material {
+        MlKemKeyHandle::Pair512{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
+        MlKemKeyHandle::Pair768{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
+        MlKemKeyHandle::Pair1024{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
     };
-    unsafe { ptr::copy_nonoverlapping(shared.as_ptr(),secret,32); }
+    if !copied { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -2446,6 +2445,38 @@ mod tests {
         assert_eq!(b.as_slice(),hmac_digest(HashAlgorithm::Sha256,secret,b"message-b").as_slice());
         assert_eq!(unsafe{BCryptDestroyHash(multi)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn mlkem_512_768_1024_cng_encapsulate_decapsulate_roundtrip() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("ML-KEM");
+        for (bits,ciphertext_size) in [(512u32,768usize),(768,1088),(1024,1568)] {
+            let mut provider=ptr::null_mut();
+            assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+            let mut key=ptr::null_mut();
+            assert_eq!(unsafe{BCryptGenerateKeyPair(provider,&mut key,bits,0)},STATUS_SUCCESS);
+            assert_eq!(unsafe{BCryptFinalizeKeyPair(key,0)},STATUS_SUCCESS);
+
+            let mut secret_required=0u32;
+            let mut ciphertext_required=0u32;
+            assert_eq!(unsafe{BCryptEncapsulate(key,ptr::null_mut(),0,&mut secret_required,ptr::null_mut(),0,&mut ciphertext_required,0)},STATUS_SUCCESS);
+            assert_eq!(secret_required,32);
+            assert_eq!(ciphertext_required as usize,ciphertext_size);
+
+            let mut ciphertext=vec![0u8;ciphertext_size];
+            let mut sender_secret=[0u8;32];
+            assert_eq!(unsafe{BCryptEncapsulate(key,sender_secret.as_mut_ptr(),32,&mut secret_required,ciphertext.as_mut_ptr(),ciphertext.len() as u32,&mut ciphertext_required,0)},STATUS_SUCCESS);
+            let mut receiver_secret=[0u8;32];
+            let mut receiver_len=0u32;
+            assert_eq!(unsafe{BCryptDecapsulate(key,ciphertext.as_mut_ptr(),ciphertext.len() as u32,receiver_secret.as_mut_ptr(),32,&mut receiver_len,0)},STATUS_SUCCESS);
+            assert_eq!(receiver_len,32);
+            assert_eq!(sender_secret,receiver_secret);
+
+            assert_eq!(unsafe{BCryptDecapsulate(key,ciphertext.as_mut_ptr(),(ciphertext.len()-1) as u32,receiver_secret.as_mut_ptr(),32,&mut receiver_len,0)},STATUS_INVALID_PARAMETER);
+            assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+            assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+        }
     }
 
     #[test]
