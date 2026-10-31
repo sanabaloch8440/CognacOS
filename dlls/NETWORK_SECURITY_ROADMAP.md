@@ -40,7 +40,7 @@ Applications call ws2_32, winhttp, or wininet over the kernel TCP/UDP and I/O co
 | DER X.509 parsing helper | Initial strict parser |
 | Kernel TCP/UDP stack | Not yet verified as available |
 | Windows 11 DLL export baselines | Not yet imported for these modules |
-| bcrypt.dll | Initial 8-function CNG hash/RNG subset; 60 exact exports, 52 fail-closed |\n| Other listed Windows ABI DLLs | Not yet implemented |
+| bcrypt.dll | SHA-2 hashing, HMAC-SHA2, PBKDF2 and system RNG; 60 exact exports, 51 fail-closed |\n| Other listed Windows ABI DLLs | Not yet implemented |
 | LSASS / LSA package integration | Not yet implemented |
 | End-to-end Windows application networking | Not yet available |
 
