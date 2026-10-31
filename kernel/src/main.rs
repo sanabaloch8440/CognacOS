@@ -562,6 +562,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                     irq as u8,(irq>>8) as u8,bar_base,bar_size,bar_virtual) {
                     Ok(object)=>{
                         published=true;
+                        let _ = platform_drivers::mark_ready(platform_drivers::Stage::PciXhciResources);
                         let _vtd_ready=initialize_vtd_from_acpi(&requester_path);
                         unsafe{
                             serial_write(b"xHCI PnP resource published: device_object=");
