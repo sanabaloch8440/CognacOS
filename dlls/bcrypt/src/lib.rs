@@ -8,7 +8,7 @@ use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey}, signature::hazmat
 use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{aead::AeadInPlace, AesGcm};
-use aes_gcm::aead::generic_array::typenum::{U12, U16};
+use aes_gcm::aead::generic_array::typenum::{U12, U13, U14, U15, U16};
 use cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 use core::num::NonZeroU32;
 use zeroize::Zeroize;
