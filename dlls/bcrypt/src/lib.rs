@@ -29,6 +29,7 @@ pub const STATUS_INVALID_SIGNATURE: NTSTATUS = 0xC000A000_u32 as i32;
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: ULONG = 0x00000002;
 const BCRYPT_ALG_HANDLE_HMAC_FLAG: ULONG = 0x00000008;
 const BCRYPT_MULTI_FLAG: ULONG = 0x00000040;
+const BCRYPT_HASH_REUSABLE_FLAG: ULONG = 0x00000020;
 const BCRYPT_BLOCK_PADDING: ULONG = 0x00000001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +59,7 @@ impl HashAlgorithm {
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, kdf: bool, rsa: bool, rng: bool, gcm: bool, cbc: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, reusable: bool, cipher: bool, kdf: bool, rsa: bool, rng: bool, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8>, gcm: bool, cbc: bool }
 #[derive(Clone)]
@@ -122,7 +123,7 @@ fn rsa_public_handle(token: *mut c_void) -> Result<RsaPublicKey, NTSTATUS> {
 }
 
 #[derive(Clone)]
-struct HashHandle { algorithm: HashAlgorithm, hmac: bool, secret: Vec<u8>, data: Vec<u8> }
+struct HashHandle { algorithm: HashAlgorithm, hmac: bool, reusable: bool, finished: bool, secret: Vec<u8>, data: Vec<u8> }
 #[derive(Clone)]
 struct MultiHashHandle { states: Vec<HashHandle> }
 impl Drop for HashHandle { fn drop(&mut self) { self.secret.zeroize(); self.data.zeroize(); } }
@@ -144,7 +145,7 @@ unsafe fn read_property_name(ptr: *const u16) -> Result<String, NTSTATUS> {
 /// Opens the implemented SHA-2, AES, PBKDF2, RSA and RNG providers.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void, alg_id: *const u16, implementation: *const u16, flags: ULONG) -> NTSTATUS {
-    if out.is_null() || flags & !(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_MULTI_FLAG) != 0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() || flags & !(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_MULTI_FLAG | BCRYPT_HASH_REUSABLE_FLAG) != 0 { return STATUS_INVALID_PARAMETER; }
     if alg_id.is_null() { return STATUS_INVALID_PARAMETER; }
     let mut units=Vec::new();
     for i in 0..64 { let u=unsafe{alg_id.add(i).read()}; if u==0 {break;} units.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
@@ -158,7 +159,8 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     else if name=="RSA" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true,false) }
     else if name=="RNG" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,false,true) }
     else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false,false),Err(e)=>return e } };
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,rsa:rsa_provider,rng:rng_provider,gcm:false,cbc:cipher})) {Ok(v)=>v,Err(e)=>return e};
+    if flags&BCRYPT_HASH_REUSABLE_FLAG!=0 && (cipher||kdf||rsa_provider||rng_provider) { return STATUS_NOT_SUPPORTED; }
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,reusable:flags&BCRYPT_HASH_REUSABLE_FLAG!=0,cipher,kdf,rsa:rsa_provider,rng:rng_provider,gcm:false,cbc:cipher})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
@@ -171,10 +173,13 @@ pub unsafe extern "system" fn BCryptCloseAlgorithmProvider(handle:*mut c_void,fl
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptCreateHash(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
- if out.is_null()||!valid_object_buffer(object,object_len)||(secret.is_null()&&secret_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
- let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e}; if p.cipher{return STATUS_INVALID_PARAMETER;} if !p.hmac&&secret_len!=0{return STATUS_INVALID_PARAMETER;}
+ if out.is_null()||!valid_object_buffer(object,object_len)||(secret.is_null()&&secret_len!=0)||flags&!BCRYPT_HASH_REUSABLE_FLAG!=0{return STATUS_INVALID_PARAMETER;}
+ let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e}; if p.cipher||p.kdf||p.rsa||p.rng{return STATUS_INVALID_PARAMETER;}
+ let reusable=flags&BCRYPT_HASH_REUSABLE_FLAG!=0;
+ if reusable&&!p.reusable{return STATUS_NOT_SUPPORTED;}
+ if !p.hmac&&secret_len!=0{return STATUS_INVALID_PARAMETER;}
  let key=if secret_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec()};
- let h=HashHandle{algorithm:p.algorithm,hmac:p.hmac,secret:key,data:Vec::new()};
+ let h=HashHandle{algorithm:p.algorithm,hmac:p.hmac,reusable,finished:false,secret:key,data:Vec::new()};
  let token=match register_handle(RegisteredHandle::Hash(h)){Ok(v)=>v,Err(e)=>return e}; unsafe{out.write(token)};STATUS_SUCCESS
 }
 
@@ -184,7 +189,7 @@ pub unsafe extern "system" fn BCryptHashData(hash:*mut c_void,input:*const u8,in
  if (input.is_null()&&input_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
  let Ok(mut table)=handle_table().lock() else{return STATUS_NO_MEMORY;};
  let Some(RegisteredHandle::Hash(state))=table.get_mut(&(hash as usize)) else{return STATUS_INVALID_PARAMETER;};
- if state.data.len().checked_add(input_len as usize).is_none(){return STATUS_INVALID_PARAMETER;}
+ if state.finished || state.data.len().checked_add(input_len as usize).is_none(){return STATUS_INVALID_PARAMETER;}
  if input_len!=0 {if state.data.try_reserve(input_len as usize).is_err(){return STATUS_NO_MEMORY;} state.data.extend_from_slice(unsafe{core::slice::from_raw_parts(input,input_len as usize)});}
  STATUS_SUCCESS
 }
@@ -192,15 +197,28 @@ pub unsafe extern "system" fn BCryptHashData(hash:*mut c_void,input:*const u8,in
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptFinishHash(hash:*mut c_void,output:*mut u8,output_len:ULONG,flags:ULONG)->NTSTATUS {
- if output.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;} let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
- if state.hmac {if output_len<state.algorithm.digest_len(){return STATUS_BUFFER_TOO_SMALL;} let k=hmac::Key::new(state.algorithm.hmac_algorithm(),&state.secret);let d=hmac::sign(&k,&state.data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}
- else {if output_len<state.algorithm.digest_len(){return STATUS_BUFFER_TOO_SMALL;}let d=state.algorithm.digest(&state.data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};} STATUS_SUCCESS
+ if output.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}
+ let Ok(mut table)=handle_table().lock()else{return STATUS_NO_MEMORY;};
+ let Some(RegisteredHandle::Hash(state))=table.get_mut(&(hash as usize))else{return STATUS_INVALID_PARAMETER;};
+ if state.finished{return STATUS_INVALID_PARAMETER;}
+ if output_len!=state.algorithm.digest_len(){return STATUS_INVALID_PARAMETER;}
+ if state.hmac {
+     let key=hmac::Key::new(state.algorithm.hmac_algorithm(),&state.secret);
+     let digest=hmac::sign(&key,&state.data);
+     unsafe{ptr::copy_nonoverlapping(digest.as_ref().as_ptr(),output,digest.as_ref().len())};
+ } else {
+     let digest=state.algorithm.digest(&state.data);
+     unsafe{ptr::copy_nonoverlapping(digest.as_ref().as_ptr(),output,digest.as_ref().len())};
+ }
+ if state.reusable {state.data.zeroize();state.data.clear();} else {state.finished=true;}
+ STATUS_SUCCESS
 }
 
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDuplicateHash(hash:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,flags:ULONG)->NTSTATUS {
  if out.is_null()||!valid_object_buffer(object,object_len)||flags!=0{return STATUS_INVALID_PARAMETER;}let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
+ if state.finished{return STATUS_INVALID_PARAMETER;}
  let token=match register_handle(RegisteredHandle::Hash(state)){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
 }
 
@@ -220,7 +238,7 @@ pub unsafe extern "system" fn BCryptCreateMultiHash(algorithm:*mut c_void,out:*m
     let key=if secret_len==0 { Vec::new() } else { unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec() };
     let mut states=Vec::new();
     if states.try_reserve_exact(count as usize).is_err(){return STATUS_NO_MEMORY;}
-    for _ in 0..count { states.push(HashHandle{algorithm:provider.algorithm,hmac:provider.hmac,secret:key.clone(),data:Vec::new()}); }
+    for _ in 0..count { states.push(HashHandle{algorithm:provider.algorithm,hmac:provider.hmac,reusable:provider.reusable,finished:false,secret:key.clone(),data:Vec::new()}); }
     let token=match register_handle(RegisteredHandle::MultiHash(MultiHashHandle{states})){Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)};STATUS_SUCCESS
 }
