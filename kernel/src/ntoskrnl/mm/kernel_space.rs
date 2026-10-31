@@ -454,7 +454,8 @@ pub fn allocate_pageable_pages_at(address:u64,pages:usize)->Result<*mut u8,Error
  if start.checked_add(pages).is_none_or(|end|end>PAGES){return Err(Error::NoVirtualSpace)}
  let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};
  let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
- let reserved=is_driver_slot_base(address)&&pages<=DRIVER_SLOT_PAGES;
+ let reserved=driver_slot_extent(start,pages);
+ if overlaps_driver_slot(start,pages)&&!reserved{return Err(Error::AlreadyMapped)}
  if table.iter().any(|e|e.live&&start<e.start+e.pages&&e.start<start+pages){return Err(Error::AlreadyMapped)}
  let bits=unsafe{&mut *BITS.0.get()};let mapped=unsafe{&*MAPPED_BITS.0.get()};
  if (start..start+pages).any(|n|(bits[n/64]&(1u64<<(n%64))!=0&&!reserved)||mapped[n/64]&(1u64<<(n%64))!=0){return Err(Error::AlreadyMapped)}
