@@ -974,7 +974,9 @@ jobs:
             set backtrace limit 80
             set architecture i386:x86-64
             set substitute-path /home/runner/work/CognacOS/CognacOS .
-            file target/x86_64-unknown-none/release/cognacos-kernel
+            # QEMU boots build/cognacos-kernel.exe, converted from the debug ELF.
+            # Load that exact debug ELF so runtime PCs resolve against matching DWARF.
+            file target/x86_64-unknown-none/debug/cognacos-kernel
             target remote 127.0.0.1:12345
             source tools/gdb/cognacos-forensics.gdb
             cognacos-forensics
