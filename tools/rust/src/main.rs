@@ -68,7 +68,7 @@ fn check_ntdll_def(path: &Path) {
     println!("validated {count} unique named NTDLL exports");
 }
 
-fn check_csrsrv_def(path: &Path) {
+fn check_csrsrv_def(path: &Path, reference: Option<&Path>) {
     let source = read(path);
     let mut exports = BTreeMap::<String, u32>::new();
     for (line_no, raw) in source.lines().enumerate() {
@@ -81,7 +81,18 @@ fn check_csrsrv_def(path: &Path) {
         if exports.insert(name.clone(), ordinal).is_some() { fail!("{}:{} duplicate export {name}", path.display(), line_no + 1); }
     }
     if exports.is_empty() { fail!("{}: no exports found", path.display()); }
-    println!("validated {} unique named CSRSRV exports (inventory-only)", exports.len());
+    if let Some(reference) = reference {
+        let actual = dll_exports::named_exports(reference).unwrap_or_else(|e| fail!("{}: {e}", reference.display()));
+        let missing: Vec<_> = actual.keys().filter(|n| !exports.contains_key(*n)).cloned().collect();
+        let extra: Vec<_> = exports.keys().filter(|n| !actual.contains_key(*n)).cloned().collect();
+        let ordinal: Vec<_> = exports.iter().filter_map(|(n,want)| actual.get(n).filter(|got| *got != want).map(|got| format!("{n}: definition @{want}, reference @{got}"))).collect();
+        if !missing.is_empty() || !extra.is_empty() || !ordinal.is_empty() {
+            fail!("CSRSRV export mismatch; missing={missing:?}, extra={extra:?}, ordinal={ordinal:?}");
+        }
+        println!("exact CSRSRV PE export name/ordinal match: {} exports", exports.len());
+    } else {
+        println!("validated {} unique named CSRSRV exports (inventory-only; pass --reference for Windows-build parity)", exports.len());
+    }
 }
 
 mod dll_exports;
@@ -99,7 +110,7 @@ fn main() {
     match command.to_string_lossy().as_ref() {
         "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
         "check-ntdll-def" => check_ntdll_def(&args.next().map(PathBuf::from).unwrap_or(root.join("ntdll/exports/ntdll-x64.def"))),
-        "check-csrsrv-def" => check_csrsrv_def(&args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"))),
+        "check-csrsrv-def" => {\n            let definition = args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"));\n            let mut reference = None;\n            while let Some(arg) = args.next() { if arg == "--reference" { reference = Some(args.next().map(PathBuf::from).unwrap_or_else(|| fail!("--reference requires a PE path"))); } else { fail!("unknown CSRSRV option {}", arg.to_string_lossy()); } }\n            check_csrsrv_def(&definition, reference.as_deref());\n        },
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
         "qemu-ps2-smoke" => {\n            let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();\n            qemu_ps2::run(&values).unwrap_or_else(|e| fail!("PS/2 QEMU smoke failed: {e}"));\n        }\n        "resolve-qemu-trace" => {
