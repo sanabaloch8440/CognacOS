@@ -1079,6 +1079,60 @@ fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.
  unsafe{base.cast::<CryptProviderReg>().write(CryptProviderReg{cAliases:0,rgpszAliases:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()})};let _=interface;STATUS_SUCCESS
 }
 
+
+static CONFIG_CHANGE_EVENTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+static NEXT_CONFIG_EVENT: AtomicUsize = AtomicUsize::new(0xC0000);
+fn config_change_events() -> &'static Mutex<HashSet<usize>> {
+    CONFIG_CHANGE_EVENTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CreateEventW(attributes: *mut c_void, manual_reset: i32, initial_state: i32, name: *const u16) -> *mut c_void;
+    fn SetEvent(event: *mut c_void) -> i32;
+    fn CloseHandle(handle: *mut c_void) -> i32;
+}
+fn signal_config_change() {
+    let events = match config_change_events().lock() { Ok(v) => v.iter().copied().collect::<Vec<_>>(), Err(_) => return };
+    #[cfg(windows)]
+    for event in events { unsafe { let _ = SetEvent(event as *mut c_void); } }
+    #[cfg(not(windows))]
+    let _ = events;
+}
+#[no_mangle]
+pub unsafe extern "system" fn BCryptRegisterConfigChangeNotify(event: *mut *mut c_void) -> NTSTATUS {
+    if event.is_null() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(windows)]
+    let handle = unsafe { CreateEventW(ptr::null_mut(), 1, 0, ptr::null()) };
+    #[cfg(not(windows))]
+    let handle = NEXT_CONFIG_EVENT.fetch_add(16, Ordering::Relaxed) as *mut c_void;
+    if handle.is_null() { return STATUS_NO_MEMORY; }
+    match config_change_events().lock() {
+        Ok(mut set) => { if !set.insert(handle as usize) {
+            #[cfg(windows)] unsafe { let _ = CloseHandle(handle); }
+            return STATUS_NO_MEMORY;
+        } }
+        Err(_) => {
+            #[cfg(windows)] unsafe { let _ = CloseHandle(handle); }
+            return STATUS_NO_MEMORY;
+        }
+    }
+    unsafe { event.write(handle); }
+    STATUS_SUCCESS
+}
+#[no_mangle]
+pub unsafe extern "system" fn BCryptUnregisterConfigChangeNotify(event: *mut c_void) -> NTSTATUS {
+    if event.is_null() { return STATUS_INVALID_PARAMETER; }
+    let removed = match config_change_events().lock() {
+        Ok(mut set) => set.remove(&(event as usize)),
+        Err(_) => return STATUS_NO_MEMORY,
+    };
+    if !removed { return STATUS_INVALID_PARAMETER; }
+    #[cfg(windows)]
+    if unsafe { CloseHandle(event) } == 0 { return STATUS_INVALID_PARAMETER; }
+    STATUS_SUCCESS
+}
+
 const CRYPT_LOCAL:ULONG=1;
 const CRYPT_DOMAIN:ULONG=2;
 const CRYPT_PRIORITY_TOP:ULONG=0;
@@ -1255,6 +1309,19 @@ include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 mod tests {
     use super::*;
     #[test]
+    #[test]
+    fn config_change_notifications_register_signal_and_unregister() {
+        let mut event = ptr::null_mut();
+        assert_eq!(unsafe { BCryptRegisterConfigChangeNotify(&mut event) }, STATUS_SUCCESS);
+        assert!(!event.is_null());
+        assert!(config_change_events().lock().unwrap().contains(&(event as usize)));
+        signal_config_change();
+        assert_eq!(unsafe { BCryptUnregisterConfigChangeNotify(event) }, STATUS_SUCCESS);
+        assert!(!config_change_events().lock().unwrap().contains(&(event as usize)));
+        assert_eq!(unsafe { BCryptUnregisterConfigChangeNotify(event) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { BCryptRegisterConfigChangeNotify(ptr::null_mut()) }, STATUS_INVALID_PARAMETER);
+    }
+
     fn bcrypt_raw_secret_derivation_and_destroy() {
         let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let provider_name=wide("PBKDF2");
