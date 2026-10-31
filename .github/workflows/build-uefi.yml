@@ -392,7 +392,7 @@ jobs:
           file build/dlls/syssetup.dll | grep -q 'PE32+.*DLL'
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- verify-dll-exports --dll syssetup,build/dlls/syssetup.dll,dlls/syssetup/exports/windows-11-x64-exports.tsv
           llvm-dlltool -m i386:x86-64 -d programs/rundll32/exports/kernel32.def -l programs/rundll32/kernel32.lib
-          RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:rundll32_entry -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/programs/rundll32" cargo build --manifest-path programs/rundll32/Cargo.toml --bin rundll32 --target x86_64-pc-windows-msvc --release
+          RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/SUBSYSTEM:CONSOLE -C link-arg=/ENTRY:rundll32_entry -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/programs/rundll32" cargo build --manifest-path programs/rundll32/Cargo.toml --bin rundll32 --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/rundll32.exe build/dlls/rundll32.exe
           file build/dlls/rundll32.exe | grep -q 'PE32+.*(console)'
           rm -f dlls/syssetup/kernel32.lib dlls/syssetup/ntdll.lib programs/rundll32/kernel32.lib
