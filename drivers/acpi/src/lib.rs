@@ -624,3 +624,35 @@ mod rmrr_and_scope_tests {
         assert!(!dmar_scope_matches_path(&scope,0,&[DmarPath{device:3,function:1},endpoint[1]]));
     }
 }
+
+
+/// Resolve the owning DRHD for a requester. An explicit endpoint/sub-hierarchy
+/// scope takes precedence over the segment's include-all unit. Duplicate
+/// explicit matches or duplicate include-all units are rejected as ambiguous.
+pub fn select_dmar_unit<'a>(info:&'a DmarInfo,segment:u16,root_bus:u8,
+    endpoint_path:&[DmarPath])->Result<&'a DmarUnit,AcpiError> {
+    let mut explicit=None;
+    let mut include_all=None;
+    for unit in info.units.iter().take(info.unit_count) {
+        if unit.segment!=segment {continue}
+        if unit.include_all {
+            if include_all.is_some(){return Err(AcpiError::MalformedEntry)}
+            include_all=Some(unit);
+        } else if unit.scopes.iter().take(unit.scope_count as usize)
+            .any(|s|dmar_scope_matches_path(s,root_bus,endpoint_path)) {
+            if explicit.is_some(){return Err(AcpiError::MalformedEntry)}
+            explicit=Some(unit);
+        }
+    }
+    explicit.or(include_all).ok_or(AcpiError::MissingRoot)
+}
+
+/// True when any RMRR in the same PCI segment scopes the endpoint. Callers
+/// must retain the reserved physical range and must not start DMA unless the
+/// platform has installed the required identity mapping after ownership handoff.
+pub fn dmar_rmrr_covers_path(info:&DmarRmrrInfo,segment:u16,root_bus:u8,
+    endpoint_path:&[DmarPath])->bool {
+    info.regions.iter().take(info.count).any(|r|r.segment==segment
+        &&r.scopes.iter().take(r.scope_count as usize)
+            .any(|s|dmar_scope_matches_path(s,root_bus,endpoint_path)))
+}
