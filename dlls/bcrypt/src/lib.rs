@@ -701,6 +701,8 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
 
 #[repr(C)]
 struct BcryptPkcs1PaddingInfo { pszAlgId: *const u16 }
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); core::mem::size_of::<BcryptPkcs1PaddingInfo>()];
 
 /// Verifies a precomputed digest using the Windows PKCS#1 padding-info ABI.
 /// SHA-256 is currently the supported digest; the padding descriptor is
