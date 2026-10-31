@@ -215,10 +215,10 @@ pub mod ahci {
     #[cfg(test)]
     mod controller_tests {
         use super::*;
-        struct Fake { regs: [u32; 128], writes: std::vec::Vec<(usize, u32)> }
+        struct Fake { regs: [u32; 256], writes: std::vec::Vec<(usize, u32)> }
         impl Fake {
             fn new() -> Self {
-                let mut regs = [0u32; 128];
+                let mut regs = [0u32; 256];
                 regs[CAP / 4] = CAP_S64A | (31 << CAP_NCS_SHIFT) | 3;
                 regs[VS / 4] = 0x0001_0300;
                 regs[CAP2 / 4] = 0;
