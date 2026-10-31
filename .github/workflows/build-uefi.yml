@@ -36,6 +36,16 @@ jobs:
       CARGO_PROFILE_RELEASE_STRIP: "none"
     steps:
       - uses: actions/checkout@v4
+      - name: Enforce Rust-only tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_files="$(find . -type f -name '*.py' -not -path './.git/*' -print)"
+          if [[ -n "$python_files" ]]; then
+            printf 'Python tooling remains in the repository:\n%s\n' "$python_files" >&2
+            exit 1
+          fi
+          echo "No Python source files remain; repository tooling is Rust-native."
       - name: Install Rust targets
         run: |
           rustup update stable
