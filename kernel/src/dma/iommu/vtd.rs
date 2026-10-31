@@ -235,7 +235,7 @@ unsafe fn invalidate_all_locked(u:&Unit)->i32{
 /// second-level root. It never creates identity mappings.
 pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
  let _guard=LOCK.lock();
- let units=unsafe{&mut*UNITS.0.get()};let unit_index=unit_slot(id.segment).ok_or(STATUS_DEVICE_NOT_READY)?;let u=&mut units[unit_index];
+ let unit_index=unit_slot(id.segment).ok_or(STATUS_DEVICE_NOT_READY)?;let units=unsafe{&mut*UNITS.0.get()};let u=&mut units[unit_index];
  let domains=unsafe{&mut*DOMAINS.0.get()};
  if domains.iter().any(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8){return Err(STATUS_INVALID_PARAMETER)}
  let slot=domains.iter().position(|d|d.id==0).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -391,7 +391,7 @@ pub unsafe fn map_pages(id:RequesterId,iova:u64,physical:u64,length:u64,permissi
   ||permissions==0||permissions&!3!=0||iova.checked_add(length).is_none_or(|e|e>SL_MAX)
   ||physical.checked_add(length).is_none_or(|e|e>SL_MAX){return STATUS_INVALID_PARAMETER}
  let _guard=LOCK.lock();
- let units=unsafe{&*UNITS.0.get()};let Some(unit_index)=unit_slot(id.segment) else{return STATUS_DEVICE_NOT_READY};let u=&units[unit_index];
+ let Some(unit_index)=unit_slot(id.segment) else{return STATUS_DEVICE_NOT_READY};let units=unsafe{&*UNITS.0.get()};let u=&units[unit_index];
  let domains=unsafe{&*DOMAINS.0.get()};
  let Some(domain)=domains.iter().find(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
  if domain.poisoned{return STATUS_DEVICE_NOT_READY}
@@ -502,7 +502,7 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
     return STATUS_DEVICE_BUSY;
  }
  let _guard=LOCK.lock();
- let units=unsafe{&mut*UNITS.0.get()};let Some(unit_index)=unit_slot(id.segment) else{return STATUS_DEVICE_NOT_READY};let u=&mut units[unit_index];
+ let Some(unit_index)=unit_slot(id.segment) else{return STATUS_DEVICE_NOT_READY};let units=unsafe{&mut*UNITS.0.get()};let u=&mut units[unit_index];
  let domains=unsafe{&mut*DOMAINS.0.get()};
  let Some(index)=domains.iter().position(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_INVALID_PARAMETER};
  let d=domains[index];
