@@ -1,4 +1,4 @@
-//! CognacOS bcrypt.dll: initial CNG hashing and random-number subset.
+//! CognacOS bcrypt.dll: Windows CNG-compatible hashing, KDF, AES, RNG and bounded RSA subset.
 //! All unimplemented Windows 11 exports return STATUS_NOT_IMPLEMENTED.
 #![allow(non_snake_case)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -136,7 +136,7 @@ unsafe fn read_property_name(ptr: *const u16) -> Result<String, NTSTATUS> {
     Err(STATUS_INVALID_PARAMETER)
 }
 
-/// BCryptOpenAlgorithmProvider (SHA-256/384/512 only; no HMAC flag yet).
+/// Opens the implemented SHA-2, AES, PBKDF2, RSA and RNG providers.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void, alg_id: *const u16, implementation: *const u16, flags: ULONG) -> NTSTATUS {
     if out.is_null() || flags & !(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_MULTI_FLAG) != 0 { return STATUS_INVALID_PARAMETER; }
@@ -424,7 +424,7 @@ fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
     target
 }
 
-/// Enumerates the SHA-2 hash providers and the system RNG implemented here.
+/// Enumerates the algorithm classes currently implemented by this provider.
 /// Only operations actually supported by this DLL are advertised.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut ULONG,list:*mut *mut BcryptAlgorithmIdentifier,flags:ULONG)->NTSTATUS {
@@ -994,6 +994,23 @@ mod tests {
             *mut c_void, *mut u8, ULONG, ULONG
         ) -> NTSTATUS = BCryptGenRandom;
         let _: unsafe extern "system" fn(*mut u8) -> NTSTATUS = BCryptGetFipsAlgorithmMode;
+    }
+
+    #[test]
+    fn rsa_public_key_property_and_duplicate_handle_behavior() {
+        let modulus=BigUint::from_bytes_be(&[0xffu8;64]);
+        let exponent=BigUint::from(65537u32);
+        let public=RsaPublicKey::new(modulus,exponent).unwrap();
+        let handle=register_handle(RegisteredHandle::RsaPublic(public)).unwrap();
+        let property="KeyLength".encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let mut bits=0u32;let mut required=0;
+        assert_eq!(unsafe{BCryptGetProperty(handle,property.as_ptr(),(&mut bits as *mut u32).cast(),4,&mut required,0)},STATUS_SUCCESS);
+        assert_eq!(bits,512);assert_eq!(required,4);
+        let mut duplicate=ptr::null_mut();
+        assert_eq!(unsafe{BCryptDuplicateKey(handle,&mut duplicate,ptr::null_mut(),0,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(handle)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptGetProperty(duplicate,property.as_ptr(),(&mut bits as *mut u32).cast(),4,&mut required,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(duplicate)},STATUS_SUCCESS);
     }
 
     #[test]
