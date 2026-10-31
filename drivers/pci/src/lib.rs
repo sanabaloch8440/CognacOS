@@ -232,6 +232,67 @@ impl PciFunctionHeader {
     pub const fn is_xhci(&self)->bool{
         is_xhci_controller(self.class_code,self.subclass,self.programming_interface)
     }
+    pub const fn is_ahci(&self)->bool {
+        self.class_code == 0x01 && self.subclass == 0x06 && self.programming_interface == 0x01
+    }
+    pub const fn is_nvme(&self)->bool {
+        self.class_code == 0x01 && self.subclass == 0x08 && self.programming_interface == 0x02
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PciFunction {
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub header: PciFunctionHeader,
+}
+pub const MAX_PCI_FUNCTIONS: usize = 1024;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PciFunctionScanError { Window(PciError), Capacity }
+impl From<PciError> for PciFunctionScanError {
+    fn from(value: PciError) -> Self { Self::Window(value) }
+}
+
+/// Enumerate present PCI functions using only read-only ECAM configuration
+/// accesses. The caller supplies the bounded output array; no BAR sizing,
+/// command-register writes, bus mastering, or device activation occurs here.
+pub unsafe fn scan_functions(
+    window: &EcamWindow,
+    output: &mut [Option<PciFunction>],
+) -> Result<usize, PciFunctionScanError> {
+    window.validate().map_err(PciFunctionScanError::Window)?;
+    output.fill(None);
+    let mut count = 0usize;
+    for bus in window.bus_start..=window.bus_end {
+        for device in 0u8..32 {
+            let mut multifunction = false;
+            for function in 0u8..8 {
+                if function > 0 && !multifunction { break; }
+                let vendor = unsafe { window.read_u16(window.segment, bus, device, function, PCI_VENDOR_ID_OFFSET) }
+                    .map_err(PciFunctionScanError::Window)?;
+                if vendor == 0xffff || vendor == 0 {
+                    if function == 0 { break; }
+                    continue;
+                }
+                let header_type = unsafe { window.read_u8(window.segment, bus, device, function, PCI_HEADER_TYPE_OFFSET) }
+                    .map_err(PciFunctionScanError::Window)?;
+                if function == 0 { multifunction = header_type & 0x80 != 0; }
+                let mut bytes = [0u8; 16];
+                for offset in [0u16, 4, 8, 12] {
+                    let value = unsafe { window.read_u32(window.segment, bus, device, function, offset) }
+                        .map_err(PciFunctionScanError::Window)?;
+                    let at = offset as usize;
+                    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                let header = PciFunctionHeader::parse(&bytes).map_err(PciFunctionScanError::Window)?;
+                if count == output.len() { return Err(PciFunctionScanError::Capacity); }
+                output[count] = Some(PciFunction { segment: window.segment, bus, device, function, header });
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct XhciPciFunction {
