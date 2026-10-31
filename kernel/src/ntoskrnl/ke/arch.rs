@@ -2032,6 +2032,15 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
     // possibly compromised trap frame or taking VM locks a second time.
     if vector == 14 {
         let Some(_fault_guard) = PageFaultDispatchGuard::acquire() else {
+            // A nested fault must not re-enter pageable VM/pagefile code. It
+            // may still be a deliberately guarded probe inside the page-in
+            // path; the lock-free exact-RIP fixup can safely unwind that
+            // access and let the original fault handler observe its failure.
+            let nested_cr2: u64;
+            unsafe { core::arch::asm!("mov {}, cr2", out(reg) nested_cr2, options(nomem, nostack, preserves_flags)); }
+            if apply_trap_frame_fixup(vector, saved_rip, nested_cr2, error, frame) {
+                return 1;
+            }
             cognacos_exception_fatal(vector, error, frame);
         };
         let cr2: u64;
