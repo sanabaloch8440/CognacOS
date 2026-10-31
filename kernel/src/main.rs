@@ -453,7 +453,7 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
    return false;
   }
   if !memory::is_firmware_reserved_ram_range(region.base,length) {
-   unsafe{serial_write(b"VT-d: RMRR intersects non-reserved or conventional RAM; refusing unsafe identity mapping.\r\n");}
+   unsafe{serial_write(b"VT-d: RMRR is not safely reserved RAM; refusing unsafe identity mapping.\r\n");}
    return false
   }
   let status=unsafe{dma::iommu::vtd::map_rmrr_identity(resources.device_object as usize,requester,region.base,length)};
