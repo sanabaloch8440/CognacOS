@@ -268,5 +268,40 @@ mod tests {
         assert_eq!(out, [0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xe1,0x7b]);
     }
     #[test]
+    fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
+        let provider = Box::into_raw(Box::new(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false }));
+        let input = b"abc";
+        let mut output = [0u8; 32];
+        let status = unsafe { BCryptHash(provider.cast(), ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(output, [
+            0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+            0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad
+        ]);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider.cast(), 0) }, STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn duplicate_hash_preserves_incremental_state() {
+        let provider = Box::into_raw(Box::new(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false }));
+        let mut original = ptr::null_mut();
+        assert_eq!(unsafe { BCryptCreateHash(provider.cast(), &mut original, ptr::null_mut(), 0, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptHashData(original, b"ab".as_ptr(), 2, 0) }, STATUS_SUCCESS);
+        let mut duplicate = ptr::null_mut();
+        assert_eq!(unsafe { BCryptDuplicateHash(original, &mut duplicate, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptHashData(original, b"c".as_ptr(), 1, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptHashData(duplicate, b"c".as_ptr(), 1, 0) }, STATUS_SUCCESS);
+        let mut a = [0u8; 32];
+        let mut b = [0u8; 32];
+        assert_eq!(unsafe { BCryptFinishHash(original, a.as_mut_ptr(), 32, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptFinishHash(duplicate, b.as_mut_ptr(), 32, 0) }, STATUS_SUCCESS);
+        assert_eq!(a, b);
+        assert_eq!(a, HashAlgorithm::Sha256.digest(b"abc").as_ref());
+        assert_eq!(unsafe { BCryptDestroyHash(original) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptDestroyHash(duplicate) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider.cast(), 0) }, STATUS_SUCCESS);
+    }
+
+    #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
 }
