@@ -630,7 +630,10 @@ pub fn handle_page_fault(address:u64,error_code:u64)->bool {
  let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root,None)&&!reclaim_one_locked(root,None){return false}match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>return false}}};
  if is_swapped {
   let slot=unsafe{(&*SWAP_SLOTS.0.get())[page_index]};
-  let Some(destination)=crate::memory::physical_access_pointer(pa) else {let _=unsafe{crate::memory::free_page(pa)};return false};
+  // allocate_data_page eagerly installs this PFN's direct-map leaf before it
+  // zeroes the frame. Re-resolving through physical_access_pointer here would
+  // re-enter the direct-map mapper while the pageable fault lock is held.
+  let Some(destination)=crate::memory::direct_map_address(pa).map(|address|address as *mut u8) else {let _=unsafe{crate::memory::free_page(pa)};return false};
   if slot==u16::MAX||unsafe{crate::pagefile::read_page(slot as u32,destination)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
   let desired=unsafe{(&*PAGE_FLAGS.0.get())[page_index]};
   let flags=(if desired&1!=0{W}else{0})|(if desired&2!=0{NX}else{0});
