@@ -23,10 +23,10 @@ pub struct PlatformOps {
  pub quarantine_requester:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u16,u8,u8,u8)->i32>,
 }
 unsafe impl Send for PlatformOps {} unsafe impl Sync for PlatformOps {}
-#[derive(Clone,Copy)] struct Unit { segment:u16, mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, max_domains:u32, ops:PlatformOps, enabled:bool }
+#[derive(Clone,Copy)] struct Unit { segment:u16, next_domain:u16, mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, max_domains:u32, ops:PlatformOps, enabled:bool }
 unsafe impl Send for Unit {} unsafe impl Sync for Unit {}
 const EMPTY_OPS:PlatformOps=PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None,quarantine_requester:None};
-const EMPTY_UNIT:Unit=Unit{segment:u16::MAX,mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),max_domains:0,ops:EMPTY_OPS,enabled:false};
+const EMPTY_UNIT:Unit=Unit{segment:u16::MAX,next_domain:1,mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),max_domains:0,ops:EMPTY_OPS,enabled:false};
 struct UnitStore(core::cell::UnsafeCell<[Unit;8]>); unsafe impl Sync for UnitStore {}
 static UNITS:UnitStore=UnitStore(core::cell::UnsafeCell::new([EMPTY_UNIT;8]));
 fn unit_slot(segment:u16)->Option<usize>{unsafe{(&*UNITS.0.get()).iter().position(|u|u.enabled&&u.segment==segment)}}
@@ -40,7 +40,6 @@ unsafe impl Send for Domain {} unsafe impl Sync for Domain {}
 const EMPTY_DOMAIN:Domain=Domain{segment:u16::MAX,bus:0,devfn:0,id:0,root_physical:0,root_virtual:core::ptr::null_mut(),poisoned:false};
 struct DomainStore(core::cell::UnsafeCell<[Domain;256]>); unsafe impl Sync for DomainStore {}
 static DOMAINS:DomainStore=DomainStore(core::cell::UnsafeCell::new([EMPTY_DOMAIN;256]));
-static NEXT_DOMAIN:core::sync::atomic::AtomicU16=core::sync::atomic::AtomicU16::new(1);
 static LOCK:crate::hal::IrqSpinLock<()>=crate::hal::IrqSpinLock::new(());
 unsafe fn r32(b:u64,o:usize)->u32{unsafe{core::ptr::read_volatile((b as *const u8).add(o).cast())}}
 unsafe fn w32(b:u64,o:usize,v:u32){unsafe{core::ptr::write_volatile((b as *mut u8).add(o).cast(),v)}}
@@ -187,7 +186,7 @@ unsafe fn initialize_segment(ops:&PlatformOps,register_pa:u64,register_len:u64,s
  // enable translation without replaying the one-shot SRTP command.
  unsafe{w32(mmio,GCMD,base_gcmd|TE)};
  if !wait32(mmio,GSTS,TES,true){unsafe{w32(mmio,GCMD,base_gcmd);let _=wait32(mmio,GSTS,TES,false);(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
- *u=Unit{segment,mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,max_domains,ops:*ops,enabled:true};
+ *u=Unit{segment,next_domain:1,mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,max_domains,ops:*ops,enabled:true};
  drop(_g);
  let backend_status=if crate::dma::iommu::available(){STATUS_SUCCESS}else{unsafe{register_generic_dma_backend()}};
  if backend_status!=STATUS_SUCCESS{return backend_status}
@@ -265,11 +264,12 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   return Err(STATUS_INSUFFICIENT_RESOURCES)
  }
  unsafe{core::ptr::write_bytes(root_va,0,512)};
- let did=NEXT_DOMAIN.fetch_add(1,Ordering::AcqRel);
+ let did=u.next_domain;
  if did==0||did as u32>=u.max_domains||did==u16::MAX{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
   return Err(STATUS_INSUFFICIENT_RESOURCES)
  }
+ u.next_domain=u.next_domain.saturating_add(1);
  let Some((low,high))=encode_context_entry(did,root_pa) else{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
   return Err(STATUS_INVALID_PARAMETER)
@@ -308,22 +308,22 @@ const SL_ADDR_MASK:u64=0x000f_ffff_ffff_f000;
 const SL_MAX:u64=1u64<<48;
 const SL_PAGE:u64=4096;
 
-#[derive(Clone,Copy)] struct TablePage{used:bool,domain_id:u16,physical:u64,virtual_address:*mut u64}
+#[derive(Clone,Copy)] struct TablePage{used:bool,segment:u16,domain_id:u16,physical:u64,virtual_address:*mut u64}
 unsafe impl Send for TablePage{} unsafe impl Sync for TablePage{}
-const EMPTY_TABLE_PAGE:TablePage=TablePage{used:false,domain_id:0,physical:0,virtual_address:core::ptr::null_mut()};
+const EMPTY_TABLE_PAGE:TablePage=TablePage{used:false,segment:u16::MAX,domain_id:0,physical:0,virtual_address:core::ptr::null_mut()};
 struct TablePageStore(core::cell::UnsafeCell<[TablePage;4096]>); unsafe impl Sync for TablePageStore{}
 static TABLE_PAGES:TablePageStore=TablePageStore(core::cell::UnsafeCell::new([EMPTY_TABLE_PAGE;4096]));
 
 /// Walk or construct an intermediate second-level table. Allocated pages are
 /// zeroed and cache-cleaned before their parent entry is made present.
-unsafe fn walk_level(u:&Unit,domain_id:u16,table:*mut u64,table_pa:u64,index:usize,create:bool)->Result<*mut u64,i32>{
+unsafe fn walk_level(u:&Unit,segment:u16,domain_id:u16,table:*mut u64,table_pa:u64,index:usize,create:bool)->Result<*mut u64,i32>{
  let slot=unsafe{table.add(index)};
  let entry=unsafe{core::ptr::read_volatile(slot)};
  if entry&SL_R!=0{
   if entry&SL_W==0{return Err(STATUS_NOT_SUPPORTED)}
   let pa=entry&SL_ADDR_MASK;
   let pages=unsafe{&*TABLE_PAGES.0.get()};
-  let Some(p)=pages.iter().find(|p|p.used&&p.domain_id==domain_id&&p.physical==pa) else{return Err(STATUS_NOT_SUPPORTED)};
+  let Some(p)=pages.iter().find(|p|p.used&&p.segment==segment&&p.domain_id==domain_id&&p.physical==pa) else{return Err(STATUS_NOT_SUPPORTED)};
   return Ok(p.virtual_address)
  }
  if !create{return Err(STATUS_INVALID_PARAMETER)}
@@ -343,7 +343,7 @@ unsafe fn walk_level(u:&Unit,domain_id:u16,table:*mut u64,table_pa:u64,index:usi
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};
   return Err(STATUS_INSUFFICIENT_RESOURCES)
  };
- *record=TablePage{used:true,domain_id,physical:pa,virtual_address:va};
+ *record=TablePage{used:true,segment,domain_id,physical:pa,virtual_address:va};
  unsafe{core::ptr::write_volatile(slot,pa|SL_R|SL_W)};
  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{
   // Keep the child page pinned because hardware may have observed its entry.
@@ -372,7 +372,7 @@ fn locate_leaf(u:&Unit,domain:&Domain,va:u64)->Result<(*mut u64,u64),i32>{
  let indexes=[((va>>39)&0x1ff)as usize,((va>>30)&0x1ff)as usize,((va>>21)&0x1ff)as usize,((va>>12)&0x1ff)as usize];
  let mut table=domain.root_virtual;let mut table_pa=domain.root_physical;
  for level in 0..3{
-  let next=unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],false)}?;
+  let next=unsafe{walk_level(u,domain.segment,domain.id,table,table_pa,indexes[level],false)}?;
   let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
   table_pa=entry&SL_ADDR_MASK;table=next;
  }
@@ -398,7 +398,7 @@ pub unsafe fn map_pages(id:RequesterId,iova:u64,physical:u64,length:u64,permissi
   let indexes=[((va>>39)&0x1ff)as usize,((va>>30)&0x1ff)as usize,((va>>21)&0x1ff)as usize,((va>>12)&0x1ff)as usize];
   let mut table=domain.root_virtual;let mut table_pa=domain.root_physical;
   for level in 0..3{
-   let next=match unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],true)}{Ok(v)=>v,Err(e)=>return e};
+   let next=match unsafe{walk_level(u,domain.segment,domain.id,table,table_pa,indexes[level],true)}{Ok(v)=>v,Err(e)=>return e};
    let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
    table_pa=entry&SL_ADDR_MASK;table=next;
   }
@@ -483,7 +483,7 @@ pub fn lookup_mapping(id:RequesterId,iova:u64)->Option<(u64,u8)>{
   if e&SL_R==0{return None}
   if level==3{return Some(((e&SL_ADDR_MASK)|(iova&0xfff),(e&3)as u8))}
   let pa=e&SL_ADDR_MASK;
-  table=pages.iter().find(|p|p.used&&p.domain_id==d.id&&p.physical==pa)?.virtual_address;
+  table=pages.iter().find(|p|p.used&&p.segment==d.segment&&p.domain_id==d.id&&p.physical==pa)?.virtual_address;
  }
  None
 }
@@ -511,7 +511,7 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[unit_index][id.bus as usize].physical,4096)}!=0{return STATUS_NOT_SUPPORTED}
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{return STATUS_IO_TIMEOUT}
  let pages=unsafe{&mut*TABLE_PAGES.0.get()};
- for page in pages.iter_mut().filter(|p|p.used&&p.domain_id==d.id){
+ for page in pages.iter_mut().filter(|p|p.used&&p.segment==d.segment&&p.domain_id==d.id){
   if unsafe{(u.ops.free_table.unwrap())(u.ops.context,page.physical,page.virtual_address)}!=0{return STATUS_NOT_SUPPORTED}
   *page=EMPTY_TABLE_PAGE;
  }
