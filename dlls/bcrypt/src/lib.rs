@@ -849,6 +849,23 @@ mod tests {
     }
 
     #[test]
+    fn algorithm_properties_report_the_opened_cng_provider() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        for (algorithm,expected) in [("PBKDF2","PBKDF2"),("RSA","RSA"),("RNG","RNG")] {
+            let name=wide(algorithm);
+            let mut handle=ptr::null_mut();
+            assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut handle,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+            let property=wide("AlgorithmName");
+            let mut output=[0u8;64];
+            let mut required=0;
+            assert_eq!(unsafe{BCryptGetProperty(handle,property.as_ptr(),output.as_mut_ptr(),output.len() as ULONG,&mut required,0)},STATUS_SUCCESS);
+            let units=unsafe{core::slice::from_raw_parts(output.as_ptr().cast::<u16>(),required as usize/2-1)};
+            assert_eq!(String::from_utf16(units).unwrap(),expected);
+            assert_eq!(unsafe{BCryptCloseAlgorithmProvider(handle,0)},STATUS_SUCCESS);
+        }
+    }
+
+    #[test]
     fn rng_provider_and_system_preferred_rng_follow_cng_flags() {
         let wide = |v: &str| v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let name = wide("RNG");
