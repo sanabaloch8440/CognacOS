@@ -642,3 +642,35 @@ pub unsafe fn register_generic_dma_backend()->i32{
  };
  unsafe{crate::dma::iommu::RdotDmaRegisterIommuBackend(&mut ops)}
 }
+
+
+/// Initialize the single-segment VT-d backend only after resolving the exact
+/// firmware DRHD for the endpoint's complete PCI path. RMRR-scoped devices are
+/// deliberately rejected here: this backend has no firmware-memory reservation
+/// or ownership-transfer hook yet, so starting them would risk losing firmware
+/// state or exposing an unreserved range to DMA.
+pub unsafe fn initialize_for_dmar_path(
+    ops:&PlatformOps,
+    dmar:&cognacos_acpi::DmarInfo,
+    rmrr:&cognacos_acpi::DmarRmrrInfo,
+    segment:u16,
+    root_bus:u8,
+    endpoint_path:&[cognacos_acpi::DmarPath],
+    register_len:u64,
+)->i32 {
+    // The current domain/context stores are per-bus and therefore support only
+    // segment zero. Never silently alias another segment's bus numbers.
+    if segment!=0||endpoint_path.is_empty()||endpoint_path.len()>8 {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let unit=match cognacos_acpi::select_dmar_unit(dmar,segment,root_bus,endpoint_path) {
+        Ok(v)=>v,Err(_)=>return STATUS_NOT_SUPPORTED,
+    };
+    if cognacos_acpi::dmar_rmrr_covers_path(rmrr,segment,root_bus,endpoint_path) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    if unit.register_base==0||unit.register_base&0xfff!=0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe{initialize(ops,unit.register_base,register_len)}
+}
