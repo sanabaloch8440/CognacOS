@@ -160,7 +160,7 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     }
     let (algorithm,cipher,kdf,rsa_provider,rng_provider)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false,false) }
     else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true,false,false) }
-    else if name=="RSA" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true,false) }
+    else if name=="RSA" || name=="RSA_SIGN" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true,false) }
     else if name=="RNG" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,false,true) }
     else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false,false),Err(e)=>return e } };
     if flags&BCRYPT_HASH_REUSABLE_FLAG!=0 && (cipher||kdf||rsa_provider||rng_provider) { return STATUS_NOT_SUPPORTED; }
@@ -506,7 +506,7 @@ pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut U
 pub unsafe extern "system" fn BCryptEnumProviders(algorithm:*const u16,count:*mut ULONG,providers:*mut *mut BcryptProvider,flags:ULONG)->NTSTATUS {
  if algorithm.is_null()||count.is_null()||providers.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}
  let alg=match unsafe{read_property_name(algorithm)}{Ok(v)=>v,Err(e)=>return e};
- if !matches!(alg.as_str(),"AES"|"SHA256"|"SHA384"|"SHA512"|"RSA"|"RNG"|"PBKDF2"){unsafe{count.write(0);providers.write(ptr::null_mut())};return 0xC0000225_u32 as i32;}
+ if !matches!(alg.as_str(),"AES"|"SHA256"|"SHA384"|"SHA512"|"RSA"|"RSA_SIGN"|"RNG"|"PBKDF2"){unsafe{count.write(0);providers.write(ptr::null_mut())};return 0xC0000225_u32 as i32;}
  const P:&str="Microsoft Primitive Provider";let sb=core::mem::size_of::<BcryptProvider>();let base=match store_enum_buffer(sb+(P.encode_utf16().count()+1)*2){Ok(v)=>v,Err(e)=>return e};let name=enum_write_wide(base,sb,P);let rec=base.cast::<BcryptProvider>();unsafe{rec.write(BcryptProvider{name});count.write(1);providers.write(rec)};STATUS_SUCCESS
 }
 
