@@ -55,8 +55,12 @@ unsafe impl Sync for ConnectState {}
 static HANDOFF: AtomicU64 = AtomicU64::new(0);
 static CONNECTED: AtomicBool = AtomicBool::new(false);
 static RUNNING: AtomicBool = AtomicBool::new(false);
-static PORT: UnsafeCell<Ps2KeyboardPort> = UnsafeCell::new(Ps2KeyboardPort::new());
-static DECODER: UnsafeCell<ScanDecoder> = UnsafeCell::new(ScanDecoder::new());
+struct SharedPort(UnsafeCell<Ps2KeyboardPort>);
+unsafe impl Sync for SharedPort {}
+struct SharedDecoder(UnsafeCell<ScanDecoder>);
+unsafe impl Sync for SharedDecoder {}
+static PORT: SharedPort = SharedPort(UnsafeCell::new(Ps2KeyboardPort::new()));
+static DECODER: SharedDecoder = SharedDecoder(UnsafeCell::new(ScanDecoder::new()));
 static CONNECT: ConnectState = ConnectState(UnsafeCell::new(MaybeUninit::uninit()));
 static RUNTIME_LOCK: AtomicBool = AtomicBool::new(false);
 struct Guard;
@@ -113,9 +117,9 @@ impl PowerAwarePortIo for HalPort<'_> {
 struct ClassSink { connect: ConnectData }
 impl KeyboardPacketSink for ClassSink {
     fn submit_keyboard_packet(&mut self, packet: KeyboardInputData) -> Result<(), ()> {
-        let Some(service) = (unsafe { core::mem::transmute::<PVOID,
-            unsafe extern "system" fn(*mut DEVICE_OBJECT, *const KeyboardInputData, *const KeyboardInputData, *mut u32)>(
-                self.connect.class_service) }) else { return Err(()); };
+        if self.connect.class_service.is_null() { return Err(()); }
+        let service: unsafe extern "system" fn(*mut DEVICE_OBJECT, *const KeyboardInputData, *const KeyboardInputData, *mut u32) =
+            unsafe { core::mem::transmute(self.connect.class_service) };
         let input = &packet as *const KeyboardInputData;
         let mut consumed = 0u32;
         unsafe { service(self.connect.class_device_object, input, input.add(1), &mut consumed); }
@@ -140,7 +144,7 @@ extern "C" fn i8042_dpc(_context: u64) {
     let _guard = Guard::acquire();
     let mut io = HalPort { hal };
     let mut sink = ClassSink { connect };
-    let decoder = unsafe { &mut *DECODER.get() };
+    let decoder = unsafe { &mut *DECODER.0.get() };
     let _ = i8042::drain_keyboard_irq(&mut io, decoder, &mut sink, 32);
 }
 
@@ -155,14 +159,13 @@ pub unsafe extern "win64" fn I8042StartDevice() -> i32 {
         return STATUS_DEVICE_NOT_READY;
     }
     RUNNING.store(true, Ordering::Release);
-    let _guard = Guard::acquire();
     let Some(hal) = (unsafe { ext.hal.as_ref() }) else {
         RUNNING.store(false, Ordering::Release);
         if let Some(unregister) = device.unregister_interrupt { let _ = unsafe { unregister(ext.interrupt_vector, ext.interrupt_context) }; }
         return STATUS_INVALID_PARAMETER;
     };
     let mut io = HalPort { hal };
-    let port = unsafe { &mut *PORT.get() };
+    let port = unsafe { &mut *PORT.0.get() };
     if port.start(&mut io, 100_000).is_err() {
         RUNNING.store(false, Ordering::Release);
         let _ = io.set_keyboard_irq_enabled(false);
@@ -181,16 +184,14 @@ pub unsafe extern "win64" fn I8042StopDevice() -> i32 {
     let _guard = Guard::acquire();
     let mut io = HalPort { hal };
     let port = unsafe { &mut *PORT.get() };
-    if port.state() == KeyboardPortState::Running && port.suspend(&mut io, 100_000).is_err() {
-        return STATUS_DEVICE_NOT_READY;
-    }
+    let suspend_failed = port.state() == KeyboardPortState::Running && port.suspend(&mut io, 100_000).is_err();
     RUNNING.store(false, Ordering::Release);
     if let Some(unregister) = device.unregister_interrupt {
         if unsafe { unregister(ext.interrupt_vector, ext.interrupt_context) }.code != 0 {
             return STATUS_DEVICE_NOT_READY;
         }
     }
-    STATUS_SUCCESS
+    if suspend_failed { STATUS_DEVICE_NOT_READY } else { STATUS_SUCCESS }
 }
 
 unsafe extern "system" fn pnp_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
