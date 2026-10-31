@@ -639,7 +639,11 @@ fn bind_xhci_pe_driver()->bool {
     let Some(resources)=ntoskrnl::pnp::xhci_resources() else {
         serial_write(b"xHCI bind: PnP resource record unavailable.\r\n"); return false
     };
-    if resources.interrupt_vector==0 || resources.bar_virtual==0 || resources.bar_length<0x1000 || !dma::iommu::available() {
+    let requester_key=((resources.segment as u32)<<16)|((resources.bus as u32)<<8)
+        |((resources.device as u32)<<3)|resources.function as u32;
+    if resources.interrupt_vector==0 || resources.bar_virtual==0 || resources.bar_length<0x1000
+        || !dma::iommu::available()
+        || VT_D_REQUESTER_OWNER.load(Ordering::Acquire)!=requester_key {
         serial_write(b"xHCI bind: safe IOMMU DMA or masked interrupt route unavailable; bus mastering stays disabled.\r\n");
         return false;
     }
