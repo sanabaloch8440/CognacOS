@@ -858,6 +858,26 @@ mod tests {
     }
 
     #[test]
+    fn hash_apis_accept_caller_owned_object_buffers() {
+        let name="SHA256".encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut object=[0u8;256];
+        let mut hash=ptr::null_mut();
+        assert_eq!(unsafe{BCryptCreateHash(provider,&mut hash,object.as_mut_ptr(),object.len() as ULONG,ptr::null_mut(),0,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptHashData(hash,b"abc".as_ptr(),3,0)},STATUS_SUCCESS);
+        let mut duplicate_object=[0u8;256];let mut duplicate=ptr::null_mut();
+        assert_eq!(unsafe{BCryptDuplicateHash(hash,&mut duplicate,duplicate_object.as_mut_ptr(),duplicate_object.len() as ULONG,0)},STATUS_SUCCESS);
+        let mut a=[0u8;32];let mut b=[0u8;32];
+        assert_eq!(unsafe{BCryptFinishHash(hash,a.as_mut_ptr(),32,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptFinishHash(duplicate,b.as_mut_ptr(),32,0)},STATUS_SUCCESS);
+        assert_eq!(a,b);
+        assert_eq!(unsafe{BCryptDestroyHash(hash)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyHash(duplicate)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn sha256_known_answer() {
         let got = HashAlgorithm::Sha256.digest(b"abc");
         assert_eq!(got.as_ref(), &[0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad]);
