@@ -49,6 +49,13 @@ fn manifest(path:&Path)->Result<BTreeMap<u32,Export>,String>{
  if out.insert(ordinal,entry).is_some(){return Err(format!("{}:{} duplicate ordinal {ordinal}",path.display(),i+1))}
  }Ok(out)
 }
+pub fn named_exports(path:&Path)->Result<BTreeMap<String,u32>,String>{
+ let bytes=fs::read(path).map_err(|e|format!("{}: {e}",path.display()))?;
+ let parsed=parse_pe(&bytes)?;
+ let mut out=BTreeMap::new();
+ for (ordinal,entry) in parsed {if let Some(name)=entry.name {if out.insert(name.clone(),ordinal).is_some(){return Err(format!("duplicate named export {name}"));}}}
+ Ok(out)
+}
 pub fn verify(name:&str,pe:&Path,tsv:&Path)->Result<(),String>{
  let bytes=fs::read(pe).map_err(|e|format!("{}: {e}",pe.display()))?;let expected=manifest(tsv)?;let actual=parse_pe(&bytes)?;
  let missing:Vec<_>=expected.keys().filter(|k|!actual.contains_key(k)).copied().collect();
