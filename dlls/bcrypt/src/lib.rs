@@ -516,6 +516,40 @@ mod tests {
     }
 
     #[test]
+    fn aes192_gcm_nist_known_answer_and_roundtrip() {
+        let wide = |s: &str| s.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let aes_name = wide("AES");
+        let mode_name = wide("ChainingMode");
+        let mode = wide("ChainingModeGCM");
+        let mut provider = ptr::null_mut();
+        assert_eq!(unsafe { BCryptOpenAlgorithmProvider(&mut provider, aes_name.as_ptr(), ptr::null(), 0) }, STATUS_SUCCESS);
+        let mode_bytes = unsafe { core::slice::from_raw_parts(mode.as_ptr().cast::<u8>(), mode.len()*2) };
+        assert_eq!(unsafe { BCryptSetProperty(provider, mode_name.as_ptr(), mode_bytes.as_ptr(), mode_bytes.len() as u32, 0) }, STATUS_SUCCESS);
+        let key_bytes = [0u8; 24];
+        let mut key = ptr::null_mut();
+        assert_eq!(unsafe { BCryptGenerateSymmetricKey(provider, &mut key, ptr::null_mut(), 0, key_bytes.as_ptr() as *mut u8, 24, 0) }, STATUS_SUCCESS);
+        let nonce = [0u8; 12];
+        let mut tag = [0u8; 16];
+        let mut info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+            cbSize: core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+            dwInfoVersion: 1, pbNonce: nonce.as_ptr() as *mut u8, cbNonce: 12,
+            pbAuthData: ptr::null_mut(), cbAuthData: 0, pbTag: tag.as_mut_ptr(), cbTag: 16,
+            pbMacContext: ptr::null_mut(), cbMacContext: 0, cbAAD: 0, cbData: 0, dwFlags: 0,
+        };
+        let mut plain = [0u8; 16];
+        let mut cipher = [0u8; 16];
+        let mut written = 0;
+        assert_eq!(unsafe { BCryptEncrypt(key, plain.as_mut_ptr(), 16, (&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(), ptr::null_mut(), 0, cipher.as_mut_ptr(), 16, &mut written, 0) }, STATUS_SUCCESS);
+        assert_eq!(cipher, [0x98,0xe7,0x24,0x7c,0x07,0xf0,0xfe,0x41,0x1c,0x26,0x7e,0x43,0x84,0xb0,0xf6,0x00]);
+        assert_eq!(tag, [0x2f,0xf5,0x8d,0x80,0x03,0x39,0x27,0xab,0x8e,0xf4,0xd4,0x58,0x75,0x14,0xf0,0xfb]);
+        let mut recovered = [0u8; 16];
+        assert_eq!(unsafe { BCryptDecrypt(key, cipher.as_mut_ptr(), 16, (&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(), ptr::null_mut(), 0, recovered.as_mut_ptr(), 16, &mut written, 0) }, STATUS_SUCCESS);
+        assert_eq!(recovered, plain);
+        assert_eq!(unsafe { BCryptDestroyKey(key) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider, 0) }, STATUS_SUCCESS);
+    }
+
+    #[test]
     fn aes_cbc_nist_known_answer_and_pkcs7_roundtrip() {
         let key=[0x2b,0x7e,0x15,0x16,0x28,0xae,0xd2,0xa6,0xab,0xf7,0x15,0x88,0x09,0xcf,0x4f,0x3c];
         let mut iv=[0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f];
