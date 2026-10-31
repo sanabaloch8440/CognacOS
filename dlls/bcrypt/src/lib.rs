@@ -3,7 +3,7 @@
 #![allow(non_snake_case)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use aws_lc_rs::{digest, hmac, pbkdf2, rand};
+use aws_lc_rs::{digest, hmac, pbkdf2, rand as aws_rand};
 use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::{hazmat::{PrehashVerifier, PrehashSigner}, SignatureEncoding}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
 use rand::rngs::OsRng;
 use sha2::{Sha256, Sha384, Sha512};
@@ -315,7 +315,7 @@ pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *m
     if algorithm.is_null() { if flags != BCRYPT_USE_SYSTEM_PREFERRED_RNG { return STATUS_INVALID_PARAMETER; } }
     else { if flags != 0 { return STATUS_INVALID_PARAMETER; } let provider=match algorithm_handle(algorithm) { Ok(v)=>v, Err(e)=>return e }; if !provider.rng { return STATUS_INVALID_PARAMETER; } }
     if length == 0 { return STATUS_SUCCESS; }
-    match rand::fill(unsafe { core::slice::from_raw_parts_mut(buffer, length as usize) }) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_NOT_SUPPORTED }
+    match aws_rand::fill(unsafe { core::slice::from_raw_parts_mut(buffer, length as usize) }) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_NOT_SUPPORTED }
 }
 
 #[repr(C)]
@@ -890,15 +890,15 @@ pub unsafe extern "system" fn BCryptSignHash(key:*mut c_void,padding_info:*mut c
         Ok(t)=>match t.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(v))=>v.clone(),_=>return STATUS_INVALID_PARAMETER},
         Err(_)=>return STATUS_NO_MEMORY,
     };
-    let required=private.size() as ULONG;
+    let required=private.key.size() as ULONG;
     unsafe{result_len.write(required)};
     if output.is_null(){return STATUS_SUCCESS;}
     if output_len<required{return STATUS_BUFFER_TOO_SMALL;}
     let digest=unsafe{core::slice::from_raw_parts(input,input_len as usize)};
     let signature=match alg{
-        HashAlgorithm::Sha256=>match SigningKey::<Sha256>::new(private).sign_prehash(digest){Ok(v)=>v.to_bytes().to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
-        HashAlgorithm::Sha384=>match SigningKey::<Sha384>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
-        HashAlgorithm::Sha512=>match SigningKey::<Sha512>::new(private).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+        HashAlgorithm::Sha256=>match SigningKey::<Sha256>::new(private.key).sign_prehash(digest){Ok(v)=>v.to_bytes().to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+        HashAlgorithm::Sha384=>match SigningKey::<Sha384>::new(private.key).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
+        HashAlgorithm::Sha512=>match SigningKey::<Sha512>::new(private.key).sign_prehash(digest){Ok(v)=>v.to_vec(),Err(_)=>return STATUS_INVALID_PARAMETER},
     };
     unsafe{ptr::copy_nonoverlapping(signature.as_ptr(),output,signature.len())};STATUS_SUCCESS
 }
@@ -1554,7 +1554,7 @@ mod tests {
         let mut padding=BcryptPkcs1PaddingInfo{pszAlgId:algorithm.as_ptr()};
         let digest=HashAlgorithm::Sha256.digest(b"cognacos-rsa-sign-test");
         let mut required=0;
-        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe{BCryptFinalizeKeyPair(key,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_SUCCESS);
         assert_eq!(required,128);
