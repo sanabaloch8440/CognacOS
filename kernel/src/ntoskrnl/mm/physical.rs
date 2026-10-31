@@ -1820,4 +1820,27 @@ mod allocator_map_tests {
         assert_eq!(collect_regions(descriptors.as_ptr().cast(), descriptors.len(),
             core::mem::size_of::<MemoryDescriptor>(), &mut regions).unwrap(), 1);
     }
+
+    #[test]
+    fn early_rmrr_subtraction_splits_free_regions_without_losing_neighbors() {
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        regions[0] = Region { next: 0x1000, end: 0x10000 };
+        let mut count = 1;
+        subtract_reserved_range(&mut regions, &mut count, 0x3000, 0x5000).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!((regions[0].next, regions[0].end), (0x1000, 0x3000));
+        assert_eq!((regions[1].next, regions[1].end), (0x5000, 0x10000));
+    }
+
+    #[test]
+    fn rmrr_coverage_accepts_conventional_and_reserved_ram_but_not_mmio() {
+        let descriptors = [
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x100000, 8),
+            descriptor(6, 0x200000, 8),
+        ];
+        let stride = core::mem::size_of::<MemoryDescriptor>();
+        assert!(firmware_map_covers_ram(descriptors.as_ptr().cast(), 2, stride, 0x101000, 0x104000));
+        assert!(firmware_map_covers_ram(descriptors.as_ptr().cast(), 2, stride, 0x200000, 0x204000));
+        assert!(!firmware_map_covers_ram(descriptors.as_ptr().cast(), 2, stride, 0x180000, 0x181000));
+    }
 }
