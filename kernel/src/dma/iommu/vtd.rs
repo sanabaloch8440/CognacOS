@@ -724,7 +724,7 @@ pub unsafe fn register_generic_dma_backend()->i32{
 }
 
 
-/// Initialize the single-segment VT-d backend only after resolving the exact
+/// Initialize the segment-owned VT-d unit only after resolving the exact
 /// firmware DRHD for the endpoint's complete PCI path. The PnP caller installs
 /// every matching, firmware-reserved RMRR identity mapping before driver bind;
 /// conventional or unverified ranges remain fail-closed.
