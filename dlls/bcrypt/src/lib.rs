@@ -887,7 +887,7 @@ pub unsafe extern "system" fn BCryptSignHash(key:*mut c_void,padding_info:*mut c
     let alg=match unsafe{HashAlgorithm::from_utf16(info.pszAlgId)}{Ok(v)=>v,Err(e)=>return e};
     if input_len!=alg.digest_len(){return STATUS_INVALID_PARAMETER;}
     let private=match handle_table().lock(){
-        Ok(t)=>match t.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(v))=>v.clone(),_=>return STATUS_INVALID_PARAMETER},
+        Ok(t)=>match t.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(v)) if v.finalized=>v.clone(),_=>return STATUS_INVALID_PARAMETER},
         Err(_)=>return STATUS_NO_MEMORY,
     };
     let required=private.key.size() as ULONG;
