@@ -8,7 +8,7 @@ const RTPS:u32=1<<30; const TES:u32=1<<31; const ICC:u64=1<<63; const GLOBAL:u64
 const IVT:u64=1<<63; const IIRG_GLOBAL:u64=1<<60;
 pub const STATUS_SUCCESS:i32=0; pub const STATUS_INVALID_PARAMETER:i32=0xC000000Du32 as i32;
 pub const STATUS_NOT_SUPPORTED:i32=0xC00000BBu32 as i32; pub const STATUS_DEVICE_NOT_READY:i32=0xC00000A3u32 as i32;
-pub const STATUS_IO_TIMEOUT:i32=0xC00000B5u32 as i32; pub const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000009Au32 as i32;
+pub const STATUS_IO_TIMEOUT:i32=0xC00000B5u32 as i32; pub const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000009Au32 as i32; pub const STATUS_DEVICE_BUSY:i32=0x80000011u32 as i32;
 
 /// Platform hooks are owned by HAL/MM and must remain valid for kernel lifetime.
 /// MM table pages must be zeroed, pinned, physically contiguous, and writable.
