@@ -938,11 +938,23 @@ pub unsafe extern "system" fn BCryptSignHash(key:*mut c_void,padding_info:*mut c
 #[no_mangle]
 pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_key:*mut c_void,blob_type:*const u16,out:*mut *mut c_void,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
     const BCRYPT_RSAPUBLIC_MAGIC:ULONG=0x31415352;
-    if out.is_null() || import_key.is_null()==false || blob_type.is_null() || input.is_null() || flags!=0 { return STATUS_INVALID_PARAMETER; }
+    const BCRYPT_ECDH_PUBLIC_P256_MAGIC: ULONG = 0x314B4345;
+    if out.is_null() || !import_key.is_null() || blob_type.is_null() || input.is_null() || flags!=0 { return STATUS_INVALID_PARAMETER; }
     let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
-    if !provider.rsa { return STATUS_INVALID_PARAMETER; }
     let mut name=Vec::new(); for i in 0..64 {let u=unsafe{blob_type.add(i).read()};if u==0{break;}name.push(u);if i==63{return STATUS_INVALID_PARAMETER;}}
-    if String::from_utf16(&name).ok().as_deref()!=Some("RSAPUBLICBLOB") { return STATUS_NOT_SUPPORTED; }
+    let blob_name=match String::from_utf16(&name){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+    if provider.ecdh {
+        if blob_name != "EccPublicBlob" || input_len != 8 + 64 { return STATUS_INVALID_PARAMETER; }
+        let magic = unsafe { ptr::read_unaligned(input.cast::<ULONG>()) };
+        let cb_key = unsafe { ptr::read_unaligned(input.add(4).cast::<ULONG>()) };
+        if magic != BCRYPT_ECDH_PUBLIC_P256_MAGIC || cb_key != 32 { return STATUS_INVALID_PARAMETER; }
+        let mut encoded = [0u8;65]; encoded[0] = 4;
+        unsafe { ptr::copy_nonoverlapping(input.add(8), encoded[1..].as_mut_ptr(), 64); }
+        let public = match P256PublicKey::from_sec1_bytes(&encoded) { Ok(v) => v, Err(_) => return STATUS_INVALID_PARAMETER };
+        let token = match register_handle(RegisteredHandle::EcdhPublic(public)) { Ok(v) => v, Err(e) => return e };
+        unsafe { out.write(token) }; return STATUS_SUCCESS;
+    }
+    if !provider.rsa || blob_name != "RSAPUBLICBLOB" { return STATUS_NOT_SUPPORTED; }
     if (input_len as usize)<core::mem::size_of::<BcryptRsaBlobHeader>() { return STATUS_INVALID_PARAMETER; }
     let h=unsafe{ptr::read_unaligned(input.cast::<BcryptRsaBlobHeader>())};
     if h.magic!=BCRYPT_RSAPUBLIC_MAGIC || h.bit_length<512 || h.bit_length>16384 || h.cb_public_exp==0 || h.cb_public_exp>8 || h.cb_modulus as u64!=(h.bit_length as u64+7)/8 || h.cb_prime1!=0 || h.cb_prime2!=0 {return STATUS_INVALID_PARAMETER;}
