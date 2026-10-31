@@ -102,6 +102,7 @@ struct EcdhPrivateHandle { key: Vec<u8>, finalized: bool }
 impl Drop for EcdhPrivateHandle { fn drop(&mut self) { self.key.zeroize(); } }
 #[derive(Clone)]
 enum MlKemKeyHandle {
+    Pending { level: u8 },
     Pair512 { dk: ml_kem::DecapsulationKey512, ek: ml_kem::EncapsulationKey512, finalized: bool },
     Pair768 { dk: ml_kem::DecapsulationKey768, ek: ml_kem::EncapsulationKey768, finalized: bool },
     Pair1024 { dk: ml_kem::DecapsulationKey1024, ek: ml_kem::EncapsulationKey1024, finalized: bool },
@@ -581,7 +582,21 @@ pub unsafe extern "system" fn BCryptFreeBuffer(buffer: *mut c_void) {
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptSetProperty(object:*mut c_void,property:*const u16,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
- if property.is_null()||input.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let n=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};if n!="ChainingMode"{return STATUS_NOT_SUPPORTED;}
+ if object.is_null()||property.is_null()||input.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}
+ let n=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};
+ if n=="ParameterSetName" {
+  if input_len<4 || input_len>10 || input_len%2!=0 { return STATUS_INVALID_PARAMETER; }
+  let mut units=Vec::new();
+  for i in 0..(input_len as usize/2) { let u=unsafe{ptr::read_unaligned(input.add(i*2).cast::<u16>())}; if u==0 { break; } units.push(u); }
+  let value=match String::from_utf16(&units){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+  let level=match value.as_str(){"512"=>1,"768"=>2,"1024"=>3,_=>return STATUS_INVALID_PARAMETER};
+  let Ok(mut table)=handle_table().lock()else{return STATUS_NO_MEMORY;};
+  return match table.get_mut(&(object as usize)) {
+   Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pending{level:current})) if *current==0||*current==level=>{*current=level;STATUS_SUCCESS},
+   _=>STATUS_INVALID_PARAMETER,
+  };
+ }
+ if n!="ChainingMode"{return STATUS_NOT_SUPPORTED;}
  let val=unsafe{core::slice::from_raw_parts(input,input_len as usize)};let gcm:Vec<u16>="ChainingModeGCM".encode_utf16().chain(core::iter::once(0)).collect();let cbc:Vec<u16>="ChainingModeCBC".encode_utf16().chain(core::iter::once(0)).collect();let matches=|v:&[u16]| val.len()==v.len()*2 && v.iter().enumerate().all(|(i,u)|unsafe{ptr::read_unaligned(input.add(i*2).cast::<u16>())}==*u);let is_gcm=matches(&gcm);let is_cbc=matches(&cbc);if !is_gcm&&!is_cbc{return STATUS_NOT_SUPPORTED;}
  let Ok(mut t)=handle_table().lock()else{return STATUS_NO_MEMORY;};
  match t.get_mut(&(object as usize)) {
@@ -976,17 +991,8 @@ pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*m
         unsafe { out.write(token) }; return STATUS_SUCCESS;
     }
     if provider.kem {
-        let level = if provider.kem_level != 0 { provider.kem_level } else {
-            match bits { 512 => 1, 768 => 2, 1024 => 3, _ => return STATUS_INVALID_PARAMETER }
-        };
-        let expected_bits = match level { 1 => 512, 2 => 768, 3 => 1024, _ => return STATUS_INVALID_PARAMETER };
-        if bits != expected_bits { return STATUS_INVALID_PARAMETER; }
-        let material = match level {
-            1 => { let (dk,ek)=MlKem512::generate_keypair(); MlKemKeyHandle::Pair512{dk,ek,finalized:false} },
-            2 => { let (dk,ek)=MlKem768::generate_keypair(); MlKemKeyHandle::Pair768{dk,ek,finalized:false} },
-            _ => { let (dk,ek)=MlKem1024::generate_keypair(); MlKemKeyHandle::Pair1024{dk,ek,finalized:false} },
-        };
-        let token=match register_handle(RegisteredHandle::MlKem(material)){Ok(v)=>v,Err(e)=>return e};
+        if bits != 0 { return STATUS_INVALID_PARAMETER; }
+        let token=match register_handle(RegisteredHandle::MlKem(MlKemKeyHandle::Pending{level:provider.kem_level})){Ok(v)=>v,Err(e)=>return e};
         unsafe{out.write(token)};return STATUS_SUCCESS;
     }
     if !provider.rsa || !(512..=16384).contains(&bits) || bits%8!=0 { return STATUS_NOT_SUPPORTED; }
@@ -1005,9 +1011,15 @@ pub unsafe extern "system" fn BCryptFinalizeKeyPair(key:*mut c_void,flags:ULONG)
     match table.get_mut(&(key as usize)){
         Some(RegisteredHandle::RsaPrivate(state)) if !state.finalized=>{state.finalized=true;STATUS_SUCCESS},
         Some(RegisteredHandle::EcdhPrivate(state)) if !state.finalized=>{state.finalized=true;STATUS_SUCCESS},
-        Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair512{finalized,..})) if !*finalized=>{*finalized=true;STATUS_SUCCESS},
-        Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair768{finalized,..})) if !*finalized=>{*finalized=true;STATUS_SUCCESS},
-        Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair1024{finalized,..})) if !*finalized=>{*finalized=true;STATUS_SUCCESS},
+        Some(RegisteredHandle::MlKem(material)) => {
+            let level=match material { MlKemKeyHandle::Pending{level} if (1..=3).contains(level)=>*level, _=>return STATUS_INVALID_PARAMETER };
+            *material=match level {
+                1=>{let(dk,ek)=MlKem512::generate_keypair();MlKemKeyHandle::Pair512{dk,ek,finalized:true}},
+                2=>{let(dk,ek)=MlKem768::generate_keypair();MlKemKeyHandle::Pair768{dk,ek,finalized:true}},
+                _=>{let(dk,ek)=MlKem1024::generate_keypair();MlKemKeyHandle::Pair1024{dk,ek,finalized:true}},
+            };
+            STATUS_SUCCESS
+        },
         _=>STATUS_INVALID_PARAMETER,
     }
 }
@@ -1074,10 +1086,10 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
 
 /// Return the fixed FIPS 203 ciphertext size for a generated ML-KEM key.
 fn mlkem_ciphertext_len(key: &MlKemKeyHandle) -> usize {
-    match key { MlKemKeyHandle::Pair512{..} => 768, MlKemKeyHandle::Pair768{..} => 1088, MlKemKeyHandle::Pair1024{..} => 1568 }
+    match key { MlKemKeyHandle::Pair512{..} => 768, MlKemKeyHandle::Pair768{..} => 1088, MlKemKeyHandle::Pair1024{..} => 1568, MlKemKeyHandle::Pending{..} => 0 }
 }
 fn mlkem_is_finalized(key: &MlKemKeyHandle) -> bool {
-    match key { MlKemKeyHandle::Pair512{finalized,..}|MlKemKeyHandle::Pair768{finalized,..}|MlKemKeyHandle::Pair1024{finalized,..} => *finalized }
+    match key { MlKemKeyHandle::Pair512{finalized,..}|MlKemKeyHandle::Pair768{finalized,..}|MlKemKeyHandle::Pair1024{finalized,..} => *finalized, MlKemKeyHandle::Pending{..} => false }
 }
 
 /// CNG ML-KEM encapsulation. Output-size queries are supported; key material
@@ -2455,7 +2467,10 @@ mod tests {
             let mut provider=ptr::null_mut();
             assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
             let mut key=ptr::null_mut();
-            assert_eq!(unsafe{BCryptGenerateKeyPair(provider,&mut key,bits,0)},STATUS_SUCCESS);
+            assert_eq!(unsafe{BCryptGenerateKeyPair(provider,&mut key,0,0)},STATUS_SUCCESS);
+            let property=wide("ParameterSetName");
+            let parameter_set=wide(match bits {512=>"512",768=>"768",_=>"1024"});
+            assert_eq!(unsafe{BCryptSetProperty(key,property.as_ptr(),parameter_set.as_ptr() as *const u8,(parameter_set.len()*2) as u32,0)},STATUS_SUCCESS);
             assert_eq!(unsafe{BCryptFinalizeKeyPair(key,0)},STATUS_SUCCESS);
 
             let mut secret_required=0u32;
