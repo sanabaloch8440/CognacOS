@@ -315,10 +315,10 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(prf:*mut c_void,password:*const u8,password_len:ULONG,salt:*const u8,salt_len:ULONG,iterations:ULONG,derived:*mut u8,derived_len:ULONG,flags:ULONG)->NTSTATUS {
+pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(prf:*mut c_void,password:*mut u8,password_len:ULONG,salt:*mut u8,salt_len:ULONG,iterations:u64,derived:*mut u8,derived_len:ULONG,flags:ULONG)->NTSTATUS {
  if (password.is_null()&&password_len!=0)||(salt.is_null()&&salt_len!=0)||(derived.is_null()&&derived_len!=0)||iterations==0||flags!=0{return STATUS_INVALID_PARAMETER;}
  let p=match algorithm_handle(prf){Ok(v)=>v,Err(e)=>return e};if !p.hmac||p.cipher{return STATUS_INVALID_PARAMETER;}
- let nz=NonZeroU32::new(iterations).unwrap();let pass=if password_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(password,password_len as usize)}};let salt=if salt_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(salt,salt_len as usize)}};let out=if derived_len==0{&mut [][..]}else{unsafe{core::slice::from_raw_parts_mut(derived,derived_len as usize)}};
+ let iterations=match u32::try_from(iterations){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let nz=match NonZeroU32::new(iterations){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};let pass=if password_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(password,password_len as usize)}};let salt=if salt_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(salt,salt_len as usize)}};let out=if derived_len==0{&mut [][..]}else{unsafe{core::slice::from_raw_parts_mut(derived,derived_len as usize)}};
  pbkdf2::derive(p.algorithm.pbkdf2_algorithm(),nz,salt,pass,out);STATUS_SUCCESS
 }
 
@@ -389,8 +389,8 @@ fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
 /// Only operations actually supported by this DLL are advertised.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut ULONG,list:*mut *mut BcryptAlgorithmIdentifier,flags:ULONG)->NTSTATUS {
- const H:ULONG=2;const R:ULONG=32;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(1|H|4|8|16|R)!=0{return STATUS_INVALID_PARAMETER;}
- let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&1!=0{e.push(("AES",1));}if operations&H!=0{e.extend([("SHA256",2),("SHA384",2),("SHA512",2)]);}if operations&4!=0{e.push(("RSA",3));}if operations&R!=0{e.push(("RNG",6));}
+ const H:ULONG=2;const R:ULONG=32;const KDF:ULONG=64;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(1|H|4|8|16|R|KDF)!=0{return STATUS_INVALID_PARAMETER;}
+ let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&1!=0{e.push(("AES",1));}if operations&H!=0{e.extend([("SHA256",2),("SHA384",2),("SHA512",2)]);}if operations&4!=0{e.push(("RSA",3));}if operations&R!=0{e.push(("RNG",6));}if operations&KDF!=0{e.push(("PBKDF2",7));}
  if e.is_empty(){unsafe{count.write(0);list.write(ptr::null_mut())};return STATUS_SUCCESS;}
  let sb=e.len()*core::mem::size_of::<BcryptAlgorithmIdentifier>();let nb:usize=e.iter().map(|(n,_)|(n.encode_utf16().count()+1)*2).sum();let base=match store_enum_buffer(sb+nb){Ok(v)=>v,Err(x)=>return x};let records=base.cast::<BcryptAlgorithmIdentifier>();let mut off=sb;
  for(i,(n,c))in e.iter().enumerate(){let np=enum_write_wide(base,off,n);unsafe{records.add(i).write(BcryptAlgorithmIdentifier{name:np,class:*c,flags:0})};off+=(n.encode_utf16().count()+1)*2;}
@@ -399,8 +399,11 @@ pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut U
 
 
 #[no_mangle]
-pub unsafe extern "system" fn BCryptEnumProviders(count:*mut ULONG,providers:*mut *mut BcryptProvider,flags:ULONG)->NTSTATUS {
- if count.is_null()||providers.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}const P:&str="CognacOS AWS-LC Provider";let sb=core::mem::size_of::<BcryptProvider>();let base=match store_enum_buffer(sb+(P.encode_utf16().count()+1)*2){Ok(v)=>v,Err(e)=>return e};let name=enum_write_wide(base,sb,P);let rec=base.cast::<BcryptProvider>();unsafe{rec.write(BcryptProvider{name});count.write(1);providers.write(rec)};STATUS_SUCCESS
+pub unsafe extern "system" fn BCryptEnumProviders(algorithm:*const u16,count:*mut ULONG,providers:*mut *mut BcryptProvider,flags:ULONG)->NTSTATUS {
+ if algorithm.is_null()||count.is_null()||providers.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}
+ let alg=match unsafe{read_property_name(algorithm)}{Ok(v)=>v,Err(e)=>return e};
+ if !matches!(alg.as_str(),"AES"|"SHA256"|"SHA384"|"SHA512"|"RSA"|"RNG"|"PBKDF2"){unsafe{count.write(0);providers.write(ptr::null_mut())};return 0xC0000225_u32 as i32;}
+ const P:&str="Microsoft Primitive Provider";let sb=core::mem::size_of::<BcryptProvider>();let base=match store_enum_buffer(sb+(P.encode_utf16().count()+1)*2){Ok(v)=>v,Err(e)=>return e};let name=enum_write_wide(base,sb,P);let rec=base.cast::<BcryptProvider>();unsafe{rec.write(BcryptProvider{name});count.write(1);providers.write(rec)};STATUS_SUCCESS
 }
 
 #[no_mangle]
@@ -790,9 +793,10 @@ mod tests {
 
     #[test]
     fn enum_providers_returns_single_provider_and_frees() {
+        let algorithm = "SHA256".encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let mut count = 0;
         let mut providers = ptr::null_mut();
-        assert_eq!(unsafe { BCryptEnumProviders(&mut count, &mut providers, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptEnumProviders(algorithm.as_ptr(), &mut count, &mut providers, 0) }, STATUS_SUCCESS);
         assert_eq!(count, 1);
         let mut name = Vec::new();
         unsafe {
@@ -803,7 +807,7 @@ mod tests {
             }
             BCryptFreeBuffer(providers.cast());
         }
-        assert_eq!(String::from_utf16(&name).unwrap(), "CognacOS AWS-LC Provider");
+        assert_eq!(String::from_utf16(&name).unwrap(), "Microsoft Primitive Provider");
     }
 
     #[test]
@@ -845,6 +849,10 @@ mod tests {
         // BCryptEnumAlgorithms operation classes.
         assert_eq!(unsafe { BCryptEnumAlgorithms(8 | 16, &mut count, &mut list, 0) }, STATUS_SUCCESS);
         assert_eq!(count, 0);
+        assert!(list.is_null());
+        assert_eq!(unsafe { BCryptEnumAlgorithms(0x40, &mut count, &mut list, 0) }, STATUS_SUCCESS);
+        assert_eq!(count, 1);
+        assert_eq!(unsafe { (*list).class }, 7);
         unsafe { BCryptFreeBuffer(list.cast()) };
     }
 
