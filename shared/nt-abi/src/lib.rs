@@ -231,6 +231,8 @@ pub mod bus {
         #[test]
         fn interface_layout_is_stable_on_x64() {
             if cfg!(target_pointer_width = "64") {
+                assert_eq!(core::mem::size_of::<GUID>(), 0x10);
+                assert_ne!(GUID_ACPI_FIRMWARE_INTERFACE, GUID_PCI_BUS_INTERFACE);
                 assert_eq!(core::mem::size_of::<INTERFACE_HEADER>(), 0x20);
                 assert_eq!(core::mem::offset_of!(INTERFACE_HEADER, context), 0x08);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
