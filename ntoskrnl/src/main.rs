@@ -6,20 +6,31 @@ pub(crate) use cognacos_nt_abi as nt_abi;
 
 pub(crate) use ntoskrnl::mm::{kernel_space as kernel_vm, pagefile, physical as memory};
 pub(crate) use ntoskrnl::se::runtime as security;
+#[path = "kernel/ps/user.rs"]
 mod user;
+#[path = "kernel/pe/pe.rs"]
 mod pe;
+#[path = "kernel/abi/winabi.rs"]
 mod winabi;
+#[path = "kernel/pe/pe_runtime.rs"]
 mod pe_runtime;
+#[path = "kernel/pe/pe_modules.rs"]
 mod pe_modules;
+#[path = "kernel/pe/pe_loader.rs"]
 mod pe_loader;
+#[path = "kernel/pe/pe_dependencies.rs"]
 mod pe_dependencies;
+#[path = "kernel/ps/usermode.rs"]
 mod usermode;
 use cognacos_acpi as acpi;
 use cognacos_pci as pci;
 #[path = "../../Hal/mod.rs"]
 mod hal;
+#[path = "kernel/ke/smp.rs"]
 mod smp;
+#[path = "kernel/io/platform_drivers.rs"]
 mod platform_drivers;
+#[path = "kernel/boot/boot_orchestration.rs"]
 mod boot_orchestration;
 static BOOT_COORDINATOR: boot_orchestration::BootCoordinator = boot_orchestration::BootCoordinator::new();
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
