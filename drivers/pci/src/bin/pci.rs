@@ -5,6 +5,74 @@ use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_pci::EcamWindowExt;
 use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
+use core::ffi::c_void;
+use cognacos_nt_abi::object::UNICODE_STRING;
+
+unsafe extern "win64" {
+    fn IoCreateDevice(
+        driver: *mut DRIVER_OBJECT, extension_size: u32, device_name: *mut UNICODE_STRING,
+        device_type: u32, characteristics: u32, exclusive: u8,
+        device_object: *mut *mut DEVICE_OBJECT,
+    ) -> i32;
+    fn IoDeleteDevice(device: *mut DEVICE_OBJECT);
+    fn MmMapIoSpace(physical_address: i64, number_of_bytes: u64, cache_type: i32) -> PVOID;
+    fn MmUnmapIoSpace(base_address: PVOID, number_of_bytes: u64);
+}
+
+// These are ordinary PE import thunks. The PE conversion step turns the
+// __imp_* slots into a standard IMAGE_IMPORT_DESCRIPTOR/IAT for ntoskrnl.exe.
+core::arch::global_asm!(r#"
+.intel_syntax noprefix
+.section .text.import_thunks,"ax",@progbits
+.global IoCreateDevice
+.type IoCreateDevice,@function
+IoCreateDevice:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoCreateDevice]
+.size IoCreateDevice, .-IoCreateDevice
+.global IoDeleteDevice
+.type IoDeleteDevice,@function
+IoDeleteDevice:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoDeleteDevice]
+.size IoDeleteDevice, .-IoDeleteDevice
+.global MmMapIoSpace
+.type MmMapIoSpace,@function
+MmMapIoSpace:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_MmMapIoSpace]
+.size MmMapIoSpace, .-MmMapIoSpace
+.global MmUnmapIoSpace
+.type MmUnmapIoSpace,@function
+MmUnmapIoSpace:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_MmUnmapIoSpace]
+.size MmUnmapIoSpace, .-MmUnmapIoSpace
+
+.section .data.imports.ntoskrnl,"aw",@progbits
+.p2align 3
+.global __imp_ntoskrnl_IoCreateDevice
+.type __imp_ntoskrnl_IoCreateDevice,@object
+__imp_ntoskrnl_IoCreateDevice: .quad 0
+.size __imp_ntoskrnl_IoCreateDevice,8
+.global __imp_ntoskrnl_IoDeleteDevice
+.type __imp_ntoskrnl_IoDeleteDevice,@object
+__imp_ntoskrnl_IoDeleteDevice: .quad 0
+.size __imp_ntoskrnl_IoDeleteDevice,8
+.global __imp_ntoskrnl_MmMapIoSpace
+.type __imp_ntoskrnl_MmMapIoSpace,@object
+__imp_ntoskrnl_MmMapIoSpace: .quad 0
+.size __imp_ntoskrnl_MmMapIoSpace,8
+.global __imp_ntoskrnl_MmUnmapIoSpace
+.type __imp_ntoskrnl_MmUnmapIoSpace,@object
+__imp_ntoskrnl_MmUnmapIoSpace: .quad 0
+.size __imp_ntoskrnl_MmUnmapIoSpace,8
+"#);
+
+const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
+#[repr(C)]
+struct PciPdoExtension {
+    magic: u64,
+    version: u32,
+    information: PCI_DEVICE_INFORMATION,
+}
+
 
 const HANDOFF_MAGIC: u64 = PCI_DRIVER_HANDOFF_MAGIC;
 const HANDOFF_VERSION: u32 = PCI_DRIVER_HANDOFF_VERSION;
@@ -160,8 +228,8 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
     unsafe { (*irp).io_status.status.status = status; }
     status
 }
-/// Build a stable BusRelations result. Each PDO is created exactly once
-/// through the kernel callback and cached for the lifetime of this bus driver.
+/// Build a stable BusRelations result. PDOs are materialized through the
+/// documented IoCreateDevice export and deleted through IoDeleteDevice.
 /// A failed creation rolls back only PDOs created by this invocation.
 unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
     if !STATE.ready.load(Ordering::Acquire) { return Err(STATUS_DEVICE_NOT_READY); }
@@ -175,7 +243,6 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
         let address = HANDOFF.load(Ordering::Acquire);
         if address == 0 { return Err(STATUS_DEVICE_NOT_READY); }
         let handoff = unsafe { &*(address as *const PciDriverHandoff) };
-        let create_pdo = handoff.create_pdo.ok_or(STATUS_DEVICE_NOT_READY)?;
         let driver = DRIVER_OBJECT.load(Ordering::Acquire) as *mut DRIVER_OBJECT;
         if driver.is_null() { return Err(STATUS_DEVICE_NOT_READY); }
         let total = STATE.function_count.load(Ordering::Acquire);
@@ -190,18 +257,45 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
                 query_inventory_function(handoff as *const _ as PVOID, index as u32, &mut information)
             };
             if status != STATUS_SUCCESS {
-                if let Some(delete_pdo) = handoff.delete_pdo {
-                    for pdo in created[..created_count].iter().copied() { unsafe { delete_pdo(handoff.pdo_context, pdo); } }
+                for pdo in created[..created_count].iter().copied() {
+                    if !pdo.is_null() { unsafe { IoDeleteDevice(pdo); } }
                 }
                 return Err(status);
             }
             let mut pdo = core::ptr::null_mut();
-            let status = unsafe { create_pdo(handoff.pdo_context, driver, &information, &mut pdo) };
+            let status = unsafe {
+                IoCreateDevice(
+                    driver,
+                    core::mem::size_of::<PciPdoExtension>() as u32,
+                    core::ptr::null_mut(),
+                    0x22,
+                    0,
+                    0,
+                    &mut pdo,
+                )
+            };
             if status != STATUS_SUCCESS || pdo.is_null() {
-                if let Some(delete_pdo) = handoff.delete_pdo {
-                    for pdo in created[..created_count].iter().copied() { unsafe { delete_pdo(handoff.pdo_context, pdo); } }
+                for created_pdo in created[..created_count].iter().copied() {
+                    if !created_pdo.is_null() { unsafe { IoDeleteDevice(created_pdo); } }
                 }
                 return Err(if status == STATUS_SUCCESS { STATUS_DEVICE_CONFIGURATION_ERROR } else { status });
+            }
+            let extension = unsafe { (*pdo).device_extension.cast::<PciPdoExtension>() };
+            if extension.is_null() {
+                unsafe { IoDeleteDevice(pdo); }
+                for created_pdo in created[..created_count].iter().copied() {
+                    if !created_pdo.is_null() { unsafe { IoDeleteDevice(created_pdo); } }
+                }
+                return Err(STATUS_INSUFFICIENT_RESOURCES);
+            }
+            unsafe {
+                extension.write(PciPdoExtension {
+                    magic: PCI_PDO_EXTENSION_MAGIC,
+                    version: 1,
+                    information,
+                });
+                // DO_BUS_ENUMERATED_DEVICE: this is a PDO created by its bus.
+                (*pdo).flags |= 0x0000_0200;
             }
             created[created_count] = pdo;
             created_count += 1;
@@ -233,14 +327,18 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     let handoff_address = HANDOFF.load(Ordering::Acquire);
     if handoff_address != 0 {
         let handoff = unsafe { &*(handoff_address as *const PciDriverHandoff) };
-        if let Some(delete_pdo) = handoff.delete_pdo {
-            let count = STATE.pdo_count.swap(0, Ordering::AcqRel).min(MAX_PCI_PDOS);
-            for index in 0..count {
-                let pdo = unsafe { (*STATE.pdos.get())[index] };
-                if !pdo.is_null() {
-                    unsafe { delete_pdo(handoff.pdo_context, pdo); }
-                    unsafe { (*STATE.pdos.get())[index] = core::ptr::null_mut(); }
-                }
+        let count = STATE.pdo_count.swap(0, Ordering::AcqRel).min(MAX_PCI_PDOS);
+        for index in 0..count {
+            let pdo = unsafe { (*STATE.pdos.get())[index] };
+            if !pdo.is_null() {
+                unsafe { IoDeleteDevice(pdo); }
+                unsafe { (*STATE.pdos.get())[index] = core::ptr::null_mut(); }
+            }
+        }
+        for window in handoff.windows[..handoff.window_count as usize].iter() {
+            let span = (window.bus_end as u64 - window.bus_start as u64 + 1) << 20;
+            if window.virtual_base != 0 {
+                unsafe { MmUnmapIoSpace(window.virtual_base as PVOID, span); }
             }
         }
     }
@@ -264,7 +362,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
 
     for i in 0..handoff.window_count as usize {
         let window = &handoff.windows[i];
-        if window.validate().is_err() || window.read_config.is_none() || window.write_config.is_none() { return STATUS_INVALID_PARAMETER; }
+        if window.validate().is_err() { return STATUS_INVALID_PARAMETER; }
         for prior in &handoff.windows[..i] {
             if prior.segment == window.segment
                 && prior.bus_start <= window.bus_end && window.bus_start <= prior.bus_end {
@@ -272,10 +370,38 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             }
         }
     }
-    if handoff.pdo_context.is_null() || handoff.create_pdo.is_none() || handoff.delete_pdo.is_none() {
-        return STATUS_INVALID_PARAMETER;
+    let mut mapped_count = 0usize;
+    for i in 0..handoff.window_count as usize {
+        let window = &mut (*(object.driver_extension as *mut PciDriverHandoff)).windows[i];
+        let span = (window.bus_end as u64 - window.bus_start as u64 + 1) << 20;
+        let Ok(physical) = i64::try_from(window.physical_base) else {
+            for prior in 0..mapped_count {
+                let old = &handoff.windows[prior];
+                let old_span = (old.bus_end as u64 - old.bus_start as u64 + 1) << 20;
+                unsafe { MmUnmapIoSpace(old.virtual_base as PVOID, old_span); }
+            }
+            return STATUS_INVALID_PARAMETER;
+        };
+        let mapped = unsafe { MmMapIoSpace(physical, span, 0) };
+        if mapped.is_null() {
+            for prior in 0..mapped_count {
+                let old = &handoff.windows[prior];
+                let old_span = (old.bus_end as u64 - old.bus_start as u64 + 1) << 20;
+                unsafe { MmUnmapIoSpace(old.virtual_base as PVOID, old_span); }
+            }
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        window.virtual_base = mapped as u64;
+        window.config_context = core::ptr::null_mut();
+        window.read_config = None;
+        window.write_config = None;
+        mapped_count += 1;
     }
-    HANDOFF.store(handoff as *const _ as u64, Ordering::Release);
+    let handoff_mut = unsafe { &mut *(object.driver_extension as *mut PciDriverHandoff) };
+    handoff_mut.pdo_context = core::ptr::null_mut();
+    handoff_mut.create_pdo = None;
+    handoff_mut.delete_pdo = None;
+    HANDOFF.store(handoff_mut as *mut _ as u64, Ordering::Release);
     DRIVER_OBJECT.store(driver as u64, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
     object.driver_unload = Some(driver_unload);
@@ -319,12 +445,10 @@ unsafe extern "win64" fn write_config(
         .iter().find(|w| w.segment == segment && bus >= w.bus_start && bus <= w.bus_end) else {
         return STATUS_INVALID_PARAMETER;
     };
-    let result = (|| {
-        let _ = window.register_address(segment, bus, device, function, offset)?;
-        let callback = window.write_config.ok_or(pci::PciError::InvalidWindow)?;
-        let status = unsafe { callback(window.config_context, segment, bus, device, function, offset, width, value) };
-        if status == STATUS_SUCCESS { Ok(()) } else { Err(pci::PciError::InvalidWindow) }
-    })();
+    let result = match width {
+        4 => unsafe { window.write_u32(segment, bus, device, function, offset, value) },
+        _ => Err(pci::PciError::InvalidOffset),
+    };
     match result {
         Ok(()) => STATUS_SUCCESS,
         Err(error) => pci::error_to_ntstatus(error),
