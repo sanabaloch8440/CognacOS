@@ -192,6 +192,9 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
             }
         }
     }
+    // WDM reinitialization callbacks are deferred until all eligible boot and
+    // system-start drivers have completed their first DriverEntry pass.
+    let _ = driver_loader::run_driver_reinitialization();
     Ok(report)
 }
 
