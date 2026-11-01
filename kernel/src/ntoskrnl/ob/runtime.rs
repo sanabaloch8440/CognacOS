@@ -176,6 +176,19 @@ pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u1
  {let _g=LOCK.lock();let s=state();if let Some(t)=s.types.iter().find(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Ok(t.id)}}
  register_type(name,gr,gw,gx,ga,valid)
 }
+/// Allocate an unnamed object body from Object Manager-owned storage.
+/// The body is reclaimed only after the object pointer and all handles/references drain.
+pub fn create_body_object(type_id:u16,body_size:usize,finalizer:Option<unsafe extern "win64" fn(*mut c_void)>)->Result<*mut c_void,i32>{
+ if body_size==0||body_size>512{return Err(STATUS_INVALID_PARAMETER)}
+ let _g=LOCK.lock();let s=state();
+ if type_idx(s,type_id).is_none(){return Err(STATUS_OBJECT_TYPE_MISMATCH)}
+ let i=s.objects.iter().position(|o|!o.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+ s.body_storage[i].0=[0;512];
+ let body=core::ptr::addr_of_mut!(s.body_storage[i].0).cast::<u8>().cast::<c_void>();
+ s.objects[i]=Object{used:true,body:body as usize,type_id,refs:1,finalizer,..Object::EMPTY};
+ Ok(body)
+}
+
 pub unsafe fn register_external_object(body:*mut c_void,type_name:&[u16],name:&[u16],permanent:bool,sd:*const u8,sd_len:usize)->Result<u16,i32>{
  let ty=ensure_type(type_name,1,2,4,7,u32::MAX)?;unsafe{register_object(body,ty,name,permanent,sd,sd_len)?;}Ok(ty)
 }
