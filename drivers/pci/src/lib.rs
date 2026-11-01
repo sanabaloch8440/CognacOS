@@ -94,6 +94,30 @@ mod tests {
         assert!(w.register_address(0, 0, 0, 0, 4096).is_err());
     }
     #[test]
+    fn ecam_reads_and_writes_use_mapped_mmio_with_width_validation() {
+        #[repr(align(4096))]
+        struct EcamPage([u8; 4096]);
+        let mut page = EcamPage([0; 4096]);
+        let window = EcamWindow {
+            virtual_base: page.0.as_mut_ptr() as u64,
+            physical_base: 0x8000_0000,
+            segment: 0,
+            bus_start: 0,
+            bus_end: 0,
+        };
+        unsafe {
+            window.write_u8(0, 0, 0, 0, 0x100, 0x5a).unwrap();
+            window.write_u16(0, 0, 0, 0, 0x102, 0x1234).unwrap();
+            window.write_u32(0, 0, 0, 0, 0x104, 0xdead_beef).unwrap();
+            assert_eq!(window.read_u8(0, 0, 0, 0, 0x100).unwrap(), 0x5a);
+            assert_eq!(window.read_u16(0, 0, 0, 0, 0x102).unwrap(), 0x1234);
+            assert_eq!(window.read_u32(0, 0, 0, 0, 0x104).unwrap(), 0xdead_beef);
+            assert!(window.write_u16(0, 0, 0, 0, 0x101, 1).is_err());
+            assert!(window.write_u32(0, 0, 0, 0, 0x102, 1).is_err());
+        }
+    }
+
+    #[test]
     fn resource_translation_checks_entire_range() {
         let w = AddressWindow { bus_start: 0x1000, physical_start: 0x8000_0000, length: 0x1000 };
         assert_eq!(w.translate(0x1100, 0x100), Ok(0x8000_0100));
