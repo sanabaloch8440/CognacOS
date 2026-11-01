@@ -532,6 +532,12 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   let mut bus=core::ptr::null_mut();
   let status=io::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
   if status!=nt_abi::ntstatus::STATUS_SUCCESS||bus.is_null(){return 0;}
+  let root_index=match ntoskrnl::pnp::register_root_device(){Ok(index)=>index,Err(_)=>{
+   let _=io::wdm::io_delete_device(bus);return 0
+  }};
+  if ntoskrnl::pnp::bind_pnp_device_object(root_index,bus).is_err(){
+   let _=io::wdm::io_delete_device(bus);return 0
+  }
   PCI_BUS_FDO=bus;
   let status=io::wdm::IoPnPEnumerateBus(bus);
   if status!=nt_abi::ntstatus::STATUS_SUCCESS {
@@ -540,7 +546,6 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   // Transfer the validated PDO identities from the WDM BusRelations table
   // into the kernel's registry-facing devnode database. No PCI config access
   // occurs here; the data originates from pci.sys-created PDO extensions.
-  let root_index=match ntoskrnl::pnp::register_root_device(){Ok(index)=>index,Err(_)=>return 0};
   let mut count=0usize;
   for child_index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES {
    let mut child=core::ptr::null_mut();
@@ -549,7 +554,10 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    if child.is_null(){continue;}
    let extension=(*child).device_extension.cast::<io::wdm::PciPdoExtension>();
    if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
-   if ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)).is_ok(){count+=1;}
+   if let Ok(index)=ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)){
+    if ntoskrnl::pnp::bind_pnp_device_object(index,child).is_ok(){count+=1;}
+    else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_FAILED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_STATE as i32);}
+   }
   }
   let _=ntoskrnl::pnp::match_registry_services(&system_hive);
   count
