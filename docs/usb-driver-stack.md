@@ -45,3 +45,17 @@ Public architecture references:
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/developing-windows-drivers-for-usb-host-controllers
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/ucx-objects-and-handles-used-by-host-controller-driver
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/configuring-usb-endpoints-in-a-host-controller-driver
+
+
+## Kernel binding milestone (2026-11-01)
+
+The native driver binaries now have a concrete kernel binding path:
+
+- ucx01020.sys is built as a PE32+ driver and loaded by the kernel's registry-selected service loader after xHCI starts. Its DriverEntry creates a controller object and a bus-enumerated root-hub PDO beneath the xHCI FDO.
+- usbhub3.sys is built and loaded after UCX. It attaches a hub FDO to the root-hub PDO, publishes the root PDO through the xHCI bus-relations path, and answers root-hub PnP identity queries.
+- The kernel I/O service table now exposes device creation/deletion, stack attachment, IRP forwarding, completion/cancel routines, MDL pin/unpin, PDO marking and bus-relations publication. The WDM wrappers route those operations into the live I/O manager and PnP manager.
+- UCX handles root-hub class control URBs against xHCI PORTSC registers and maintains pending interrupt URBs. The hub driver posts a persistent interrupt URB, requeues it from its completion routine, and cancels it during removal. The request owns a real IRP and pinned transfer buffer.
+- usbhub3 has a validated child-PDO factory. It creates a WDM PDO with bounded device identity strings, marks it bus-enumerated, and publishes/removes it through IoPnPProcessBusRelations.
+- UCX receives the xHCI PCI device's DeviceServiceTable and exposes device-scoped DMA allocate/validate/free entry points. These allocate in the xHCI requester's DMA domain rather than treating CPU virtual addresses as device addresses.
+
+This is not yet full physical USB enumeration. The child-PDO factory is ready to be called after descriptors are obtained, but the hub has not yet got a complete standard endpoint-zero control-transfer path for downstream devices. The UCX DMA lease API is not yet wired into a live per-endpoint URB submission queue. The xHCI transfer-engine library is still not installed as the hardware-backed endpoint ring set in the controller runtime, and transfer-event DPCs do not yet retire real endpoint requests. Enable Slot, Address Device, Configure Endpoint, endpoint-ring programming, and end-to-end transfer completion therefore remain outstanding. Do not interpret successful PE loading or root-hub status requests as proof that a physical USB keyboard/storage device enumerates.
