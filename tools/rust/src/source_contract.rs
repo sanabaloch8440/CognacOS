@@ -10,6 +10,24 @@ fn read(path: &str) -> Result<String, String> {
 fn require(source: &str, needle: &str, errors: &mut Vec<String>) {
     if !source.contains(needle) { errors.push(format!("missing source contract: {needle}")); }
 }
+fn read_wdm_sources() -> Result<String, String> {
+    let mut combined = read("kernel/src/ntoskrnl/io/wdm.rs")?;
+    let dir = root().join("kernel/src/ntoskrnl/io/wdm");
+    let mut paths = fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let source = fs::read_to_string(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        combined.push('\n');
+        combined.push_str(&source);
+    }
+    Ok(combined)
+}
 fn has_raw_bytes_autoref(source: &str, suffix: &str) -> bool {
     source.match_indices("(*").any(|(start, _)| {
         let tail = &source[start + 2..];
@@ -22,21 +40,8 @@ fn report(name: &str, errors: Vec<String>) -> Result<(), String> {
     else { Err(format!("{name} source-contract checks failed:\n - {}", errors.join("\n - "))) }
 }
 pub fn check_wdm() -> Result<(), String> {
-    // The facade is intentionally small. Validate the exact fragments it
-    // includes instead of assuming the retired monolithic wdm.rs/runtime.rs.
-    let facade = read("kernel/src/ntoskrnl/io/wdm.rs")?;
-    let mut wdm = facade.clone();
-    let mut included = 0usize;
-    for line in facade.lines() {
-        let line = line.trim();
-        if let Some(fragment) = line.strip_prefix("include!(\"wdm/").and_then(|v| v.strip_suffix("\");")) {
-            let path = format!("kernel/src/ntoskrnl/io/wdm/{fragment}");
-            wdm.push_str(&read(&path)?);
-            wdm.push('\n');
-            included += 1;
-        }
-    }
-    if included == 0 { return Err("WDM facade does not include any source fragments".into()); }
+    let wdm = read_wdm_sources()?;
+    let cancel = read("kernel/src/ntoskrnl/io/wdm/cancel.rs")?;
     let exports = read("kernel/src/ntoskrnl/mod.rs")?;
     let manifest = read("kernel/src/ntoskrnl/manifest_26100.json")?;
     let nt_io_abi = read("shared/nt-abi/src/io.rs")?;
@@ -74,12 +79,6 @@ pub fn check_wdm() -> Result<(), String> {
         "pub unsafe extern \"win64\" fn io_acquire_vpb_spin_lock",
         "pub unsafe extern \"win64\" fn io_release_vpb_spin_lock",
     ] { require(&wdm, required, &mut errors); }
-    for required in [
-        "include!(\"wdm/core.rs\");",
-        "include!(\"wdm/irp_management.rs\");",
-        "include!(\"wdm/filesystem.rs\");",
-        "include!(\"wdm/cancel.rs\");",
-    ] { require(&facade, required, &mut errors); }
     for required in ["IoVerifyVolume", "IoAcquireVpbSpinLock", "IoReleaseVpbSpinLock"] {
         require(&exports, required, &mut errors);
         if !manifest.contains(&format!("\"name\": \"{required}\"")) {
@@ -99,7 +98,7 @@ pub fn check_wdm() -> Result<(), String> {
         if !exports.contains(symbol) || !manifest.contains(&format!("\"name\": \"{symbol}\"")) {
             errors.push(format!("missing kernel export or manifest entry: {symbol}"));
         }
-        let alias_source = &wdm;
+        let alias_source = if matches!(symbol, "IoAcquireCancelSpinLock" | "IoReleaseCancelSpinLock") { &cancel } else { &wdm };
         if !alias_source.contains(&format!("export_name = \"{symbol}\"")) {
             errors.push(format!("missing PE export alias for {symbol}"));
         }
