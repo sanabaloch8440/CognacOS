@@ -169,9 +169,60 @@ pub struct IO_STACK_LOCATION {
     pub completion_routine: PIO_COMPLETION_ROUTINE,
     pub context: PVOID,
 }
+
+pub const FO_SYNCHRONOUS_IO: u32 = 0x0000_0002;
+pub const FO_SEQUENTIAL_ONLY: u32 = 0x0000_0004;
+pub const FO_NO_INTERMEDIATE_BUFFERING: u32 = 0x0000_0008;
+pub const FO_CACHE_SUPPORTED: u32 = 0x0000_0040;
+pub const FO_STREAM_FILE: u32 = 0x0000_0100;
+pub const FO_DIRECT_DEVICE_OPEN: u32 = 0x0000_0200;
+pub const FO_FILE_MODIFIED: u32 = 0x0000_0400;
+pub const FO_FILE_SIZE_CHANGED: u32 = 0x0000_0800;
+pub const FO_DELETE_ON_CLOSE: u32 = 0x0000_1000;
+pub const FO_CLEANUP_COMPLETE: u32 = 0x0000_8000;
+
+/// Windows x64 FILE_OBJECT layout. Event/list storage remains opaque to drivers.
+#[repr(C)]
+pub struct FILE_OBJECT {
+    pub type_: i16, pub size: i16,
+    pub device_object: *mut DEVICE_OBJECT, pub vpb: *mut VPB,
+    pub fs_context: PVOID, pub fs_context2: PVOID,
+    pub section_object_pointer: PVOID, pub private_cache_map: PVOID,
+    pub final_status: NTSTATUS, pub related_file_object: *mut FILE_OBJECT,
+    pub lock_operation: u8, pub delete_pending: u8, pub read_access: u8,
+    pub write_access: u8, pub delete_access: u8, pub shared_read: u8,
+    pub shared_write: u8, pub shared_delete: u8, pub flags: ULONG,
+    pub file_name: UNICODE_STRING, pub current_byte_offset: i64,
+    pub waiters: ULONG, pub busy: ULONG, pub last_lock: PVOID,
+    pub lock: [u8; 0x18], pub event: [u8; 0x18],
+    pub completion_context: PVOID, pub irp_list_lock: usize,
+    pub irp_list: [usize; 2], pub file_object_extension: PVOID,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_x64_file_object_layout_matches_wdk() {
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(core::mem::size_of::<FILE_OBJECT>(), 0xd8);
+            assert_eq!(core::mem::align_of::<FILE_OBJECT>(), 8);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, device_object), 0x08);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, vpb), 0x10);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, fs_context), 0x18);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, final_status), 0x38);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, related_file_object), 0x40);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, flags), 0x50);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, file_name), 0x58);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, current_byte_offset), 0x68);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, lock), 0x80);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, event), 0x98);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, completion_context), 0xb0);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, irp_list), 0xc0);
+            assert_eq!(core::mem::offset_of!(FILE_OBJECT, file_object_extension), 0xd0);
+        }
+    }
 
     #[test]
     fn windows_x64_vpb_layout_matches_wdk() {
