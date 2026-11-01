@@ -1217,7 +1217,7 @@ mod power_state_tests {
  fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,extended_capabilities_offset:0,context_size:32,page_size_mask:1}}
  #[test] fn port_change_event_uses_portsc_as_authoritative_status(){
   let mut mmio=PortMmio::new();
-  mmio.regs[0x440/4]=PORTSC_CCS|PORTSC_PED|PORTSC_PP|PORTSC_OCA|(3<<10)|(PORTSC_LINK_U3 as u32<<5)|(1<<17);
+  mmio.regs[0x440/4]=PORTSC_CCS|PORTSC_PED|PORTSC_PP|PORTSC_OCA|(3<<10)|((PORTSC_LINK_U3 as u32)<<5)|(1<<17);
   let event=Trb{parameter:1u64<<24,status:0,control:TRB_TYPE_PORT_STATUS_CHANGE<<TRB_TYPE_SHIFT};
   assert_eq!(port_id_from_event(&event),Some(1));
   let status=read_port_status(&mut mmio,&caps(),port_id_from_event(&event).unwrap()).unwrap();
