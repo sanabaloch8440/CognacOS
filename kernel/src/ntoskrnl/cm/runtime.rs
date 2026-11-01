@@ -274,22 +274,25 @@ pub unsafe fn mark_hives_boot_successful()->Result<usize,i32>{
         let hive=unsafe { core::slice::from_raw_parts_mut(mounted.bytes,mounted.len) };
         let journal=unsafe { core::slice::from_raw_parts_mut(mounted.journal,mounted.journal_len) };
         if hive_backend::Hive::open(hive).is_err() { continue; }
-        let (redo,tail)=journal.split_at_mut(redo_len);
-        let _=redo;
-        let (first,second)=tail.split_at_mut(slot_len);
-        let a=hive_writer_backend::LastKnownGoodSnapshot::committed_generation(first);
-        let b=hive_writer_backend::LastKnownGoodSnapshot::committed_generation(second);
-        let (target,generation)=match (a,b){
-            (None,None)=>(first,1),
-            (Some(ga),None)=>(second,ga.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
-            (None,Some(gb))=>(first,gb.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
-            (Some(ga),Some(gb)) if ga<=gb=>(first,gb.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
-            (Some(ga),Some(gb))=>(second,ga.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+        let a_offset=redo_len;
+        let b_offset=redo_len+slot_len;
+        let a=hive_writer_backend::LastKnownGoodSnapshot::committed_generation(
+            &journal[a_offset..a_offset+slot_len]);
+        let b=hive_writer_backend::LastKnownGoodSnapshot::committed_generation(
+            &journal[b_offset..b_offset+slot_len]);
+        let (target_offset,generation)=match (a,b){
+            (None,None)=>(a_offset,1),
+            (Some(ga),None)=>(b_offset,ga.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+            (None,Some(gb))=>(a_offset,gb.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+            (Some(ga),Some(gb)) if ga<=gb=>(a_offset,gb.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+            (Some(ga),Some(gb))=>(b_offset,ga.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
         };
-        hive_writer_backend::LastKnownGoodSnapshot::prepare(hive,target,generation)
+        hive_writer_backend::LastKnownGoodSnapshot::prepare(
+            hive,&mut journal[target_offset..target_offset+slot_len],generation)
             .map_err(|_|STATUS_INVALID_PARAMETER)?;
         flush(HIVE_SLOT_NAMES[slot_index],HIVE_FLUSH_LKG_PREPARE,hive,journal)?;
-        hive_writer_backend::LastKnownGoodSnapshot::commit(target)
+        hive_writer_backend::LastKnownGoodSnapshot::commit(
+            &mut journal[target_offset..target_offset+slot_len])
             .map_err(|_|STATUS_INVALID_PARAMETER)?;
         flush(HIVE_SLOT_NAMES[slot_index],HIVE_FLUSH_LKG_COMMIT,hive,journal)?;
         promoted+=1;
