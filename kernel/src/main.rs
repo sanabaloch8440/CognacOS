@@ -22,6 +22,7 @@ mod dma;
 mod hal;
 mod smp;
 mod platform_drivers;
+mod boot_orchestration;
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
 #[path = "ntoskrnl/io/runtime.rs"]
