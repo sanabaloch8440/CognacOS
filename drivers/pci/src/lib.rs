@@ -542,7 +542,10 @@ pub fn parse_interrupt_capabilities(config:&[u8])->Result<InterruptCapabilities,
     if config.len()<256{return Err(CapabilityError::Truncated)}
     let status=u16::from_le_bytes([config[0x06],config[0x07]]);
     if status&0x10==0{return Err(CapabilityError::ListNotPresent)}
-    let mut pointer=(config[0x34]&!0x3) as usize;
+    // The capability pointer is a byte offset; reserved low bits must be zero.
+    // Do not mask them before validation or malformed pointers can alias a valid
+    // node and be misreported as a cycle.
+    let mut pointer=config[0x34] as usize;
     let mut visited=[false;64];
     let mut result=InterruptCapabilities::default();
     let mut steps=0usize;
@@ -553,7 +556,11 @@ pub fn parse_interrupt_capabilities(config:&[u8])->Result<InterruptCapabilities,
         visited[slot]=true;steps+=1;
         if steps>48{return Err(CapabilityError::Cycle)}
         let id=config[pointer];
-        let next=(config[pointer+1]&!0x3) as usize;
+        let next_raw=config[pointer+1] as usize;
+        if next_raw!=0 && (next_raw<0x40 || next_raw>0xfc || next_raw&3!=0) {
+            return Err(CapabilityError::InvalidPointer);
+        }
+        let next=next_raw;
         match id {
             0x05=>{
                 if result.msi.is_some(){return Err(CapabilityError::Duplicate)}
