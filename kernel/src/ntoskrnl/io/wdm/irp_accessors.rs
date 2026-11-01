@@ -74,3 +74,16 @@ pub unsafe fn io_write_stack_i64(stack: *mut IoStackLocation, offset: usize, val
     unsafe { ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(offset).cast::<i64>(), value); }
     true
 }
+
+/// Set IRP.UserBuffer without exposing the opaque packet layout.
+pub unsafe fn io_set_irp_user_buffer(irp: *mut Irp, buffer: *mut c_void) -> bool {
+    if irp.is_null() { return false; }
+    unsafe {
+        ptr::write_unaligned(
+            ptr::addr_of_mut!((*irp).bytes).cast::<u8>()
+                .add(IRP_USER_BUFFER_OFFSET).cast::<*mut c_void>(),
+            buffer
+        );
+    }
+    true
+}
