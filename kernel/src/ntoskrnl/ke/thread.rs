@@ -228,10 +228,22 @@ pub extern "C" fn cognacos_current_user_xstate_ptr() -> *const u8 {
 /// Select the highest-ID-independent first runnable thread and switch stacks.
 /// If the ready queue is empty, a blocked/yielding thread switches back to its saved idle context.
 fn reschedule(block:bool)->Result<(),ThreadError>{
+    // Keep the current context's interrupt state disabled from the moment its
+    // scheduler ownership changes until the stack switch has completed. In
+    // particular, IRQ-save lock guards in publish_switched_out must not STI
+    // while the CPU still runs on the outgoing stack with the incoming ETHREAD
+    // already published in CpuLocal.
+    let prior_interrupts_enabled=crate::ntoskrnl::ke::arch::interrupts_enabled();
+    crate::ntoskrnl::ke::arch::set_interrupts_enabled(false);
+    let result=reschedule_with_interrupts_disabled(block);
+    crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior_interrupts_enabled);
+    result
+}
+
+fn reschedule_with_interrupts_disabled(block:bool)->Result<(),ThreadError>{
     // All scheduler entry points, not just the timer ISR, honor the
     // KeSetEvent(Wait=TRUE) handoff until KeWaitXxx has established its wait.
     if crate::ntoskrnl::ke::runtime::ke_preemption_deferred(){return Err(ThreadError::InvalidState)}
-    let prior_interrupts_enabled=crate::ntoskrnl::ke::arch::interrupts_enabled();
     let cpu=cpu_index()?;
     let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
     let mut observed_rsp:u64;
@@ -299,7 +311,6 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         } else {
             unsafe{crate::ntoskrnl::ke::arch::context_switch_xstate(old_rsp_ptr,next_rsp,next_xstate)};
         }
-        crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
     }else if current_id!=0&&!block {
         crate::scheduler::resume_task(cpu,current_scheduler_id).map_err(|_|ThreadError::InvalidState)?;
@@ -325,7 +336,6 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
         } else { core::ptr::null() };
         unsafe{crate::ntoskrnl::ke::arch::context_switch_publish_xstate(old_rsp_ptr,idle,publish_switched_out,current_scheduler_id as usize,idle_xstate)};
-        crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
     }else{
         Ok(())
@@ -553,6 +563,10 @@ fn exit_current()->! {
     // cancel, so late completion cannot touch the exiting thread's stack.
     let _ = crate::io::io_cancel_thread_irps(id);
     crate::ntoskrnl::ke::runtime::thread_exit_cleanup(id);
+    // The outgoing thread is about to be removed from scheduler ownership.
+    // Do not accept an interrupt until the replacement stack and CpuLocal
+    // current-thread identity are active on the same CPU.
+    crate::ntoskrnl::ke::arch::set_interrupts_enabled(false);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
     let (old_rsp_ptr,new_rsp,old_token,next_xstate)={
         let mut table=THREADS.lock();
