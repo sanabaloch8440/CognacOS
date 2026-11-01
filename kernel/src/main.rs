@@ -647,6 +647,10 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                     unsafe{serial_write(b"xHCI PCI path unresolved; refusing to guess the DMAR requester.\\r\\n");}
                     continue;
                 };
+                let Some(pnp_index)=ntoskrnl::pnp::find_pnp_pci_function(0,bus as u8,device,function) else {
+                    // Do not publish or bind a controller outside the kernel PnP tree.
+                    continue;
+                };
                 let extended_hal=hal::driver_extended_service_table();
                 if !extended_hal.compatible() { continue; }
                 let Some(map_io)=extended_hal.map_device_io_space else { continue; };
@@ -665,6 +669,14 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                 match ntoskrnl::pnp::publish_xhci(&requester_path,vendor,(id>>16) as u16,
                     irq as u8,(irq>>8) as u8,bar_base,bar_size,bar_virtual) {
                     Ok(object)=>{
+                        if ntoskrnl::pnp::transition_pnp_device(
+                            pnp_index,ntoskrnl::pnp::PNP_DEVICE_RESOURCES_ASSIGNED,0).is_err() {
+                            ntoskrnl::pnp::withdraw_xhci();
+                            if let Some(unmap_io)=extended_hal.unmap_device_io_space {
+                                let _=unsafe{unmap_io(bar_virtual,bar_size)};
+                            }
+                            continue;
+                        }
                         published=true;
                         let _ = platform_drivers::mark_ready(platform_drivers::Stage::PciXhciResources);
                         let _vtd_ready=initialize_vtd_from_acpi(&requester_path);
@@ -714,8 +726,36 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     if published {
         let _ = platform_drivers::mark_ready(platform_drivers::Stage::PciXhciResources);
         unsafe{serial_write(b"PCI xHCI resource discovery and uncached MMIO mapping complete.\r\n");}
-        if !bind_xhci_pe_driver() {
-            unsafe{serial_write(b"PCI xHCI discovered; PE driver did not bind; bus mastering remains disabled.\r\n");}
+        if bind_xhci_pe_driver() {
+            if let Some(resources)=ntoskrnl::pnp::xhci_resources() {
+                if let Some(index)=ntoskrnl::pnp::find_pnp_pci_function(
+                    resources.segment,resources.bus,resources.device,resources.function) {
+                    if ntoskrnl::pnp::transition_pnp_device(
+                        index,ntoskrnl::pnp::PNP_DEVICE_STARTED,0).is_err() {
+                        let _=xhci_set_bus_master(resources.device_object,false);
+                        let _=ntoskrnl::pnp::transition_pnp_device(
+                            index,ntoskrnl::pnp::PNP_DEVICE_FAILED,0xC0000001u32 as i32);
+                        if let Some(unmap_io)=hal::driver_extended_service_table().unmap_device_io_space {
+                            let _=unsafe{unmap_io(resources.bar_virtual,resources.bar_length)};
+                        }
+                        ntoskrnl::pnp::withdraw_xhci();
+                    }
+                }
+            }
+        } else {
+            if let Some(resources)=ntoskrnl::pnp::xhci_resources() {
+                let _=xhci_set_bus_master(resources.device_object,false);
+                if let Some(index)=ntoskrnl::pnp::find_pnp_pci_function(
+                    resources.segment,resources.bus,resources.device,resources.function) {
+                    let _=ntoskrnl::pnp::transition_pnp_device(
+                        index,ntoskrnl::pnp::PNP_DEVICE_FAILED,0xC0000001u32 as i32);
+                }
+                if let Some(unmap_io)=hal::driver_extended_service_table().unmap_device_io_space {
+                    let _=unsafe{unmap_io(resources.bar_virtual,resources.bar_length)};
+                }
+                ntoskrnl::pnp::withdraw_xhci();
+            }
+            unsafe{serial_write(b"PCI xHCI discovered; PE driver did not bind; bus mastering remains disabled.\\r\\n");}
         }
     } else if found!=0 {
         unsafe{serial_write(b"PCI xHCI detected but no safe PnP MMIO resource could be published.\r\n");}
