@@ -3134,6 +3134,10 @@ mod wdm_tests {
   let irp2=unsafe{io_allocate_irp(2,0)};
   assert!(!irp1.is_null()&&!irp2.is_null());
   let list_ptr=list.as_ptr().cast::<c_void>();
+  let mut wrong_class=list;
+  wrong_class[20]=CM_RESOURCE_PORT;
+  assert_eq!(unsafe{io_prepare_pnp_resources(dev1,irp1,IRP_MN_START_DEVICE,
+   list_ptr,wrong_class.as_ptr().cast::<c_void>())},STATUS_INVALID_PARAMETER);
   assert_eq!(unsafe{io_prepare_pnp_resources(dev1,irp1,IRP_MN_START_DEVICE,list_ptr,list_ptr)},STATUS_SUCCESS);
   assert_eq!(unsafe{io_prepare_pnp_resources(dev2,irp2,IRP_MN_START_DEVICE,list_ptr,list_ptr)},STATUS_DEVICE_BUSY);
   io_finish_pnp_resources(irp1,dev1,IRP_MN_START_DEVICE,STATUS_SUCCESS);
