@@ -580,7 +580,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
         serial_write_hex(status as u32 as u64);serial_write(b"\r\n");return false
     }
     let interface=unsafe{interface_storage.assume_init()};
-    if interface.header.size as usize<core::mem::size_of::<PCI_BUS_INTERFACE>()
+    if (interface.header.size as usize)<core::mem::size_of::<PCI_BUS_INTERFACE>()
         ||interface.header.version as u32!=PCI_BUS_INTERFACE_VERSION {
         serial_write(b"PCI xHCI: unsupported PCI bus interface version/size.\r\n");return false
     }
