@@ -32,6 +32,8 @@ mod smp;
 mod platform_drivers;
 #[path = "boot/boot_orchestration.rs"]
 mod boot_orchestration;
+#[path = "boot/registry_init.rs"]
+mod registry_init;
 static BOOT_COORDINATOR: boot_orchestration::BootCoordinator = boot_orchestration::BootCoordinator::new();
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
