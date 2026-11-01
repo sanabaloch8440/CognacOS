@@ -55,6 +55,7 @@ const IRP_MN_START_DEVICE: u8 = 0x00;
 const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
+const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
 
 /// Enumerate the PCI configuration inventory at the bus PnP discovery
 /// point, not during DriverEntry. This is read-only and still does not publish
@@ -117,7 +118,25 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
         // PDO creation, and BusRelations publication are connected to PnP.
         IRP_MN_QUERY_DEVICE_RELATIONS => {
             let _ = unsafe { CognacPciEnumerateInventory() };
+            // BusRelations requires PDO creation and resource arbitration;
+            // inventory discovery alone is not a valid BusRelations response.
             STATUS_NOT_SUPPORTED
+        },
+        IRP_MN_QUERY_INTERFACE => {
+            let parameters = unsafe { &(*stack).parameters };
+            let guid = unsafe { core::ptr::read_unaligned(parameters.as_ptr().cast::<*const cognacos_nt_abi::bus::GUID>()) };
+            let size = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(8).cast::<u16>()) };
+            let version = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(10).cast::<u16>()) };
+            let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut PCI_BUS_INTERFACE>()) };
+            if guid.is_null() || output.is_null() {
+                STATUS_INVALID_PARAMETER
+            } else if unsafe { *guid } != cognacos_nt_abi::bus::GUID_PCI_BUS_INTERFACE
+                || version as u32 != PCI_BUS_INTERFACE_VERSION
+                || (size as usize) < core::mem::size_of::<PCI_BUS_INTERFACE>() {
+                STATUS_NOT_SUPPORTED
+            } else {
+                unsafe { CognacPciGetBusInterface(output) }
+            }
         },
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
         _ => STATUS_INVALID_DEVICE_REQUEST,
