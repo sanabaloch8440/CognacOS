@@ -426,7 +426,7 @@ fn pin_handle(owner: u64, handle: usize) -> Result<*mut FILE_OBJECT, i32> {
     if handle == 0 { return Err(STATUS_INVALID_HANDLE); }
     let body = ob::reference_by_handle(handle as *mut c_void, 1, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false)?;
     let mut state = STATE.lock();
-    let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, body.cast::<FILE_OBJECT>()) && slot.used && !slot.closing) else {
+    let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == body.cast::<FILE_OBJECT>() && slot.used && !slot.closing) else {
         drop(state);
         let _ = ob::dereference_body(body);
         return Err(STATUS_INVALID_HANDLE);
@@ -558,7 +558,7 @@ pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
     let file_object = body.cast::<FILE_OBJECT>();
     {
         let mut state = STATE.lock();
-        let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object) && slot.used && !slot.closing) else {
+        let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == file_object && slot.used && !slot.closing) else {
             drop(state);
             let _ = ob::dereference_body(body);
             return Err(STATUS_INVALID_HANDLE);
@@ -571,12 +571,12 @@ pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
         slot.closing = true;
     }
     if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CLEANUP, 0, ptr::null_mut(), 0) {
-        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object)) { slot.closing = false; }
+        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| slot.file_object == file_object) { slot.closing = false; }
         let _ = ob::dereference_body(body);
         return Err(status);
     }
     if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CLOSE, 0, ptr::null_mut(), 0) {
-        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object)) { slot.closing = false; }
+        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| slot.file_object == file_object) { slot.closing = false; }
         let _ = ob::dereference_body(body);
         return Err(status);
     }
