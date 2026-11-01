@@ -2078,6 +2078,12 @@ fn release_mount_rundown(device:*mut DeviceObject) {
  if !retry_device.is_null(){unsafe{io_delete_device(retry_device);}}
 }
 
+fn wdm_device_is_live(device:*mut DeviceObject)->bool {
+ if device.is_null(){return false}
+ let state=WDM.lock();
+ state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device))
+}
+
 unsafe extern "win64" fn verify_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,context:*mut c_void)->i32 {
  if !irp.is_null(){unsafe{io_free_irp(irp);}}
  if !context.is_null(){release_mount_rundown(context.cast::<DeviceObject>());}
@@ -2282,6 +2288,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
   let status=unsafe{io_call_driver(target,irp)};
   if status!=STATUS_PENDING&&irp_completion_state(irp)==Some(0){unsafe{io_complete_irp_status(irp,status,0,0);}}
   unsafe{io_dereference_device_object(target);}
+  if !wdm_device_is_live(device){return STATUS_DELETE_PENDING}
   if status==STATUS_WRONG_VOLUME {
    let dismount=io_dismount_volume(device);
    if dismount==STATUS_SUCCESS{return unsafe{io_verify_volume(device,allow_raw_mount)}}
@@ -2335,34 +2342,35 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
     let mut state=WDM.lock();
     if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
    }
+   if !wdm_device_is_live(device){return STATUS_DELETE_PENDING}
    let mut vpb_irql=0u8;
    unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
    let is_mounted=unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0};
    unsafe{io_release_vpb_spin_lock(vpb_irql);}
    if status>=0&&is_mounted{return STATUS_SUCCESS}
    if status>=0&&!is_mounted {
-    release_mount_rundown(device);
     let mut vpb_irql=0u8;
     unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
     unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
     unsafe{io_release_vpb_spin_lock(vpb_irql);}
+    release_mount_rundown(device);
     return STATUS_INVALID_DEVICE_REQUEST
    }
    if status!=STATUS_UNRECOGNIZED_VOLUME&&status!=STATUS_INVALID_DEVICE_REQUEST {
-    release_mount_rundown(device);
     let mut vpb_irql=0u8;
     unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
     unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
     unsafe{io_release_vpb_spin_lock(vpb_irql);}
+    release_mount_rundown(device);
     return status
    }
   }
  }
- release_mount_rundown(device);
  let mut vpb_irql=0u8;
  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
  unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
  unsafe{io_release_vpb_spin_lock(vpb_irql);}
+ release_mount_rundown(device);
  STATUS_UNRECOGNIZED_VOLUME
 }
 
