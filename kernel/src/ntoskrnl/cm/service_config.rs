@@ -186,7 +186,7 @@ pub fn find_pci_device_service(
     let pci_root=match hive.find_path(&enum_path[..enum_len]){
         Ok(key)=>key,Err(HiveError::NotFound)=>return Ok(None),Err(error)=>return Err(error.into())
     };
-    let mut wanted=[0u16;13];
+    let mut wanted=[0u16;17];
     let prefix=ascii("VEN_",&mut wanted)?;
     let mut n=prefix;
     n=append_hex4(vendor_id,&mut wanted,n)?;
