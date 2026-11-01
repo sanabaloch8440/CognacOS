@@ -1049,6 +1049,27 @@ pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
 #[unsafe(export_name = "IoDeleteDevice")]
 pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
+ // Stop new filesystem mount discovery before dropping the control device.
+ unsafe{io_unregister_file_system(device);}
+ let mounted_vpb={
+  let mut state=WDM.lock();
+  match state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) {
+   Some(slot) if !slot.object.vpb.is_null() => {
+    let vpb=slot.object.vpb.cast::<Vpb>();
+    if unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0} {
+     unsafe{(*vpb).flags|=crate::nt_abi::io::VPB_REMOVE_PENDING;}
+     true
+    } else {false}
+   }
+   _=>false
+  }
+ };
+ if mounted_vpb {
+  // Do not free a physical device while its mounted filesystem still owns
+  // the volume association. A pending dismount is completed asynchronously;
+  // PnP removal can retry IoDeleteDevice after that completion.
+  if io_dismount_volume(device)!=STATUS_SUCCESS{return}
+ }
  let _ = crate::ntoskrnl::ob::runtime::unregister_object(device.cast());
  let mut state=WDM.lock();
  let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return};
@@ -1093,7 +1114,7 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  drop(state);
  crate::ntoskrnl::po::device_power::unregister(device);
  io_release_pnp_resources(device);
- unsafe{io_unregister_file_system(device);}
+
 }
 fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  let next=slot.next;
