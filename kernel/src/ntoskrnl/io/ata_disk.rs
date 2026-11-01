@@ -702,5 +702,21 @@ pub fn run_ext4_readme_test() -> bool {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot write skipped or failed.\r\n"); }
     }
     if crate::file_services::mount_ext4_volume(partition_device)<0{return false;}
+
+    // Verify that the mounted ext4 volume is reachable through the public
+    // FILE_OBJECT/IRP file-service path, not only through the block parser.
+    let handle=match crate::file_services::open_for_process(0,b"README.txt"){
+        Ok(handle)=>handle,
+        Err(_)=>return false,
+    };
+    let mut service_read=[0u8;128];
+    let read_result=crate::file_services::read_at_for_process(
+        0,handle,0,&mut service_read[..EXPECTED.len()]
+    );
+    let close_result=crate::file_services::close_for_process(0,handle);
+    if !matches!(read_result,Ok(n) if n==EXPECTED.len())
+        || &service_read[..EXPECTED.len()]!=EXPECTED
+        || close_result.is_err()
+    {return false;}
     true
 }
