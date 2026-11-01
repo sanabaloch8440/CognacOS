@@ -61,15 +61,23 @@ pub unsafe extern "win64" fn IoRegisterDriverReinitialization(
 /// Invoke the callbacks registered by successfully initialized boot drivers.
 /// Count is the number of completed reinitialization passes (one for this boot).
 pub fn run_driver_reinitialization() -> usize {
+ // Snapshot and clear one pass before invoking callbacks. A callback that
+ // registers itself again is intentionally deferred to a later explicit pass.
+ let mut pending = [ReinitializeRecord::EMPTY; MAX_REINITIALIZE_CALLBACKS];
+ let count = {
+  let mut callbacks = DRIVER_REINITIALIZE.lock();
+  let mut count = 0usize;
+  for slot in callbacks.iter_mut() {
+   if slot.used {
+    pending[count] = *slot;
+    count += 1;
+    *slot = ReinitializeRecord::EMPTY;
+   }
+  }
+  count
+ };
  let mut invoked = 0usize;
- loop {
-  let record = {
-   let mut callbacks = DRIVER_REINITIALIZE.lock();
-   let Some(index) = callbacks.iter().position(|r| r.used) else { break; };
-   let record = callbacks[index];
-   callbacks[index] = ReinitializeRecord::EMPTY;
-   record
-  };
+ for record in pending[..count].iter().copied() {
   if let Some(routine) = record.routine {
    unsafe { routine(record.driver, record.context, 1); }
    invoked += 1;
