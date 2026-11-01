@@ -19,8 +19,8 @@ pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine
 pub struct LoadedDriver { pub image_base:u64,pub image_size:u32,pub entry_point:u64,pub status:i32 }
 const MAX_LOADED_DRIVER_IMAGES:usize=256;
 #[derive(Clone,Copy)]
-struct DriverImageRecord { used:bool, driver:usize, base:u64, size:u32 }
-impl DriverImageRecord { const EMPTY:Self=Self{used:false,driver:0,base:0,size:0}; }
+struct DriverImageRecord { used:bool, driver:usize, base:u64, size:u32, references:u32, unloading:bool }
+impl DriverImageRecord { const EMPTY:Self=Self{used:false,driver:0,base:0,size:0,references:0,unloading:false}; }
 static LOADED_DRIVER_IMAGES:crate::hal::IrqSpinLock<[DriverImageRecord;MAX_LOADED_DRIVER_IMAGES]>=
  crate::hal::IrqSpinLock::new([DriverImageRecord::EMPTY;MAX_LOADED_DRIVER_IMAGES]);
 
@@ -90,11 +90,44 @@ fn remember_loaded_driver(driver:*mut DriverObject,base:u64,size:u32)->bool {
  let mut records=LOADED_DRIVER_IMAGES.lock();
  if records.iter().any(|r|r.used&&r.driver==driver as usize){return false;}
  let Some(slot)=records.iter_mut().find(|r|!r.used) else{return false;};
- *slot=DriverImageRecord{used:true,driver:driver as usize,base,size};true
+ *slot=DriverImageRecord{used:true,driver:driver as usize,base,size,references:1,unloading:false};true
 }
 fn forget_loaded_driver(driver:*mut DriverObject,base:u64) {
  let mut records=LOADED_DRIVER_IMAGES.lock();
  if let Some(slot)=records.iter_mut().find(|r|r.used&&r.driver==driver as usize&&r.base==base){*slot=DriverImageRecord::EMPTY;}
+}
+
+/// Acquire a loader-owned DRIVER_OBJECT reference. The initial loader reference
+/// remains held until unload; new references are refused once unload begins.
+pub fn reference_driver_object(driver: *mut DriverObject) -> bool {
+ if driver.is_null() { return false; }
+ let mut records = LOADED_DRIVER_IMAGES.lock();
+ let Some(record) = records.iter_mut().find(|r| r.used && r.driver == driver as usize) else { return false; };
+ if record.unloading { return false; }
+ let Some(next) = record.references.checked_add(1) else { return false; };
+ record.references = next;
+ true
+}
+
+/// Release a caller-owned driver reference without dropping the loader's
+/// baseline reference.
+pub fn dereference_driver_object(driver: *mut DriverObject) -> bool {
+ if driver.is_null() { return false; }
+ let mut records = LOADED_DRIVER_IMAGES.lock();
+ let Some(record) = records.iter_mut().find(|r| r.used && r.driver == driver as usize) else { return false; };
+ if record.references <= 1 { return false; }
+ record.references -= 1;
+ true
+}
+
+/// Atomically prevent new references and report whether only the loader's
+/// baseline reference remains. Safe to call again while device rundown drains.
+pub fn begin_driver_unload(driver: *mut DriverObject) -> bool {
+ if driver.is_null() { return false; }
+ let mut records = LOADED_DRIVER_IMAGES.lock();
+ let Some(record) = records.iter_mut().find(|r| r.used && r.driver == driver as usize) else { return true; };
+ record.unloading = true;
+ record.references == 1
 }
 
 /// Resolve a faulting instruction pointer against loader-owned driver images.
