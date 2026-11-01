@@ -1,7 +1,7 @@
+#![allow(dead_code)]
 //! Extended registry metadata for Windows-style driver service configuration.
 //! Optional values are validated when present; malformed registry data is never
 //! silently converted into a default load-order or dependency policy.
-#![allow(dead_code)]
 use super::driver_config::{self, Error, ServiceConfig};
 use super::hive::{Error as HiveError, Hive, Key};
 
