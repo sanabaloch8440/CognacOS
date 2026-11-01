@@ -2194,8 +2194,9 @@ pub unsafe extern "win64" fn io_register_file_system(device:*mut DeviceObject) {
   unsafe{io_dereference_device_object(device);}
   return
  }
- registry.devices[registry.count]=device;
- registry.count+=1;
+ let insert_index=registry.count;
+ registry.devices[insert_index]=device;
+ registry.count=insert_index+1;
 }
 
 /// Remove a filesystem from new mount discovery. In-flight IRPs and mounted
@@ -2207,8 +2208,9 @@ pub unsafe extern "win64" fn io_unregister_file_system(device:*mut DeviceObject)
   let mut registry=FILESYSTEMS.lock();
   let Some(index)=registry.devices[..registry.count].iter().position(|d|*d==device) else{return};
   for i in index..registry.count-1 {registry.devices[i]=registry.devices[i+1];}
-  registry.count-=1;
-  registry.devices[registry.count]=ptr::null_mut();
+  let new_count=registry.count-1;
+  registry.count=new_count;
+  registry.devices[new_count]=ptr::null_mut();
   true
  };
  if removed {unsafe{io_dereference_device_object(device);}}
