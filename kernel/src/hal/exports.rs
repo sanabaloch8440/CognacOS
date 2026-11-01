@@ -26,11 +26,11 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 11, name: "HalCalibratePerformanceCounter", state: StubState::NotImplemented },
     HalExport { ordinal: 12, name: "HalClearSoftwareInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 13, name: "HalConvertDeviceIdtToIrql", state: StubState::NotImplemented },
-    HalExport { ordinal: 14, name: "HalDisableInterrupt", state: StubState::NotImplemented },
+    HalExport { ordinal: 14, name: "HalDisableInterrupt", state: StubState::Implemented },
     HalExport { ordinal: 15, name: "HalDisplayString", state: StubState::Implemented },
     HalExport { ordinal: 16, name: "HalDmaAllocateCrashDumpRegistersEx", state: StubState::NotImplemented },
     HalExport { ordinal: 17, name: "HalDmaFreeCrashDumpRegistersEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::NotImplemented },
+    HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::Implemented },
     HalExport { ordinal: 19, name: "HalEnumerateEnvironmentVariablesEx", state: StubState::NotImplemented },
     HalExport { ordinal: 20, name: "HalEnumerateProcessors", state: StubState::NotImplemented },
     HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::Implemented },
@@ -348,6 +348,17 @@ pub unsafe extern "win64" fn hal_translate_bus_address(
 /// identity-mapped physical window and remains firmware-owned; callers must
 /// treat it as read-only. STATUS_NOT_FOUND is returned when discovery has not
 /// run or the requested instance is absent.
+/// Enable a previously connected device interrupt vector after its ISR is installed.
+pub unsafe extern "win64" fn hal_enable_interrupt(vector:u32,_irql:u8)->u8{
+    if vector>u8::MAX as u32{return 0;}
+    unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,true).is_ok() as u8}
+}
+/// Mask a connected device interrupt vector before interrupt teardown.
+pub unsafe extern "win64" fn hal_disable_interrupt(vector:u32,_irql:u8)->u8{
+    if vector>u8::MAX as u32{return 0;}
+    unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,false).is_ok() as u8}
+}
+
 pub unsafe extern "win64" fn hal_acpi_get_table_ex(
     signature: u32,
     instance: u32,
@@ -511,6 +522,10 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
 pub fn resolve(name: &[u8]) -> Option<u64> {
     if name.eq_ignore_ascii_case(b"HalQueryRealTimeClock") {
         Some(hal_query_real_time_clock as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalEnableInterrupt") {
+        Some(hal_enable_interrupt as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalDisableInterrupt") {
+        Some(hal_disable_interrupt as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalAcpiGetTableEx") {
         Some(hal_acpi_get_table_ex as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalDisplayString") {
