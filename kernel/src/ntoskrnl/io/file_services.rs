@@ -32,9 +32,6 @@ const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010u32 as i32;
 const IO_TYPE_FILE: i16 = 5;
 const FILE_DEVICE_DISK: u32 = 7;
 const FILE_USE_FILE_POINTER_POSITION: i64 = -2;
-const IRP_USER_BUFFER_OFFSET: usize = 0x70;
-const IRP_STATUS_OFFSET: usize = 0x30;
-const IRP_INFORMATION_OFFSET: usize = 0x38;
 
 #[derive(Clone, Copy)]
 struct FileRecord {
@@ -154,9 +151,9 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
                 status = STATUS_INVALID_PARAMETER;
             } else {
                 let params = unsafe { (*stack).parameters.as_ptr() };
-                let length = unsafe { ptr::read_unaligned(params.cast::<u32>()) as usize };
-                let requested_offset = unsafe { ptr::read_unaligned(params.add(8).cast::<i64>()) };
-                let output = unsafe { ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_USER_BUFFER_OFFSET).cast::<*mut u8>()) };
+                let length = unsafe { wdm::io_read_stack_u32(stack, 0) as usize };
+                let requested_offset = unsafe { wdm::io_read_stack_i64(stack, 8) };
+                let output = unsafe { wdm::io_get_irp_user_buffer(irp).cast::<u8>() };
                 let index = unsafe { (*file_object).fs_context as usize };
                 if index == 0 || index > MAX_FILES || (length != 0 && output.is_null()) {
                     status = STATUS_INVALID_PARAMETER;
@@ -350,13 +347,13 @@ fn dispatch_file_irp(file_object: *mut FILE_OBJECT, major: u8, offset: i64, buff
         (*stack).major_function = major;
         (*stack).file_object = file_object.cast::<c_void>();
         if major == IRP_MJ_READ {
-            ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<u32>(), length as u32);
-            ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<i64>(), offset);
-            ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_USER_BUFFER_OFFSET).cast::<*mut u8>(), buffer);
+            let _ = wdm::io_write_stack_u32(stack, 0, length as u32);
+            let _ = wdm::io_write_stack_i64(stack, 8, offset);
+            ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(0x70).cast::<*mut u8>(), buffer);
         }
     }
     let status = unsafe { wdm::io_call_driver(device, irp) };
-    let information = unsafe { ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>()) };
+    let information = unsafe { wdm::io_get_irp_information(irp) };
     unsafe { wdm::io_free_irp(irp); }
     if major == IRP_MJ_READ && status == STATUS_END_OF_FILE { return Ok(0); }
     if status < 0 { Err(status) } else { Ok(information) }
