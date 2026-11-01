@@ -170,12 +170,40 @@ pub mod bus {
         ) -> NTSTATUS,
     >;
 
+    /// Stable bus-neutral PCI function record returned by pci.sys inventory.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct PCI_DEVICE_INFORMATION {
+        pub segment: u16,
+        pub bus: u8,
+        pub device: u8,
+        pub function: u8,
+        pub header_type: u8,
+        pub revision_id: u8,
+        pub programming_interface: u8,
+        pub subclass: u8,
+        pub class_code: u8,
+        pub reserved: u16,
+        pub vendor_id: u16,
+        pub device_id: u16,
+        pub command: u16,
+    }
+
+    pub type PPCI_QUERY_COUNTS = Option<
+        unsafe extern "win64" fn(context: PVOID, functions: *mut u32, bridges: *mut u32, xhci: *mut u32) -> NTSTATUS,
+    >;
+    pub type PPCI_QUERY_FUNCTION = Option<
+        unsafe extern "win64" fn(context: PVOID, index: u32, output: *mut PCI_DEVICE_INFORMATION) -> NTSTATUS,
+    >;
+
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct PCI_BUS_INTERFACE {
         pub header: INTERFACE_HEADER,
         pub read_config: PPCI_READ_CONFIG,
         pub write_config: PPCI_WRITE_CONFIG,
+        pub query_counts: PPCI_QUERY_COUNTS,
+        pub query_function: PPCI_QUERY_FUNCTION,
     }
 
     #[cfg(test)]
@@ -188,7 +216,8 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<INTERFACE_HEADER>(), 0x20);
                 assert_eq!(core::mem::offset_of!(INTERFACE_HEADER, context), 0x08);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
-                assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x30);
+                assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x40);
+                assert_eq!(core::mem::size_of::<PCI_DEVICE_INFORMATION>(), 0x14);
             }
         }
     }
