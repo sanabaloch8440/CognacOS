@@ -2063,8 +2063,24 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
 
 /// A verification IRP is allocated by the I/O manager and freed by its
 /// completion routine, including when the filesystem completes asynchronously.
-unsafe extern "win64" fn verify_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,_context:*mut c_void)->i32 {
+fn release_mount_rundown(device:*mut DeviceObject) {
+ if device.is_null(){return}
+ let retry_device={
+  let mut state=WDM.lock();
+  match state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) {
+   Some(slot)=>{
+    slot.mount_in_progress=false;
+    if slot.deleting {ptr::addr_of_mut!(slot.object)} else {ptr::null_mut()}
+   }
+   None=>ptr::null_mut()
+  }
+ };
+ if !retry_device.is_null(){unsafe{io_delete_device(retry_device);}}
+}
+
+unsafe extern "win64" fn verify_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,context:*mut c_void)->i32 {
  if !irp.is_null(){unsafe{io_free_irp(irp);}}
+ if !context.is_null(){release_mount_rundown(context.cast::<DeviceObject>());}
  STATUS_MORE_PROCESSING_REQUIRED
 }
 
@@ -2240,7 +2256,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let snapshot=unsafe{(vpb,(*vpb).device_object,(*vpb).flags&crate::nt_abi::io::VPB_REMOVE_PENDING!=0,(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0)};
   unsafe{io_release_vpb_spin_lock(vpb_irql);}
-  if !snapshot.2&&!snapshot.3 {
+  if !snapshot.2 {
    if state.devices[index].mount_in_progress{return STATUS_PENDING;}
    state.devices[index].mount_in_progress=true;
   }
@@ -2248,20 +2264,20 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
  };
  if remove_pending{return STATUS_DELETE_PENDING}
  if mounted {
-  if volume.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
+  if volume.is_null(){release_mount_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
   let target=unsafe{io_reference_device_object(volume.cast::<DeviceObject>())};
-  if target.is_null(){return STATUS_DELETE_PENDING}
+  if target.is_null(){release_mount_rundown(device);return STATUS_DELETE_PENDING}
   let stack_size=unsafe{(*target).stack_size};
-  if stack_size<=0 {unsafe{io_dereference_device_object(target);}return STATUS_INVALID_DEVICE_REQUEST}
+  if stack_size<=0 {unsafe{io_dereference_device_object(target);}release_mount_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
   let irp=unsafe{io_allocate_irp(stack_size,0)};
-  if irp.is_null(){unsafe{io_dereference_device_object(target);}return STATUS_INSUFFICIENT_RESOURCES}
+  if irp.is_null(){unsafe{io_dereference_device_object(target);}release_mount_rundown(device);return STATUS_INSUFFICIENT_RESOURCES}
   let stack=unsafe{io_get_next_irp_stack_location(irp)};
-  if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(target);}return STATUS_INSUFFICIENT_RESOURCES}
+  if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(target);}release_mount_rundown(device);return STATUS_INSUFFICIENT_RESOURCES}
   unsafe{
    (*stack).major_function=IRP_MJ_FILE_SYSTEM_CONTROL;
    (*stack).minor_function=IRP_MN_VERIFY_VOLUME;
    ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(4).cast::<*mut Vpb>(),vpb);
-   io_set_completion_routine(irp,Some(verify_volume_completion),ptr::null_mut(),1,1,1);
+   io_set_completion_routine(irp,Some(verify_volume_completion),device.cast(),1,1,1);
   }
   let status=unsafe{io_call_driver(target,irp)};
   if status!=STATUS_PENDING&&irp_completion_state(irp)==Some(0){unsafe{io_complete_irp_status(irp,status,0,0);}}
@@ -2280,8 +2296,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
   (list,registry.count)
  };
  if candidates.1==0 {
-  let mut state=WDM.lock();
-  if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
+  release_mount_rundown(device);
   return STATUS_UNRECOGNIZED_VOLUME
  }
  let pass_count=if allow_raw_mount!=0 {2}else{1};
@@ -2326,9 +2341,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
    unsafe{io_release_vpb_spin_lock(vpb_irql);}
    if status>=0&&is_mounted{return STATUS_SUCCESS}
    if status>=0&&!is_mounted {
-    let mut state=WDM.lock();
-    if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
-    drop(state);
+    release_mount_rundown(device);
     let mut vpb_irql=0u8;
     unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
     unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
@@ -2336,9 +2349,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
     return STATUS_INVALID_DEVICE_REQUEST
    }
    if status!=STATUS_UNRECOGNIZED_VOLUME&&status!=STATUS_INVALID_DEVICE_REQUEST {
-    let mut state=WDM.lock();
-    if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
-    drop(state);
+    release_mount_rundown(device);
     let mut vpb_irql=0u8;
     unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
     unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
@@ -2347,9 +2358,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
    }
   }
  }
- let mut state=WDM.lock();
- if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
- drop(state);
+ release_mount_rundown(device);
  let mut vpb_irql=0u8;
  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
  unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
