@@ -8,8 +8,7 @@ use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::ntoskrnl::io::FileObject;
-use crate::ntoskrnl::io::IoStatusBlock;
+use crate::io::{FileObject, IoStatusBlock};
 
 const STATUS_SUCCESS: i32 = 0;
 const MAX_CACHE_MAPS: usize = 128;
