@@ -22,11 +22,15 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
  pub fn generation(&self)->u32{self.generation}
  pub fn outstanding(&self)->usize{self.tracker.len()}
  pub fn stop_submissions(&mut self){self.stopped=true;}
- pub fn restart(&mut self,generation:u32){self.generation=generation;self.stopped=false;}
- pub fn submit<H:TransferHardware>(&mut self,hw:&mut H,trb_dma:u64,buffer_dma:u64,length:u32,slot:u8,endpoint:u8)->Result<TransferToken,RuntimeError>{
+ pub fn restart(&mut self,generation:u32,q:&crate::SlotDmaQuiesced){
+  for slot in 1..=crate::MAX_SLOTS{let _=self.tracker.cancel_slot(slot,q);}
+  self.pending=[Pending::EMPTY;R];self.generation=generation;self.stopped=false;
+ }
+ pub fn submit<H:TransferHardware>(&mut self,hw:&mut H,trb_dma:u64,buffer_dma:u64,length:u32,slot:u8,endpoint:u8,max_device_address:u64)->Result<TransferToken,RuntimeError>{
   if self.stopped||R==0||N<4||!N.is_power_of_two()||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
   let p=self.pending.iter().position(|p|!p.used).ok_or(RuntimeError::QueueFull)?;
   let token=TransferToken{request_id:self.next_id,trb_dma,slot_id:slot,endpoint_id:endpoint,generation:self.generation};
+  crate::validate_dma_span(buffer_dma,length as u64,max_device_address).map_err(|_|RuntimeError::InvalidRequest)?;
   let req=TransferRequest{trb_dma,buffer_dma,length,endpoint_id:endpoint,slot_id:slot};
   self.tracker.reserve(req).map_err(RuntimeError::Transfer)?;
   let trb=Trb{parameter:buffer_dma,status:length,control:(TRB_TYPE_NORMAL<<TRB_TYPE_SHIFT)|TRB_IOC|((endpoint as u32)<<16)|((slot as u32)<<24)};
@@ -44,8 +48,10 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
   let i=self.pending.iter().position(|p|p.used&&p.token.trb_dma==event.parameter).ok_or(RuntimeError::StaleCompletion)?;
   let token=self.pending[i].token;
   if token.generation!=self.generation||token.slot_id!=event.slot_id()||token.endpoint_id!=event.endpoint_id(){return Err(RuntimeError::StaleCompletion)}
-  let result=self.tracker.complete(event).map_err(RuntimeError::Transfer)?;
-  self.pending[i]=Pending::EMPTY;Ok(RuntimeCompletion{token,result,generation:self.generation})
+  let completed=self.tracker.complete(event);
+  self.pending[i]=Pending::EMPTY;
+  let result=completed.map_err(RuntimeError::Transfer)?;
+  Ok(RuntimeCompletion{token,result,generation:self.generation})
  }
  /// Called only after Stop Endpoint/Disable Slot, DPC synchronization and the
  /// requester-scoped IOMMU unmap/invalidation have all succeeded.
