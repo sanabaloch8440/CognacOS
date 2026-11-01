@@ -490,6 +490,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "HalAllProcessorsStarted" => crate::hal::exports::hal_all_processors_started as usize,
   "HalDisplayString" => crate::hal::exports::hal_display_string as usize,
   "IoGetDmaAdapter" => crate::dma::io_get_dma_adapter as usize,
+  "IoConnectInterrupt" => crate::io::io_connect_interrupt as usize,
+  "IoDisconnectInterrupt" => crate::io::io_disconnect_interrupt as usize,
   "IoCreateDevice" => crate::io::io_create_device as usize,
   "IoDeleteDevice" => crate::io::io_delete_device as usize,
   "IoStartPacket" => crate::io::io_start_packet as usize,
