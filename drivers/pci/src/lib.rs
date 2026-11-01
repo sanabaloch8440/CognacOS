@@ -490,6 +490,98 @@ pub fn decode_bridge_range(segment:u16,current_bus:u8,device:u8,function:u8,
         subordinate_bus:subordinate,device,function})
 }
 
+/// Parsed standard PCI interrupt capabilities. Offsets are byte offsets in
+/// the 256-byte conventional configuration header; extended capabilities are
+/// deliberately handled separately.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct MsiCapability {
+    pub offset:u8, pub is_64_bit:bool, pub per_vector_masking:bool, pub max_vectors:u8,
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct MsixCapability {
+    pub offset:u8, pub table_size:u16, pub table_bir:u8, pub table_offset:u32,
+    pub pba_bir:u8, pub pba_offset:u32,
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct InterruptCapabilities {
+    pub msi:Option<MsiCapability>, pub msix:Option<MsixCapability>,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum CapabilityError { Truncated, ListNotPresent, InvalidPointer, Cycle, Malformed, Duplicate }
+
+/// Walk the conventional capability linked list with strict bounds/cycle
+/// checks and decode MSI/MSI-X layouts without changing device state.
+pub fn parse_interrupt_capabilities(config:&[u8])->Result<InterruptCapabilities,CapabilityError>{
+    if config.len()<256{return Err(CapabilityError::Truncated)}
+    let status=u16::from_le_bytes([config[0x06],config[0x07]]);
+    if status&0x10==0{return Err(CapabilityError::ListNotPresent)}
+    let mut pointer=(config[0x34]&!0x3) as usize;
+    let mut visited=[false;64];
+    let mut result=InterruptCapabilities::default();
+    let mut steps=0usize;
+    while pointer!=0 {
+        if !(0x40..=0xfc).contains(&pointer)||pointer&3!=0{return Err(CapabilityError::InvalidPointer)}
+        let slot=pointer/4;
+        if visited[slot]{return Err(CapabilityError::Cycle)}
+        visited[slot]=true;steps+=1;
+        if steps>48{return Err(CapabilityError::Cycle)}
+        let id=config[pointer];
+        let next=(config[pointer+1]&!0x3) as usize;
+        match id {
+            0x05=>{
+                if result.msi.is_some(){return Err(CapabilityError::Duplicate)}
+                let control=u16::from_le_bytes([config[pointer+2],config[pointer+3]]);
+                let is_64=control&(1<<7)!=0;
+                let masking=control&(1<<8)!=0;
+                let max=(1u8<<((control>>1)&7));
+                let required=if masking {if is_64{24}else{20}}else if is_64{14}else{10};
+                if pointer+required>256{return Err(CapabilityError::Malformed)}
+                result.msi=Some(MsiCapability{offset:pointer as u8,is_64_bit:is_64,
+                    per_vector_masking:masking,max_vectors:max});
+            }
+            0x11=>{
+                if result.msix.is_some(){return Err(CapabilityError::Duplicate)}
+                let control=u16::from_le_bytes([config[pointer+2],config[pointer+3]]);
+                let table=u32::from_le_bytes([config[pointer+4],config[pointer+5],config[pointer+6],config[pointer+7]]);
+                let pba=u32::from_le_bytes([config[pointer+8],config[pointer+9],config[pointer+10],config[pointer+11]]);
+                let table_bir=(table&7) as u8;let pba_bir=(pba&7) as u8;
+                if table_bir>=6||pba_bir>=6{return Err(CapabilityError::Malformed)}
+                result.msix=Some(MsixCapability{offset:pointer as u8,table_size:(control&0x7ff)+1,
+                    table_bir,table_offset:table&!7,pba_bir,pba_offset:pba&!7});
+            }
+            _=>{}
+        }
+        pointer=next;
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod interrupt_capability_tests {
+    use super::*;
+    #[test]
+    fn parses_msi_64bit_and_msix_capabilities() {
+        let mut c=[0u8;256];c[6..8].copy_from_slice(&0x10u16.to_le_bytes());c[0x34]=0x40;
+        c[0x40]=0x05;c[0x41]=0x50;c[0x42..0x44].copy_from_slice(&((1<<7)| (2<<1) | (1<<8) as u16).to_le_bytes());
+        c[0x50]=0x11;c[0x51]=0;c[0x52..0x54].copy_from_slice(&0x0003u16.to_le_bytes());
+        c[0x54..0x58].copy_from_slice(&0x0000_1000u32.to_le_bytes());
+        c[0x58..0x5c].copy_from_slice(&0x0000_2000u32.to_le_bytes());
+        let caps=parse_interrupt_capabilities(&c).unwrap();
+        assert_eq!(caps.msi.unwrap().max_vectors,4);
+        assert!(caps.msi.unwrap().is_64_bit&&caps.msi.unwrap().per_vector_masking);
+        let msix=caps.msix.unwrap();assert_eq!(msix.table_size,4);assert_eq!(msix.table_bir,0);
+        assert_eq!(msix.pba_offset,0x2000);
+    }
+    #[test]
+    fn rejects_cyclic_and_unaligned_capability_lists() {
+        let mut c=[0u8;256];c[6..8].copy_from_slice(&0x10u16.to_le_bytes());
+        c[0x34]=0x40;c[0x40]=0x01;c[0x41]=0x40;
+        assert_eq!(parse_interrupt_capabilities(&c),Err(CapabilityError::Cycle));
+        c[0x34]=0x41;
+        assert_eq!(parse_interrupt_capabilities(&c),Err(CapabilityError::InvalidPointer));
+    }
+}
+
 pub const MAX_PCI_BRIDGES:usize=256;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum PciBridgeScanError { Window(PciError), InvalidBridgeTopology, Capacity }
