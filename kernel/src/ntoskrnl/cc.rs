@@ -196,6 +196,16 @@ pub unsafe extern "win64" fn cc_flush_cache(
     let _ = section_object_pointers;
 }
 
+/// VOID CcSetReadAheadGranularity(PFILE_OBJECT, ULONG).
+#[unsafe(export_name = "CcSetReadAheadGranularity")]
+pub unsafe extern "win64" fn cc_set_read_ahead_granularity(file: *mut FileObject, granularity: u32) {
+    if file.is_null() || granularity == 0 || !granularity.is_power_of_two() { return; }
+    let _guard = Guard::acquire();
+    if let Some(index) = unsafe { find_map(file) } {
+        unsafe { (&mut *STATE.0.get())[index].read_ahead_granularity = granularity.min(1 << 20); }
+    }
+}
+
 /// BOOLEAN CcCanIWrite(PFILE_OBJECT, ULONG, BOOLEAN, BOOLEAN).
 #[unsafe(export_name = "CcCanIWrite")]
 pub unsafe extern "win64" fn cc_can_i_write(file: *mut FileObject, _bytes: u32, _wait: u8, _retrying: u8) -> u8 {
