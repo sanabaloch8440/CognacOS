@@ -52,6 +52,15 @@ struct PciPdoExtension {
     information: PCI_DEVICE_INFORMATION,
 }
 
+unsafe fn delete_pdo(pdo: *mut DEVICE_OBJECT) {
+    if pdo.is_null() { return; }
+    let extension = unsafe { (*pdo).device_extension.cast::<PciPdoExtension>() };
+    if !extension.is_null() && unsafe { (*extension).magic == PCI_PDO_EXTENSION_MAGIC } {
+        unsafe { (*extension).magic = 0; }
+    }
+    unsafe { IoDeleteDevice(pdo); }
+}
+
 
 const HANDOFF_MAGIC: u64 = PCI_DRIVER_HANDOFF_MAGIC;
 const HANDOFF_VERSION: u32 = PCI_DRIVER_HANDOFF_VERSION;
@@ -237,7 +246,7 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
             };
             if status != STATUS_SUCCESS {
                 for pdo in created[..created_count].iter().copied() {
-                    if !pdo.is_null() { unsafe { IoDeleteDevice(pdo); } }
+                    if !pdo.is_null() { unsafe { delete_pdo(pdo); } }
                 }
                 return Err(status);
             }
@@ -254,14 +263,15 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
                 )
             };
             if status != STATUS_SUCCESS || pdo.is_null() {
+                if !pdo.is_null() { unsafe { delete_pdo(pdo); } }
                 for created_pdo in created[..created_count].iter().copied() {
-                    if !created_pdo.is_null() { unsafe { IoDeleteDevice(created_pdo); } }
+                    if !created_pdo.is_null() { unsafe { delete_pdo(created_pdo); } }
                 }
                 return Err(if status == STATUS_SUCCESS { STATUS_DEVICE_CONFIGURATION_ERROR } else { status });
             }
             let extension = unsafe { (*pdo).device_extension.cast::<PciPdoExtension>() };
             if extension.is_null() {
-                unsafe { IoDeleteDevice(pdo); }
+                unsafe { delete_pdo(pdo); }
                 for created_pdo in created[..created_count].iter().copied() {
                     if !created_pdo.is_null() { unsafe { IoDeleteDevice(created_pdo); } }
                 }
@@ -315,6 +325,7 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
         }
 
     }
+    HANDOFF.store(0, Ordering::Release);
     DRIVER_OBJECT.store(0, Ordering::Release);
 }
 
