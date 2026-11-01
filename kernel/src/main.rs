@@ -858,7 +858,7 @@ static mut USBHUB3_CHILD_FACTORY:u64=0;
 static USBHUB3_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 fn bind_usbhub3_pe_driver()->bool{
  use core::sync::atomic::Ordering;
- if USBHUB3_PE_IMAGE.is_empty()||UCX_ROOT_HUB_DEVICE==0{return false}
+ if USBHUB3_PE_IMAGE.is_empty()||unsafe{UCX_ROOT_HUB_DEVICE}==0{return false}
  if USBHUB3_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return false}
  unsafe{
   let xhci=core::ptr::addr_of_mut!(XHCI_DRIVER_EXTENSION).cast::<XhciDriverExtensionHeader>();
