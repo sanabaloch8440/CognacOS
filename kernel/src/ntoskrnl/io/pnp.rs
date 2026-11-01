@@ -245,6 +245,7 @@ pub struct PnpDeviceSnapshot {
     pub programming_interface: u8,
     pub last_status: i32,
     pub start_attempts: u32,
+    pub is_root: bool,
 }
 
 struct PnpDeviceNode {
@@ -261,6 +262,7 @@ struct PnpDeviceNode {
     programming_interface: AtomicU32,
     last_status: core::sync::atomic::AtomicI32,
     start_attempts: AtomicU32,
+    is_root: AtomicBool,
     service_name: UnsafeCell<[u16;128]>,
     service_name_len: AtomicUsize,
 }
@@ -276,6 +278,7 @@ impl PnpDeviceNode {
             programming_interface: AtomicU32::new(0),
             last_status: core::sync::atomic::AtomicI32::new(0),
             start_attempts: AtomicU32::new(0),
+            is_root: AtomicBool::new(false),
             service_name: UnsafeCell::new([0;128]),
             service_name_len: AtomicUsize::new(0),
         }
@@ -338,6 +341,84 @@ fn valid_pnp_transition(from: u32, to: u32) -> bool {
         PNP_DEVICE_FAILED => to == PNP_DEVICE_REMOVED,
         _ => false,
     }
+}
+
+/// Create the synthetic root-bus devnode. It has no fabricated PCI BDF.
+pub fn register_root_device() -> Result<u32, PnpError> {
+    let _guard = lock_pnp_table();
+    if let Some((index, _)) = PNP_DEVICES.iter().enumerate().find(|(_, node)|
+        node.is_root.load(Ordering::Acquire)
+            && node.state.load(Ordering::Acquire) != PNP_DEVICE_EMPTY
+            && node.state.load(Ordering::Relaxed) != PNP_DEVICE_REMOVED) {
+        return Ok(index as u32);
+    }
+    let (index, node) = PNP_DEVICES.iter().enumerate()
+        .find(|(_, node)| matches!(node.state.load(Ordering::Acquire), PNP_DEVICE_EMPTY | PNP_DEVICE_REMOVED))
+        .ok_or(PnpError::TableFull)?;
+    node.parent.store(PNP_NO_PARENT, Ordering::Relaxed);
+    node.segment.store(0, Ordering::Relaxed); node.bus.store(0, Ordering::Relaxed);
+    node.device.store(0, Ordering::Relaxed); node.function.store(0, Ordering::Relaxed);
+    node.vendor_id.store(0, Ordering::Relaxed); node.device_id.store(0, Ordering::Relaxed);
+    node.class_code.store(0, Ordering::Relaxed); node.subclass.store(0, Ordering::Relaxed);
+    node.programming_interface.store(0, Ordering::Relaxed);
+    node.last_status.store(0, Ordering::Relaxed); node.start_attempts.store(0, Ordering::Relaxed);
+    node.service_name_len.store(0, Ordering::Relaxed);
+    node.is_root.store(true, Ordering::Relaxed);
+    node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
+    Ok(index as u32)
+}
+
+/// Return HardwareIDs and CompatibleIDs as UTF-16 MULTI_SZ values.
+/// Returned lengths include the double-NUL terminator. Pass None to query
+/// required length. IDs use Windows PCI matching syntax.
+pub fn query_pnp_device_ids(
+    index: u32,
+    hardware_ids: Option<&mut [u16]>,
+    compatible_ids: Option<&mut [u16]>,
+) -> Result<(usize, usize), PnpError> {
+    let snapshot = query_pnp_device(index).ok_or(PnpError::InvalidState)?;
+    fn ascii(out: &mut [u16], at: &mut usize, s: &[u8]) -> Result<(), PnpError> {
+        let end = at.checked_add(s.len()).ok_or(PnpError::InvalidState)?;
+        if end >= out.len() { return Err(PnpError::TableFull); }
+        for (dst, src) in out[*at..end].iter_mut().zip(s) { *dst = *src as u16; }
+        *at = end; Ok(())
+    }
+    fn hex(out: &mut [u16], at: &mut usize, value: u32, digits: usize) -> Result<(), PnpError> {
+        const H: &[u8;16] = b"0123456789ABCDEF";
+        let end = at.checked_add(digits).ok_or(PnpError::InvalidState)?;
+        if end >= out.len() { return Err(PnpError::TableFull); }
+        for i in 0..digits { out[*at+i] = H[((value >> ((digits-1-i)*4)) & 15) as usize] as u16; }
+        *at = end; Ok(())
+    }
+    fn finish(out: &mut [u16], at: usize) -> Result<usize, PnpError> {
+        if at + 1 >= out.len() { return Err(PnpError::TableFull); }
+        out[at] = 0; out[at+1] = 0; Ok(at+2)
+    }
+    let mut hw_len = 0usize;
+    let mut compat_len = 0usize;
+    if let Some(out) = hardware_ids {
+        out.fill(0);
+        if snapshot.is_root { ascii(out, &mut hw_len, b"ROOT\\COGNACOS")?; }
+        else {
+            ascii(out, &mut hw_len, b"PCI\\VEN_")?; hex(out, &mut hw_len, snapshot.vendor_id as u32, 4)?;
+            ascii(out, &mut hw_len, b"&DEV_")?; hex(out, &mut hw_len, snapshot.device_id as u32, 4)?;
+        }
+        hw_len = finish(out, hw_len)?;
+    } else { hw_len = if snapshot.is_root { 15 } else { 25 }; }
+    if let Some(out) = compatible_ids {
+        out.fill(0);
+        if snapshot.is_root { ascii(out, &mut compat_len, b"ROOT\\PNP0A08")?; }
+        else {
+            ascii(out, &mut compat_len, b"PCI\\CC_")?;
+            hex(out, &mut compat_len, ((snapshot.class_code as u32)<<16)
+                | ((snapshot.subclass as u32)<<8) | snapshot.programming_interface as u32, 6)?;
+            compat_len = finish(out, compat_len)?;
+            ascii(out, &mut compat_len, b"PCI\\CC_")?;
+            hex(out, &mut compat_len, ((snapshot.class_code as u32)<<8) | snapshot.subclass as u32, 4)?;
+        }
+        compat_len = finish(out, compat_len)?;
+    } else { compat_len = if snapshot.is_root { 14 } else { 31 }; }
+    Ok((hw_len, compat_len))
 }
 
 /// Add a PCI function to the kernel PnP device tree. Enumeration is read-only:
@@ -405,6 +486,8 @@ pub fn register_pci_information(
     node.programming_interface.store(function.programming_interface as u32, Ordering::Relaxed);
     node.last_status.store(0, Ordering::Relaxed);
     node.start_attempts.store(0, Ordering::Relaxed);
+    node.is_root.store(false, Ordering::Relaxed);
+    node.service_name_len.store(0, Ordering::Relaxed);
     node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
     Ok(index as u32)
 }
@@ -547,6 +630,7 @@ pub fn query_pnp_device(index: u32) -> Option<PnpDeviceSnapshot> {
         programming_interface: node.programming_interface.load(Ordering::Relaxed) as u8,
         last_status: node.last_status.load(Ordering::Relaxed),
         start_attempts: node.start_attempts.load(Ordering::Relaxed),
+        is_root: node.is_root.load(Ordering::Relaxed),
     })
 }
 
