@@ -830,11 +830,15 @@ struct UcxDriverExtensionHeader{
  event_sink:*mut core::sync::atomic::AtomicU64,
  event_context:*mut core::sync::atomic::AtomicU64,
  mmio_base:u64,operational_offset:u32,port_count:u32,
+ hub_event_sink:*mut core::sync::atomic::AtomicU64,
+ hub_event_context:*mut core::sync::atomic::AtomicU64,
  root_hub_device_out:*mut u64,
 }
 static mut UCX_DRIVER_EXTENSION:core::mem::MaybeUninit<UcxDriverExtensionHeader>=core::mem::MaybeUninit::uninit();
 static mut UCX_DRIVER_OBJECT:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
 static mut UCX_ROOT_HUB_DEVICE:u64=0;
+static UCX_HUB_EVENT_SINK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static UCX_HUB_EVENT_CONTEXT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static mut UCX_REGISTRY_IMAGE_BUFFER:[u8;UCX01020_PE_IMAGE.len()]=[0;UCX01020_PE_IMAGE.len()];
 static UCX_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
@@ -858,6 +862,8 @@ fn bind_ucx_pe_driver()->bool{
    event_sink:core::ptr::addr_of_mut!((*xhci).event_sink),
    event_context:core::ptr::addr_of_mut!((*xhci).event_context),
    mmio_base:(*xhci).mmio_base,operational_offset,port_count,
+   hub_event_sink:core::ptr::addr_of_mut!(UCX_HUB_EVENT_SINK),
+   hub_event_context:core::ptr::addr_of_mut!(UCX_HUB_EVENT_CONTEXT),
    root_hub_device_out:core::ptr::addr_of_mut!(UCX_ROOT_HUB_DEVICE),
   });
   let driver=core::ptr::addr_of_mut!(UCX_DRIVER_OBJECT).cast::<ntoskrnl::driver_loader::DriverObject>();
