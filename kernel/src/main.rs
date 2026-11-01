@@ -726,7 +726,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
         return false
     }
     // Resolve the PCI INTx pin through MADT overrides. The route is configured
-    // masked; usbxhci.sys registers the actual ISR through the HAL table later.
+    // masked; usbxhci.sys connects its ISR through IoConnectInterrupt and enables it through HAL exports.
     let irq=function.interrupt_line;
     let mut gsi=irq as u32;let mut active_low=true;let mut level_triggered=true;let mut override_seen=false;
     for ov in madt.irq_overrides.iter().take(madt.irq_override_count){
