@@ -111,6 +111,24 @@ pub mod bus {
     pub const ACPI_FIRMWARE_INTERFACE_VERSION: u32 = 1;
     pub const PCI_BUS_INTERFACE_VERSION: u32 = 1;
 
+    /// Stable interface identifiers used by IRP_MN_QUERY_INTERFACE.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct GUID {
+        pub data1: u32,
+        pub data2: u16,
+        pub data3: u16,
+        pub data4: [u8; 8],
+    }
+    pub const GUID_ACPI_FIRMWARE_INTERFACE: GUID = GUID {
+        data1: 0x7b7a_2a01, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+    pub const GUID_PCI_BUS_INTERFACE: GUID = GUID {
+        data1: 0x7b7a_2a02, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+
     /// Common prefix for all published bus interfaces.
     #[repr(C)]
     #[derive(Clone, Copy)]
