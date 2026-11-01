@@ -17,27 +17,12 @@ Windows Registry Editor Version 5.00
 "ErrorControl"=dword:00000001
 "Group"="Boot Bus Extender"
 "Tag"=dword:00000001
-"ImagePath"="\\SystemRoot\System32\drivers\usbxhci.sys"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\usbxhci.sys"
 
 [HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\Beep]
 "Type"=dword:00000001
 "Start"=dword:00000001
 "ErrorControl"=dword:00000001
 "Group"="Base"
-"ImagePath"="\\SystemRoot\System32\drivers\beep.sys"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\beep.sys"
 
-; Reserved service metadata for the in-kernel ACPI/PCI implementations.
-; These are built-in Rust components today, not separately loadable PE images.
-[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\ACPI]
-"Type"=dword:00000001
-"Start"=dword:00000000
-"ErrorControl"=dword:00000001
-"Group"="Boot Bus Extender"
-"ImagePath"="\\SystemRoot\System32\drivers\acpi.sys"
-
-[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\PCI]
-"Type"=dword:00000001
-"Start"=dword:00000000
-"ErrorControl"=dword:00000001
-"Group"="Boot Bus Extender"
-"ImagePath"="\\SystemRoot\System32\drivers\pci.sys"
