@@ -456,7 +456,7 @@ static PCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::ato
 static mut PCI_DRIVER_OBJECT_STORAGE:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
 static mut PCI_HANDOFF_STORAGE:core::mem::MaybeUninit<nt_abi::bus::PCI_DRIVER_HANDOFF>=core::mem::MaybeUninit::uninit();
 static mut PCI_REGISTRY_IMAGE_BUFFER:[u8;PCI_PE_IMAGE.len()]=[0;PCI_PE_IMAGE.len()];
-static mut PCI_BUS_FDO:*mut ntoskrnl::wdm::DeviceObject=core::ptr::null_mut();
+static mut PCI_BUS_FDO:*mut io::wdm::DeviceObject=core::ptr::null_mut();
 
 unsafe extern "win64" fn pci_create_pdo_callback(
  context:nt_abi::types::PVOID,
@@ -464,10 +464,10 @@ unsafe extern "win64" fn pci_create_pdo_callback(
  information:*const nt_abi::bus::PCI_DEVICE_INFORMATION,
  output:*mut *mut nt_abi::io::DEVICE_OBJECT,
 )->i32 {
- unsafe{ntoskrnl::wdm::IoPciCreatePdo(context,driver.cast(),information,output.cast())}
+ unsafe{io::wdm::IoPciCreatePdo(context,driver.cast(),information,output.cast())}
 }
 unsafe extern "win64" fn pci_delete_pdo_callback(context:nt_abi::types::PVOID,device:*mut nt_abi::io::DEVICE_OBJECT) {
- unsafe{ntoskrnl::wdm::IoPciDeletePdo(context,device.cast())}
+ unsafe{io::wdm::IoPciDeletePdo(context,device.cast())}
 }
 
 /// Load PCI.sys from its registry service entry, pass it firmware-derived ECAM
@@ -485,7 +485,7 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
  let mut handoff=PCI_DRIVER_HANDOFF{
   magic:PCI_DRIVER_HANDOFF_MAGIC,size:core::mem::size_of::<PCI_DRIVER_HANDOFF>() as u32,
   version:PCI_DRIVER_HANDOFF_VERSION,window_count:mcfg.count as u32,reserved:0,
-  pdo_context:ntoskrnl::wdm::IoPciPdoContext(),
+  pdo_context:io::wdm::IoPciPdoContext(),
   create_pdo:Some(pci_create_pdo_callback),delete_pdo:Some(pci_delete_pdo_callback),
   windows:[PCI_ECAM_WINDOW::default();PCI_DRIVER_HANDOFF_MAX_WINDOWS],
  };
@@ -530,12 +530,12 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    },ntoskrnl::resolve);
   if loaded.is_err(){return 0;}
   let mut bus=core::ptr::null_mut();
-  let status=ntoskrnl::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
+  let status=io::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
   if status!=nt_abi::ntstatus::STATUS_SUCCESS||bus.is_null(){return 0;}
   PCI_BUS_FDO=bus;
-  let status=ntoskrnl::wdm::IoPnPEnumerateBus(bus);
+  let status=io::wdm::IoPnPEnumerateBus(bus);
   if status!=nt_abi::ntstatus::STATUS_SUCCESS {
-   let _=ntoskrnl::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return 0;
+   let _=io::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return 0;
   }
   // Transfer the validated PDO identities from the WDM BusRelations table
   // into the kernel's registry-facing devnode database. No PCI config access
@@ -543,11 +543,11 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   let mut count=0usize;
   for child_index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES {
    let mut child=core::ptr::null_mut();
-   let query=ntoskrnl::wdm::IoPnPQueryBusChild(bus,child_index as u32,&mut child);
+   let query=io::wdm::IoPnPQueryBusChild(bus,child_index as u32,&mut child);
    if query!=nt_abi::ntstatus::STATUS_SUCCESS {break;}
    if child.is_null(){continue;}
-   let extension=(*child).device_extension.cast::<ntoskrnl::wdm::PciPdoExtension>();
-   if extension.is_null()||(*extension).magic!=ntoskrnl::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
+   let extension=(*child).device_extension.cast::<io::wdm::PciPdoExtension>();
+   if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
    if ntoskrnl::pnp::register_pci_information(&(*extension).information,None).is_ok(){count+=1;}
   }
   let _=ntoskrnl::pnp::match_registry_services(&system_hive);
@@ -570,6 +570,32 @@ fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
 fn probe_xhci_pci_function(_madt:&acpi::MadtInfo,_bsp_apic_id:u32)->bool {
     false
 }
+
+#[repr(C)]
+struct XhciDriverExtensionHeader {
+ magic:u64,size:u32,version:u32,mmio_base:u64,mmio_length:u64,device_object:u64,
+ interrupt_vector:u32,max_slots:u32,
+ hal:*const cognacos_hal_contract::HalServiceTable,
+ device:*const cognacos_hal_contract::DeviceServiceTable,
+ ready:core::sync::atomic::AtomicBool,
+ interrupt_requested:core::sync::atomic::AtomicBool,
+ event_count:core::sync::atomic::AtomicU64,
+ port_change_count:core::sync::atomic::AtomicU64,
+ command_completion_count:core::sync::atomic::AtomicU64,
+ transfer_completion_count:core::sync::atomic::AtomicU64,
+ runtime_lock:core::sync::atomic::AtomicBool,
+}
+#[repr(C)]
+struct XhciDriverExtensionBacking {
+ header:XhciDriverExtensionHeader,
+ // Four 24-byte DMA allocations followed by the event-ring indices and
+ // lifecycle booleans in the driver's private XhciRuntimeResources value.
+ runtime:[u8;104],
+}
+static mut XHCI_HAL_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::HalServiceTable>=core::mem::MaybeUninit::uninit();
+static mut XHCI_DEVICE_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::DeviceServiceTable>=core::mem::MaybeUninit::uninit();
+static mut XHCI_DRIVER_EXTENSION:core::mem::MaybeUninit<XhciDriverExtensionBacking>=core::mem::MaybeUninit::uninit();
+static mut XHCI_DRIVER_OBJECT:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
 
 static XHCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static mut XHCI_REGISTRY_IMAGE_BUFFER: [u8; USBXHCI_PE_IMAGE.len()] = [0; USBXHCI_PE_IMAGE.len()];
