@@ -968,8 +968,11 @@ jobs:
 
           # Run failure capture before assertions: an early kernel fault may
           # naturally prevent the VT-d/xHCI markers below from ever appearing.
-          if ! grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log; then
-            echo "Full ring-3 process-lifecycle smoke test did not complete; attaching GDB to the same live QEMU instance."
+          if ! grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log ||
+             ! grep -Fq 'VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.' build/serial.log ||
+             ! grep -Fq 'xHCI bind: DriverEntry succeeded' build/serial.log ||
+             ! grep -Fq 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log; then
+            echo "Ring-3 or PCI/VT-d/xHCI bring-up did not complete; attaching GDB to the same live QEMU instance."
             command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
             echo "=== GDB first-user-fault monitor ==="
             echo "Not run during normal boot; collecting a live snapshot after failure."
@@ -994,6 +997,11 @@ jobs:
             cognacos-forensics
             echo \\n===== LIVE CPU / SOURCE LOCATION =====\\n
             info registers
+            info variables XHCI_PCI_DEVICE
+            info variables PCI_BUS_FDO
+            info variables VT_D_REQUESTER_OWNER
+            info variables XHCI_INTERRUPT_VECTOR
+            info variables XHCI_DRIVER_BINDING_STARTED
             info threads
             thread apply all info registers rip rsp
             thread apply all info line *$rip
