@@ -51,8 +51,8 @@ pub struct ObjectType { pub name:UnicodeString,pub type_index:u16,pub reserved:u
 struct TypeEntry { used:bool,id:u16,name:[u16;32],len:u8,gr:u32,gw:u32,gx:u32,ga:u32,valid:u32 }
 impl TypeEntry { const EMPTY:Self=Self{used:false,id:0,name:[0;32],len:0,gr:0,gw:0,gx:0,ga:0,valid:u32::MAX}; }
 #[derive(Clone,Copy)]
-struct Object { used:bool, deleting:bool, finalizing:bool, inserted:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16, finalizer:Option<unsafe extern "win64" fn(*mut c_void)> }
-impl Object { const EMPTY:Self=Self{used:false,deleting:false,finalizing:false,inserted:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0,finalizer:None}; }
+struct Object { used:bool, deleting:bool, inserted:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16, finalizer:Option<unsafe extern "win64" fn(*mut c_void)> }
+impl Object { const EMPTY:Self=Self{used:false,deleting:false,inserted:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0,finalizer:None}; }
 #[derive(Clone,Copy)]
 struct HandleEntry { used:bool,generation:u16,object:usize,owner:usize,access:u32,attributes:u32 }
 impl HandleEntry { const EMPTY:Self=Self{used:false,generation:1,object:0,owner:0,access:0,attributes:0}; }
@@ -176,19 +176,28 @@ pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u1
  {let _g=LOCK.lock();let s=state();if let Some(t)=s.types.iter().find(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Ok(t.id)}}
  register_type(name,gr,gw,gx,ga,valid)
 }
-/// Allocate an unnamed object body from Object Manager-owned storage.
-/// The body is reclaimed only after the object pointer and all handles/references drain.
-pub fn create_body_object(type_id:u16,body_size:usize,finalizer:Option<unsafe extern "win64" fn(*mut c_void)>)->Result<*mut c_void,i32>{
- if body_size==0||body_size>512{return Err(STATUS_INVALID_PARAMETER)}
- let _g=LOCK.lock();let s=state();
- if type_idx(s,type_id).is_none(){return Err(STATUS_OBJECT_TYPE_MISMATCH)}
- let i=s.objects.iter().position(|o|!o.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
- s.body_storage[i].0=[0;512];
- let body=core::ptr::addr_of_mut!(s.body_storage[i].0).cast::<u8>().cast::<c_void>();
- s.objects[i]=Object{used:true,body:body as usize,type_id,refs:1,finalizer,..Object::EMPTY};
- Ok(body)
-}
 
+pub fn file_object_type_id() -> Result<u16, i32> {
+    ensure_type(&[b'F' as u16, b'i' as u16, b'l' as u16, b'e' as u16], 1, 2, 4, 7, 0x001f_01ff)
+}
+pub unsafe fn create_file_object_handle_with_finalizer(
+    body: *mut c_void, owner: usize, access: u32,
+    finalizer: unsafe extern "win64" fn(*mut c_void),
+) -> Result<*mut c_void, i32> {
+    let type_name = [b'F' as u16, b'i' as u16, b'l' as u16, b'e' as u16];
+    file_object_type_id()?;
+    unsafe { register_external_object_with_finalizer(body, &type_name, &[], false, core::ptr::null(), 0, finalizer)?; }
+    match open_by_pointer(body, access, owner, true, 0) {
+        Ok(handle) => Ok(handle),
+        Err(status) => { unregister_object(body); Err(status) }
+    }
+}
+pub fn reference_file_object_handle(handle: *mut c_void, owner: usize, access: u32) -> Result<*mut c_void, i32> {
+    reference_by_handle(handle, access, file_object_type_id()?, owner, false)
+}
+pub fn close_file_object_handle(handle: *mut c_void, owner: usize) -> Result<(), i32> { close_handle(handle, owner) }
+pub fn release_file_object_reference(body: *mut c_void) -> bool { dereference_body(body) }
+pub fn unregister_file_object(body: *mut c_void) -> bool { unregister_object(body) }
 pub unsafe fn register_external_object(body:*mut c_void,type_name:&[u16],name:&[u16],permanent:bool,sd:*const u8,sd_len:usize)->Result<u16,i32>{
  let ty=ensure_type(type_name,1,2,4,7,u32::MAX)?;unsafe{register_object(body,ty,name,permanent,sd,sd_len)?;}Ok(ty)
 }
@@ -200,25 +209,11 @@ pub fn object_rundown_complete(body:*mut c_void)->bool{
  if body.is_null(){return false}let _g=LOCK.lock();let s=state();raw_object_idx(s,body as usize).is_none()
 }
 fn reclaim_if_drained(s:&mut State,i:usize)->Option<(usize,Option<unsafe extern "win64" fn(*mut c_void)>)>{
- let o=s.objects.get(i)?;
- if !o.used||o.finalizing||o.refs!=0||o.handles!=0||(o.permanent&&!o.deleting){return None}
- let result=(o.body,o.finalizer);
- s.objects[i].deleting=true;
- s.objects[i].finalizing=true;
- Some(result)
+ let o=s.objects.get(i)?;if !o.used||o.refs!=0||o.handles!=0||(o.permanent&&!o.deleting){return None}
+ let result=(o.body,o.finalizer);s.objects[i]=Object::EMPTY;Some(result)
 }
 unsafe fn invoke_finalizer(v:Option<(usize,Option<unsafe extern "win64" fn(*mut c_void)>)>){
- if let Some((body,finalizer))=v{
-  if let Some(f)=finalizer{unsafe{f(body as *mut c_void)}}
-  // Keep the body slot reserved until the finalizer has finished using it.
-  let _g=LOCK.lock();
-  let s=state();
-  if let Some(i)=raw_object_idx(s,body){
-   if s.objects[i].finalizing&&s.objects[i].refs==0&&s.objects[i].handles==0{
-    s.objects[i]=Object::EMPTY;
-   }
-  }
- }
+ if let Some((body,Some(f)))=v{unsafe{f(body as *mut c_void)}}
 }
 fn raw_object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o.used&&o.body==body)}
 fn audit_locked(s:&mut State,object:usize,owner:usize,operation:u8,desired:u32,granted:u32,status:i32){

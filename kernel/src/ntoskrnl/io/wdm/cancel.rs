@@ -290,6 +290,55 @@ pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
 }
 
 
+static WDM_CANCEL_SELF_TEST_CALLBACKS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+const STATUS_CANCELLED_SELF_TEST: i32 = 0xC000_0120u32 as i32;
+
+unsafe extern "win64" fn wdm_cancel_self_test_cancel(_device: *mut DeviceObject, irp: *mut Irp) {
+    WDM_CANCEL_SELF_TEST_CALLBACKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    unsafe { io_complete_irp_status(irp, STATUS_CANCELLED_SELF_TEST, 0, 0); }
+}
+unsafe extern "win64" fn wdm_cancel_self_test_dispatch(_device: *mut DeviceObject, irp: *mut Irp) -> i32 {
+    unsafe {
+        let _ = io_set_cancel_routine(irp, Some(wdm_cancel_self_test_cancel));
+        io_mark_irp_pending(irp);
+    }
+    STATUS_PENDING
+}
+
+/// Exercise the real WDM cancel-spin-lock, cancel callback, and IRP completion
+/// path after the executive scheduler and SMP processors are online.
+pub fn io_cancel_self_test() -> bool {
+    WDM_CANCEL_SELF_TEST_CALLBACKS.store(0, core::sync::atomic::Ordering::Release);
+    let mut driver: DriverObject = unsafe { core::mem::zeroed() };
+    driver.major_function[IRP_MJ_READ as usize] = Some(wdm_cancel_self_test_dispatch);
+    let mut device: *mut DeviceObject = ptr::null_mut();
+    if unsafe { io_create_device(&mut driver, 0, ptr::null_mut(), 7, 0, 0, &mut device) } != STATUS_SUCCESS {
+        return false;
+    }
+    let irp = unsafe { io_allocate_irp(1, 0) };
+    if irp.is_null() {
+        unsafe { io_delete_device(device); }
+        return false;
+    }
+    let stack = unsafe { io_get_next_irp_stack_location(irp) };
+    if stack.is_null() {
+        unsafe { io_free_irp(irp); io_delete_device(device); }
+        return false;
+    }
+    unsafe { (*stack).major_function = IRP_MJ_READ; }
+    let dispatch_status = unsafe { io_call_driver(device, irp) };
+    if dispatch_status != STATUS_PENDING {
+        unsafe { io_free_irp(irp); io_delete_device(device); }
+        return false;
+    }
+    let cancelled = unsafe { io_cancel_irp(irp) };
+    let final_status = unsafe { io_get_irp_status(irp) };
+    let callbacks = WDM_CANCEL_SELF_TEST_CALLBACKS.load(core::sync::atomic::Ordering::Acquire);
+    unsafe { io_free_irp(irp); io_delete_device(device); }
+    cancelled != 0 && final_status == STATUS_CANCELLED_SELF_TEST && callbacks == 1
+}
+
 /// Resolve a counted device name to a registered device object. This is the
 /// bounded name lookup primitive used by future IoGetDeviceObjectPointer and
 /// mount-manager integration; it does not create a FILE_OBJECT.

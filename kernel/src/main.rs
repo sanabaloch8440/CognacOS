@@ -2083,6 +2083,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"SMP scheduler, cross-CPU wakeup, contended-lock, IRP/object teardown stress passed.\r\n");
+        if !wdm::io_cancel_self_test() {
+            serial_write(b"FATAL: SMP WDM IRP cancellation, cancel-spin-lock, callback, or completion self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"SMP WDM IRP cancellation, cancel-spin-lock, callback, and completion test passed.\r\n");
         if !processor_startup.vm_stress_passed {
             serial_write(b"FATAL: SMP kernel VM/TLB shootdown self-test failed.\r\n");
             #[cfg(debug_assertions)]
