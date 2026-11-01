@@ -71,3 +71,38 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
   count
  }
 }
+
+#[cfg(test)]
+mod tests{
+ use super::*;
+ struct Mock{published:[Trb;4],doorbells:u32}
+ impl TransferHardware for Mock{
+  fn publish_trb(&mut self,index:usize,_dma:u64,trb:Trb)->Result<(),()>{self.published[index]=trb;Ok(())}
+  fn ring_endpoint_doorbell(&mut self,_slot:u8,_ep:u8)->Result<(),()>{self.doorbells+=1;Ok(())}
+ }
+ fn event(token:TransferToken)->Trb{Trb{parameter:token.trb_dma,status:1u32<<24,control:(TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT)|((token.endpoint_id as u32)<<16)|((token.slot_id as u32)<<24)}}
+ #[test]fn submission_publishes_link_and_dpc_completes_once(){
+  let mut e=TransferEngine::<4,4>::new(0x1000,1);
+  let mut hw=Mock{published:[Trb::default();4],doorbells:0};
+  let a=e.submit(&mut hw,0x8000,8,1,3,0xffff).unwrap();
+  let b=e.submit(&mut hw,0x8010,8,1,3,0xffff).unwrap();
+  let c=e.submit(&mut hw,0x8020,8,1,3,0xffff).unwrap();
+  assert_eq!(hw.published[3].trb_type(),crate::TRB_TYPE_LINK as u8);
+  assert_eq!(hw.doorbells,3);
+  let done=e.complete_dpc(&event(c)).unwrap();assert_eq!(done.token,c);assert_eq!(done.result.bytes_transferred,8);
+  assert_eq!(e.complete_dpc(&event(c)),Err(RuntimeError::StaleCompletion));
+  assert_eq!(e.complete_dpc(&event(a)).unwrap().token,a);
+  assert_eq!(e.complete_dpc(&event(b)).unwrap().token,b);
+ }
+ #[test]fn ring_slot_is_not_reused_until_that_slot_completes(){
+  let mut e=TransferEngine::<4,4>::new(0x2000,1);
+  let mut hw=Mock{published:[Trb::default();4],doorbells:0};
+  let a=e.submit(&mut hw,0x8000,8,1,3,0xffff).unwrap();
+  let _b=e.submit(&mut hw,0x8010,8,1,3,0xffff).unwrap();
+  let _c=e.submit(&mut hw,0x8020,8,1,3,0xffff).unwrap();
+  e.complete_dpc(&event(_c)).unwrap();
+  assert_eq!(e.submit(&mut hw,0x8030,8,1,3,0xffff),Err(RuntimeError::QueueFull));
+  e.complete_dpc(&event(a)).unwrap();
+  assert!(e.submit(&mut hw,0x8030,8,1,3,0xffff).is_ok());
+ }
+}
