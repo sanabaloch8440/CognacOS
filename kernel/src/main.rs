@@ -885,7 +885,7 @@ fn bind_ucx_pe_driver()->bool{
    kernel_io:io_ptr,device_services:core::ptr::addr_of_mut!(XHCI_DEVICE_SERVICES).cast::<cognacos_hal_contract::DeviceServiceTable>(),dma_device_object:(*xhci).device_object,hal:hal_ptr,
    event_sink:core::ptr::addr_of_mut!((*xhci).event_sink),
    event_context:core::ptr::addr_of_mut!((*xhci).event_context),
-   mmio_base:(*xhci).mmio_base,operational_offset,port_count,
+   mmio_base:(*xhci).mmio_virtual.load(Ordering::Acquire),operational_offset,port_count,
    hub_event_sink:core::ptr::addr_of!(UCX_HUB_EVENT_SINK).cast_mut(),
    hub_event_context:core::ptr::addr_of!(UCX_HUB_EVENT_CONTEXT).cast_mut(),
    root_hub_device_out:core::ptr::addr_of_mut!(UCX_ROOT_HUB_DEVICE),
