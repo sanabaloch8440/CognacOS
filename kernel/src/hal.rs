@@ -177,6 +177,69 @@ pub unsafe fn pci_config_write(segment:u16,bus:u8,device:u8,function:u8,offset:u
     Ok(())
 }
 
+pub fn pci_msi_message(destination_apic_id:u32,vector:u8)->Result<(u32,u32),HalError>{
+    if destination_apic_id>255||vector<0x20{return Err(HalError::InvalidInterruptBase)}
+    Ok((0xfee0_0000|((destination_apic_id&0xff)<<12),vector as u32))
+}
+
+/// Program MSI only after a HAL handler is registered. One message is enabled.
+pub unsafe fn configure_pci_msi(segment:u16,bus:u8,device:u8,function:u8,capability_offset:u8,
+    destination_apic_id:u32,vector:u8)->Result<(),HalError>{
+    if !device_interrupt_handler_registered(vector){return Err(HalError::InvalidTransition)}
+    let (address,data)=pci_msi_message(destination_apic_id,vector)?;
+    let off=capability_offset as u16;
+    if off<0x40||off>0xf0||off&3!=0{return Err(HalError::InvalidMmioRange)}
+    if unsafe{pci_config_read(segment,bus,device,function,off,1)?} as u8!=0x05{return Err(HalError::InvalidMmioRange)}
+    let mut control=unsafe{pci_config_read(segment,bus,device,function,off+2,2)?} as u16;
+    let is64=control&(1<<7)!=0;let masking=control&(1<<8)!=0;
+    control&=!1;
+    unsafe{pci_config_write(segment,bus,device,function,off+2,2,control as u32)?;}
+    let data_offset=off+if is64{12}else{8};
+    if is64 {
+        unsafe{pci_config_write(segment,bus,device,function,off+4,4,address)?;
+            pci_config_write(segment,bus,device,function,off+8,4,0)?;}
+    } else { unsafe{pci_config_write(segment,bus,device,function,off+4,4,address)?;} }
+    unsafe{pci_config_write(segment,bus,device,function,data_offset,2,data)?;}
+    if masking {
+        let mask_offset=off+if is64{16}else{12};
+        unsafe{pci_config_write(segment,bus,device,function,mask_offset,4,0)?;}
+    }
+    control|=1;
+    unsafe{pci_config_write(segment,bus,device,function,off+2,2,control as u32)?;}
+    Ok(())
+}
+
+/// Program MSI-X table entry zero in a caller-mapped BAR. The caller supplies
+/// the BIR selected from the parsed capability and the mapped BAR span.
+pub unsafe fn configure_pci_msix(segment:u16,bus:u8,device:u8,function:u8,capability_offset:u8,
+    table_bir:u8,table_offset:u32,table_size:u16,table_virtual:u64,mapping_length:u64,
+    destination_apic_id:u32,vector:u8)->Result<(),HalError>{
+    if !device_interrupt_handler_registered(vector)||table_bir>=6||table_size==0
+        ||table_virtual==0||table_offset&7!=0{return Err(HalError::InvalidTransition)}
+    let (address,data)=pci_msi_message(destination_apic_id,vector)?;
+    let off=capability_offset as u16;
+    if off<0x40||off>0xf0||off&3!=0{return Err(HalError::InvalidMmioRange)}
+    if unsafe{pci_config_read(segment,bus,device,function,off,1)?} as u8!=0x11{return Err(HalError::InvalidMmioRange)}
+    let control=unsafe{pci_config_read(segment,bus,device,function,off+2,2)?} as u16;
+    if (control&0x7ff)+1!=table_size{return Err(HalError::InvalidMmioRange)}
+    let bytes=(table_size as u64).checked_mul(16).ok_or(HalError::InvalidMmioRange)?;
+    let end=(table_offset as u64).checked_add(bytes).ok_or(HalError::InvalidMmioRange)?;
+    if end>mapping_length{return Err(HalError::InvalidMmioRange)}
+    unsafe{pci_config_write(segment,bus,device,function,off+2,2,((control|1<<14)&!(1<<15)) as u32)?;}
+    let entry=table_virtual.checked_add(table_offset as u64).ok_or(HalError::InvalidMmioRange)? as *mut u32;
+    unsafe{
+        core::ptr::write_volatile(entry.add(3),1);
+        core::ptr::write_volatile(entry.add(0),address);
+        core::ptr::write_volatile(entry.add(1),0);
+        core::ptr::write_volatile(entry.add(2),data);
+        device_full_barrier();
+        core::ptr::write_volatile(entry.add(3),0);
+        device_full_barrier();
+        pci_config_write(segment,bus,device,function,off+2,2,((control|1<<15)&!(1<<14)) as u32)?;
+    }
+    Ok(())
+}
+
 /// Reserve a logical CPU slot for an ACPI-discovered APIC ID. Does not start it.
 /// Mark the bootstrap processor online in logical slot zero before AP discovery.
 pub fn initialize_bsp(apic_id: u32) -> Result<usize, HalError> {
