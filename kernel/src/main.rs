@@ -793,6 +793,7 @@ struct XhciDriverExtensionHeader {
  interrupt_vector:u32,max_slots:u32,
  hal:*const cognacos_hal_contract::HalServiceTable,
  device:*const cognacos_hal_contract::DeviceServiceTable,
+ kernel_io:*const cognacos_hal_contract::KernelIoServiceTable,
  ready:core::sync::atomic::AtomicBool,
  interrupt_requested:core::sync::atomic::AtomicBool,
  event_count:core::sync::atomic::AtomicU64,
@@ -810,6 +811,7 @@ struct XhciDriverExtensionBacking {
 }
 static mut XHCI_HAL_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::HalServiceTable>=core::mem::MaybeUninit::uninit();
 static mut XHCI_DEVICE_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::DeviceServiceTable>=core::mem::MaybeUninit::uninit();
+static mut XHCI_KERNEL_IO_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::KernelIoServiceTable>=core::mem::MaybeUninit::uninit();
 static mut XHCI_DRIVER_EXTENSION:core::mem::MaybeUninit<XhciDriverExtensionBacking>=core::mem::MaybeUninit::uninit();
 static mut XHCI_DRIVER_OBJECT:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
 
@@ -843,7 +845,8 @@ fn bind_xhci_pe_driver()->bool {
     }
     let hal_table=hal::driver_service_table();
     let device_table=hal::driver_device_service_table();
-    if !hal_table.compatible() || !device_table.compatible() || !device_table.has_dma() || !device_table.has_interrupts() || !device_table.has_bus_master() {
+    let kernel_io_table=hal::driver_kernel_io_service_table();
+    if !hal_table.compatible() || !device_table.compatible() || !device_table.has_dma() || !device_table.has_interrupts() || !device_table.has_bus_master() || !kernel_io_table.compatible() {
         serial_write(b"xHCI bind: required HAL/device services are incomplete.\r\n"); return false;
     }
     if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_MMIO_MAPPED,ntoskrnl::pnp::STATE_DMA_READY).is_err() {
@@ -854,12 +857,14 @@ fn bind_xhci_pe_driver()->bool {
         hal_ptr.write(hal_table);
         let device_ptr=core::ptr::addr_of_mut!(XHCI_DEVICE_SERVICES).cast::<cognacos_hal_contract::DeviceServiceTable>();
         device_ptr.write(device_table);
+        let kernel_io_ptr=core::ptr::addr_of_mut!(XHCI_KERNEL_IO_SERVICES).cast::<cognacos_hal_contract::KernelIoServiceTable>();
+        kernel_io_ptr.write(kernel_io_table);
         let extension=core::ptr::addr_of_mut!(XHCI_DRIVER_EXTENSION).cast::<XhciDriverExtensionHeader>();
         extension.write(XhciDriverExtensionHeader {
             magic:0x434f_474e_4143_5848, size:core::mem::size_of::<XhciDriverExtensionBacking>() as u32,
             version:1, mmio_base:resources.bar_virtual, mmio_length:resources.bar_length,
             device_object:resources.device_object, interrupt_vector:resources.interrupt_vector as u32,
-            max_slots:64, hal:hal_ptr, device:device_ptr,
+            max_slots:64, hal:hal_ptr, device:device_ptr, kernel_io:kernel_io_ptr,
             ready:core::sync::atomic::AtomicBool::new(false),
             interrupt_requested:core::sync::atomic::AtomicBool::new(false),
             event_count:core::sync::atomic::AtomicU64::new(0),
