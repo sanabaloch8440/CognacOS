@@ -1,6 +1,6 @@
 //! Fixed-capacity USB bulk-stream object lifetime and cancellation.
 #![no_std]
-use super::{EndpointHandle,EndpointQuiesced,StreamHandle,UcxStatus};
+use super::{EndpointHandle,EndpointQuiesced,StreamHandle};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum StreamState{Configured,Running,Aborting,Removed}
 #[derive(Clone,Copy)]
@@ -28,7 +28,7 @@ impl<const N:usize> StreamTable<N>{
  pub fn complete(&mut self,h:StreamHandle)->Result<(),StreamError>{let i=self.find(h)?;let r=&mut self.records[i];if r.outstanding==0{return Err(StreamError::InvalidState)}r.outstanding-=1;Ok(())}
  pub fn begin_abort(&mut self,h:StreamHandle)->Result<(),StreamError>{let i=self.find(h)?;if self.records[i].state!=StreamState::Running{return Err(StreamError::InvalidState)}self.records[i].state=StreamState::Aborting;Ok(())}
  pub fn finish_abort(&mut self,h:StreamHandle,_q:&EndpointQuiesced)->Result<(),StreamError>{let i=self.find(h)?;if self.records[i].state!=StreamState::Aborting||self.records[i].outstanding!=0{return Err(StreamError::Busy)}self.records[i].state=StreamState::Configured;Ok(())}
- pub fn remove(&mut self,h:StreamHandle,_q:&EndpointQuiesced)->Result<(),StreamError>{let i=self.find(h)?;let r=&mut self.records[i];if r.outstanding!=0||r.references!=1{return Err(StreamError::Busy)}r.state=StreamState::Removed;r.used=false;Ok(())}
+ pub fn remove(&mut self,h:StreamHandle,_q:&EndpointQuiesced)->Result<(),StreamError>{let i=self.find(h)?;let r=&mut self.records[i];if r.outstanding!=0||r.references!=1||r.state==StreamState::Running{return Err(StreamError::Busy)}r.state=StreamState::Removed;r.used=false;Ok(())}
  pub fn outstanding(&self,h:StreamHandle)->Result<u16,StreamError>{Ok(self.records[self.find(h)?].outstanding)}
 }
 impl<const N:usize> Default for StreamTable<N>{fn default()->Self{Self::new()}}
