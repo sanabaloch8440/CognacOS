@@ -29,7 +29,7 @@ const SYSTEM_DLL_PATHS: [(&uefi::CStr16, &uefi::CStr16, usize); 4] = [
 const BEEP_PRIMARY_PATH: &uefi::CStr16 = cstr16!("\\Windows\\System32\\drivers\\beep.sys");
 const BEEP_FALLBACK_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\beep.sys");
 const HIVE_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);7] = [
- (cstr16!("\\Windows\\System32\\config\\SYSTEM"),cstr16!("\\EFI\\CognacOS\\Hives\\SYSTEM"),128*1024*1024),
+ (cstr16!("\\EFI\\CognacOS\\Hives\\SYSTEM"),cstr16!("\\Windows\\System32\\config\\SYSTEM"),128*1024*1024),
  (cstr16!("\\Windows\\System32\\config\\SOFTWARE"),cstr16!("\\EFI\\CognacOS\\Hives\\SOFTWARE"),256*1024*1024),
  (cstr16!("\\Windows\\System32\\config\\SECURITY"),cstr16!("\\EFI\\CognacOS\\Hives\\SECURITY"),64*1024*1024),
  (cstr16!("\\Windows\\System32\\config\\SAM"),cstr16!("\\EFI\\CognacOS\\Hives\\SAM"),64*1024*1024),
