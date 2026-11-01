@@ -130,6 +130,7 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { (*irp).io_status.information = 0; }
     let status = match unsafe { (*stack).minor_function } {
         IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
         IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
@@ -168,7 +169,7 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
         _ => STATUS_INVALID_DEVICE_REQUEST,
     };
-    unsafe { (*irp).io_status.status.status = status; (*irp).io_status.information = 0; }
+    unsafe { (*irp).io_status.status.status = status; }
     status
 }
 /// Build a stable BusRelations result. Each PDO is created exactly once
