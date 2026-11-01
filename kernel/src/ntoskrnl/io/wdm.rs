@@ -2032,6 +2032,63 @@ unsafe extern "win64" fn verify_volume_completion(_device:*mut DeviceObject,irp:
  STATUS_MORE_PROCESSING_REQUIRED
 }
 
+/// Commit VPB teardown only after the filesystem accepts FSCTL_DISMOUNT_VOLUME.
+/// The VPB's volume-device reference is released under the I/O-manager lock.
+unsafe extern "win64" fn dismount_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,context:*mut c_void)->i32 {
+ if irp.is_null()||context.is_null(){return STATUS_MORE_PROCESSING_REQUIRED}
+ let vpb=context.cast::<Vpb>();
+ let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ if status>=0 {
+  let mut state=WDM.lock();
+  let volume=unsafe{(*vpb).device_object};
+  let volume_index=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,volume));
+  if let Some(vi)=volume_index {
+   unsafe{
+    (*vpb).device_object=ptr::null_mut();
+    (*vpb).flags&=!(crate::nt_abi::io::VPB_MOUNTED|crate::nt_abi::io::VPB_LOCKED);
+    (*vpb).volume_label_length=0;
+    (*vpb).volume_label=[0;32];
+   }
+   if state.devices[vi].object.reference_count>1 {state.devices[vi].object.reference_count-=1;}
+  }
+ }
+ unsafe{io_free_irp(irp);}
+ STATUS_MORE_PROCESSING_REQUIRED
+}
+
+/// Send the documented user-FS-request dismount control to the mounted volume.
+/// Open VPB references prevent teardown; pending requests retain the IRP and
+/// volume-device rundown until the filesystem completes the request.
+fn io_dismount_volume(real_device:*mut DeviceObject)->i32 {
+ let (vpb,volume,refs)={
+  let state=WDM.lock();
+  let Some(slot)=state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,real_device)) else{return STATUS_INVALID_PARAMETER};
+  if slot.object.vpb.is_null(){return STATUS_SUCCESS}
+  let vpb=slot.object.vpb.cast::<Vpb>();
+  unsafe{(vpb,(*vpb).device_object,(*vpb).reference_count)}
+ };
+ if volume.is_null(){return STATUS_SUCCESS}
+ if refs!=0{return STATUS_DEVICE_BUSY}
+ let target=unsafe{io_reference_device_object(volume)};
+ if target.is_null(){return STATUS_DELETE_PENDING}
+ let stack_size=unsafe{(*target).stack_size};
+ if stack_size<=0 {unsafe{io_dereference_device_object(target);}return STATUS_INVALID_DEVICE_REQUEST}
+ let irp=unsafe{io_allocate_irp(stack_size,0)};
+ if irp.is_null(){unsafe{io_dereference_device_object(target);}return STATUS_INSUFFICIENT_RESOURCES}
+ let stack=unsafe{io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(target);}return STATUS_INSUFFICIENT_RESOURCES}
+ unsafe{
+  (*stack).major_function=IRP_MJ_FILE_SYSTEM_CONTROL;
+  (*stack).minor_function=0; // IRP_MN_USER_FS_REQUEST
+  ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u32>(),FSCTL_DISMOUNT_VOLUME);
+  io_set_completion_routine(irp,Some(dismount_volume_completion),vpb.cast(),1,1,1);
+ }
+ let status=unsafe{io_call_driver(target,irp)};
+ if status!=STATUS_PENDING&&irp_completion_state(irp)==Some(0){unsafe{io_complete_irp_status(irp,status,0,0);}}
+ unsafe{io_dereference_device_object(target);}
+ status
+}
+
 fn irp_completion_state(irp:*mut Irp)->Option<u8>{
  let state=WDM.lock();
  state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).map(|s|s.completion_state)
