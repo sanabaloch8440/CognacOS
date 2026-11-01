@@ -5,7 +5,6 @@ use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_pci::EcamWindowExt;
 use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
-use core::ffi::c_void;
 use cognacos_nt_abi::object::UNICODE_STRING;
 
 unsafe extern "win64" {
@@ -15,8 +14,6 @@ unsafe extern "win64" {
         device_object: *mut *mut DEVICE_OBJECT,
     ) -> i32;
     fn IoDeleteDevice(device: *mut DEVICE_OBJECT);
-    fn MmMapIoSpace(physical_address: i64, number_of_bytes: u64, cache_type: i32) -> PVOID;
-    fn MmUnmapIoSpace(base_address: PVOID, number_of_bytes: u64);
 }
 
 // These are ordinary PE import thunks. The PE conversion step turns the
@@ -34,16 +31,6 @@ IoCreateDevice:
 IoDeleteDevice:
     jmp QWORD PTR [rip + __imp_ntoskrnl_IoDeleteDevice]
 .size IoDeleteDevice, .-IoDeleteDevice
-.global MmMapIoSpace
-.type MmMapIoSpace,@function
-MmMapIoSpace:
-    jmp QWORD PTR [rip + __imp_ntoskrnl_MmMapIoSpace]
-.size MmMapIoSpace, .-MmMapIoSpace
-.global MmUnmapIoSpace
-.type MmUnmapIoSpace,@function
-MmUnmapIoSpace:
-    jmp QWORD PTR [rip + __imp_ntoskrnl_MmUnmapIoSpace]
-.size MmUnmapIoSpace, .-MmUnmapIoSpace
 
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -59,10 +46,6 @@ __imp_ntoskrnl_IoDeleteDevice: .quad 0
 .type __imp_ntoskrnl_MmMapIoSpace,@object
 __imp_ntoskrnl_MmMapIoSpace: .quad 0
 .size __imp_ntoskrnl_MmMapIoSpace,8
-.global __imp_ntoskrnl_MmUnmapIoSpace
-.type __imp_ntoskrnl_MmUnmapIoSpace,@object
-__imp_ntoskrnl_MmUnmapIoSpace: .quad 0
-.size __imp_ntoskrnl_MmUnmapIoSpace,8
 "#);
 
 const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
@@ -335,12 +318,7 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
                 unsafe { (*STATE.pdos.get())[index] = core::ptr::null_mut(); }
             }
         }
-        for window in handoff.windows[..handoff.window_count as usize].iter() {
-            let span = (window.bus_end as u64 - window.bus_start as u64 + 1) << 20;
-            if window.virtual_base != 0 {
-                unsafe { MmUnmapIoSpace(window.virtual_base as PVOID, span); }
-            }
-        }
+
     }
     DRIVER_OBJECT.store(0, Ordering::Release);
 }
@@ -353,7 +331,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     if driver.is_null() { return STATUS_INVALID_PARAMETER; }
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
     if object.driver_extension.is_null() { return STATUS_INVALID_PARAMETER; }
-    let handoff = unsafe { &mut *(object.driver_extension as *mut PciDriverHandoff) };
+    let handoff = unsafe { &*(object.driver_extension as *const PciDriverHandoff) };
     if handoff.magic != HANDOFF_MAGIC || handoff.version != HANDOFF_VERSION
         || (handoff.size as usize) < core::mem::size_of::<PciDriverHandoff>()
         || handoff.window_count == 0 || handoff.window_count as usize > MAX_WINDOWS {
@@ -370,37 +348,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             }
         }
     }
-    let mut mapped_count = 0usize;
-    let mut mapped_bases = [0u64; MAX_WINDOWS];
-    let mut mapped_lengths = [0u64; MAX_WINDOWS];
-    for i in 0..handoff.window_count as usize {
-        let window = &mut handoff.windows[i];
-        let span = (window.bus_end as u64 - window.bus_start as u64 + 1) << 20;
-        let Ok(physical) = i64::try_from(window.physical_base) else {
-            for prior in 0..mapped_count {
-                unsafe { MmUnmapIoSpace(mapped_bases[prior] as PVOID, mapped_lengths[prior]); }
-            }
-            return STATUS_INVALID_PARAMETER;
-        };
-        let mapped = unsafe { MmMapIoSpace(physical, span, 0) };
-        if mapped.is_null() {
-            for prior in 0..mapped_count {
-                unsafe { MmUnmapIoSpace(mapped_bases[prior] as PVOID, mapped_lengths[prior]); }
-            }
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        mapped_bases[mapped_count] = mapped as u64;
-        mapped_lengths[mapped_count] = span;
-        mapped_count += 1;
-        window.virtual_base = mapped as u64;
-        window.config_context = core::ptr::null_mut();
-        window.read_config = None;
-        window.write_config = None;
-    }
-    handoff.pdo_context = core::ptr::null_mut();
-    handoff.create_pdo = None;
-    handoff.delete_pdo = None;
-    HANDOFF.store(handoff as *mut _ as u64, Ordering::Release);
+    HANDOFF.store(handoff as *const _ as u64, Ordering::Release);
     DRIVER_OBJECT.store(driver as u64, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
     object.driver_unload = Some(driver_unload);
