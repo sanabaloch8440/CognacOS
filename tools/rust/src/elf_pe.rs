@@ -290,7 +290,7 @@ mod tests{
   assert_eq!(u32at(&pe,raw+eat+4).unwrap(),0);
   assert_eq!(u32at(&pe,raw+eat+8).unwrap(),0x1000);
  }
- #[test] fn emits_standard_pe_import_directory_for_ntoskrnl_iat(){
+ #[test] fn emits_standard_pe_import_directory_for_ntoskrnl_and_hal_iat(){
   let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
   b[16..18].copy_from_slice(&2u16.to_le_bytes());b[18..20].copy_from_slice(&62u16.to_le_bytes());
   b[24..32].copy_from_slice(&(BASE+0x1000).to_le_bytes());b[32..40].copy_from_slice(&64u64.to_le_bytes());
@@ -303,12 +303,13 @@ mod tests{
   let slots=[
    ImportSlot{dll:"ntoskrnl.exe".into(),name:"IoCreateDevice".into(),rva:0x2000,section:2},
    ImportSlot{dll:"ntoskrnl.exe".into(),name:"IoDeleteDevice".into(),rva:0x2008,section:2},
+   ImportSlot{dll:"hal.dll".into(),name:"HalAcpiGetTableEx".into(),rva:0x2010,section:2},
   ];
   append_import_section(&mut pe,&slots).unwrap();
   let peoff=u32at(&pe,0x3c).unwrap() as usize;let opt=peoff+24;
   assert_eq!(u16at(&pe,peoff+6).unwrap(),2);
   let import_rva=u32at(&pe,opt+112+8).unwrap();let import_size=u32at(&pe,opt+112+12).unwrap();
-  assert_ne!(import_rva,0);assert_eq!(import_size,40);
+  assert_ne!(import_rva,0);assert_eq!(import_size,60);
   let sh=opt+240+40;assert_eq!(&pe[sh..sh+6],b".idata");
   let raw=u32at(&pe,sh+20).unwrap() as usize;
   let oft=u32at(&pe,raw).unwrap() as usize;
@@ -322,6 +323,16 @@ mod tests{
   let first_name_off=raw+(first_name_rva-rva_base);
   assert_eq!(u16at(&pe,first_name_off).unwrap(),0);
   assert_eq!(&pe[first_name_off+2..first_name_off+17],b"IoCreateDevice\0");
+  // HAL dependencies must remain standard PE imports too.
+  let hal_dll_rva=u32at(&pe,raw+12).unwrap() as usize;
+  let hal_dll_off=raw+(hal_dll_rva-rva_base);
+  assert_eq!(&pe[hal_dll_off..hal_dll_off+8],b"hal.dll\0");
+  let hal_ilt_rva=u32at(&pe,raw).unwrap() as usize;
+  let hal_ilt_off=raw+(hal_ilt_rva-rva_base);
+  let hal_name_rva=u64::from_le_bytes(pe[hal_ilt_off..hal_ilt_off+8].try_into().unwrap()) as usize;
+  let hal_name_off=raw+(hal_name_rva-rva_base);
+  assert_eq!(u16at(&pe,hal_name_off).unwrap(),0);
+  assert_eq!(&pe[hal_name_off+2..hal_name_off+17],b"HalAcpiGetTableEx");
  }
  #[test] fn converts_minimal_static_elf_to_amd64_pe32plus(){
   let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
