@@ -12,7 +12,6 @@ use crate::ntoskrnl::io::FileObject;
 use crate::ntoskrnl::io::IoStatusBlock;
 
 const STATUS_SUCCESS: i32 = 0;
-const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002_u32 as i32;
 const MAX_CACHE_MAPS: usize = 128;
 
 #[repr(C)]
@@ -112,7 +111,14 @@ pub unsafe extern "win64" fn cc_initialize_cache_map(
     }
     let Some(slot) = maps.iter_mut().find(|m| !m.used) else { return; };
     *slot = CacheMap { used: true, file, sizes, callbacks, lazy_write_context, read_ahead_granularity: 0x10000 };
-    unsafe { (*file).private_cache_map = (slot as *mut CacheMap).cast(); }
+    unsafe {
+        let map_ptr = (slot as *mut CacheMap).cast::<c_void>();
+        (*file).private_cache_map = map_ptr;
+        let section = (*file).section_object_pointer.cast::<u8>();
+        if !section.is_null() {
+            core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), map_ptr);
+        }
+    }
 }
 
 /// BOOLEAN CcUninitializeCacheMap(PFILE_OBJECT, PLARGE_INTEGER,
@@ -127,8 +133,15 @@ pub unsafe extern "win64" fn cc_uninitialize_cache_map(
     let _guard = Guard::acquire();
     let maps = unsafe { &mut *STATE.0.get() };
     let Some(slot) = maps.iter_mut().find(|m| m.used && m.file == file) else { return 1; };
+    let map_ptr = (slot as *mut CacheMap).cast::<c_void>();
     *slot = CacheMap::EMPTY;
-    unsafe { (*file).private_cache_map = core::ptr::null_mut(); }
+    unsafe {
+        (*file).private_cache_map = core::ptr::null_mut();
+        let section = (*file).section_object_pointer.cast::<u8>();
+        if !section.is_null() && core::ptr::read_unaligned(section.add(8).cast::<*mut c_void>()) == map_ptr {
+            core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), core::ptr::null_mut());
+        }
+    }
     1
 }
 
