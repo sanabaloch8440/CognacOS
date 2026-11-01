@@ -91,7 +91,7 @@ fn collect_import_slots(elf:&[u8],image_base:u64)->Result<Vec<ImportSlot>,String
  let mut sections=Vec::new();
  for i in 0..count{let o=usize::try_from(shoff+i*ents).map_err(|_|"section offset overflow")?;sections.push((u32at(elf,o)?,u32at(elf,o+4)?,u64at(elf,o+8)?,u64at(elf,o+16)?,u64at(elf,o+24)?,u64at(elf,o+32)?,u32at(elf,o+40)?,u32at(elf,o+44)?,u64at(elf,o+48)?,u64at(elf,o+56)?));}
  let phoff=u64at(elf,32)?;let phents=u16at(elf,54)? as u64;let phnum=u16at(elf,56)? as u64;
- let mut slots=Vec::new();
+ let mut slots:Vec<ImportSlot>=Vec::new();
  for sec in &sections{
   let (_name,kind,_flags,_addr,off,size,link,_info,_align,entsize)=*sec;
   if kind!=2{continue}
