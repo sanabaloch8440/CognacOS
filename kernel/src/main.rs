@@ -556,7 +556,7 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
    if let Ok(index)=ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)){
     if ntoskrnl::pnp::bind_pnp_device_object(index,child).is_ok(){count+=1;}
-    else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_FAILED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_STATE as i32);}
+    else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_FAILED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST as i32);}
    }
   }
   let _=ntoskrnl::pnp::match_registry_services(&system_hive);
