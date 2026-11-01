@@ -1,0 +1,108 @@
+Windows Registry Editor Version 5.00
+
+; CognacOS native SYSTEM hive seed.
+; The converter normalizes CurrentControlSet to ControlSet001 and emits a
+; native REGF hive consumed by the kernel's Configuration Manager.
+[HKEY_LOCAL_MACHINE\SYSTEM\Select]
+"Current"=dword:00000001
+"Default"=dword:00000001
+"Failed"=dword:00000000
+"LastKnownGood"=dword:00000001
+
+; These two services are the first native PE driver images supported by the
+; current boot-time image resolver. Bus discovery remains kernel-owned.
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\USBXHCI]
+"Type"=dword:00000001
+"Start"=dword:00000000
+"ErrorControl"=dword:00000001
+"Group"="Boot Bus Extender"
+"Tag"=dword:00000001
+"ImagePath"="\SystemRoot\System32\drivers\usbxhci.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\Beep]
+"Type"=dword:00000001
+"Start"=dword:00000001
+"ErrorControl"=dword:00000001
+"Group"="Base"
+"ImagePath"="\SystemRoot\System32\drivers\beep.sys"
+
+; Reserved service metadata for the in-kernel ACPI/PCI implementations.
+; These are built-in Rust components today, not separately loadable PE images.
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\ACPI]
+"Type"=dword:00000001
+"Start"=dword:00000000
+"ErrorControl"=dword:00000001
+"Group"="Boot Bus Extender"
+"ImagePath"="\SystemRoot\System32\drivers\acpi.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\PCI]
+"Type"=dword:00000001
+"Start"=dword:00000000
+"ErrorControl"=dword:00000001
+"Group"="Boot Bus Extender"
+"ImagePath"="\SystemRoot\System32\drivers\pci.sys"
+
+; The remaining services are configured for later PnP-driven startup. They
+; must not be loaded until their corresponding native PE image is packaged.
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\storahci]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="SCSI Miniport"
+"ImagePath"="\SystemRoot\System32\drivers\storahci.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\stornvme]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="SCSI Miniport"
+"ImagePath"="\SystemRoot\System32\drivers\stornvme.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\i8042prt]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Keyboard Port"
+"ImagePath"="\SystemRoot\System32\drivers\i8042prt.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\kbdclass]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Keyboard Class"
+"ImagePath"="\SystemRoot\System32\drivers\kbdclass.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\kbdhid]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Keyboard Port"
+"ImagePath"="\SystemRoot\System32\drivers\kbdhid.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\hidclass]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Base"
+"ImagePath"="\SystemRoot\System32\drivers\hidclass.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\usbhub3]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Boot Bus Extender"
+"ImagePath"="\SystemRoot\System32\drivers\usbhub3.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\disk]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="SCSI Class"
+"ImagePath"="\SystemRoot\System32\drivers\disk.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\partmgr]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="System Bus Extender"
+"ImagePath"="\SystemRoot\System32\drivers\partmgr.sys"
