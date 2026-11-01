@@ -497,7 +497,7 @@ pub fn lookup_mapping(id:RequesterId,iova:u64)->Option<(u64,u8)>{
 pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
  // A firmware RMRR remains part of the live requester contract. It must be
  // explicitly unmapped after bus mastering is revoked before the context can go.
- if DMA_MAPS.lock().iter().any(|m|m.used&&m.cookie==0
+ if DMA_MAPS.lock().iter().any(|m|m.used
     &&requester_for_device(m.device).is_some_and(|r|r.segment==id.segment&&r.bus==id.bus&&r.device==id.device&&r.function==id.function)) {
     return STATUS_DEVICE_BUSY;
  }
