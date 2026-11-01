@@ -1,6 +1,6 @@
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
-pub(crate) mod syscall;
 //! Entries describe export names/ordinals only; they are not all implemented APIs.
+pub(crate) mod syscall;
 pub const EXPORTS: &[(&str, u16)] = &[
     ("KeAcquireGuardedMutex", 1208),
     ("KeAcquireGuardedMutexUnsafe", 1209),

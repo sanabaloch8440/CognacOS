@@ -1,7 +1,7 @@
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
+//! Entries describe export names/ordinals only; they are not all implemented APIs.
 #[path = "io/dma.rs"]
 pub(crate) mod dma;
-//! Entries describe export names/ordinals only; they are not all implemented APIs.
 pub const EXPORTS: &[(&str, u16)] = &[
     ("CcAddDirtyPagesToExternalCache", 62),
     ("CcAsyncCopyRead", 63),
