@@ -966,11 +966,8 @@ jobs:
             sleep 0.25
           done
 
-          # Verify the IOMMU and xHCI handoff; PS/2 key injection runs in an isolated boot below.
-          grep -F 'VT-d: translation enabled; generic DMA backend registered for validated xHCI requester.' build/serial.log
-          grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
-          grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
-
+          # Run failure capture before assertions: an early kernel fault may
+          # naturally prevent the VT-d/xHCI markers below from ever appearing.
           if ! grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log; then
             echo "Full ring-3 process-lifecycle smoke test did not complete; attaching GDB to the same live QEMU instance."
             command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
@@ -1087,6 +1084,12 @@ jobs:
               --gdb build/gdb-state.txt || true
             exit 1
           fi
+
+          # Verify the IOMMU and xHCI handoff only after the failure-capture
+          # branch has had a chance to preserve the live guest's stack and GDB state.
+          grep -F 'VT-d: translation enabled; generic DMA backend registered for validated xHCI requester.' build/serial.log
+          grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
+          grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
 
           cleanup_qemu
           trap - EXIT
