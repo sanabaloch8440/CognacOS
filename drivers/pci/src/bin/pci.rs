@@ -3,7 +3,7 @@
 
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
-use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_CREATE_PDO, PCI_DELETE_PDO, PCI_DEVICE_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
+use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PPCI_CREATE_PDO, PPCI_DELETE_PDO, PCI_DEVICE_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
 
 const HANDOFF_MAGIC: u64 = 0x434f_474e_4143_5043; // COGNACPC
 const HANDOFF_VERSION: u32 = 2;
@@ -20,8 +20,8 @@ pub struct PciDriverHandoff {
     pub reserved: u32,
     /// Kernel callbacks for creating and deleting bus-enumerated PDOs.
     pub pdo_context: PVOID,
-    pub create_pdo: PCI_CREATE_PDO,
-    pub delete_pdo: PCI_DELETE_PDO,
+    pub create_pdo: PPCI_CREATE_PDO,
+    pub delete_pdo: PPCI_DELETE_PDO,
     /// MCFG-derived ECAM windows already mapped with uncached device attributes.
     pub windows: [pci::EcamWindow; MAX_WINDOWS],
 }
