@@ -536,11 +536,13 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    let _=io::wdm::io_delete_device(bus);return 0
   }};
   if ntoskrnl::pnp::bind_pnp_device_object(root_index,bus).is_err(){
+   let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);
    let _=io::wdm::io_delete_device(bus);return 0
   }
   PCI_BUS_FDO=bus;
   let status=io::wdm::IoPnPEnumerateBus(bus);
   if status!=nt_abi::ntstatus::STATUS_SUCCESS {
+   let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,status);
    let _=io::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return 0;
   }
   // Transfer the validated PDO identities from the WDM BusRelations table
@@ -556,7 +558,7 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
    if let Ok(index)=ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)){
     if ntoskrnl::pnp::bind_pnp_device_object(index,child).is_ok(){count+=1;}
-    else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_FAILED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST as i32);}
+    else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);}
    }
   }
   let _=ntoskrnl::pnp::match_registry_services(&system_hive);
