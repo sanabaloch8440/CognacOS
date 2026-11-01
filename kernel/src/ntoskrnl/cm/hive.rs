@@ -110,6 +110,61 @@ impl<'h,'a> Key<'h,'a>{
   }Ok(current)
  }
  pub fn subkey_count(&self)->Result<u32,Error>{u32at(self.cell,0x14)}
+ /// Return a child key by its stable hive index. This supports bounded
+ /// registry enumeration for PnP's Enum tree without exposing cell offsets.
+ pub fn subkey_at(&self,index:u32)->Result<Key<'h,'a>,Error>{
+  let count=self.subkey_count()?;
+  if index>=count{return Err(Error::NotFound)}
+  let list=u32at(self.cell,0x1c)?;
+  self.key_at_index(list,count,index,0)
+ }
+ fn index_count(&self,list:u32,depth:u8)->Result<u32,Error>{
+  if depth>8{return Err(Error::InvalidKey)}
+  let c=self.hive.cell(list)?;
+  match c.get(0..2).ok_or(Error::InvalidKey)?{
+   b"li" | b"lf" | b"lh"=>{
+    let count=u16at(c,2)? as u32;
+    let stride=if c.get(0..2)==Some(&b"li"[..]){4}else{8};
+    if c.len()<4+count as usize*stride{return Err(Error::InvalidKey)}
+    Ok(count)
+   },
+   b"ri"=>{
+    let count=u16at(c,2)? as usize;
+    if c.len()<4+count*4{return Err(Error::InvalidKey)}
+    let mut total=0u32;
+    for i in 0..count{
+     total=total.checked_add(self.index_count(u32at(c,4+i*4)?,depth+1)?).ok_or(Error::InvalidKey)?;
+    }
+    Ok(total)
+   },
+   _=>Err(Error::UnsupportedIndex),
+  }
+ }
+ fn key_at_index(&self,list:u32,count:u32,index:u32,depth:u8)->Result<Key<'h,'a>,Error>{
+  if depth>8||index>=count{return Err(Error::InvalidKey)}
+  let c=self.hive.cell(list)?;
+  match c.get(0..2).ok_or(Error::InvalidKey)?{
+   b"li" | b"lf" | b"lh"=>{
+    let entries=u16at(c,2)? as u32;
+    let stride=if c.get(0..2)==Some(&b"li"[..]){4}else{8};
+    if entries!=count||c.len()<4+entries as usize*stride{return Err(Error::InvalidKey)}
+    self.hive.key(u32at(c,4+index as usize*stride)?)
+   },
+   b"ri"=>{
+    let entries=u16at(c,2)? as usize;
+    if c.len()<4+entries*4{return Err(Error::InvalidKey)}
+    let mut remaining=index;
+    for i in 0..entries{
+     let child=u32at(c,4+i*4)?;
+     let child_count=self.index_count(child,depth+1)?;
+     if remaining<child_count{return self.key_at_index(child,child_count,remaining,depth+1)}
+     remaining-=child_count;
+    }
+    Err(Error::InvalidKey)
+   },
+   _=>Err(Error::UnsupportedIndex),
+  }
+ }
  pub fn find_subkey(&self,name:&[u16])->Result<Key<'h, 'a>,Error>{
   let count=u32at(self.cell,0x14)?;let list=u32at(self.cell,0x1c)?;
   if count>1_000_000{return Err(Error::InvalidKey)}if count==0{return Err(Error::NotFound)}
