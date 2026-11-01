@@ -54,6 +54,7 @@ pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
 /// Use the canonical Windows IO_STATUS_BLOCK union layout shared with NTDLL and drivers.
 pub type IoStatusBlock = crate::nt_abi::io::IO_STATUS_BLOCK;
 pub type Vpb = crate::nt_abi::io::VPB;
+pub type FileObject = crate::nt_abi::io::FILE_OBJECT;
 const IRP_MJ_FILE_SYSTEM_CONTROL: u8 = 0x0d;
 const IRP_MN_MOUNT_VOLUME: u8 = 0x01;
 const IRP_MN_VERIFY_VOLUME: u8 = 0x02;
@@ -1954,6 +1955,19 @@ pub unsafe extern "win64" fn io_get_lower_device_object(device:*mut DeviceObject
     let state=WDM.lock();
     let Some(slot)=state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
     slot.attached_to
+}
+
+/// Return the top device object associated with a file object.
+///
+/// This is the WDM IoGetRelatedDeviceObject contract: file systems and filter
+/// drivers must send subsequent requests to the current top of the device stack,
+/// not retain a stale lower-device pointer from the original create operation.
+#[unsafe(export_name = "IoGetRelatedDeviceObject")]
+pub unsafe extern "win64" fn io_get_related_device_object(file_object: *mut FileObject) -> *mut DeviceObject {
+    if file_object.is_null() { return ptr::null_mut(); }
+    let device = unsafe { (*file_object).device_object };
+    if device.is_null() { return ptr::null_mut(); }
+    unsafe { io_get_attached_device(device) }
 }
 
 /// Reset an allocated IRP for reuse without releasing its allocation.
