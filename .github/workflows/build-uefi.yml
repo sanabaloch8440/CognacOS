@@ -560,8 +560,8 @@ jobs:
               assert struct.unpack_from("<H", p, opt+68)[0] == 1, f"{path}: not native subsystem"
               assert struct.unpack_from("<I", p, opt+16)[0] != 0, f"{path}: no entry point"
               import_rva, import_size = struct.unpack_from("<II", p, opt+112+8)
-              if path.name == "pci.sys":
-                  assert import_rva and import_size >= 40, f"{path}: missing NTOSKRNL import directory"
+              if path.name in ("pci.sys", "acpi.sys"):
+                  assert import_rva and import_size >= 40, f"{path}: missing required kernel/HAL import directory"
                   section_count = struct.unpack_from("<H", p, pe+6)[0]
                   optional_size = struct.unpack_from("<H", p, pe+20)[0]
                   section_table = pe + 24 + optional_size
@@ -603,8 +603,13 @@ jobs:
                           names.append(read_c_string(hint_name + 2))
                           index += 1
                       imports[dll] = names
-                  assert imports == {"ntoskrnl.exe": ["IoCreateDevice", "IoDeleteDevice"]}, f"{path}: unexpected imports: {imports}"
-                  assert len(iat_rvas) == 1, f"{path}: expected one contiguous NTOSKRNL IAT"
+                  expected_imports = (
+                      {"ntoskrnl.exe": ["IoCreateDevice", "IoDeleteDevice"]}
+                      if path.name == "pci.sys"
+                      else {"hal.dll": ["HalAcpiGetTableEx"]}
+                  )
+                  assert imports == expected_imports, f"{path}: unexpected imports: {imports}"
+                  assert len(iat_rvas) == 1, f"{path}: expected one contiguous kernel/HAL IAT"
                   first_thunk = iat_rvas[0]
                   iat_section = next(
                       (struct.unpack_from("<I", p, section_table+i*40+36)[0]
