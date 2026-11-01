@@ -30,6 +30,8 @@ unsafe extern "win64" {
     fn IoGetDmaAdapter(device:*mut DEVICE_OBJECT,description:*const c_void,map_registers:*mut u32)->*mut c_void;
     fn MmMapIoSpace(physical_address:i64,length:u64,cache_type:i32)->*mut c_void;
     fn MmUnmapIoSpace(base:*mut c_void,length:u64);
+    fn HalEnableInterrupt(vector:u32,irql:u8)->u8;
+    fn HalDisableInterrupt(vector:u32,irql:u8)->u8;
     fn HalAllocateCommonBuffer(adapter:*mut c_void,length:u32,logical:*mut i64,cache_enabled:u8)->*mut c_void;
     fn HalFreeCommonBuffer(adapter:*mut c_void,length:u32,logical:i64,virtual_address:*mut c_void,cache_enabled:u8);
     fn HalGetBusDataByOffset(bus_type:u32,bus:u32,slot:u32,buffer:*mut u8,offset:u32,length:u32)->u32;
@@ -63,6 +65,8 @@ thunk KeInitializeDpc, __imp_ntoskrnl_KeInitializeDpc
 thunk KeInsertQueueDpc, __imp_ntoskrnl_KeInsertQueueDpc
 thunk IoGetCurrentIrpStackLocation, __imp_ntoskrnl_IoGetCurrentIrpStackLocation
 thunk IoCompleteRequest, __imp_ntoskrnl_IoCompleteRequest
+thunk HalEnableInterrupt, __imp_hal_HalEnableInterrupt
+thunk HalDisableInterrupt, __imp_hal_HalDisableInterrupt
 thunk HalAllocateCommonBuffer, __imp_hal_HalAllocateCommonBuffer
 thunk HalFreeCommonBuffer, __imp_hal_HalFreeCommonBuffer
 thunk HalGetBusDataByOffset, __imp_hal_HalGetBusDataByOffset
@@ -94,6 +98,8 @@ iat IoCompleteRequest
 __imp_hal_\name: .quad 0
 .size __imp_hal_\name,8
 .endm
+hiat HalEnableInterrupt
+hiat HalDisableInterrupt
 hiat HalAllocateCommonBuffer
 hiat HalFreeCommonBuffer
 hiat HalGetBusDataByOffset
@@ -230,31 +236,26 @@ impl XhciPlatform for Platform<'_>{
         Ok(())
     }
     fn register_interrupt(&mut self)->Result<(),()>{
-        self.ext.interrupt_requested.store(true,Ordering::Release);Ok(())
+        if self.ext.interrupt_object.load(Ordering::Acquire)!=0{return Ok(())}
+        let mut object=core::ptr::null_mut();
+        let status=unsafe{IoConnectInterrupt(&mut object,Some(xhci_isr),self.ext as *const _ as *mut c_void,
+            core::ptr::null_mut(),self.ext.interrupt_vector,self.ext.interrupt_irql,
+            self.ext.interrupt_irql,0,0,u64::MAX,0)};
+        if status<0||object.is_null(){return Err(())}
+        self.ext.interrupt_object.store(object as u64,Ordering::Release);
+        Ok(())
     }
     fn unregister_interrupt(&mut self){
         let object=self.ext.interrupt_object.swap(0,Ordering::AcqRel) as *mut c_void;
         if !object.is_null(){unsafe{IoDisconnectInterrupt(object);}}
     }
     fn set_interrupt_enabled(&mut self,enabled:bool)->Result<(),()>{
-        if enabled{
-            if !self.ext.ready.load(Ordering::Acquire){
-                self.ext.interrupt_requested.store(true,Ordering::Release);
-                return Ok(())
-            }
-            if self.ext.interrupt_object.load(Ordering::Acquire)!=0{return Ok(())}
-            let mut object=core::ptr::null_mut();
-            let status=unsafe{IoConnectInterrupt(&mut object,Some(xhci_isr),self.ext as *const _ as *mut c_void,
-                core::ptr::null_mut(),self.ext.interrupt_vector,self.ext.interrupt_irql,
-                self.ext.interrupt_irql,0,0,u64::MAX,0)};
-            if status<0||object.is_null(){return Err(())}
-            self.ext.interrupt_object.store(object as u64,Ordering::Release);
-            Ok(())
-        }else{
-            let object=self.ext.interrupt_object.swap(0,Ordering::AcqRel) as *mut c_void;
-            if !object.is_null(){unsafe{IoDisconnectInterrupt(object);}}
-            Ok(())
+        if enabled&&!self.ext.ready.load(Ordering::Acquire){
+            self.ext.interrupt_requested.store(true,Ordering::Release);return Ok(())
         }
+        if self.ext.interrupt_object.load(Ordering::Acquire)==0{return if enabled{Err(())}else{Ok(())}}
+        let result=unsafe{if enabled{HalEnableInterrupt(self.ext.interrupt_vector,self.ext.interrupt_irql)}else{HalDisableInterrupt(self.ext.interrupt_vector,self.ext.interrupt_irql)}};
+        if result!=0{Ok(())}else{Err(())}
     }
 }
 
