@@ -43,7 +43,7 @@ pub unsafe fn io_get_irp_user_buffer(irp: *const Irp) -> *mut c_void {
 
 /// Read a 32-bit member of the IO_STACK_LOCATION.Parameters union.
 pub unsafe fn io_read_stack_u32(stack: *const IoStackLocation, offset: usize) -> u32 {
-    if stack.is_null() || offset.checked_add(core::mem::size_of::<u32>()).is_none_or(|end| end > 0x20) {
+    if stack.is_null() || offset.checked_add(core::mem::size_of::<u32>()).map_or(true, |end| end > 0x20) {
         return 0;
     }
     unsafe { ptr::read_unaligned((*stack).parameters.as_ptr().add(offset).cast::<u32>()) }
