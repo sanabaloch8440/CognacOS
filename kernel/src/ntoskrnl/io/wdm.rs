@@ -631,6 +631,49 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
  }
 }
 
+/// Query a synchronous IRP_MN_QUERY_INTERFACE on a bus PDO/FDO. The
+/// returned interface is copied into caller-owned storage; the provider retains
+/// ownership of its context and callback targets for the device lifetime.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoPnPQueryBusInterface(
+ bus:*mut DeviceObject,
+ interface_guid:*const crate::nt_abi::bus::GUID,
+ interface_size:u16,
+ interface_version:u16,
+ output:*mut c_void,
+)->i32 {
+ if bus.is_null()||interface_guid.is_null()||output.is_null()||interface_size==0 {
+  return STATUS_INVALID_PARAMETER;
+ }
+ let dispatch_device=unsafe{io_get_attached_device(bus)};
+ if dispatch_device.is_null(){return STATUS_DELETE_PENDING}
+ let referenced=unsafe{io_reference_device_object(dispatch_device)};
+ if referenced.is_null(){return STATUS_DELETE_PENDING}
+ let stack_size=unsafe{(*dispatch_device).stack_size.max(1)};
+ let irp=unsafe{io_allocate_irp(stack_size,0)};
+ if irp.is_null(){unsafe{io_dereference_device_object(dispatch_device)};return STATUS_INSUFFICIENT_RESOURCES}
+ let stack=unsafe{io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(dispatch_device)};return STATUS_INSUFFICIENT_RESOURCES}
+ unsafe{
+  (*stack).major_function=0x1b;
+  (*stack).minor_function=0x08;
+  ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<*const crate::nt_abi::bus::GUID>(),interface_guid);
+  ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u16>(),interface_size);
+  ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(10).cast::<u16>(),interface_version);
+  ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<*mut c_void>(),output);
+ }
+ let status=unsafe{io_call_driver(dispatch_device,irp)};
+ // Bus interface queries are synchronous by contract. If a provider violates
+ // that contract, retain the IRP and device reference rather than freeing
+ // memory that a pending completion could still access.
+ if status==STATUS_PENDING{return STATUS_PENDING}
+ let io_status=unsafe{
+  ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())
+ };
+ unsafe{io_free_irp(irp);io_dereference_device_object(dispatch_device);}
+ if status==STATUS_SUCCESS{io_status}else{status}
+}
+
 /// Ask a bus driver for IRP_MN_QUERY_DEVICE_RELATIONS / BusRelations and
 /// publish the returned children when the IRP completes. STATUS_PENDING is
 /// supported; the manager retains the IRP and processes relations on completion.
