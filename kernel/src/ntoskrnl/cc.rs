@@ -226,17 +226,24 @@ mod tests {
 
     #[test]
     fn cache_map_lifecycle_tracks_file_object_and_sizes() {
+        let baseline = cache_map_count();
         let mut file: FileObject = unsafe { core::mem::zeroed() };
+        let mut section = crate::nt_abi::io::SECTION_OBJECT_POINTERS::default();
+        file.section_object_pointer = &mut section as *mut _ as *mut c_void;
         let sizes = CcFileSizes { allocation_size: 8192, file_size: 4096, valid_data_length: 2048 };
         unsafe { cc_initialize_cache_map(&mut file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
         assert!(!file.private_cache_map.is_null());
-        assert_eq!(cache_map_count(), 1);
+        assert_eq!(cache_map_count(), baseline + 1);
+        assert_eq!(section.shared_cache_map, file.private_cache_map);
         let changed = CcFileSizes { allocation_size: 8192, file_size: 2048, valid_data_length: 1024 };
         unsafe { cc_set_file_sizes(&mut file, &changed); }
+        unsafe { cc_set_read_ahead_granularity(&mut file, 0x20000); }
+        assert_eq!(unsafe { find_map(&mut file) }.map(|i| unsafe { (&*STATE.0.get())[i].read_ahead_granularity }), Some(0x20000));
         assert_eq!(unsafe { find_map(&mut file) }.map(|i| unsafe { (&*STATE.0.get())[i].sizes.file_size }), Some(2048));
         assert_eq!(unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()) }, 1);
         assert!(file.private_cache_map.is_null());
-        assert_eq!(cache_map_count(), 0);
+        assert_eq!(section.shared_cache_map, core::ptr::null_mut());
+        assert_eq!(cache_map_count(), baseline);
     }
 
     #[test]
