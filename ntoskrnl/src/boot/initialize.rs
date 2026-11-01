@@ -464,6 +464,22 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"ACPI MADT parser self-test passed; APIC discovery primitives available.\r\n");
 
+        // Configuration Manager owns the staged registry hives. Validate
+        // SYSTEM\\Select and publish the Registry milestone before any
+        // registry-configured boot driver is allowed to initialize.
+        let system_registry = match registry_init::initialize_system_registry() {
+            Ok(state) => state,
+            Err(_) => {
+                serial_write(b"FATAL: Configuration Manager could not initialize the SYSTEM registry hive or select a valid control set.\\r\\n");
+                halt();
+            }
+        };
+        if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::Registry).is_err() {
+            serial_write(b"FATAL: invalid boot phase transition into Registry.\\r\\n");
+            halt();
+        }
+        let _active_control_set = system_registry.control_sets.current;
+
         let mut local_timer_ready = false;
         if info.rsdp_address != 0 {
             // Publish the firmware RSDP to the HAL's table service before
@@ -473,16 +489,16 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             // driver before PCI.sys receives the MCFG-derived ECAM windows.
             let acpi_driver_ready=platform_devices::initialize_acpi_driver(info.rsdp_address);
             let _pnp_enumerated=if acpi_driver_ready {
-                // The SYSTEM hive has been validated by the registry-backed
-                // ACPI boot-driver load. Publish milestones only after their
-                // corresponding initialization operation has succeeded.
-                if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::Registry).is_err() {
+                // DriverEntry succeeded through the registry-backed native
+                // driver loader; publish BootDrivers only after that success.
+                if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
+                    serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\\r\\n");
                     halt();
                 }
                 let enumerated = platform_devices::enumerate_acpi_pci_devices(info.rsdp_address);
                 if matches!(boot_orchestration::validate_device_tree(), Ok(count) if count != 0) {
-                    if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err()
-                        || BOOT_COORDINATOR.advance(boot_orchestration::BootStage::DeviceTree).is_err() {
+                    if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::DeviceTree).is_err() {
+                        serial_write(b"FATAL: invalid boot phase transition into DeviceTree.\\r\\n");
                         halt();
                     }
                 }
