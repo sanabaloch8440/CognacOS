@@ -232,10 +232,15 @@ pub mod bus {
         pub segment: u16,
         pub bus_start: u8,
         pub bus_end: u8,
+        /// Configuration-space operations are supplied by HAL. PCI.sys must
+        /// use these callbacks rather than dereferencing the ECAM mapping.
+        pub config_context: PVOID,
+        pub read_config: PPCI_READ_CONFIG,
+        pub write_config: PPCI_WRITE_CONFIG,
     }
 
     pub const PCI_DRIVER_HANDOFF_MAGIC: u64 = 0x434f_474e_4143_5043;
-    pub const PCI_DRIVER_HANDOFF_VERSION: u32 = 3;
+    pub const PCI_DRIVER_HANDOFF_VERSION: u32 = 4;
     pub const PCI_DRIVER_HANDOFF_MAX_WINDOWS: usize = 16;
 
     /// Versioned initialization contract between ntoskrnl and pci.sys.
