@@ -83,6 +83,22 @@ See [SYSTEM hive and driver configuration](docs/system-hive-driver-configuration
 - [ ] Implement wait-all queue-entry reservation and scheduler-backed blocking waits; add WDK-style race/conformance tests.
 - [ ] Associate every user thread with a scheduler ThreadRecord; enable AVX/YMM only after all thread, trap, context-copy, and restore paths support the expanded XSTATE area.
 
+## P2 — Plug and Play manager
+
+- [x] Add a stable synthetic root-bus devnode and parent root-level PCI functions beneath it; preserve PCI segment/BDF identity and validated bridge topology.
+- [x] Generate bounded UTF-16 MULTI_SZ HardwareIDs and CompatibleIDs for PCI devnodes and root-bus IDs.
+- [x] Import PCI bus inventory through the versioned bus interface and resolve installed Enum\\PCI service bindings without conflating discovery with driver start.
+- [x] Reuse WDM device-object creation, attach/detach, BusRelations, PDO lifetime/rundown, and filter-stack dispatch paths for PDO/FDO/filter stacks.
+- [x] Dispatch IRP_MN_QUERY_RESOURCES and IRP_MN_QUERY_RESOURCE_REQUIREMENTS through the device stack; arbitrate translated start resources only after the bus/driver returns them.
+- [x] Reserve memory ranges, I/O port ranges, interrupt vectors, and DMA channels; validate raw/translated resource classes and release tentative claims on failed start.
+- [x] Keep start/stop/surprise-removal/remove transitions tied to terminal IRP completion; expose a rebalance entry point that sequences stop before start.
+- [ ] Bind each persistent devnode to its PDO and bus relations with reference-safe lifetime across hotplug and re-enumeration.
+- [ ] Match driver packages by ranked HardwareIDs and CompatibleIDs, including INF/catalog validation, service installation, and package-store discovery; current registry matching resolves existing Enum\\PCI Service values.
+- [ ] Implement bus-specific resource requirement negotiation and actual assignment/programming for PCI BARs, bridge windows, interrupt routing, and DMA/IOMMU domains. Current arbitration validates and reserves translated CM_RESOURCE_LIST claims; it is not a hardware allocator.
+- [ ] Complete transactional rebalance continuation for pending stop/start IRPs and restore old resources if the replacement start fails.
+- [ ] Complete parent/child device power IRP sequencing, wake propagation, and hardware D-state transitions; current power-state tracking is not full platform power management.
+- [ ] Add QEMU SMP tests for hotplug, repeated enumeration, PDO/FDO/filter query/start/remove ordering, resource conflict rollback, rebalance failure, and suspend/resume.
+
 ## P2 — Registry, NLS, and writable filesystem
 
 - [ ] Add legacy REGF DIRT replay, correct LOG1/LOG2 selection/sequence policy, and validate against Windows-generated hive fixtures.
