@@ -1409,21 +1409,11 @@ jobs:
             build/dlls/rundll32.exe
             build/kernel/cognacos-kernel.exe
             build/cognacos-uefi.img
-            build/serial.log
-            build/serial-ps2.log
-            build/qemu-ps2-debug.log
             build/qemu-ps2-debug.launch.log
-            build/serial-persist.log
             build/qemu-persist-launch.log
-            build/serial-smp-*.log
             build/beep-driver-assessment/output.txt
             build/beep-driver-assessment/audio.txt
             build/beep.wav
-            build/gdb-state.txt
-            build/gdb-helper-validation.txt
-            build/cognacos-gdb-forensics.txt
-            build/gdb-diagnose.gdb
-            build/qemu-debug.log
             build/ntdll/cognac_ntdll.pdb
             target/x86_64-unknown-none/debug/cognacos-kernel
             target/x86_64-unknown-none/release/cognacos-kernel
@@ -1442,3 +1432,31 @@ jobs:
             build/drivers/storahci.sys
             build/drivers/stornvme.sys
             build/drivers/disk.sys
+
+      - name: Publish QEMU serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cognacos-qemu-serial-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build/serial.log
+            build/serial-ps2.log
+            build/serial-persist.log
+            build/serial-smp-*.log
+
+      - name: Publish GDB diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cognacos-gdb-output
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build/gdb-state.txt
+            build/gdb-helper-validation.txt
+            build/cognacos-gdb-forensics.txt
+            build/gdb-diagnose.gdb
+            build/gdb-first-fault.gdb
+            build/qemu-debug.log
