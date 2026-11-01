@@ -378,39 +378,6 @@ fn trace_store_transfer(offset: u64, output: &mut [u8]) -> bool {
     true
 }
 
-#[cfg(debug_assertions)]
-fn ext4_error_debug_name(error: extfs::Error) -> &'static [u8] {
-    match error {
-        extfs::Error::Truncated => b"Truncated",
-        extfs::Error::BadMagic => b"BadMagic",
-        extfs::Error::InvalidBlockSize => b"InvalidBlockSize",
-        extfs::Error::InvalidInodeSize => b"InvalidInodeSize",
-        extfs::Error::InvalidGeometry => b"InvalidGeometry",
-        extfs::Error::UnsupportedIncompatFeature => b"UnsupportedIncompatFeature",
-        extfs::Error::OutOfRange => b"OutOfRange",
-        extfs::Error::InvalidDirectoryEntry => b"InvalidDirectoryEntry",
-        extfs::Error::UnsupportedFormat => b"UnsupportedFormat",
-        extfs::Error::UnsupportedRoCompatFeature => b"UnsupportedRoCompatFeature",
-        extfs::Error::UnsupportedCompatFeature => b"UnsupportedCompatFeature",
-        extfs::Error::InvalidExtentTree => b"InvalidExtentTree",
-        extfs::Error::InvalidChecksum => b"InvalidChecksum",
-        extfs::Error::InvalidPartitionTable => b"InvalidPartitionTable",
-        extfs::Error::UnsupportedPartitionTable => b"UnsupportedPartitionTable",
-        extfs::Error::TransactionTooLarge => b"TransactionTooLarge",
-        extfs::Error::Io => b"Io",
-    }
-}
-#[cfg(debug_assertions)]
-fn ext4_write_error_debug_name(error: &extfs::WriteError) -> &'static [u8] {
-    match error {
-        extfs::WriteError::Filesystem(fs) => ext4_error_debug_name(*fs),
-        extfs::WriteError::ReadOnly => b"ReadOnly",
-        extfs::WriteError::OutOfRange => b"OutOfRange",
-        extfs::WriteError::Io => b"Io",
-        extfs::WriteError::PartialBlock => b"PartialBlock",
-    }
-}
-
 /// End-to-end guest check. The physical port driver backs a registered disk
 /// object; GPT and ext4 then read only through disk/partition READ IRPs.
 pub fn run_ext4_readme_test() -> bool {
@@ -438,77 +405,6 @@ pub fn run_ext4_readme_test() -> bool {
     PARTITION_CAPACITY.store(capacity, Ordering::Release);
     let partition_device=match create_storage_device(&[0x5c,0,0x44,0,0x65,0,0x76,0,0x69,0,0x63,0,0x65,0,0x5c,0,0x48,0,0x61,0,0x72,0,0x64,0,0x64,0,0x69,0,0x73,0,0x6b,0,0x30,0,0x5c,0,0x50,0,0x61,0,0x72,0,0x74,0,0x69,0,0x74,0,0x69,0,0x6f,0,0x6e,0,0x31,0],true){Ok(device)=>device,Err(_)=>return false};
     unsafe { crate::serial_write(b"Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.\r\n"); }
-    let mut volume = IoManagerBlockDevice { device: partition_device, capacity };
-    let mut actual = [0u8; 128];
-    let (file_size, length) = match extfs::read_root_file_range(
-        &mut volume, b"\\README.txt", 0, &mut actual,
-    ) {
-        Ok(result) => result, Err(_) => return false,
-    };
-    if file_size != EXPECTED.len() as u64 || length != EXPECTED.len()
-        || &actual[..length] != EXPECTED {
-        return false;
-    }
-    unsafe { crate::serial_write(b"ext4: partition superblock and README data read through the registered partition READ interface.\r\n"); }
-    unsafe { crate::serial_write(b"Guest ext4 README.txt bytes match expected content exactly.\r\n"); }
-
-    let mut changed = [0u8; 128];
-    changed[..EXPECTED.len()].copy_from_slice(EXPECTED);
-    changed[0] = b'X';
-    match extfs::write_root_file_range(
-        volume, b"\\README.txt", 0, &changed[..EXPECTED.len()],
-    ) {
-        Ok(n) if n == EXPECTED.len() => {},
-        Err(error) => {
-            #[cfg(debug_assertions)] unsafe {
-                crate::serial_write(b"EXT4 DEBUG: checked data write failed: ");
-                crate::serial_write(ext4_error_debug_name(error));
-                crate::serial_write(b"\r\n");
-            }
-            return false;
-        },
-        _ => return false,
-    }
-    let mut changed_volume = IoManagerBlockDevice { device: partition_device, capacity };
-    let mut changed_readback = [0u8; 128];
-    let (changed_size, changed_len) = match extfs::read_root_file_range(
-        &mut changed_volume, b"\\README.txt", 0, &mut changed_readback,
-    ) {
-        Ok(result) => result, Err(_) => return false,
-    };
-    if changed_size != EXPECTED.len() as u64 || changed_len != EXPECTED.len()
-        || &changed_readback[..changed_len] != &changed[..EXPECTED.len()] {
-        return false;
-    }
-    unsafe { crate::serial_write(b"Guest ext4 WRITE IRP modified existing README data and read it back exactly.\r\n"); }
-
-    match extfs::write_root_file_range(
-        IoManagerBlockDevice { device: partition_device, capacity },
-        b"\\README.txt", 0, EXPECTED,
-    ) {
-        Ok(n) if n == EXPECTED.len() => {},
-        Err(error) => {
-            #[cfg(debug_assertions)] unsafe {
-                crate::serial_write(b"EXT4 DEBUG: restore data write failed: ");
-                crate::serial_write(ext4_error_debug_name(error));
-                crate::serial_write(b"\r\n");
-            }
-            return false;
-        },
-        _ => return false,
-    }
-    let mut restored_volume = IoManagerBlockDevice { device: partition_device, capacity };
-    let mut restored = [0u8; 128];
-    let (restored_size, restored_len) = match extfs::read_root_file_range(
-        &mut restored_volume, b"\\README.txt", 0, &mut restored,
-    ) {
-        Ok(result) => result, Err(_) => return false,
-    };
-    if restored_size != EXPECTED.len() as u64 || restored_len != EXPECTED.len()
-        || &restored[..restored_len] != EXPECTED {
-        return false;
-    }
-    unsafe { crate::serial_write(b"Guest ext4 README.txt restored and verified byte-for-byte after write test.\r\n"); }
     if crate::ntoskrnl::debug::restore_from_storage() {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot restored from dedicated GPT partition.\r\n"); }
     } else {

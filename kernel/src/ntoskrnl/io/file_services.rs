@@ -142,16 +142,35 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
                 };
                 if unsafe { (*file_object).device_object } != device.cast() || file.is_none() {
                     status = STATUS_OBJECT_NAME_NOT_FOUND;
-                } else if let Some(file) = file {
-                    let sizes = crate::ntoskrnl::cc::CcFileSizes {
-                        allocation_size: file.length as i64,
-                        file_size: file.length as i64,
-                        valid_data_length: file.length as i64,
-                    };
-                    unsafe {
-                        crate::ntoskrnl::cc::cc_initialize_cache_map(
-                            file_object, &sizes, 0, ptr::null(), ptr::null_mut(),
-                        );
+                } else if let Some(mut file) = file {
+                    if file.source == 1 {
+                        match crate::ata_disk::ext4_block_device() {
+                            Ok(mut volume) => match extfs::root_file_size(
+                                &mut volume, &file.path[..file.path_len],
+                            ) {
+                                Ok(size) => match usize::try_from(size) {
+                                    Ok(length) => {
+                                        file.length = length;
+                                        STATE.lock().files[index - 1].length = length;
+                                    }
+                                    Err(_) => status = STATUS_INVALID_PARAMETER,
+                                },
+                                Err(_) => status = STATUS_OBJECT_NAME_NOT_FOUND,
+                            },
+                            Err(_) => status = STATUS_UNSUCCESSFUL,
+                        }
+                    }
+                    if status == STATUS_SUCCESS {
+                        let sizes = crate::ntoskrnl::cc::CcFileSizes {
+                            allocation_size: file.length as i64,
+                            file_size: file.length as i64,
+                            valid_data_length: file.length as i64,
+                        };
+                        unsafe {
+                            crate::ntoskrnl::cc::cc_initialize_cache_map(
+                                file_object, &sizes, 0, ptr::null(), ptr::null_mut(),
+                            );
+                        }
                     }
                 }
             }
@@ -528,15 +547,13 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     mount_boot_system_files();
     let registered={let state=STATE.lock();state.files.iter().position(|f|f.used&&path_equal(&f.path[..f.path_len],path))};
     let file_index=if let Some(index)=registered{index}else{
-     let mut volume=crate::ata_disk::ext4_block_device().map_err(|_|STATUS_OBJECT_NAME_NOT_FOUND)?;
-     let size=extfs::root_file_size(&mut volume,path).map_err(|_|STATUS_OBJECT_NAME_NOT_FOUND)?;
      let mut state=STATE.lock();
      if let Some(index)=state.files.iter().position(|f|f.used&&path_equal(&f.path[..f.path_len],path)){index}
      else{
       let index=state.files.iter().position(|f|!f.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
       let generation=state.next_generation;state.next_generation=state.next_generation.wrapping_add(1).max(1);
       let mut file=FileRecord::EMPTY;file.path[..path.len()].copy_from_slice(path);file.path_len=path.len();
-      file.length=usize::try_from(size).map_err(|_|STATUS_INVALID_PARAMETER)?;file.generation=generation;file.source=1;file.used=true;
+      file.length=0;file.generation=generation;file.source=1;file.used=true;
       state.files[index]=file;index
      }
     };
