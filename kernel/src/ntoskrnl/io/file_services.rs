@@ -449,7 +449,7 @@ fn unpin_handle(file_object: *mut FILE_OBJECT) {
 }
 
 /// Open a registered path and issue a real IRP_MJ_CREATE against the provider device.
-pub fn open(path: &[u8]) -> Result<usize, i32> { open_for_process(0, path) }
+pub fn open(path: &[u8]) -> Result<usize, i32> { open_for_process(ob::current_owner() as u64, path) }
 pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     if path.is_empty() || path.len() > MAX_PATH_BYTES { return Err(STATUS_INVALID_PARAMETER); }
     mount_boot_system_files();
@@ -510,7 +510,7 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
 
 /// Read from an explicit byte offset using IRP_MJ_READ.
 pub fn read_at(handle: usize, offset: usize, out: &mut [u8]) -> Result<usize, i32> {
-    read_at_for_process(0, handle, offset, out)
+    read_at_for_process(ob::current_owner() as u64, handle, offset, out)
 }
 pub fn read_at_for_process(owner: u64, handle: usize, offset: usize, out: &mut [u8]) -> Result<usize, i32> {
     let byte_offset: i64 = offset.try_into().map_err(|_| STATUS_INVALID_PARAMETER)?;
@@ -522,7 +522,7 @@ pub fn read_at_for_process(owner: u64, handle: usize, offset: usize, out: &mut [
 
 /// Read from and advance FILE_OBJECT.CurrentByteOffset using the WDM file-pointer sentinel.
 pub fn read_current(handle: usize, out: &mut [u8]) -> Result<usize, i32> {
-    read_current_for_process(0, handle, out)
+    read_current_for_process(ob::current_owner() as u64, handle, out)
 }
 pub fn read_current_for_process(owner: u64, handle: usize, out: &mut [u8]) -> Result<usize, i32> {
     let file_object = pin_handle(owner, handle)?;
@@ -553,7 +553,7 @@ pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, a
 }
 
 /// Issue IRP_MJ_CLEANUP followed by IRP_MJ_CLOSE before releasing the FILE_OBJECT.
-pub fn close(handle: usize) -> Result<(), i32> { close_for_process(0, handle) }
+pub fn close(handle: usize) -> Result<(), i32> { close_for_process(ob::current_owner() as u64, handle) }
 pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
     if handle == 0 { return Err(STATUS_INVALID_HANDLE); }
     let body = ob::reference_by_handle(handle as *mut c_void, 0, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false)?;
