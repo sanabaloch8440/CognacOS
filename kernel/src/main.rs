@@ -540,6 +540,7 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   // Transfer the validated PDO identities from the WDM BusRelations table
   // into the kernel's registry-facing devnode database. No PCI config access
   // occurs here; the data originates from pci.sys-created PDO extensions.
+  let root_index=match ntoskrnl::pnp::register_root_device(){Ok(index)=>index,Err(_)=>return 0};
   let mut count=0usize;
   for child_index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES {
    let mut child=core::ptr::null_mut();
@@ -548,7 +549,7 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    if child.is_null(){continue;}
    let extension=(*child).device_extension.cast::<io::wdm::PciPdoExtension>();
    if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
-   if ntoskrnl::pnp::register_pci_information(&(*extension).information,None).is_ok(){count+=1;}
+   if ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)).is_ok(){count+=1;}
   }
   let _=ntoskrnl::pnp::match_registry_services(&system_hive);
   count
