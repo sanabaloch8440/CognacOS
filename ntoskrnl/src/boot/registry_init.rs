@@ -19,6 +19,7 @@ pub(crate) enum RegistryInitError {
 pub(crate) struct SystemRegistryState {
     pub control_sets: ControlSetSelection,
     pub boot_driver_count: usize,
+    pub boot_driver_services: &'static [[u16; 128]],
 }
 
 // Boot runs this before secondary processors and the general scheduler are
@@ -46,6 +47,18 @@ pub(crate) fn initialize_system_registry(
     let boot_driver_count =
         crate::ntoskrnl::cm::service_config::enumerate_boot_driver_services(&hive, names)
             .map_err(|_| RegistryInitError::InvalidSystemHive)?;
+    // Publish only the populated prefix as an immutable boot snapshot. This
+    // storage is never modified after Configuration Manager initialization.
+    let boot_driver_services = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(BOOT_DRIVER_SERVICE_NAMES).cast::<[u16; 128]>(),
+            boot_driver_count,
+        )
+    };
 
-    Ok(SystemRegistryState { control_sets, boot_driver_count })
+    Ok(SystemRegistryState {
+        control_sets,
+        boot_driver_count,
+        boot_driver_services,
+    })
 }
