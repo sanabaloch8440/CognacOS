@@ -176,7 +176,6 @@ fn append_import_section(pe:&mut Vec<u8>,slots:&[ImportSlot])->Result<(),String>
  let peoff=u32at(pe,0x3c)? as usize;let coff=peoff+4;let nsec=u16at(pe,coff+2)? as usize;let opt=coff+20;let optsize=u16at(pe,coff+16)? as usize;let sh=opt+optsize;
  let headers=u32at(pe,opt+60)? as usize;let new_header=sh.checked_add(nsec.checked_mul(40).ok_or("section table overflow")?).ok_or("section header overflow")?;
  if new_header+40>headers{return Err("PE header has no room for .idata section header".into())}
- let image_base=u64at(pe,opt+24)?;let _=image_base;
  let file_align=u32at(pe,opt+36)? as usize;let sect_align=u32at(pe,opt+32)? as usize;
  if file_align==0||!file_align.is_power_of_two()||sect_align==0||!sect_align.is_power_of_two(){return Err("invalid PE alignment for import section".into())}
  let image_size=u32at(pe,opt+56)? as usize;let rva=(image_size+sect_align-1)&!(sect_align-1);
