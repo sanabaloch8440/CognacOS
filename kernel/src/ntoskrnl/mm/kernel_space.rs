@@ -118,7 +118,7 @@ pub fn is_initialized()->bool { ROOT.load(Ordering::Acquire)!=0 }
 /// Dedicated uncached device-MMIO aperture. These virtual pages are separate
 /// from the pageable pool and never own/free the physical frames they map.
 const IO_BASE: u64 = BASE + (PAGES as u64 * PAGE);
-const IO_PAGES: usize = 16384; // 64 MiB of BAR/firmware MMIO windows.
+const IO_PAGES: usize = 65536; // 256 MiB: enough for a full 256-bus PCIe ECAM aperture.
 const IO_WORDS: usize = IO_PAGES / 64;
 struct IoBits(core::cell::UnsafeCell<[u64; IO_WORDS]>);
 unsafe impl Sync for IoBits {}
