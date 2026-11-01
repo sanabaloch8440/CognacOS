@@ -162,7 +162,7 @@ unsafe extern "win64" fn hub_unload(_driver:*mut c_void){
 #[unsafe(no_mangle)]pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32{
  if driver.is_null(){return STATUS_INVALID_PARAMETER}let object=unsafe{&mut *(driver as *mut DriverObject)};
  let Some(ext)=(unsafe{object.driver_extension.as_ref()}) else{return STATUS_INVALID_PARAMETER};
- if ext.magic!=EXT_MAGIC||ext.version!=1||ext.size as usize<core::mem::size_of::<HubDriverExtension>()||ext.kernel_io.is_null()||ext.root_hub_device==0||ext.parent_bus_device==0||ext.port_count==0||ext.port_count>255||ext.event_sink.is_null()||ext.event_context.is_null()||ext.hub_device_out.is_null()||ext.child_factory_out.is_null(){return STATUS_INVALID_PARAMETER}
+ if ext.magic!=EXT_MAGIC||ext.version!=1||(ext.size as usize)<core::mem::size_of::<HubDriverExtension>()||ext.kernel_io.is_null()||ext.root_hub_device==0||ext.parent_bus_device==0||ext.port_count==0||ext.port_count>255||ext.event_sink.is_null()||ext.event_context.is_null()||ext.hub_device_out.is_null()||ext.child_factory_out.is_null(){return STATUS_INVALID_PARAMETER}
  let io=unsafe{&*ext.kernel_io};if !io.compatible(){return STATUS_INVALID_DEVICE_REQUEST}
  KERNEL_IO.store(ext.kernel_io as u64,Ordering::Release);ROOT_HUB.store(ext.root_hub_device,Ordering::Release);PORT_COUNT.store(ext.port_count as u64,Ordering::Release);DRIVER_OBJECT.store(driver as u64,Ordering::Release);
  let runtime_ptr=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};unsafe{runtime_ptr.write(HubRuntime::new());}RUNTIME_READY.store(true,Ordering::Release);
