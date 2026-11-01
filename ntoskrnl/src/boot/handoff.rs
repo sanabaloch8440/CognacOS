@@ -1,10 +1,10 @@
 //! UEFI boot handoff and firmware-provided native asset catalog.
 use crate::*;
 
-const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
+pub(crate) const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
 #[repr(C)]
 #[derive(Clone,Copy)]
-struct BootFile { address:u64, length:u64 }
+pub(crate) struct BootFile { pub(crate) address:u64, pub(crate) length:u64 }
 impl BootFile { const EMPTY:Self=Self{address:0,length:0}; }
 static BOOT_HIVE_ADDRESS:[core::sync::atomic::AtomicU64;7]=[const{core::sync::atomic::AtomicU64::new(0)};7];
 static BOOT_HIVE_LENGTH:[core::sync::atomic::AtomicU64;7]=[const{core::sync::atomic::AtomicU64::new(0)};7];
@@ -62,22 +62,22 @@ extern "C" fn thread_wake_smoke_entry(argument: *mut core::ffi::c_void) {
 }
 
 unsafe extern "C" {
-    pub(crate) static __text_start u8;
-    pub(crate) static __text_end u8;
-    pub(crate) static __rodata_start u8;
-    pub(crate) static __rodata_end u8;
-    pub(crate) static __data_start u8;
-    pub(crate) static __data_end u8;
-    pub(crate) static __bss_start u8;
-    pub(crate) static __bss_end u8;
-    pub(crate) static __text_phys_start u8;
-    pub(crate) static __text_phys_end u8;
-    pub(crate) static __rodata_phys_start u8;
-    pub(crate) static __rodata_phys_end u8;
-    pub(crate) static __data_phys_start u8;
-    pub(crate) static __data_phys_end u8;
-    pub(crate) static __bss_phys_start u8;
-    pub(crate) static __bss_phys_end u8;
+    pub(crate) static __text_start: u8;
+    pub(crate) static __text_end: u8;
+    pub(crate) static __rodata_start: u8;
+    pub(crate) static __rodata_end: u8;
+    pub(crate) static __data_start: u8;
+    pub(crate) static __data_end: u8;
+    pub(crate) static __bss_start: u8;
+    pub(crate) static __bss_end: u8;
+    pub(crate) static __text_phys_start: u8;
+    pub(crate) static __text_phys_end: u8;
+    pub(crate) static __rodata_phys_start: u8;
+    pub(crate) static __rodata_phys_end: u8;
+    pub(crate) static __data_phys_start: u8;
+    pub(crate) static __data_phys_end: u8;
+    pub(crate) static __bss_phys_start: u8;
+    pub(crate) static __bss_phys_end: u8;
 }
 
 #[repr(C)]
