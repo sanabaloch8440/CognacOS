@@ -43,7 +43,7 @@ pub(crate) use ntoskrnl::ps::process;
 pub(crate) use ntoskrnl::ke::syscall;
 pub(crate) use ntoskrnl::io as io;
 pub(crate) use ntoskrnl::io::{ata_disk, dma, file_services, wdm};
-#[path = "kernel/debug_console.rs"]
+#[path = "kernel/dbg/console.rs"]
 mod debug_console;
 
 use core::arch::asm;

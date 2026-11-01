@@ -9,18 +9,18 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Po, Cm, Se, Rtl, Zw, Other }
 #[derive(Clone, Copy, Debug)]
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
-pub(crate) mod alpc;
-pub(crate) mod alpc_resources; pub(crate) mod alpc_native; pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
-pub(crate) mod mm; pub(crate) mod ob; pub(crate) mod ps; pub(crate) mod io; pub(crate) mod cc; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; mod zw; mod other;
-mod manifest_26100;
+#[path = "alpc/mod.rs"] pub(crate) mod alpc;
+#[path = "alpc/resources.rs"] pub(crate) mod alpc_resources; #[path = "alpc/native.rs"] pub(crate) mod alpc_native; pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
+pub(crate) mod mm; #[path = "ob/mod.rs"] pub(crate) mod ob; #[path = "ps/mod.rs"] pub(crate) mod ps; #[path = "io/mod.rs"] pub(crate) mod io; #[path = "cc/mod.rs"] pub(crate) mod cc; #[path = "po/mod.rs"] pub(crate) mod po; #[path = "cm/mod.rs"] pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; #[path = "rtl_runtime/exports.rs"] mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; #[path = "zw/mod.rs"] mod zw; #[path = "compat/other.rs"] mod other;
+#[path = "abi/manifests/manifest_26100.rs"] mod manifest_26100;
 pub(crate) use io::pnp;
-pub(crate) mod driver_loader;
-pub(crate) mod driver_order;
-pub(crate) mod driver_init;
-pub(crate) mod runtime_functions;
-pub(crate) mod dbg;
-pub(crate) mod debug;
-pub mod abi_signatures;
+#[path = "io/driver_loader.rs"] pub(crate) mod driver_loader;
+#[path = "io/driver_order.rs"] pub(crate) mod driver_order;
+#[path = "io/driver_init.rs"] pub(crate) mod driver_init;
+#[path = "ke/runtime_functions.rs"] pub(crate) mod runtime_functions;
+#[path = "dbg/mod.rs"] pub(crate) mod dbg;
+#[path = "dbg/debugger.rs"] pub(crate) mod debug;
+#[path = "abi/abi_signatures.rs"] pub mod abi_signatures;
 
 
 pub fn exports() -> impl Iterator<Item = Export> {
