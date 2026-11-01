@@ -4,7 +4,8 @@ use core::{cell::UnsafeCell,ffi::c_void,mem::MaybeUninit,sync::atomic::{AtomicBo
 use cognacos_hal_contract::{DeviceServiceTable,HalServiceTable,KernelIoServiceTable};
 use cognacos_ucx01020::dma::{DeviceDma,DmaBuffer};
 use cognacos_ucx01020::root_hub::{self,PortStatus,RootHubNotifications,RootHubPortIo,SetupPacket};
-use cognacos_ucx01020::wdm::{UrbHeader,URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER,URB_FUNCTION_CONTROL_TRANSFER};
+use cognacos_ucx01020::wdm::{UrbHeader,IRP_MJ_INTERNAL_DEVICE_CONTROL,URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER,URB_FUNCTION_CONTROL_TRANSFER};
+use cognacos_nt_abi::ntifs::PVOID;
 const EXT_MAGIC:u64=0x434f_474e_4143_5543;
 const STATUS_SUCCESS:i32=0;
 const STATUS_PENDING:i32=0x00000103;
@@ -342,9 +343,9 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
  for f in object.major_function.iter_mut(){*f=Some(ucx_dispatch);}
  object.driver_unload=Some(ucx_unload);
  let Some(create)=io.create_device else{return STATUS_INVALID_DEVICE_REQUEST};
- let mut controller=core::ptr::null_mut();let st=unsafe{create(driver,0,&mut controller_name,4,0,0,&mut controller)};
+ let mut controller:*mut c_void=core::ptr::null_mut();let st=unsafe{create(driver,0,&mut controller_name,4,0,0,&mut controller)};
  if st<0||controller.is_null(){RUNTIME_READY.store(false,Ordering::Release);return st}
- let mut root=core::ptr::null_mut();let st=unsafe{create(driver,0,core::ptr::null_mut(),0x22,0,0,&mut root)};
+ let mut root:*mut c_void=core::ptr::null_mut();let st=unsafe{create(driver,0,core::ptr::null_mut(),0x22,0,0,&mut root)};
  if st<0||root.is_null(){if let Some(delete)=io.delete_device{unsafe{delete(controller);}}RUNTIME_READY.store(false,Ordering::Release);return st}
  let Some(mark_pdo)=io.mark_bus_enumerated_pdo else{if let Some(delete)=io.delete_device{unsafe{delete(root);delete(controller);}}RUNTIME_READY.store(false,Ordering::Release);return STATUS_INVALID_DEVICE_REQUEST};
  let mark_status=unsafe{mark_pdo(root)};
