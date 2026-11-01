@@ -259,11 +259,11 @@ unsafe extern "win64" fn storage_dispatch(device:*mut DeviceObject,irp:*mut Irp)
       None=>status=STATUS_IO_DEVICE_ERROR,
      }
     }
-    None=>status=STATUS_INVALID_PARAMETER,
+    None=>status=wdm::STATUS_INVALID_PARAMETER,
    }
   }
  } else if major!=wdm::IRP_MJ_CREATE&&major!=wdm::IRP_MJ_CLOSE {
-  status=STATUS_INVALID_PARAMETER;
+  status=wdm::STATUS_INVALID_PARAMETER;
  }
  unsafe{wdm::io_complete_irp_status(irp,status,information,0);}
  status
