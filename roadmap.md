@@ -89,8 +89,9 @@ See [SYSTEM hive and driver configuration](docs/system-hive-driver-configuration
 - [x] Validate MCFG allocations, map firmware ECAM windows uncached, reject overlapping segment/bus windows, and register the mapped apertures with HAL's checked PCI configuration-space access API for kernel-side configuration operations.
 - [x] Add bounded standard PCI capability-list parsing for MSI and MSI-X, including cycle/pointer checks, message layout, table bounds, and malformed capability rejection.
 - [x] Add HAL MSI message construction and guarded MSI/MSI-X programming primitives; configuration is rejected until the interrupt vector has a registered HAL handler. xAPIC destination IDs above 255 remain unsupported by this path.
-- [ ] Route PCI.sys configuration reads/writes through HAL callbacks; the current PCI driver still performs checked volatile ECAM accesses through its mapped windows.
-- [ ] Load ACPI.sys as a native driver in the boot/system driver lifecycle and consume its versioned firmware interface instead of having bootstrap code call the ACPI parser library directly.
+- [x] Route PCI.sys configuration reads/writes through versioned HAL callbacks; the PCI driver rejects a handoff without both callbacks, and the kernel's own PCI config operations use the same registered MCFG apertures.
+- [x] Build, stage, and load ACPI.sys as an independent native boot-start driver before PCI.sys; DriverEntry validates MADT/MCFG/DMAR from its versioned RSDP handoff.
+- [ ] Route all kernel firmware-table consumers through ACPI.sys' versioned query interface; bootstrap still uses the shared bounded ACPI parser for selected early topology consumers.
 - [ ] Implement AML namespace loading/evaluation, ACPI device discovery (_HID/_CID/_UID/_ADR), ACPI PDO creation, and publication into PnP BusRelations.
 - [ ] Implement recursive PCI bridge bus-number assignment and subordinate-bus scanning for firmware that leaves bridge bus numbers unconfigured; current enumeration validates and follows firmware-assigned bus windows.
 - [ ] Implement generic BAR sizing/assignment and PCI bridge I/O, memory, and prefetchable window programming, integrated with the PnP arbiter and rollback on failure. Current xHCI BAR probing is a narrowly scoped bootstrap path, not a general allocator.
