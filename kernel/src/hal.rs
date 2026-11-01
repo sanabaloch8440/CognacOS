@@ -112,6 +112,71 @@ static CPU_LOCALS: [CpuLocal; MAX_CPUS] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HalError { InvalidCpu, DuplicateApicId, InvalidTransition, CpuTableFull, InvalidMmioRange, InvalidInterruptBase, PlatformFailure }
 
+/// Firmware-described PCI ECAM aperture registered by the platform bus
+/// bootstrap. HAL owns checked configuration-space access; callers cannot
+/// address a segment/bus outside an MCFG window.
+#[derive(Clone, Copy)]
+struct HalPciEcamWindow {
+    used: bool, virtual_base: u64, physical_base: u64,
+    segment: u16, bus_start: u8, bus_end: u8,
+}
+unsafe impl Send for HalPciEcamWindow {}
+impl HalPciEcamWindow {
+    const EMPTY: Self = Self { used:false, virtual_base:0, physical_base:0,
+        segment:0, bus_start:0, bus_end:0 };
+}
+const MAX_HAL_PCI_ECAM_WINDOWS: usize = 16;
+static HAL_PCI_ECAM_WINDOWS: IrqSpinLock<[HalPciEcamWindow; MAX_HAL_PCI_ECAM_WINDOWS]> =
+    IrqSpinLock::new([HalPciEcamWindow::EMPTY; MAX_HAL_PCI_ECAM_WINDOWS]);
+
+/// Register one already-mapped, uncached MCFG aperture with HAL.
+pub fn register_pci_ecam_window(
+    virtual_base:u64, physical_base:u64, segment:u16, bus_start:u8, bus_end:u8,
+) -> Result<(),HalError> {
+    if virtual_base==0 || physical_base==0 || virtual_base&0xfff!=0
+        || physical_base&0xfffff!=0 || bus_end<bus_start { return Err(HalError::InvalidMmioRange); }
+    let span=((bus_end as u64-bus_start as u64)+1).checked_mul(1<<20)
+        .ok_or(HalError::InvalidMmioRange)?;
+    virtual_base.checked_add(span).ok_or(HalError::InvalidMmioRange)?;
+    physical_base.checked_add(span).ok_or(HalError::InvalidMmioRange)?;
+    let mut windows=HAL_PCI_ECAM_WINDOWS.lock();
+    if windows.iter().any(|w|w.used&&w.segment==segment
+        &&w.bus_start<=bus_end&&bus_start<=w.bus_end) { return Err(HalError::InvalidTransition); }
+    let slot=windows.iter_mut().find(|w|!w.used).ok_or(HalError::PlatformFailure)?;
+    *slot=HalPciEcamWindow{used:true,virtual_base,physical_base,segment,bus_start,bus_end};
+    Ok(())
+}
+
+fn pci_ecam_register_address(segment:u16,bus:u8,device:u8,function:u8,offset:u16,width:u8)->Result<*mut u8,HalError>{
+    if device>=32||function>=8||offset as u32+width as u32>4096
+        ||!matches!(width,1|2|4)
+        ||(width==2&&offset&1!=0)||(width==4&&offset&3!=0) {
+        return Err(HalError::InvalidMmioRange);
+    }
+    let windows=HAL_PCI_ECAM_WINDOWS.lock();
+    let window=windows.iter().find(|w|w.used&&w.segment==segment&&bus>=w.bus_start&&bus<=w.bus_end)
+        .ok_or(HalError::InvalidMmioRange)?;
+    let bus_offset=((bus as u64-window.bus_start as u64)<<20)
+        |((device as u64)<<15)|((function as u64)<<12)|offset as u64;
+    let address=window.virtual_base.checked_add(bus_offset).ok_or(HalError::InvalidMmioRange)?;
+    Ok(address as *mut u8)
+}
+
+pub unsafe fn pci_config_read(segment:u16,bus:u8,device:u8,function:u8,offset:u16,width:u8)->Result<u32,HalError>{
+    let p=pci_ecam_register_address(segment,bus,device,function,offset,width)?;
+    Ok(unsafe{match width{1=>core::ptr::read_volatile(p) as u32,
+        2=>core::ptr::read_volatile(p.cast::<u16>()) as u32,
+        4=>core::ptr::read_volatile(p.cast::<u32>()),_=>return Err(HalError::InvalidMmioRange)}})
+}
+pub unsafe fn pci_config_write(segment:u16,bus:u8,device:u8,function:u8,offset:u16,width:u8,value:u32)->Result<(),HalError>{
+    let p=pci_ecam_register_address(segment,bus,device,function,offset,width)?;
+    unsafe{match width{1=>core::ptr::write_volatile(p,value as u8),
+        2=>core::ptr::write_volatile(p.cast::<u16>(),value as u16),
+        4=>core::ptr::write_volatile(p.cast::<u32>(),value),_=>return Err(HalError::InvalidMmioRange)}}
+    device_full_barrier();
+    Ok(())
+}
+
 /// Reserve a logical CPU slot for an ACPI-discovered APIC ID. Does not start it.
 /// Mark the bootstrap processor online in logical slot zero before AP discovery.
 pub fn initialize_bsp(apic_id: u32) -> Result<usize, HalError> {
