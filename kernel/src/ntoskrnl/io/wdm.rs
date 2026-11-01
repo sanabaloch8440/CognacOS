@@ -985,6 +985,11 @@ unsafe extern "win64" fn io_object_manager_finalizer(object:*mut c_void){unsafe{
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
+ // Close the loader's reference gate before device rundown. If clients still
+ // hold driver references, unload remains pending until they dereference.
+ if !crate::ntoskrnl::driver_loader::begin_driver_unload(
+  driver.cast::<crate::ntoskrnl::driver_loader::DriverObject>()
+ ) { return STATUS_PENDING; }
  let mut devices=[ptr::null_mut::<DeviceObject>();MAX_WDM_DEVICES];
  let count={
   let mut state=WDM.lock();
