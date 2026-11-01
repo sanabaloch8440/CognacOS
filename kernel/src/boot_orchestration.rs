@@ -9,9 +9,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::ntoskrnl::{
     cm::driver_config::ControlSetSelection,
-    io::pnp::{
-        self, PnpDeviceSnapshot, MAX_PNP_DEVICES, PNP_DEVICE_REMOVED, PNP_NO_PARENT,
-    },
+    pnp::{self, PnpDeviceSnapshot, MAX_PNP_DEVICES, PNP_DEVICE_REMOVED, PNP_NO_PARENT},
 };
 
 #[repr(u8)]
