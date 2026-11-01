@@ -750,11 +750,8 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
 
 #[repr(C)]
 struct XhciDriverExtensionHeader {
- magic:u64,size:u32,version:u32,mmio_base:u64,mmio_length:u64,device_object:u64,
- interrupt_vector:u32,max_slots:u32,
- hal:*const cognacos_hal_contract::HalServiceTable,
- device:*const cognacos_hal_contract::DeviceServiceTable,
- kernel_io:*const cognacos_hal_contract::KernelIoServiceTable,
+ magic:u64,size:u32,version:u32,mmio_physical:u64,mmio_length:u64,device_object:u64,
+ bus:u32,slot:u32,interrupt_vector:u32,max_slots:u32,interrupt_irql:u8,_padding:[u8;7],
  fdo_out:*mut u64,
  ready:core::sync::atomic::AtomicBool,
  interrupt_requested:core::sync::atomic::AtomicBool,
@@ -767,6 +764,9 @@ struct XhciDriverExtensionHeader {
  event_context:core::sync::atomic::AtomicU64,
  operational_offset:core::sync::atomic::AtomicU32,
  port_count:core::sync::atomic::AtomicU32,
+ mmio_virtual:core::sync::atomic::AtomicU64,
+ dma_adapter:core::sync::atomic::AtomicU64,
+ interrupt_object:core::sync::atomic::AtomicU64,
 }
 #[repr(C)]
 struct XhciDriverExtensionBacking {
@@ -970,9 +970,11 @@ fn bind_xhci_pe_driver()->bool {
         let extension=core::ptr::addr_of_mut!(XHCI_DRIVER_EXTENSION).cast::<XhciDriverExtensionHeader>();
         extension.write(XhciDriverExtensionHeader {
             magic:0x434f_474e_4143_5848, size:core::mem::size_of::<XhciDriverExtensionBacking>() as u32,
-            version:1, mmio_base:resources.bar_virtual, mmio_length:resources.bar_length,
-            device_object:resources.device_object, interrupt_vector:resources.interrupt_vector as u32,
-            max_slots:64, hal:hal_ptr, device:device_ptr, kernel_io:kernel_io_ptr, fdo_out:core::ptr::addr_of_mut!(XHCI_FDO_DEVICE),
+            version:1, mmio_physical:resources.bar_physical, mmio_length:resources.bar_length,
+            device_object:resources.device_object, bus:resources.bus as u32,
+            slot:((resources.device as u32)&0x1f)|(((resources.function as u32)&7)<<5),
+            interrupt_vector:resources.interrupt_vector as u32, max_slots:64, interrupt_irql:0x0d, _padding:[0;7],
+            fdo_out:core::ptr::addr_of_mut!(XHCI_FDO_DEVICE),
             ready:core::sync::atomic::AtomicBool::new(false),
             interrupt_requested:core::sync::atomic::AtomicBool::new(false),
             event_count:core::sync::atomic::AtomicU64::new(0),
@@ -984,6 +986,9 @@ fn bind_xhci_pe_driver()->bool {
             event_context:core::sync::atomic::AtomicU64::new(0),
             operational_offset:core::sync::atomic::AtomicU32::new(0),
             port_count:core::sync::atomic::AtomicU32::new(0),
+            mmio_virtual:core::sync::atomic::AtomicU64::new(0),
+            dma_adapter:core::sync::atomic::AtomicU64::new(0),
+            interrupt_object:core::sync::atomic::AtomicU64::new(0),
         });
         let driver=core::ptr::addr_of_mut!(XHCI_DRIVER_OBJECT).cast::<ntoskrnl::driver_loader::DriverObject>();
         driver.write(core::mem::MaybeUninit::<ntoskrnl::driver_loader::DriverObject>::zeroed().assume_init());
