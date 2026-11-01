@@ -233,6 +233,16 @@ jobs:
         run: cargo check --manifest-path drivers/ucx01020/Cargo.toml --lib
       - name: Test UCX object, request, cancellation and generation lifetimes
         run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Test USB WDM PnP, IRP/URB validation and power rundown
+        run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib wdm::tests
+      - name: Test UCX root-hub control requests and port-change bitmap
+        run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib root_hub::tests
+      - name: Test UCX bulk stream object rundown
+        run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib streams::tests
+      - name: Test xHCI transfer submission, Link TRB and DPC completion
+        run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib runtime::tests
+      - name: Test USB address-zero enumeration and child-PDO removal
+        run: cargo test --manifest-path drivers/usbhub3/Cargo.toml --target x86_64-unknown-linux-gnu --lib runtime::tests
       - name: Test USB xHCI port power-state transitions
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib power_state_tests
       - name: Test USB xHCI controller D0 exit and entry
