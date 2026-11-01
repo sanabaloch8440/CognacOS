@@ -42,6 +42,8 @@ pub struct XhciDriverExtension {
     pub command_completion_count: AtomicU64,
     pub transfer_completion_count: AtomicU64,
     runtime_lock: AtomicBool,
+    event_sink:core::sync::atomic::AtomicU64,
+    event_context:core::sync::atomic::AtomicU64,
     runtime: UnsafeCell<MaybeUninit<XhciRuntimeResources>>,
 }
 unsafe impl Sync for XhciDriverExtension {}
@@ -205,6 +207,12 @@ extern "C" fn xhci_dpc(context: u64) {
             xhci::TRB_TYPE_COMMAND_COMPLETION => { ext.command_completion_count.fetch_add(1, Ordering::Relaxed); }
             xhci::TRB_TYPE_TRANSFER_EVENT => { ext.transfer_completion_count.fetch_add(1, Ordering::Relaxed); }
             _ => {}
+        }
+        let sink=ext.event_sink.load(Ordering::Acquire);
+        if sink!=0 {
+            let context=ext.event_context.load(Ordering::Acquire);
+            let callback:unsafe extern "win64" fn(u64,*const xhci::Trb)=unsafe{core::mem::transmute(sink as usize)};
+            unsafe{callback(context,&event);}
         }
     });
     ext.runtime_lock.store(false, Ordering::Release);
