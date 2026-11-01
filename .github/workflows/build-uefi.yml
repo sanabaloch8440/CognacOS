@@ -1095,13 +1095,13 @@ jobs:
             # these optional inventory addresses inaccessible. A failed GDB
             # memory read must not abort the remaining CPU/stack/backtrace capture.
             python
-            import gdb
-            for expression in ("x/4gx 0xffff8000e0006070", "x/gx 0xffff8000e0064318"):
-                try:
-                    gdb.execute(expression)
-                except gdb.error as error:
-                    print("Optional PCI image memory inspection unavailable: " + str(error))
-            end
+          import gdb
+          for expression in ("x/4gx 0xffff8000e0006070", "x/gx 0xffff8000e0064318"):
+              try:
+                  gdb.execute(expression)
+              except gdb.error as error:
+                  print("Optional PCI image memory inspection unavailable: " + str(error))
+          end
             info threads
             thread apply all info registers rip rsp
             thread apply all info line *$rip
