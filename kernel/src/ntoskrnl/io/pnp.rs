@@ -376,7 +376,7 @@ pub unsafe fn import_pci_inventory(
 ) -> Result<usize, PnpError> {
     use crate::nt_abi::ntstatus::{STATUS_SUCCESS, STATUS_NOT_FOUND};
     let header = &interface.header;
-    if header.size as usize < core::mem::size_of::<crate::nt_abi::bus::PCI_BUS_INTERFACE>()
+    if (header.size as usize) < core::mem::size_of::<crate::nt_abi::bus::PCI_BUS_INTERFACE>()
         || header.version as u32 != crate::nt_abi::bus::PCI_BUS_INTERFACE_VERSION
         || header.context.is_null() {
         return Err(PnpError::InvalidFunction);
