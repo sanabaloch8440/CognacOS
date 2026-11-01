@@ -801,6 +801,8 @@ struct XhciDriverExtensionHeader {
  command_completion_count:core::sync::atomic::AtomicU64,
  transfer_completion_count:core::sync::atomic::AtomicU64,
  runtime_lock:core::sync::atomic::AtomicBool,
+ event_sink:core::sync::atomic::AtomicU64,
+ event_context:core::sync::atomic::AtomicU64,
 }
 #[repr(C)]
 struct XhciDriverExtensionBacking {
@@ -872,6 +874,8 @@ fn bind_xhci_pe_driver()->bool {
             command_completion_count:core::sync::atomic::AtomicU64::new(0),
             transfer_completion_count:core::sync::atomic::AtomicU64::new(0),
             runtime_lock:core::sync::atomic::AtomicBool::new(false),
+            event_sink:core::sync::atomic::AtomicU64::new(0),
+            event_context:core::sync::atomic::AtomicU64::new(0),
         });
         let driver=core::ptr::addr_of_mut!(XHCI_DRIVER_OBJECT).cast::<ntoskrnl::driver_loader::DriverObject>();
         driver.write(core::mem::MaybeUninit::<ntoskrnl::driver_loader::DriverObject>::zeroed().assume_init());
