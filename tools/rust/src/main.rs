@@ -140,8 +140,9 @@ fn main() {
         "reg-hive" => {
             let input = args.next().map(PathBuf::from).unwrap_or_else(|| root.join("registry/drivers/CognacOS-Drivers.reg"));
             let output = args.next().map(PathBuf::from).unwrap_or_else(|| root.join("build/registry/SYSTEM"));
-            if args.next().is_some() { fail!("usage: cognacos-tools reg-hive [input.reg] [output-hive]"); }
-            reg_hive::convert_file(&input, &output).unwrap_or_else(|e| fail!("{e}"));
+            let mut inputs = vec![input];
+            inputs.extend(args.map(PathBuf::from));
+            reg_hive::convert_files(&inputs, &output).unwrap_or_else(|e| fail!("{e}"));
         },
         "update-windows11-exports" => { let check = args.any(|x| x == "--check"); update_windows11_exports(check); },
         "check-ntdll-def" => check_ntdll_def(&args.next().map(PathBuf::from).unwrap_or(root.join("ntdll/exports/ntdll-x64.def"))),
