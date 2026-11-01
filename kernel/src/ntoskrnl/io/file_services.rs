@@ -424,7 +424,7 @@ unsafe extern "win64" fn file_object_finalizer(body: *mut c_void) {
 /// Resolve a process-owned Object Manager handle and pin the FILE_OBJECT for I/O.
 fn pin_handle(owner: u64, handle: usize) -> Result<*mut FILE_OBJECT, i32> {
     if handle == 0 { return Err(STATUS_INVALID_HANDLE); }
-    let body = ob::reference_by_handle(handle as *mut c_void, 0, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false)?;
+    let body = ob::reference_by_handle(handle as *mut c_void, 1, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false)?;
     let mut state = STATE.lock();
     let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, body.cast::<FILE_OBJECT>()) && slot.used && !slot.closing) else {
         drop(state);
