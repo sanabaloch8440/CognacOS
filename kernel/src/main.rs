@@ -48,6 +48,7 @@ const ACPI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/acpi.sys"
 const PCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pci.sys"));
 const USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhci.sys"));
 const UCX01020_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ucx01020.sys"));
+const USBHUB3_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbhub3.sys"));
 
 use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
 use cognacos_i8042prt::{Ps2KeyboardPort,PortIo,PowerAwarePortIo,PortError,controller_command,wait_output_full,wait_input_empty,CMD_READ_CONFIG,CMD_WRITE_CONFIG,CONFIG_KEYBOARD_IRQ,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
@@ -840,6 +841,70 @@ static mut UCX_ROOT_HUB_DEVICE:u64=0;
 static UCX_HUB_EVENT_SINK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static UCX_HUB_EVENT_CONTEXT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static mut UCX_REGISTRY_IMAGE_BUFFER:[u8;UCX01020_PE_IMAGE.len()]=[0;UCX01020_PE_IMAGE.len()];
+#[repr(C)]
+struct Usbhub3DriverExtensionHeader{
+ magic:u64,size:u32,version:u32,
+ kernel_io:*const cognacos_hal_contract::KernelIoServiceTable,
+ root_hub_device:u64,port_count:u32,
+ event_sink:*mut core::sync::atomic::AtomicU64,
+ event_context:*mut core::sync::atomic::AtomicU64,
+ hub_device_out:*mut u64,child_factory_out:*mut u64,
+}
+static mut USBHUB3_DRIVER_EXTENSION:core::mem::MaybeUninit<Usbhub3DriverExtensionHeader>=core::mem::MaybeUninit::uninit();
+static mut USBHUB3_DRIVER_OBJECT:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
+static mut USBHUB3_REGISTRY_IMAGE_BUFFER:[u8;USBHUB3_PE_IMAGE.len()]=[0;USBHUB3_PE_IMAGE.len()];
+static mut USBHUB3_DEVICE:u64=0;
+static mut USBHUB3_CHILD_FACTORY:u64=0;
+static USBHUB3_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+fn bind_usbhub3_pe_driver()->bool{
+ use core::sync::atomic::Ordering;
+ if USBHUB3_PE_IMAGE.is_empty()||UCX_ROOT_HUB_DEVICE==0{return false}
+ if USBHUB3_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return false}
+ unsafe{
+  let xhci=core::ptr::addr_of_mut!(XHCI_DRIVER_EXTENSION).cast::<XhciDriverExtensionHeader>();
+  let port_count=(*xhci).port_count.load(Ordering::Acquire);
+  if port_count==0||port_count>255{return false}
+  let io_ptr=core::ptr::addr_of_mut!(XHCI_KERNEL_IO_SERVICES).cast::<cognacos_hal_contract::KernelIoServiceTable>();
+  let ext=core::ptr::addr_of_mut!(USBHUB3_DRIVER_EXTENSION).cast::<Usbhub3DriverExtensionHeader>();
+  ext.write(Usbhub3DriverExtensionHeader{
+   magic:0x434f_474e_4143_4833,size:core::mem::size_of::<Usbhub3DriverExtensionHeader>() as u32,version:1,
+   kernel_io:io_ptr,root_hub_device:UCX_ROOT_HUB_DEVICE,port_count,
+   event_sink:core::ptr::addr_of_mut!(UCX_HUB_EVENT_SINK),
+   event_context:core::ptr::addr_of_mut!(UCX_HUB_EVENT_CONTEXT),
+   hub_device_out:core::ptr::addr_of_mut!(USBHUB3_DEVICE),
+   child_factory_out:core::ptr::addr_of_mut!(USBHUB3_CHILD_FACTORY),
+  });
+  let driver=core::ptr::addr_of_mut!(USBHUB3_DRIVER_OBJECT).cast::<ntoskrnl::driver_loader::DriverObject>();
+  driver.write(core::mem::MaybeUninit::<ntoskrnl::driver_loader::DriverObject>::zeroed().assume_init());
+  (*driver).size=core::mem::size_of::<ntoskrnl::driver_loader::DriverObject>() as i16;
+  (*driver).driver_extension=ext.cast::<core::ffi::c_void>();
+  let Some(system_bytes)=boot_hive_bytes("SYSTEM") else{return false};
+  let hive=match ntoskrnl::cm::hive::Hive::open(system_bytes){Ok(h)=>h,Err(_)=>return false};
+  const SERVICE:&[u16]=&[85,83,66,72,85,66,51];
+  const IMAGE_PATH:&[u16]=&[92,83,121,115,116,101,109,82,111,111,116,92,83,121,115,116,101,109,51,50,92,100,114,105,118,101,114,115,92,117,115,98,104,117,98,51,46,115,121,115];
+  let mut registry_path=[0u16;1024];
+  let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(USBHUB3_REGISTRY_IMAGE_BUFFER).cast::<u8>(),USBHUB3_PE_IMAGE.len());
+  let result=ntoskrnl::driver_loader::load_registered_service_with_resolver(
+   &hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
+   |image_path,out|{
+    let equal=image_path.len()==IMAGE_PATH.len()&&image_path.iter().zip(IMAGE_PATH).all(|(a,b)|{
+     let aa=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
+     let bb=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};aa==bb
+    });
+    if !equal||out.len()<USBHUB3_PE_IMAGE.len(){return None}
+    out[..USBHUB3_PE_IMAGE.len()].copy_from_slice(USBHUB3_PE_IMAGE);Some(USBHUB3_PE_IMAGE.len())
+   },ntoskrnl::resolve
+  );
+  match result{
+   Ok(image) if USBHUB3_DEVICE!=0&&USBHUB3_CHILD_FACTORY!=0=>{
+    serial_write(b"USBHUB3 bind: hub FDO attached to UCX root hub; child-PDO factory=");serial_write_hex(USBHUB3_CHILD_FACTORY);
+    serial_write(b" image=");serial_write_hex(image.image_base);serial_write(b"\\r\\n");true
+   },
+   _=>{serial_write(b"USBHUB3 bind: native hub driver or PDO callback registration failed.\\r\\n");false}
+  }
+ }
+}
+
 static UCX_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
 fn bind_ucx_pe_driver()->bool{
@@ -1019,6 +1084,7 @@ fn bind_xhci_pe_driver()->bool {
                 }
                 let _ = platform_drivers::mark_ready(platform_drivers::Stage::XhciController);
                 if !bind_ucx_pe_driver(){serial_write(b"USB stack: UCX root hub not bound; external USB enumeration remains disabled.\\r\\n");}
+                else if !bind_usbhub3_pe_driver(){serial_write(b"USB stack: usbhub3 not bound; child PDO enumeration remains unavailable.\\r\\n");}
                 let ext=&*extension;
                 serial_write(b"xHCI runtime: events="); serial_write_hex(ext.event_count.load(Ordering::Acquire));
                 serial_write(b" port_changes="); serial_write_hex(ext.port_change_count.load(Ordering::Acquire)); serial_write(b"\r\n");
