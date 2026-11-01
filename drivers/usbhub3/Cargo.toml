@@ -6,6 +6,7 @@ license = "GPL-2.0-or-later"
 [dependencies]
 cognacos-nt-abi = { path = "../../shared/nt-abi" }
 cognacos-hal-contract = { path = "../hal" }
+cognacos-ucx01020 = { path = "../ucx01020" }
 [lib]
 path = "src/lib.rs"
 [[bin]]
