@@ -1,13 +1,13 @@
 static IO_CANCEL_SPIN_LOCK:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
-#[unsafe(export_name="IoAcquireCancelSpinLock")]
+#[unsafe(export_name = "IoAcquireCancelSpinLock")]
 pub unsafe extern "win64" fn io_acquire_cancel_spin_lock(old_irql:*mut u8){
  if old_irql.is_null(){return}
  let old=unsafe{crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level()};
  while IO_CANCEL_SPIN_LOCK.compare_exchange_weak(false,true,core::sync::atomic::Ordering::Acquire,core::sync::atomic::Ordering::Relaxed).is_err(){core::hint::spin_loop();}
  unsafe{old_irql.write(old);}
 }
-#[unsafe(export_name="IoReleaseCancelSpinLock")]
+#[unsafe(export_name = "IoReleaseCancelSpinLock")]
 pub unsafe extern "win64" fn io_release_cancel_spin_lock(old_irql:u8){
  IO_CANCEL_SPIN_LOCK.store(false,core::sync::atomic::Ordering::Release);
  unsafe{crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql);}
