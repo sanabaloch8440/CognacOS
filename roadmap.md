@@ -83,6 +83,20 @@ See [SYSTEM hive and driver configuration](docs/system-hive-driver-configuration
 - [ ] Implement wait-all queue-entry reservation and scheduler-backed blocking waits; add WDK-style race/conformance tests.
 - [ ] Associate every user thread with a scheduler ThreadRecord; enable AVX/YMM only after all thread, trap, context-copy, and restore paths support the expanded XSTATE area.
 
+## P3 — ACPI and PCI bus drivers
+
+- [x] Keep ACPI parsing and PCI enumeration in independent `drivers/acpi` and `drivers/pci` crates/PE driver entry points; PCI.sys owns read-only ECAM inventory and Type-1 bridge topology, while the kernel owns PDO creation.
+- [x] Validate MCFG allocations, map firmware ECAM windows uncached, reject overlapping segment/bus windows, and register the mapped apertures with HAL's checked PCI configuration-space access API for kernel-side configuration operations.
+- [x] Add bounded standard PCI capability-list parsing for MSI and MSI-X, including cycle/pointer checks, message layout, table bounds, and malformed capability rejection.
+- [x] Add HAL MSI message construction and guarded MSI/MSI-X programming primitives; configuration is rejected until the interrupt vector has a registered HAL handler. xAPIC destination IDs above 255 remain unsupported by this path.
+- [ ] Route PCI.sys configuration reads/writes through HAL callbacks; the current PCI driver still performs checked volatile ECAM accesses through its mapped windows.
+- [ ] Load ACPI.sys as a native driver in the boot/system driver lifecycle and consume its versioned firmware interface instead of having bootstrap code call the ACPI parser library directly.
+- [ ] Implement AML namespace loading/evaluation, ACPI device discovery (_HID/_CID/_UID/_ADR), ACPI PDO creation, and publication into PnP BusRelations.
+- [ ] Implement recursive PCI bridge bus-number assignment and subordinate-bus scanning for firmware that leaves bridge bus numbers unconfigured; current enumeration validates and follows firmware-assigned bus windows.
+- [ ] Implement generic BAR sizing/assignment and PCI bridge I/O, memory, and prefetchable window programming, integrated with the PnP arbiter and rollback on failure. Current xHCI BAR probing is a narrowly scoped bootstrap path, not a general allocator.
+- [ ] Connect parsed MSI/MSI-X capabilities to PCI.sys resource negotiation, per-device HAL vector allocation, ISR/DPC registration, affinity, teardown, and interrupt-remapping policy. HAL programming primitives exist, but the PCI bus driver does not yet own this full lifecycle.
+- [ ] Add QEMU tests for multi-segment ECAM, nested bridges, unconfigured bridge windows, BAR exhaustion/conflicts, MSI/MSI-X delivery, ACPI namespace PDO enumeration, and hotplug/power transitions.
+
 ## P2 — Plug and Play manager
 
 - [x] Add a stable synthetic root-bus devnode and parent root-level PCI functions beneath it; preserve PCI segment/BDF identity and validated bridge topology.
