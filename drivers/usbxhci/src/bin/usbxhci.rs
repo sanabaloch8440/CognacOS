@@ -112,136 +112,148 @@ const MMIO_LIMIT: u64 = 0x10000;
 const USBSTS: u32 = 0x44;
 const USBSTS_INTERRUPT: u32 = 1 << 3;
 
-/// Kernel-populated, versioned xHCI handoff block stored in DriverObject.DriverExtension.
-/// The kernel must only publish this after PCI BAR mapping and safe DMA/IRQ services exist.
-/// The MMIO base is a mapped virtual address, never a PCI physical BAR address.
+/// PnP resource record only: no private HAL, DMA, or I/O service-table pointers.
 #[repr(C)]
 pub struct XhciDriverExtension {
-    pub magic: u64,
-    pub size: u32,
-    pub version: u32,
-    pub mmio_base: u64,
-    pub mmio_length: u64,
-    /// Stable PnP device-object address registered with the IOMMU requester table.
-    pub device_object: u64,
-    pub interrupt_vector: u32,
-    pub max_slots: u32,
-    pub hal: *const HalServiceTable,
-    pub device: *const DeviceServiceTable,
-    pub kernel_io: *const KernelIoServiceTable,
+    pub magic:u64,
+    pub size:u32,
+    pub version:u32,
+    pub mmio_physical:u64,
+    pub mmio_length:u64,
+    pub device_object:u64,
+    pub bus:u32,
+    pub slot:u32,
+    pub interrupt_vector:u32,
+    pub max_slots:u32,
+    pub interrupt_irql:u8,
+    _padding:[u8;7],
     pub fdo_out:*mut u64,
-    pub ready: AtomicBool,
-    pub interrupt_requested: AtomicBool,
-    pub event_count: AtomicU64,
-    pub port_change_count: AtomicU64,
-    pub command_completion_count: AtomicU64,
-    pub transfer_completion_count: AtomicU64,
-    runtime_lock: AtomicBool,
+    pub ready:AtomicBool,
+    pub interrupt_requested:AtomicBool,
+    pub event_count:AtomicU64,
+    pub port_change_count:AtomicU64,
+    pub command_completion_count:AtomicU64,
+    pub transfer_completion_count:AtomicU64,
+    runtime_lock:AtomicBool,
     event_sink:core::sync::atomic::AtomicU64,
     event_context:core::sync::atomic::AtomicU64,
     operational_offset:core::sync::atomic::AtomicU32,
     port_count:core::sync::atomic::AtomicU32,
-    runtime: UnsafeCell<MaybeUninit<XhciRuntimeResources>>,
+    mmio_virtual:AtomicU64,
+    dma_adapter:AtomicU64,
+    interrupt_object:AtomicU64,
+    runtime:UnsafeCell<MaybeUninit<XhciRuntimeResources>>,
 }
 unsafe impl Sync for XhciDriverExtension {}
 
-type DriverDispatch = unsafe extern "win64" fn(*mut c_void,*mut c_void)->i32;
+struct DmaAdapterPrefix {
+    version:u16,
+    size:u16,
+    operations:*const DmaOperationsPrefix,
+}
 #[repr(C)]
-struct DriverObject {
-    object_type:i16,size:i16,device_object:*mut c_void,flags:u32,
-    driver_start:*mut c_void,driver_size:u32,driver_section:*mut c_void,
-    driver_extension:*mut XhciDriverExtension,
-    driver_name:cognacos_nt_abi::object::UNICODE_STRING,
-    hardware_database:*mut cognacos_nt_abi::object::UNICODE_STRING,
-    fast_io_dispatch:*mut c_void,
-    driver_init:*mut c_void,driver_start_io:*mut c_void,
-    driver_unload:Option<unsafe extern "win64" fn(*mut c_void)>,
-    major_function:[Option<DriverDispatch>;28],
+struct DmaOperationsPrefix {
+    size:u32,
+    put_dma_adapter:usize,
+    allocate_common_buffer:Option<AllocateCommonBuffer>,
+    free_common_buffer:Option<FreeCommonBuffer>,
+    allocate_adapter_channel:usize,
+    flush_adapter_buffers:usize,
 }
-
-struct Platform<'a> { ext: &'a XhciDriverExtension, hal: &'a HalServiceTable, dev: &'a DeviceServiceTable }
-impl XhciRegisterIo for Platform<'_> {
-    fn read32(&mut self, offset: u32) -> Result<u32, ()> {
-        let end = (offset as u64).checked_add(4).ok_or(())?;
-        if end > self.ext.mmio_length || end > MMIO_LIMIT { return Err(()); }
-        let read = self.hal.read_mmio_u32.ok_or(())?;
-        let mut value = 0u32;
-        let status = unsafe { read(self.ext.mmio_base.checked_add(offset as u64).ok_or(())?, &mut value) };
-        if status.code == 0 { Ok(value) } else { Err(()) }
+struct Platform<'a>{ext:&'a XhciDriverExtension,maximum_dma_address:u64}
+impl Platform<'_>{
+    fn mmio(&self,offset:u32)->Result<*mut u32,()>{
+        let end=(offset as u64).checked_add(4).ok_or(())?;
+        if end>self.ext.mmio_length||end>MMIO_LIMIT{return Err(())}
+        let base=self.ext.mmio_virtual.load(Ordering::Acquire);
+        if base==0{return Err(())}
+        Ok((base.checked_add(offset as u64).ok_or(())?) as *mut u32)
     }
-    fn write32(&mut self, offset: u32, value: u32) -> Result<(), ()> {
-        let end = (offset as u64).checked_add(4).ok_or(())?;
-        if end > self.ext.mmio_length || end > MMIO_LIMIT { return Err(()); }
-        let write = self.hal.write_mmio_u32.ok_or(())?;
-        let status = unsafe { write(self.ext.mmio_base.checked_add(offset as u64).ok_or(())?, value) };
-        if status.code == 0 { Ok(()) } else { Err(()) }
+    fn dma_adapter(&self)->Result<*mut c_void,()>{
+        let p=self.ext.dma_adapter.load(Ordering::Acquire) as *mut c_void;
+        if p.is_null(){Err(())}else{Ok(p)}
     }
-    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()> {
-        let set = self.dev.set_bus_master.ok_or(())?;
-        let status = unsafe { set(self.ext.device_object, enabled) };
-        if status.code == 0 { Ok(()) } else { Err(()) }
+    fn set_bus_master(&self,enabled:bool)->Result<(),()>{
+        let mut command=[0u8;2];
+        let slot=self.ext.slot;
+        if unsafe{HalGetBusDataByOffset(5,self.ext.bus,slot,command.as_mut_ptr(),4,2)}!=2{return Err(())}
+        let mut value=u16::from_le_bytes(command);
+        if enabled{value|=1<<2}else{value&=!(1<<2)}
+        command=value.to_le_bytes();
+        if unsafe{HalSetBusDataByOffset(5,self.ext.bus,slot,command.as_ptr(),4,2)}!=2{return Err(())}
+        Ok(())
     }
 }
-impl XhciPlatform for Platform<'_> {
-    fn dma_mapping_ready(&self, allocation: DmaAllocation) -> bool {
-        // Validate the exact live mapping against this controller's requester
-        // domain. A successful allocation alone does not prove that the IOVA
-        // is currently mapped and pinned for this device.
-        let Some(validate) = self.dev.validate_dma else { return false; };
-        unsafe {
-            validate(
-                self.ext.device_object,
-                allocation.cpu_address,
-                allocation.device_address,
-                allocation.size,
-            ).code == 0
+impl XhciRegisterIo for Platform<'_>{
+    fn read32(&mut self,offset:u32)->Result<u32,()>{
+        let p=self.mmio(offset)?;
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let value=unsafe{p.read_volatile()};
+        core::sync::atomic::fence(Ordering::SeqCst);
+        if value==u32::MAX{Err(())}else{Ok(value)}
+    }
+    fn write32(&mut self,offset:u32,value:u32)->Result<(),()>{
+        let p=self.mmio(offset)?;
+        unsafe{p.write_volatile(value);}
+        core::sync::atomic::fence(Ordering::SeqCst);
+        Ok(())
+    }
+    fn set_bus_master(&mut self,enabled:bool)->Result<(),()>{self.set_bus_master(enabled)}
+}
+impl XhciPlatform for Platform<'_>{
+    fn dma_mapping_ready(&self,allocation:DmaAllocation)->bool{
+        allocation.cpu_address!=0&&allocation.device_address!=0&&allocation.size!=0
+            &&allocation.device_address.checked_add(allocation.size-1).is_some_and(|end|end<=self.maximum_dma_address)
+    }
+    fn allocate_dma(&mut self,size:u64,alignment:u64,maximum:u64)->Result<DmaAllocation,()>{
+        if size==0||size>u32::MAX as u64||alignment>4096||!alignment.is_power_of_two(){return Err(())}
+        let adapter=self.dma_adapter()?;
+        let mut logical=0i64;
+        let cpu=unsafe{HalAllocateCommonBuffer(adapter,size as u32,&mut logical,1)};
+        if cpu.is_null()||logical<=0{return Err(())}
+        let device=logical as u64;
+        if device.checked_add(size-1).is_none_or(|end|end>maximum||end>self.maximum_dma_address){
+            unsafe{HalFreeCommonBuffer(adapter,size as u32,logical,cpu,1);}
+            return Err(())
+        }
+        if (cpu as u64)&(alignment-1)!=0||(device&(alignment-1))!=0{
+            unsafe{HalFreeCommonBuffer(adapter,size as u32,logical,cpu,1);}
+            return Err(())
+        }
+        Ok(DmaAllocation{cpu_address:cpu as u64,device_address:device,size})
+    }
+    fn free_dma(&mut self,allocation:DmaAllocation)->Result<(),()>{
+        let adapter=self.dma_adapter()?;
+        if allocation.cpu_address==0||allocation.device_address==0||allocation.size==0||allocation.size>u32::MAX as u64{return Err(())}
+        unsafe{HalFreeCommonBuffer(adapter,allocation.size as u32,allocation.device_address as i64,allocation.cpu_address as *mut c_void,1);}
+        Ok(())
+    }
+    fn register_interrupt(&mut self)->Result<(),()>{
+        self.ext.interrupt_requested.store(true,Ordering::Release);Ok(())
+    }
+    fn unregister_interrupt(&mut self){
+        let object=self.ext.interrupt_object.swap(0,Ordering::AcqRel) as *mut c_void;
+        if !object.is_null(){unsafe{IoDisconnectInterrupt(object);}}
+    }
+    fn set_interrupt_enabled(&mut self,enabled:bool)->Result<(),()>{
+        if enabled{
+            if !self.ext.ready.load(Ordering::Acquire)&&self.ext.interrupt_object.load(Ordering::Acquire)==0{
+                return Err(())
+            }
+            if self.ext.interrupt_object.load(Ordering::Acquire)!=0{return Ok(())}
+            let mut object=core::ptr::null_mut();
+            let status=unsafe{IoConnectInterrupt(&mut object,Some(xhci_isr),self.ext as *const _ as *mut c_void,
+                core::ptr::null_mut(),self.ext.interrupt_vector,self.ext.interrupt_irql,
+                self.ext.interrupt_irql,0,0,u64::MAX,0)};
+            if status<0||object.is_null(){return Err(())}
+            self.ext.interrupt_object.store(object as u64,Ordering::Release);
+            Ok(())
+        }else{
+            let object=self.ext.interrupt_object.swap(0,Ordering::AcqRel) as *mut c_void;
+            if !object.is_null(){unsafe{IoDisconnectInterrupt(object);}}
+            Ok(())
         }
     }
-
-    fn allocate_dma(&mut self, size: u64, alignment: u64, maximum: u64) -> Result<DmaAllocation, ()> {
-        let allocate = self.dev.allocate_dma.ok_or(())?;
-        let mut cpu = 0u64;
-        let mut device = 0u64;
-        let status = unsafe { allocate(self.ext.device_object, size, alignment, maximum, 7, &mut cpu, &mut device) };
-        if status.code != 0 || cpu == 0 || device == 0 { return Err(()); }
-        Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
-    }
-    fn free_dma(&mut self, allocation: DmaAllocation) -> Result<(), ()> {
-        // A missing release service or failed HAL release means the allocation
-        // may still be mapped/reachable by the controller. Propagate failure so
-        // the xHCI core can fail closed instead of recycling potentially live DMA.
-        let free = self.dev.free_dma.ok_or(())?;
-        let status = unsafe {
-            free(
-                self.ext.device_object,
-                allocation.cpu_address,
-                allocation.device_address,
-                allocation.size,
-            )
-        };
-        if status.code == 0 { Ok(()) } else { Err(()) }
-    }
-    fn register_interrupt(&mut self) -> Result<(), ()> {
-        let register = self.dev.register_interrupt.ok_or(())?;
-        let status = unsafe { register(self.ext.interrupt_vector, self.ext as *const _ as u64,
-            Some(xhci_isr), Some(xhci_dpc)) };
-        if status.code == 0 { Ok(()) } else { Err(()) }
-    }
-    fn unregister_interrupt(&mut self) {
-        if let Some(unregister) = self.dev.unregister_interrupt {
-            let _ = unsafe { unregister(self.ext.interrupt_vector, self.ext as *const _ as u64) };
-        }
-    }
-    fn set_interrupt_enabled(&mut self, enabled: bool) -> Result<(), ()> {
-        if enabled && !self.ext.ready.load(Ordering::Acquire) {
-            self.ext.interrupt_requested.store(true, Ordering::Release);
-            return Ok(());
-        }
-        let set = self.dev.set_interrupt_enabled.ok_or(())?;
-        let status = unsafe { set(self.ext.interrupt_vector, enabled) };
-        if status.code == 0 { Ok(()) } else { Err(()) }
-    }
-
 }
 
 static XHCI_FDO:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
