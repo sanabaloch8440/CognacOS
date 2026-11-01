@@ -638,6 +638,27 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
 pub unsafe extern "win64" fn IoPnPEnumerateBus(bus:*mut DeviceObject)->i32{
  unsafe{IoPnPDispatchLifecycle(bus,0x07,ptr::null(),ptr::null())}
 }
+
+/// Retrieve a child PDO already published by a completed BusRelations request.
+/// The caller owns no reference from this query; the PnP relation table retains
+/// the PDO until a later relation update or explicit device removal.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoPnPQueryBusChild(
+ bus:*mut DeviceObject,index:u32,output:*mut *mut DeviceObject,
+)->i32 {
+ if bus.is_null()||output.is_null(){return STATUS_INVALID_PARAMETER}
+ unsafe{output.write(ptr::null_mut());}
+ let manager=PNP_MANAGER.lock();
+ let mut ordinal=0u32;
+ for relation in manager.relations.iter().filter(|r|r.used&&r.bus==bus){
+  if ordinal==index{
+   unsafe{output.write(relation.child);}
+   return STATUS_SUCCESS;
+  }
+  ordinal=ordinal.saturating_add(1);
+ }
+ STATUS_OBJECT_NAME_NOT_FOUND
+}
 /// Start a PnP device by sending its real START_DEVICE IRP with the
 /// allocated and translated resource lists supplied by the bus/resource arbiter.
 #[unsafe(no_mangle)]
