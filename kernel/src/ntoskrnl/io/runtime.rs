@@ -412,7 +412,7 @@ pub use wdm::{
     io_delete_device, io_unload_driver, io_detach_device, io_attach_device_to_device_stack,
     io_get_attached_device, io_get_device_attachment_base_ref, io_get_lower_device_object,
     io_initialize_irp, io_copy_current_irp_stack_location_to_next,
-    io_skip_current_irp_stack_location, io_set_completion_routine, io_set_cancel_routine, io_cancel_irp, io_reuse_irp, lookup_device_object, io_register_file_system,
+    io_skip_current_irp_stack_location, io_reuse_irp, lookup_device_object, io_register_file_system,
     io_unregister_file_system, io_create_symbolic_link, io_delete_symbolic_link,
     io_reference_device_object, io_dereference_device_object, io_acquire_device_remove_lock,
     io_release_device_remove_lock, io_begin_device_power_transition, io_complete_device_power_transition,
