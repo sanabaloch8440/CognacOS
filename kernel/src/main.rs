@@ -829,6 +829,7 @@ static mut XHCI_DRIVER_OBJECT:core::mem::MaybeUninit<ntoskrnl::driver_loader::Dr
 struct UcxDriverExtensionHeader{
  magic:u64,size:u32,version:u32,parent_bus_device:u64,
  kernel_io:*const cognacos_hal_contract::KernelIoServiceTable,
+ device_services:*const cognacos_hal_contract::DeviceServiceTable,dma_device_object:u64,
  hal:*const cognacos_hal_contract::HalServiceTable,
  event_sink:*mut core::sync::atomic::AtomicU64,
  event_context:*mut core::sync::atomic::AtomicU64,
@@ -925,7 +926,7 @@ fn bind_ucx_pe_driver()->bool{
   let ext=core::ptr::addr_of_mut!(UCX_DRIVER_EXTENSION).cast::<UcxDriverExtensionHeader>();
   ext.write(UcxDriverExtensionHeader{
    magic:0x434f_474e_4143_5543,size:core::mem::size_of::<UcxDriverExtensionHeader>() as u32,version:1,parent_bus_device:XHCI_FDO_DEVICE,
-   kernel_io:io_ptr,hal:hal_ptr,
+   kernel_io:io_ptr,device_services:core::ptr::addr_of_mut!(XHCI_DEVICE_SERVICES).cast::<cognacos_hal_contract::DeviceServiceTable>(),dma_device_object:(*xhci).device_object,hal:hal_ptr,
    event_sink:core::ptr::addr_of_mut!((*xhci).event_sink),
    event_context:core::ptr::addr_of_mut!((*xhci).event_context),
    mmio_base:(*xhci).mmio_base,operational_offset,port_count,
