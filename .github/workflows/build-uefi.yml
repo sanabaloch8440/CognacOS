@@ -537,6 +537,7 @@ jobs:
           build_driver kbdhid drivers/kbdhid kbdhid 0xffff800150000000 kbdhid.sys
           build_driver i8042prt drivers/i8042prt i8042prt 0xffff800160000000 i8042prt.sys
           build_driver usbxhci drivers/usbxhci usbxhci 0xffff800180000000 usbxhci.sys\n          build_driver ucx01020 drivers/ucx01020 ucx01020 0xffff8001a0000000 ucx01020.sys
+          build_driver usbhub3 drivers/usbhub3 usbhub3 0xffff800190000000 usbhub3.sys
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C code-model=large -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/storahci.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-storahci --release --bin storahci
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-storahci/x86_64-unknown-none/release/storahci build/drivers/storahci.sys --image-base=0xffff800110000000 --dll
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C code-model=large -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/stornvme.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-stornvme --release --bin stornvme
