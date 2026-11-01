@@ -664,13 +664,8 @@ pub unsafe extern "win64" fn io_connect_interrupt(
         slot.context.store(0,core::sync::atomic::Ordering::Release);
         return STATUS_NOT_SUPPORTED;
     }
-    if unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,true)}.is_err(){
-        slot.active.store(false,core::sync::atomic::Ordering::Release);
-        let _=crate::hal::release_device_interrupt_vector(vector as u8);
-        slot.routine.store(0,core::sync::atomic::Ordering::Release);
-        slot.context.store(0,core::sync::atomic::Ordering::Release);
-        return STATUS_NOT_SUPPORTED;
-    }
+    // Keep the device route masked. The driver enables it through the HAL
+    // export only after its controller state and ISR/DPC are fully initialized.
     unsafe{interrupt_object_out.write(object);}
     STATUS_SUCCESS
 }
