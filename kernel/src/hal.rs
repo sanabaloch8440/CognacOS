@@ -1119,6 +1119,58 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
     }
 }
 
+// Opaque-pointer adapters keep the driver-facing ABI independent of the
+// kernel's private Rust wrapper types while forwarding to the live WDM manager.
+unsafe extern "win64" fn kernel_io_complete_irp(
+    irp:*mut cognacos_nt_abi::io::IRP,priority_boost:i8
+) { unsafe { crate::io::io_complete_request(irp.cast(),priority_boost); } }
+unsafe extern "win64" fn kernel_io_create_device(
+    driver:*mut core::ffi::c_void,extension_size:u32,
+    name:*mut cognacos_nt_abi::object::UNICODE_STRING,device_type:u32,
+    characteristics:u32,exclusive:u8,output:*mut *mut core::ffi::c_void
+)->i32 {
+    if output.is_null(){return cognacos_nt_abi::ntstatus::STATUS_INVALID_PARAMETER}
+    let mut device=core::ptr::null_mut();
+    let status=unsafe{crate::io::io_create_device(driver.cast(),extension_size,name,device_type,characteristics,exclusive,&mut device)};
+    unsafe{output.write(device.cast())};status
+}
+unsafe extern "win64" fn kernel_io_delete_device(device:*mut core::ffi::c_void) {
+    unsafe{crate::io::io_delete_device(device.cast());}
+}
+unsafe extern "win64" fn kernel_io_call_driver(device:*mut core::ffi::c_void,irp:*mut core::ffi::c_void)->i32 {
+    unsafe{crate::io::io_call_driver(device.cast(),irp.cast())}
+}
+unsafe extern "win64" fn kernel_io_allocate_irp(stack_size:i8,charge_quota:u8)->*mut core::ffi::c_void {
+    unsafe{crate::io::io_allocate_irp(stack_size,charge_quota).cast()}
+}
+unsafe extern "win64" fn kernel_io_current_stack(irp:*mut core::ffi::c_void)->*mut core::ffi::c_void {
+    unsafe{crate::io::io_get_current_irp_stack_location(irp.cast()).cast()}
+}
+unsafe extern "win64" fn kernel_io_next_stack(irp:*mut core::ffi::c_void)->*mut core::ffi::c_void {
+    unsafe{crate::io::io_get_next_irp_stack_location(irp.cast()).cast()}
+}
+unsafe extern "win64" fn kernel_io_complete_status(
+    irp:*mut core::ffi::c_void,status:i32,information:usize,priority_boost:i8
+) {
+    unsafe{crate::io::io_complete_irp_status(irp.cast(),status,information,priority_boost);}
+}
+/// Live WDM service table for native drivers. Every callback reaches the same
+/// DEVICE_OBJECT/IRP tables used by the kernel's IoCallDriver/PnP manager.
+pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceTable {
+    cognacos_hal_contract::KernelIoServiceTable{
+        size:core::mem::size_of::<cognacos_hal_contract::KernelIoServiceTable>() as u32,
+        version:cognacos_hal_contract::KERNEL_IO_SERVICES_VERSION,
+        complete_irp:Some(kernel_io_complete_irp),
+        create_device:Some(kernel_io_create_device),
+        delete_device:Some(kernel_io_delete_device),
+        call_driver:Some(kernel_io_call_driver),
+        allocate_irp:Some(kernel_io_allocate_irp),
+        current_stack_location:Some(kernel_io_current_stack),
+        next_stack_location:Some(kernel_io_next_stack),
+        complete_irp_status:Some(kernel_io_complete_status),
+    }
+}
+
 #[cfg(test)]
 mod driver_service_publication_tests {
     use super::*;
