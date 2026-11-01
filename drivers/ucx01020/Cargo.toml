@@ -7,6 +7,11 @@ description = "CognacOS UCX 1.2.0-compatible USB host-controller extension core"
 
 [dependencies]
 cognacos-nt-abi = { path = "../../shared/nt-abi" }
+cognacos-hal-contract = { path = "../hal" }
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "ucx01020"
+path = "src/bin/ucx01020.rs"
