@@ -3,7 +3,7 @@
 
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
-use cognacos_nt_abi::{io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
+use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
 const HANDOFF_MAGIC: u64 = 0x434f_474e_4143_5043; // COGNACPC
 const HANDOFF_VERSION: u32 = 1;
@@ -156,6 +156,85 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     }
     HANDOFF.store(handoff as *const _ as u64, Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
+    STATUS_SUCCESS
+}
+
+unsafe extern "win64" fn read_config(
+    context: PVOID, segment: u16, bus: u8, device: u8, function: u8,
+    offset: u16, width: u8, value: *mut u32,
+) -> i32 {
+    if context.is_null() || value.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    let handoff = unsafe { &*(context as *const PciDriverHandoff) };
+    let Some(window) = handoff.windows[..handoff.window_count as usize]
+        .iter().find(|w| w.segment == segment && bus >= w.bus_start && bus <= w.bus_end) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let result = match width {
+        1 => unsafe { window.read_u8(segment, bus, device, function, offset) }.map(u32::from),
+        2 => unsafe { window.read_u16(segment, bus, device, function, offset) }.map(u32::from),
+        4 => unsafe { window.read_u32(segment, bus, device, function, offset) },
+        _ => return STATUS_INVALID_PARAMETER,
+    };
+    match result {
+        Ok(v) => { unsafe { value.write(v); } STATUS_SUCCESS }
+        Err(error) => pci::error_to_ntstatus(error),
+    }
+}
+
+unsafe extern "win64" fn write_config(
+    context: PVOID, segment: u16, bus: u8, device: u8, function: u8,
+    offset: u16, width: u8, value: u32,
+) -> i32 {
+    if context.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    let handoff = unsafe { &*(context as *const PciDriverHandoff) };
+    let Some(window) = handoff.windows[..handoff.window_count as usize]
+        .iter().find(|w| w.segment == segment && bus >= w.bus_start && bus <= w.bus_end) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let result = (|| {
+        let address = window.register_address(segment, bus, device, function, offset)?;
+        match width {
+            1 => unsafe { core::ptr::write_volatile(address, value as u8); },
+            2 if offset & 1 == 0 => unsafe { core::ptr::write_volatile(address.cast::<u16>(), value as u16); },
+            4 if offset & 3 == 0 => unsafe { core::ptr::write_volatile(address.cast::<u32>(), value); },
+            _ => return Err(pci::PciError::InvalidOffset),
+        }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        Ok(())
+    })();
+    match result {
+        Ok(()) => STATUS_SUCCESS,
+        Err(error) => pci::error_to_ntstatus(error),
+    }
+}
+
+/// Return PCI.sys' versioned configuration-space interface. The interface
+/// exposes only checked ECAM access; resource assignment remains a PnP duty.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciGetBusInterface(
+    output: *mut PCI_BUS_INTERFACE,
+) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    let context = HANDOFF.load(Ordering::Acquire) as PVOID;
+    if context.is_null() { return STATUS_DEVICE_NOT_READY; }
+    unsafe {
+        output.write(PCI_BUS_INTERFACE {
+            header: INTERFACE_HEADER {
+                size: core::mem::size_of::<PCI_BUS_INTERFACE>() as u16,
+                version: PCI_BUS_INTERFACE_VERSION as u16,
+                context,
+                interface_reference: None,
+                interface_dereference: None,
+            },
+            read_config: Some(read_config),
+            write_config: Some(write_config),
+        });
+    }
     STATUS_SUCCESS
 }
 
