@@ -3149,6 +3149,17 @@ mod wdm_tests {
  }
 
  #[test]
+ fn pnp_manager_dispatches_query_resources_and_requirements_irps() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[0x1b]=Some(pnp_start_complete_success);
+  assert_eq!(unsafe{IoPnPQueryResources(device)},STATUS_SUCCESS);
+  assert_eq!(unsafe{IoPnPQueryResourceRequirements(device)},STATUS_SUCCESS);
+  unsafe{io_delete_device(device);}
+ }
+
+ #[test]
  fn pnp_manager_sends_real_start_stop_and_ordered_remove_irps() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
   let mut device:*mut DeviceObject=ptr::null_mut();
