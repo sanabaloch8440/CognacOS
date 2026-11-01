@@ -109,7 +109,7 @@ pub mod bus {
     use crate::ntstatus::NTSTATUS;
 
     pub const ACPI_FIRMWARE_INTERFACE_VERSION: u32 = 1;
-    pub const PCI_BUS_INTERFACE_VERSION: u32 = 2;
+    pub const PCI_BUS_INTERFACE_VERSION: u32 = 3;
 
     /// Stable interface identifiers used by IRP_MN_QUERY_INTERFACE.
     #[repr(C)]
@@ -274,6 +274,31 @@ pub mod bus {
     pub type PPCI_QUERY_FUNCTION = Option<
         unsafe extern "win64" fn(context: PVOID, index: u32, output: *mut PCI_DEVICE_INFORMATION) -> NTSTATUS,
     >;
+    /// xHCI endpoint information discovered by pci.sys. BAR sizing and
+    /// mapping remain kernel resource-arbitration responsibilities.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct PCI_XHCI_INFORMATION {
+        pub segment: u16,
+        pub root_bus: u8,
+        pub bus: u8,
+        pub device: u8,
+        pub function: u8,
+        pub vendor_id: u16,
+        pub device_id: u16,
+        pub command: u16,
+        pub interrupt_line: u8,
+        pub interrupt_pin: u8,
+        pub bar_is_64bit: u8,
+        pub bar_prefetchable: u8,
+        pub reserved: u16,
+        pub bar_physical: u64,
+    }
+
+    pub type PPCI_QUERY_XHCI = Option<
+        unsafe extern "win64" fn(context: PVOID, index: u32, output: *mut PCI_XHCI_INFORMATION) -> NTSTATUS,
+    >;
+
     pub type PPCI_QUERY_BRIDGE = Option<
         unsafe extern "win64" fn(context: PVOID, index: u32, output: *mut PCI_BRIDGE_INFORMATION) -> NTSTATUS,
     >;
@@ -287,6 +312,7 @@ pub mod bus {
         pub query_counts: PPCI_QUERY_COUNTS,
         pub query_function: PPCI_QUERY_FUNCTION,
         pub query_bridge: PPCI_QUERY_BRIDGE,
+        pub query_xhci: PPCI_QUERY_XHCI,
     }
 
     #[cfg(test)]
@@ -302,7 +328,8 @@ pub mod bus {
                 assert_eq!(core::mem::offset_of!(INTERFACE_HEADER, context), 0x08);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
                 assert_eq!(core::mem::size_of::<PCI_BRIDGE_INFORMATION>(), 0x08);
-                assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x48);
+                assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x50);
+                assert_eq!(core::mem::size_of::<PCI_XHCI_INFORMATION>(), 0x20);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INFORMATION>(), 0x12);
             }
         }
