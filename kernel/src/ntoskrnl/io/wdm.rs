@@ -1075,7 +1075,7 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
  // Stop new filesystem mount discovery before dropping the control device.
  unsafe{io_unregister_file_system(device);}
- let mounted_vpb={
+ let (mounted_vpb,mount_in_progress)={
   let mut state=WDM.lock();
   match state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) {
    Some(slot) if !slot.object.vpb.is_null() => {
@@ -1083,20 +1083,21 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
     let mut vpb_irql=0u8;
     unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
     let is_mounted=unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0};
-    if is_mounted {
+    let mounting=slot.mount_in_progress;
+    if is_mounted||mounting {
      unsafe{(*vpb).flags|=crate::nt_abi::io::VPB_REMOVE_PENDING;}
      slot.deleting=true;
     }
     unsafe{io_release_vpb_spin_lock(vpb_irql);}
-    is_mounted
+    (is_mounted,mounting)
    }
-   _=>false
+   _=>(false,false)
   }
  };
+ if mount_in_progress{return}
  if mounted_vpb {
-  // Do not free a physical device while its mounted filesystem still owns
-  // the volume association. A pending dismount is completed asynchronously;
-  // PnP removal can retry IoDeleteDevice after that completion.
+  // Keep the physical device alive until its filesystem has accepted the
+  // dismount IRP; asynchronous completion retries deletion automatically.
   if io_dismount_volume(device)!=STATUS_SUCCESS{return}
  }
  let _ = crate::ntoskrnl::ob::runtime::unregister_object(device.cast());
@@ -2008,11 +2009,12 @@ static FILESYSTEMS:IrqSpinLock<FileSystemRegistry>=IrqSpinLock::new(FileSystemRe
 unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,context:*mut c_void)->i32 {
  if irp.is_null()||context.is_null(){return STATUS_MORE_PROCESSING_REQUIRED}
  let vpb=context.cast::<Vpb>();
+ let mut retry_device=ptr::null_mut();
  let mut status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
  if status>=0 {
   let mut state=WDM.lock();
   let real_index_any=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb));
-  let real_index=real_index_any.filter(|i|!state.devices[*i].deleting);
+  let real_index=real_index_any;
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let volume=unsafe{(*vpb).device_object};
@@ -2036,10 +2038,16 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
    }
   }
   unsafe{io_release_vpb_spin_lock(vpb_irql);}
-  if let Some(ri)=real_index_any {state.devices[ri].mount_in_progress=false;}
+  if let Some(ri)=real_index_any {
+   state.devices[ri].mount_in_progress=false;
+   if state.devices[ri].deleting {retry_device=ptr::addr_of_mut!(state.devices[ri].object);}
+  }
  } else {
   let mut state=WDM.lock();
-  if let Some(ri)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb)){state.devices[ri].mount_in_progress=false;}
+  if let Some(ri)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb)){
+   state.devices[ri].mount_in_progress=false;
+   if state.devices[ri].deleting {retry_device=ptr::addr_of_mut!(state.devices[ri].object);}
+  }
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   unsafe{
@@ -2049,6 +2057,7 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
   unsafe{io_release_vpb_spin_lock(vpb_irql);}
  }
  unsafe{io_free_irp(irp);}
+ if !retry_device.is_null(){unsafe{io_delete_device(retry_device);}}
  STATUS_MORE_PROCESSING_REQUIRED
 }
 
