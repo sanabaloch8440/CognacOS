@@ -353,7 +353,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     if driver.is_null() { return STATUS_INVALID_PARAMETER; }
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
     if object.driver_extension.is_null() { return STATUS_INVALID_PARAMETER; }
-    let handoff = unsafe { &*(object.driver_extension as *const PciDriverHandoff) };
+    let handoff = unsafe { &mut *(object.driver_extension as *mut PciDriverHandoff) };
     if handoff.magic != HANDOFF_MAGIC || handoff.version != HANDOFF_VERSION
         || (handoff.size as usize) < core::mem::size_of::<PciDriverHandoff>()
         || handoff.window_count == 0 || handoff.window_count as usize > MAX_WINDOWS {
@@ -371,37 +371,36 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         }
     }
     let mut mapped_count = 0usize;
+    let mut mapped_bases = [0u64; MAX_WINDOWS];
+    let mut mapped_lengths = [0u64; MAX_WINDOWS];
     for i in 0..handoff.window_count as usize {
-        let window = &mut (*(object.driver_extension as *mut PciDriverHandoff)).windows[i];
+        let window = &mut handoff.windows[i];
         let span = (window.bus_end as u64 - window.bus_start as u64 + 1) << 20;
         let Ok(physical) = i64::try_from(window.physical_base) else {
             for prior in 0..mapped_count {
-                let old = &handoff.windows[prior];
-                let old_span = (old.bus_end as u64 - old.bus_start as u64 + 1) << 20;
-                unsafe { MmUnmapIoSpace(old.virtual_base as PVOID, old_span); }
+                unsafe { MmUnmapIoSpace(mapped_bases[prior] as PVOID, mapped_lengths[prior]); }
             }
             return STATUS_INVALID_PARAMETER;
         };
         let mapped = unsafe { MmMapIoSpace(physical, span, 0) };
         if mapped.is_null() {
             for prior in 0..mapped_count {
-                let old = &handoff.windows[prior];
-                let old_span = (old.bus_end as u64 - old.bus_start as u64 + 1) << 20;
-                unsafe { MmUnmapIoSpace(old.virtual_base as PVOID, old_span); }
+                unsafe { MmUnmapIoSpace(mapped_bases[prior] as PVOID, mapped_lengths[prior]); }
             }
             return STATUS_INSUFFICIENT_RESOURCES;
         }
+        mapped_bases[mapped_count] = mapped as u64;
+        mapped_lengths[mapped_count] = span;
+        mapped_count += 1;
         window.virtual_base = mapped as u64;
         window.config_context = core::ptr::null_mut();
         window.read_config = None;
         window.write_config = None;
-        mapped_count += 1;
     }
-    let handoff_mut = unsafe { &mut *(object.driver_extension as *mut PciDriverHandoff) };
-    handoff_mut.pdo_context = core::ptr::null_mut();
-    handoff_mut.create_pdo = None;
-    handoff_mut.delete_pdo = None;
-    HANDOFF.store(handoff_mut as *mut _ as u64, Ordering::Release);
+    handoff.pdo_context = core::ptr::null_mut();
+    handoff.create_pdo = None;
+    handoff.delete_pdo = None;
+    HANDOFF.store(handoff as *mut _ as u64, Ordering::Release);
     DRIVER_OBJECT.store(driver as u64, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
     object.driver_unload = Some(driver_unload);
