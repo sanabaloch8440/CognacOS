@@ -4,6 +4,16 @@ use crate::{ProducerRing,Trb,TransferError,TransferRequest,TransferResult,Transf
 use core::sync::atomic::{fence,Ordering};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RuntimeError{InvalidRequest,QueueFull,Busy,Ring(crate::XhciError),Transfer(TransferError),PublishFailed,DoorbellFailed,StaleCompletion}
+
+/// Proof that controller-wide reset/stop has completed, bus mastering is
+/// disabled, and ISR/DPC processing can no longer touch the event or transfer rings.
+pub struct ControllerDmaQuiesced { _private:() }
+impl ControllerDmaQuiesced {
+ /// # Safety
+ /// Caller must establish controller halt, PCI bus-master disable, device DMA
+ /// revocation/IOMMU invalidation, and interrupt/DPC synchronization.
+ pub unsafe fn after_controller_halt_and_dma_fence()->Self{Self{_private:()}}
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct TransferToken{pub request_id:u64,pub trb_dma:u64,pub slot_id:u8,pub endpoint_id:u8,pub generation:u32}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -22,7 +32,7 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
  pub fn generation(&self)->u32{self.generation}
  pub fn outstanding(&self)->usize{self.tracker.len()}
  pub fn stop_submissions(&mut self){self.stopped=true;}
- pub fn restart(&mut self,generation:u32)->Result<(),RuntimeError>{
+ pub fn restart(&mut self,generation:u32,_q:&ControllerDmaQuiesced)->Result<(),RuntimeError>{
   if self.tracker.len()!=0{return Err(RuntimeError::Busy)}
   self.pending=[Pending::EMPTY;R];self.generation=generation;self.stopped=false;Ok(())
  }
