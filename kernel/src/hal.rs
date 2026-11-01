@@ -1210,6 +1210,13 @@ unsafe extern "win64" fn kernel_io_publish_bus_relations(
     unsafe{crate::io::wdm::IoPnPProcessBusRelations(bus.cast(),(&relations as *const KernelDeviceRelations).cast())}
 }
 
+unsafe extern "win64" fn kernel_io_set_completion(
+    irp:*mut core::ffi::c_void,
+    routine:Option<cognacos_hal_contract::IoCompletionRoutine>,
+    context:*mut core::ffi::c_void,success:u8,error:u8,cancel:u8
+){
+    unsafe{crate::io::io_set_completion_routine(irp.cast(),routine,context,success,error,cancel);}
+}
 unsafe extern "win64" fn kernel_io_mark_bus_pdo(device:*mut core::ffi::c_void)->i32{
     unsafe{crate::io::io_mark_bus_enumerated_pdo(device.cast())}
 }
@@ -1242,6 +1249,7 @@ pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceT
         skip_current_stack:Some(kernel_io_skip_current_stack),
         free_irp:Some(kernel_io_free_irp),
         mark_bus_enumerated_pdo:Some(kernel_io_mark_bus_pdo),
+        set_completion_routine:Some(kernel_io_set_completion),
     }
 }
 
