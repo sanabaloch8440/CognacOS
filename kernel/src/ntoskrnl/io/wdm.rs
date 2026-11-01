@@ -9,6 +9,24 @@
 use core::{ffi::c_void, ptr, ops::{Index, IndexMut}};
 use crate::hal::IrqSpinLock;
 
+static VPB_SPIN_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// WDK global VPB lock. Callers must keep the critical section short; this
+/// raises to DISPATCH_LEVEL and restores the caller's prior IRQL on release.
+#[unsafe(export_name="IoAcquireVpbSpinLock")]
+pub unsafe extern "win64" fn io_acquire_vpb_spin_lock(old_irql:*mut u8) {
+ if old_irql.is_null(){return}
+ let old=unsafe{crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level()};
+ while VPB_SPIN_LOCK.compare_exchange_weak(false,true,core::sync::atomic::Ordering::Acquire,core::sync::atomic::Ordering::Relaxed).is_err(){core::hint::spin_loop();}
+ unsafe{old_irql.write(old);}
+}
+
+#[unsafe(export_name="IoReleaseVpbSpinLock")]
+pub unsafe extern "win64" fn io_release_vpb_spin_lock(old_irql:u8) {
+ VPB_SPIN_LOCK.store(false,core::sync::atomic::Ordering::Release);
+ unsafe{crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql);}
+}
+
 pub use crate::nt_abi::ntstatus::{
     STATUS_DELETE_PENDING, STATUS_DEVICE_BUSY, STATUS_INSUFFICIENT_RESOURCES,
     STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_PARAMETER, STATUS_OBJECT_NAME_COLLISION,
