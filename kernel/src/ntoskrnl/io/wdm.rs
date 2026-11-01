@@ -1998,9 +1998,23 @@ const STATUS_MORE_PROCESSING_REQUIRED:i32=0xC000_0016_u32 as i32;
 const FILE_DEVICE_DISK_FILE_SYSTEM:u32=0x0000_0008;
 const FSCTL_DISMOUNT_VOLUME:u32=0x0009_0020;
 
-struct FileSystemRegistry { devices:[*mut DeviceObject;MAX_REGISTERED_FILESYSTEMS], count:usize }
+pub type DriverFsNotification=unsafe extern "win64" fn(*mut DeviceObject,u8);
+const MAX_FS_NOTIFICATIONS:usize=16;
+#[derive(Clone,Copy)]
+struct FsNotification { driver:*mut DriverObject, callback:Option<DriverFsNotification> }
+unsafe impl Send for FsNotification {}
+impl FsNotification { const EMPTY:Self=Self{driver:ptr::null_mut(),callback:None}; }
+struct FileSystemRegistry {
+ devices:[*mut DeviceObject;MAX_REGISTERED_FILESYSTEMS], count:usize,
+ notifications:[FsNotification;MAX_FS_NOTIFICATIONS],
+}
 unsafe impl Send for FileSystemRegistry {}
-impl FileSystemRegistry { const fn new()->Self{Self{devices:[ptr::null_mut();MAX_REGISTERED_FILESYSTEMS],count:0}} }
+impl FileSystemRegistry {
+ const fn new()->Self{Self{
+  devices:[ptr::null_mut();MAX_REGISTERED_FILESYSTEMS],count:0,
+  notifications:[FsNotification::EMPTY;MAX_FS_NOTIFICATIONS],
+ }}
+}
 static FILESYSTEMS:IrqSpinLock<FileSystemRegistry>=IrqSpinLock::new(FileSystemRegistry::new());
 
 /// A stable, referenced snapshot of the registered filesystem devices.
@@ -2241,38 +2255,99 @@ pub unsafe extern "win64" fn io_register_file_system(device:*mut DeviceObject) {
    &&unsafe{(*s.object.driver_object).major_function[IRP_MJ_FILE_SYSTEM_CONTROL as usize].is_some()})
  };
  if !valid||unsafe{io_reference_device_object(device)}.is_null(){return}
- let mut registry=FILESYSTEMS.lock();
- if registry.devices[..registry.count].contains(&device)||registry.count==MAX_REGISTERED_FILESYSTEMS {
-  drop(registry);
-  unsafe{io_dereference_device_object(device);}
-  return
+ let (callbacks,event_reference)={
+  let mut registry=FILESYSTEMS.lock();
+  if registry.devices[..registry.count].contains(&device)||registry.count==MAX_REGISTERED_FILESYSTEMS {
+   drop(registry);
+   unsafe{io_dereference_device_object(device);}
+   return
+  }
+  let insert_index=registry.count;
+  registry.devices[insert_index]=device;
+  registry.count=insert_index+1;
+  let mut callbacks=[None;MAX_FS_NOTIFICATIONS];
+  for (i,entry) in registry.notifications.iter().enumerate(){callbacks[i]=entry.callback;}
+  let event_reference=unsafe{io_reference_device_object(device)};
+  (callbacks,event_reference)
+ };
+ if !event_reference.is_null(){
+  for callback in callbacks.into_iter().flatten(){unsafe{callback(device,1);}}
+  unsafe{io_dereference_device_object(event_reference);}
  }
- let insert_index=registry.count;
- registry.devices[insert_index]=device;
- registry.count=insert_index+1;
-}
 
 /// Remove a filesystem from new mount discovery. In-flight IRPs and mounted
 /// volume device references independently keep the driver image alive.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn io_unregister_file_system(device:*mut DeviceObject) {
  if device.is_null(){return}
- let removed={
+ let (callbacks,event_reference)={
   let mut registry=FILESYSTEMS.lock();
   let Some(index)=registry.devices[..registry.count].iter().position(|d|*d==device) else{return};
   for i in index..registry.count-1 {registry.devices[i]=registry.devices[i+1];}
   let new_count=registry.count-1;
   registry.count=new_count;
   registry.devices[new_count]=ptr::null_mut();
-  true
+  let mut callbacks=[None;MAX_FS_NOTIFICATIONS];
+  for (i,entry) in registry.notifications.iter().enumerate(){callbacks[i]=entry.callback;}
+  let event_reference=unsafe{io_reference_device_object(device)};
+  (callbacks,event_reference)
  };
- if removed {unsafe{io_dereference_device_object(device);}}
+ if !event_reference.is_null(){
+  for callback in callbacks.into_iter().flatten(){unsafe{callback(device,0);}}
+  unsafe{io_dereference_device_object(event_reference);}
+ }
+ unsafe{io_dereference_device_object(device);}
 }
 
 pub fn is_file_system_registered(device:*mut DeviceObject)->bool {
  if device.is_null(){return false}
  let registry=FILESYSTEMS.lock();
  registry.devices[..registry.count].contains(&device)
+}
+
+/// Register a WDK filesystem-registration notification callback. Existing
+/// filesystems are reported once with Active=TRUE after the callback is stored;
+/// future registrations and removals are delivered outside the registry lock.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn io_register_fs_registration_change(
+ driver:*mut DriverObject,callback:Option<DriverFsNotification>
+)->i32 {
+ let Some(callback)=callback else{return STATUS_INVALID_PARAMETER};
+ if driver.is_null()||unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0 {
+  return STATUS_INVALID_PARAMETER
+ }
+ let (devices,count)={
+  let mut registry=FILESYSTEMS.lock();
+  if registry.notifications.iter().any(|n|n.driver==driver&&n.callback.is_some_and(|c|c as usize==callback as usize)){
+   return STATUS_OBJECT_NAME_COLLISION
+  }
+  let Some(slot)=registry.notifications.iter_mut().find(|n|n.callback.is_none()) else{return STATUS_INSUFFICIENT_RESOURCES};
+  *slot=FsNotification{driver,callback:Some(callback)};
+  let mut devices=[ptr::null_mut::<DeviceObject>();MAX_REGISTERED_FILESYSTEMS];
+  let mut count=0usize;
+  for device in registry.devices[..registry.count].iter().copied(){
+   let reference=unsafe{io_reference_device_object(device)};
+   if !reference.is_null(){devices[count]=reference;count+=1;}
+  }
+  (devices,count)
+ };
+ for device in devices[..count].iter().copied(){
+  unsafe{callback(device,1);io_dereference_device_object(device);}
+ }
+ STATUS_SUCCESS
+}
+
+/// Remove a previously registered filesystem notification callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn io_unregister_fs_registration_change(
+ driver:*mut DriverObject,callback:Option<DriverFsNotification>
+) {
+ let Some(callback)=callback else{return};
+ if driver.is_null(){return}
+ let mut registry=FILESYSTEMS.lock();
+ if let Some(slot)=registry.notifications.iter_mut().find(|n|
+  n.driver==driver&&n.callback.is_some_and(|c|c as usize==callback as usize)
+ ){*slot=FsNotification::EMPTY;}
 }
 
 /// Windows IoVerifyVolume contract: verify an existing mounted volume, or
