@@ -37,7 +37,7 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
   self.pending=[Pending::EMPTY;R];self.generation=generation;self.stopped=false;Ok(())
  }
  pub fn submit<H:TransferHardware>(&mut self,hw:&mut H,buffer_dma:u64,length:u32,slot:u8,endpoint:u8,max_device_address:u64)->Result<TransferToken,RuntimeError>{
-  if self.stopped||R==0||N<4||!N.is_power_of_two()||self.ring_dma==0||self.ring_dma&63!=0||self.tracker.len()>=N-1||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
+  if self.stopped||R==0||N<4||!N.is_power_of_two()||self.ring_dma==0||self.ring_dma&63!=0||self.tracker.len()>=N-1||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
   let p=self.pending.iter().position(|p|!p.used).ok_or(RuntimeError::QueueFull)?;
   let index_expected=self.ring.producer_index();
   let trb_dma=self.ring_dma.checked_add((index_expected as u64)*16).ok_or(RuntimeError::InvalidRequest)?;
