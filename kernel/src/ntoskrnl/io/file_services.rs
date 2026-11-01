@@ -23,6 +23,10 @@ pub const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
 pub const STATUS_END_OF_FILE: i32 = 0xC000_0011u32 as i32;
 pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009Au32 as i32;
 pub const STATUS_DEVICE_BUSY: i32 = 0x8000_0011u32 as i32;
+const STATUS_UNRECOGNIZED_VOLUME:i32=0xC000_014F_u32 as i32;
+const FILE_DEVICE_DISK_FILE_SYSTEM:u32=8;
+const IRP_MN_MOUNT_VOLUME:u8=1;
+const IRP_MN_USER_FS_REQUEST:u8=0;
 const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010u32 as i32;
 const IO_TYPE_FILE: i16 = 5;
 const FILE_DEVICE_DISK: u32 = 7;
@@ -38,10 +42,11 @@ struct FileRecord {
     address: usize,
     length: usize,
     generation: usize,
+    source: u8,
     used: bool,
 }
 impl FileRecord {
-    const EMPTY: Self = Self { path: [0; MAX_PATH_BYTES], path_len: 0, address: 0, length: 0, generation: 0, used: false };
+    const EMPTY: Self = Self { path: [0; MAX_PATH_BYTES], path_len: 0, address: 0, length: 0, generation: 0, source: 0, used: false };
 }
 
 const fn empty_file_object() -> FILE_OBJECT {
@@ -111,6 +116,9 @@ static STATE: IrqSpinLock<State> = IrqSpinLock::new(State::new());
 static BOOT_INIT: AtomicUsize = AtomicUsize::new(0);
 static DEVICE_INIT: AtomicUsize = AtomicUsize::new(0);
 static FILE_DEVICE: AtomicUsize = AtomicUsize::new(0);
+static FILE_SYSTEM_DEVICE:AtomicUsize=AtomicUsize::new(0);
+static FILE_SYSTEM_INIT:AtomicUsize=AtomicUsize::new(0);
+static VOLUME_DEVICE:AtomicUsize=AtomicUsize::new(0);
 
 unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp) -> i32 {
     if device.is_null() || irp.is_null() {
@@ -152,33 +160,26 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
                 if index == 0 || index > MAX_FILES || (length != 0 && output.is_null()) {
                     status = STATUS_INVALID_PARAMETER;
                 } else {
-                    let mut state = STATE.lock();
-                    let file = &state.files[index - 1];
-                    if !file.used {
-                        status = STATUS_INVALID_HANDLE;
-                    } else {
-                        let offset = if requested_offset == FILE_USE_FILE_POINTER_POSITION {
-                            unsafe { (*file_object).current_byte_offset }
-                        } else {
-                            requested_offset
-                        };
-                        if offset < 0 {
-                            status = STATUS_INVALID_PARAMETER;
-                        } else if offset as usize >= file.length {
-                            status = STATUS_END_OF_FILE;
-                        } else {
-                            let count = core::cmp::min(length, file.length - offset as usize);
-                            if count != 0 {
-                                unsafe {
-                                    ptr::copy_nonoverlapping((file.address + offset as usize) as *const u8, output, count);
-                                }
-                            }
-                            information = count;
-                            if requested_offset == FILE_USE_FILE_POINTER_POSITION {
-                                unsafe { (*file_object).current_byte_offset = offset + count as i64; }
-                            }
+                    let file={let state=STATE.lock();if !state.files[index-1].used{None}else{Some(state.files[index-1])}};
+                    if let Some(file)=file{
+                     let offset=if requested_offset==FILE_USE_FILE_POINTER_POSITION{unsafe{(*file_object).current_byte_offset}}else{requested_offset};
+                     if offset<0{status=STATUS_INVALID_PARAMETER;}
+                     else if offset as usize>=file.length{status=STATUS_END_OF_FILE;}
+                     else{
+                      let count=core::cmp::min(length,file.length-offset as usize);
+                      if count!=0{
+                       if file.source==0{unsafe{ptr::copy_nonoverlapping((file.address+offset as usize) as *const u8,output,count);}information=count;}
+                       else if !output.is_null(){
+                        let out=unsafe{core::slice::from_raw_parts_mut(output,count)};
+                        match crate::ata_disk::read_ext4_root_file_range(&file.path[..file.path_len],offset as u64,out){
+                         Ok((size,read)) if size==file.length as u64=>information=read,
+                         _=>status=STATUS_OBJECT_NAME_NOT_FOUND,
                         }
-                    }
+                       }else{status=STATUS_INVALID_PARAMETER;}
+                      }
+                      if status>=0&&requested_offset==FILE_USE_FILE_POINTER_POSITION{unsafe{(*file_object).current_byte_offset=offset+information as i64;}}
+                     }
+                    }else{status=STATUS_INVALID_HANDLE;}
                 }
             }
         }
@@ -207,12 +208,45 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
     status
 }
 
+unsafe extern "win64" fn file_system_control_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32{
+ if irp.is_null(){return STATUS_INVALID_PARAMETER}
+ let stack=unsafe{wdm::io_get_current_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{wdm::io_complete_irp_status(irp,STATUS_INVALID_PARAMETER,0,0);}return STATUS_INVALID_PARAMETER}
+ let minor=unsafe{(*stack).minor_function};let parameters=unsafe{(*stack).parameters.as_ptr()};
+ let mut status=STATUS_INVALID_DEVICE_REQUEST;
+ if minor==IRP_MN_MOUNT_VOLUME{
+  let real=unsafe{ptr::read_unaligned(parameters.add(4).cast::<*mut DeviceObject>())};
+  let vpb=unsafe{ptr::read_unaligned(parameters.add(12).cast::<*mut wdm::Vpb>())};
+  if real.is_null()||vpb.is_null()||!crate::ata_disk::is_ext4_partition(real){status=STATUS_UNRECOGNIZED_VOLUME;}
+  else{
+   let existing=VOLUME_DEVICE.load(Ordering::Acquire);
+   if existing!=0{
+    let volume=existing as *mut DeviceObject;
+    if unsafe{(*vpb).device_object}.is_null(){unsafe{(*vpb).device_object=volume.cast();(*volume).vpb=vpb.cast();}status=STATUS_SUCCESS;}
+    else if unsafe{(*vpb).device_object}==volume.cast(){status=STATUS_SUCCESS}else{status=STATUS_DEVICE_BUSY}
+   }else{
+    let mut volume=ptr::null_mut();
+    let create=unsafe{wdm::io_create_device(ptr::addr_of_mut!(FILE_DRIVER),0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut volume)};
+    if create>=0&&!volume.is_null(){
+     unsafe{(*volume).vpb=vpb.cast();(*vpb).device_object=volume.cast();}
+     VOLUME_DEVICE.store(volume as usize,Ordering::Release);status=STATUS_SUCCESS;
+    }else{status=create}
+   }
+  }
+ }else if minor==IRP_MN_USER_FS_REQUEST{
+  let control=unsafe{ptr::read_unaligned(parameters.add(8).cast::<u32>())};
+  if control==0x0009_0020{status=STATUS_SUCCESS;}
+ }
+ unsafe{wdm::io_complete_irp_status(irp,status,0,0);}status
+}
+
 const fn make_file_driver() -> DriverObject {
     let mut major: [Option<wdm::DriverDispatch>; 28] = [None; 28];
     major[IRP_MJ_CREATE as usize] = Some(file_dispatch);
     major[IRP_MJ_READ as usize] = Some(file_dispatch);
     major[IRP_MJ_CLEANUP as usize] = Some(file_dispatch);
     major[IRP_MJ_CLOSE as usize] = Some(file_dispatch);
+    major[wdm::IRP_MJ_FILE_SYSTEM_CONTROL as usize] = Some(file_system_control_dispatch);
     DriverObject {
         object_type: 4,
         size: core::mem::size_of::<DriverObject>() as i16,
@@ -273,11 +307,36 @@ fn ensure_file_device() -> Result<*mut DeviceObject, i32> {
     }
 }
 
+fn ensure_filesystem_device()->Result<*mut DeviceObject,i32>{
+ let existing=FILE_SYSTEM_DEVICE.load(Ordering::Acquire);if existing!=0{return Ok(existing as *mut DeviceObject)}
+ match FILE_SYSTEM_INIT.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire){
+  Ok(_)=>{
+   let mut device=ptr::null_mut();
+   let status=unsafe{wdm::io_create_device(ptr::addr_of_mut!(FILE_DRIVER),0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut device)};
+   if status>=0&&!device.is_null(){
+    unsafe{wdm::io_register_file_system(device);}
+    if wdm::is_file_system_registered(device){FILE_SYSTEM_DEVICE.store(device as usize,Ordering::Release);FILE_SYSTEM_INIT.store(2,Ordering::Release);Ok(device)}
+    else{unsafe{wdm::io_delete_device(device);}FILE_SYSTEM_INIT.store(0,Ordering::Release);Err(STATUS_INSUFFICIENT_RESOURCES)}
+   }else{FILE_SYSTEM_INIT.store(0,Ordering::Release);Err(status)}
+  }
+  Err(1)=>{while FILE_SYSTEM_INIT.load(Ordering::Acquire)==1{core::hint::spin_loop();}let d=FILE_SYSTEM_DEVICE.load(Ordering::Acquire);if d!=0{Ok(d as *mut DeviceObject)}else{Err(STATUS_INSUFFICIENT_RESOURCES)}}
+  Err(_)=>{let d=FILE_SYSTEM_DEVICE.load(Ordering::Acquire);if d!=0{Ok(d as *mut DeviceObject)}else{Err(STATUS_INSUFFICIENT_RESOURCES)}}
+ }
+}
+pub fn mount_ext4_volume(real_device:*mut DeviceObject)->i32{
+ if real_device.is_null(){return STATUS_INVALID_PARAMETER}
+ if let Err(status)=ensure_filesystem_device(){return status}
+ let status=unsafe{wdm::io_verify_volume(real_device,0)};
+ if status>=0&&VOLUME_DEVICE.load(Ordering::Acquire)!=0{STATUS_SUCCESS}
+ else if status>=0{STATUS_UNRECOGNIZED_VOLUME}else{status}
+}
+
 fn dispatch_file_irp(file_object: *mut FILE_OBJECT, major: u8, offset: i64, buffer: *mut u8, length: usize) -> Result<usize, i32> {
     if file_object.is_null() || (major == IRP_MJ_READ && length != 0 && buffer.is_null()) || length > u32::MAX as usize {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let device = ensure_file_device()?;
+    let device = unsafe { (*file_object).device_object.cast::<DeviceObject>() };
+    if device.is_null(){return Err(STATUS_INVALID_HANDLE)}
     let stack_size = unsafe { (*device).stack_size };
     let irp = unsafe { wdm::io_allocate_irp(stack_size, 0) };
     if irp.is_null() { return Err(STATUS_INSUFFICIENT_RESOURCES); }
@@ -323,6 +382,7 @@ pub fn register_static(path: &[u8], bytes: &'static [u8]) -> Result<(), i32> {
     file.address = bytes.as_ptr() as usize;
     file.length = bytes.len();
     file.generation = generation;
+    file.source = 0;
     file.used = true;
     state.files[slot] = file;
     Ok(())
@@ -386,22 +446,29 @@ pub fn open(path: &[u8]) -> Result<usize, i32> { open_for_process(0, path) }
 pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     if path.is_empty() || path.len() > MAX_PATH_BYTES { return Err(STATUS_INVALID_PARAMETER); }
     mount_boot_system_files();
-    let device = ensure_file_device()?;
-    let (slot, token) = {
-        let mut state = STATE.lock();
-        let file_index = state.files.iter().position(|f| f.used && path_equal(&f.path[..f.path_len], path))
-            .ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
-        let slot = state.handles.iter().position(|h| !h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-        let token = state.next_handle.wrapping_add(1).max(1) & (usize::MAX >> 8);
-        let token = token.max(1);
-        state.next_handle = token;
-        let mut file_object = empty_file_object();
-        file_object.device_object = device.cast();
-        file_object.fs_context = (file_index + 1) as *mut c_void;
-        state.handles[slot] = HandleRecord {
-            token, owner, file_index, active_io: 0, closing: false, used: true, file_object,
-        };
-        (slot, token)
+    let registered={let state=STATE.lock();state.files.iter().position(|f|f.used&&path_equal(&f.path[..f.path_len],path))};
+    let file_index=if let Some(index)=registered{index}else{
+     let size=crate::ata_disk::ext4_root_file_size(path).map_err(|_|STATUS_OBJECT_NAME_NOT_FOUND)?;
+     let mut state=STATE.lock();
+     if let Some(index)=state.files.iter().position(|f|f.used&&path_equal(&f.path[..f.path_len],path)){index}
+     else{
+      let index=state.files.iter().position(|f|!f.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+      let generation=state.next_generation;state.next_generation=state.next_generation.wrapping_add(1).max(1);
+      let mut file=FileRecord::EMPTY;file.path[..path.len()].copy_from_slice(path);file.path_len=path.len();
+      file.length=usize::try_from(size).map_err(|_|STATUS_INVALID_PARAMETER)?;file.generation=generation;file.source=1;file.used=true;
+      state.files[index]=file;index
+     }
+    };
+    let file_source=STATE.lock().files[file_index].source;
+    let device=if file_source==1{let d=VOLUME_DEVICE.load(Ordering::Acquire);if d==0{return Err(STATUS_UNRECOGNIZED_VOLUME)}d as *mut DeviceObject}else{ensure_file_device()?};
+    let (slot,token)={
+     let mut state=STATE.lock();
+     let slot=state.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+     let token=state.next_handle.wrapping_add(1).max(1)&(usize::MAX>>8);let token=token.max(1);state.next_handle=token;
+     let mut file_object=empty_file_object();file_object.device_object=device.cast();file_object.vpb=unsafe{(*device).vpb};
+     file_object.fs_context=(file_index+1) as *mut c_void;
+     state.handles[slot]=HandleRecord{token,owner,file_index,active_io:0,closing:false,used:true,file_object};
+     (slot,token)
     };
     let file_object = {
         let mut state = STATE.lock();

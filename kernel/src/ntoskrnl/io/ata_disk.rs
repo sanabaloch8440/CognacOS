@@ -425,6 +425,78 @@ impl BlockDevice for IoManagerBlockDevice {
  }
 }
 
+
+fn lookup_root_file_inode<D:ReadOnlyBlockDevice>(
+ dev:&mut D,sb:&extfs::Superblock,name:&[u8],
+)->Result<(u32,extfs::Inode,[u8;256]),extfs::Error>{
+ if name.is_empty()||name.contains(&b'/')||!sb.has_extents(){return Err(extfs::Error::UnsupportedFormat)}
+ let mut root_raw=[0u8;256];let root=extfs::read_inode(dev,sb,2,&mut root_raw)?;
+ if !root.is_directory||root.size>(sb.block_size as u64)*64{return Err(extfs::Error::UnsupportedFormat)}
+ let mut block=[0u8;4096];let mut found=None;
+ for logical in 0..root.size.div_ceil(sb.block_size as u64){
+  let physical=extfs::map_extent_block(dev,sb,&root_raw[40..100],logical as u32,&mut block[..sb.block_size as usize])?;
+  if let Some(p)=physical{extfs::read_block(dev,sb,p,&mut block[..sb.block_size as usize])?;}else{block[..sb.block_size as usize].fill(0);}
+  let mut off=0usize;
+  while off<sb.block_size as usize{
+   if sb.block_size as usize-off<8{return Err(extfs::Error::InvalidDirectoryEntry)}
+   let ino=u32_at(&block,off).ok_or(extfs::Error::InvalidDirectoryEntry)?;
+   let rec=u16_at(&block,off+4).ok_or(extfs::Error::InvalidDirectoryEntry)? as usize;
+   let nlen=block[off+6] as usize;
+   if rec<8||rec&3!=0||rec>sb.block_size as usize-off||nlen>rec-8{return Err(extfs::Error::InvalidDirectoryEntry)}
+   if ino!=0&&nlen==name.len()&&&block[off+8..off+8+nlen]==name{found=Some(ino);break}
+   off+=rec;
+  }
+  if found.is_some(){break}
+ }
+ let number=found.ok_or(extfs::Error::OutOfRange)?;let mut raw=[0u8;256];
+ let inode=extfs::read_inode(dev,sb,number,&mut raw)?;
+ if !inode.is_regular_file{return Err(extfs::Error::UnsupportedFormat)}
+ Ok((number,inode,raw))
+}
+fn read_root_file_range<D:ReadOnlyBlockDevice>(
+ dev:&mut D,sb:&extfs::Superblock,name:&[u8],offset:u64,out:&mut[u8],
+)->Result<(u64,usize),extfs::Error>{
+ let (_number,inode,raw)=lookup_root_file_inode(dev,sb,name)?;
+ if offset>=inode.size||out.is_empty(){return Ok((inode.size,0))}
+ let count=core::cmp::min(out.len() as u64,inode.size-offset) as usize;
+ let block_size=sb.block_size as usize;let mut done=0usize;let mut scratch=[0u8;4096];
+ while done<count{
+  let absolute=offset.checked_add(done as u64).ok_or(extfs::Error::OutOfRange)?;
+  let logical=(absolute/sb.block_size as u64) as u32;let within=(absolute%sb.block_size as u64) as usize;
+  let amount=core::cmp::min(block_size-within,count-done);
+  let physical=extfs::map_extent_block(dev,sb,&raw[40..100],logical,&mut scratch[..block_size])?;
+  if let Some(block)=physical{extfs::read_block(dev,sb,block,&mut scratch[..block_size])?;out[done..done+amount].copy_from_slice(&scratch[within..within+amount]);}
+  else{out[done..done+amount].fill(0);}
+  done+=amount;
+ }
+ Ok((inode.size,count))
+}
+fn ext4_root_name(path:&[u8])->Result<&[u8],extfs::Error>{
+ if path.len()<2||path[0]!=b'\\'||path[1..].contains(&b'\\'){return Err(extfs::Error::UnsupportedFormat)}
+ Ok(&path[1..])
+}
+pub fn ext4_root_file_size(path:&[u8])->Result<u64,extfs::Error>{
+ let name=ext4_root_name(path)?;
+ let device=PARTITION_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
+ if device.is_null(){return Err(extfs::Error::Io)}
+ let mut volume=IoManagerBlockDevice{device,capacity:PARTITION_CAPACITY.load(Ordering::Acquire)};
+ let sb=extfs::read_superblock(&mut volume)?;
+ let (_ino,inode,_raw)=lookup_root_file_inode(&mut volume,&sb,name)?;Ok(inode.size)
+}
+pub fn read_ext4_root_file_range(path:&[u8],offset:u64,out:&mut[u8])->Result<(u64,usize),extfs::Error>{
+ let name=ext4_root_name(path)?;
+ let device=PARTITION_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
+ if device.is_null(){return Err(extfs::Error::Io)}
+ let mut volume=IoManagerBlockDevice{device,capacity:PARTITION_CAPACITY.load(Ordering::Acquire)};
+ let sb=extfs::read_superblock(&mut volume)?;
+ read_root_file_range(&mut volume,&sb,name,offset,out)
+}
+pub fn is_ext4_partition(device:*mut DeviceObject)->bool{
+ if device.is_null()||device as usize!=PARTITION_DEVICE.load(Ordering::Acquire){return false}
+ let mut volume=IoManagerBlockDevice{device,capacity:PARTITION_CAPACITY.load(Ordering::Acquire)};
+ extfs::read_superblock(&mut volume).is_ok()
+}
+
 /// Optional reserved GPT partition for crash-trace persistence. The partition
 /// is discovered from GPT entry index 2; no arbitrary sectors are overwritten.
 pub fn debug_trace_store_read(offset: u64, output: &mut [u8]) -> bool {
@@ -629,5 +701,6 @@ pub fn run_ext4_readme_test() -> bool {
     } else {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot write skipped or failed.\r\n"); }
     }
+    if crate::file_services::mount_ext4_volume(partition_device)<0{return false;}
     true
 }
