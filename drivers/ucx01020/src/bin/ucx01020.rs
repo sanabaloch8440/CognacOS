@@ -72,11 +72,16 @@ fn unlock_runtime(){RUNTIME_LOCK.store(false,Ordering::Release);}
 unsafe fn runtime_mut()->&'static mut Runtime{unsafe{(*RUNTIME.0.get()).assume_init_mut()}}
 fn io_table()->Option<&'static KernelIoServiceTable>{let p=KERNEL_IO.load(Ordering::Acquire) as *const KernelIoServiceTable;if p.is_null(){None}else{unsafe{p.as_ref()}}}
 fn finish_pending(p:Pending,bytes:&[u8],status:i32,io:&KernelIoServiceTable){
- if p.urb!=0{unsafe{let h=p.urb as *mut UrbHeader;(*h).status=if status==STATUS_SUCCESS{0}else{0xC0000001u32};}}
- if status==STATUS_SUCCESS&&p.mapped!=0{unsafe{core::ptr::copy_nonoverlapping(bytes.as_ptr(),p.mapped as *mut u8,n);}}
- if let Some(complete)=io.complete_irp_status{unsafe{complete(p.irp as *mut c_void,status,if status==STATUS_SUCCESS{(p.length as usize).min(bytes.len())}else{0},0);}}
+ let n=if status==STATUS_SUCCESS{(p.length as usize).min(bytes.len())}else{0};
+ if p.urb!=0{unsafe{
+  let h=p.urb as *mut UrbHeader;(*h).status=if status==STATUS_SUCCESS{0}else{0xC0000001u32};
+  core::ptr::write_unaligned((p.urb as *mut u8).add(core::mem::size_of::<UrbHeader>()+12).cast::<u32>(),n as u32);
+ }}
+ if n!=0&&p.mapped!=0{unsafe{core::ptr::copy_nonoverlapping(bytes.as_ptr(),p.mapped as *mut u8,n);}}
+ if let Some(complete)=io.complete_irp_status{unsafe{complete(p.irp as *mut c_void,status,n,0);}}
  if let Some(unpin)=io.unpin_buffer{unsafe{unpin(p.mdl as *mut c_void,p.mapped as *mut c_void);}}
 }
+
 fn try_complete_pending(){
  let Some(io)=io_table() else{return};
  if !RUNTIME_READY.load(Ordering::Acquire){return}
@@ -115,7 +120,7 @@ impl RootHubPortIo for PortIo{
   let v=self.read(port)?;
   let mut status=0u16;let mut change=0u16;
   if v&(1<<0)!=0{status|=1<<0}if v&(1<<1)!=0{status|=1<<1}if v&(1<<3)!=0{status|=1<<3}
-  if v&(1<<4)!=0{status|=1<<4}if v&(1<<9)!=0{status|=1<<8}
+  if v&(1<<4)!=0{status|=1<<4}if (v>>5)&0xf==3{status|=1<<2}if v&(1<<9)!=0{status|=1<<8}
   let speed=(v>>10)&0xf;if speed==2{status|=1<<9}else if speed==3{status|=1<<10}else if speed>=4{status|=1<<10}
   if v&(1<<17)!=0{change|=1<<0}if v&(1<<18)!=0{change|=1<<1}
   if v&(1<<20)!=0{change|=1<<3}if v&(1<<21)!=0{change|=1<<4}
