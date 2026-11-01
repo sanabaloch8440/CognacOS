@@ -5,7 +5,7 @@
 //! Windows HAL or WDK implementation. Interrupt delivery remains disabled
 //! until the IDT, APIC routing, and timer are completely installed.
 
-#[path = "hal/apic.rs"]
+#[path = "apic.rs"]
 mod apic;
 
 use core::cell::UnsafeCell;

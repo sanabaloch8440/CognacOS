@@ -19,6 +19,7 @@ mod usermode;
 use cognacos_acpi as acpi;
 use cognacos_pci as pci;
 mod dma;
+#[path = "../../Hal/mod.rs"]
 mod hal;
 mod smp;
 mod platform_drivers;
