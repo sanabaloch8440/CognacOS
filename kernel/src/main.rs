@@ -484,6 +484,108 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
  true
 }
 
+
+/// Enumerate ACPI-described PCIe ECAM segments into the kernel-owned PnP tree.
+/// Firmware MCFG allocations are validated before mapping; functions are read
+/// through ECAM, and downstream nodes are attached to the narrowest validated
+/// bridge range in the same segment. This inventory does not assign BARs or
+/// enable bus mastering; those operations remain part of device start.
+fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
+    if rsdp_address==0 { return 0; }
+    let Ok(mcfg_bytes)=(unsafe { acpi::find_table(rsdp_address,*b"MCFG",0) }) else { return 0; };
+    let Ok(mcfg)=acpi::parse_mcfg(mcfg_bytes) else { return 0; };
+    let ext=hal::driver_extended_service_table();
+    if !ext.compatible() { return 0; }
+    let Some(map_io)=ext.map_device_io_space else { return 0; };
+    let mut registered_count=0usize;
+
+    for allocation in mcfg.allocations.iter().take(mcfg.count) {
+        let bus_count=(allocation.end_bus as u64)
+            .checked_sub(allocation.start_bus as u64)
+            .and_then(|n|n.checked_add(1));
+        let Some(length)=bus_count.and_then(|n|n.checked_mul(1<<20)) else { continue; };
+        let mut virtual_base=0u64;
+        let status=unsafe { map_io(allocation.base_address,length,
+            cognacos_hal_contract::HAL_MEMORY_DEVICE
+                | cognacos_hal_contract::HAL_MEMORY_UNCACHED
+                | cognacos_hal_contract::HAL_MEMORY_READ_WRITE,
+            &mut virtual_base) };
+        if status.code!=cognacos_hal_contract::HalStatus::SUCCESS.code || virtual_base==0 {
+            continue;
+        }
+        let window=pci::EcamWindow {
+            virtual_base, physical_base:allocation.base_address,
+            segment:allocation.segment,bus_start:allocation.start_bus,bus_end:allocation.end_bus,
+        };
+        let Ok((bridge_slots,bridge_count))=(unsafe { pci::scan_bridge_ranges(&window) }) else { continue; };
+        let bridges:[pci::PciBridgeRange; pci::MAX_PCI_BRIDGES]=core::array::from_fn(|i| bridge_slots[i].unwrap_or_default());
+        let active_bridges=&bridges[..bridge_count];
+        let mut functions:[Option<pci::PciFunction>; pci::MAX_PCI_FUNCTIONS]=[None;pci::MAX_PCI_FUNCTIONS];
+        let Ok(function_count)=(unsafe { pci::scan_functions(&window,&mut functions) }) else { continue; };
+        let mut registered:[Option<(pci::PciFunction,u32)>; pci::MAX_PCI_FUNCTIONS]=[None;pci::MAX_PCI_FUNCTIONS];
+
+        // scan_functions emits bus/device/function order. A bridge lives on its
+        // primary bus, which precedes its secondary buses, so its devnode is
+        // available before registering its descendants.
+        for function in functions.iter().take(function_count).flatten().copied() {
+            if let Some(index)=ntoskrnl::pnp::find_pnp_pci_function(
+                function.segment,function.bus,function.device,function.function) {
+                if let Some(slot)=registered.iter_mut().find(|slot|slot.is_none()) {
+                    *slot=Some((function,index));
+                }
+                continue;
+            }
+
+            let parent=if function.bus==allocation.start_bus {
+                Some(None)
+            } else {
+                let mut best:Option<pci::PciBridgeRange>=None;
+                for bridge in active_bridges.iter().filter(|b|
+                    b.segment==function.segment && b.secondary_bus<=function.bus
+                    && function.bus<=b.subordinate_bus) {
+                    match best {
+                        None=>best=Some(*bridge),
+                        Some(old)=>{
+                            let old_width=old.subordinate_bus as u16-old.secondary_bus as u16;
+                            let new_width=bridge.subordinate_bus as u16-bridge.secondary_bus as u16;
+                            if new_width<old_width { best=Some(*bridge); }
+                            else if new_width==old_width { best=None; break; }
+                        }
+                    }
+                }
+                let Some(bridge)=best else { continue; };
+                let parent_index=registered.iter().flatten().find_map(|(candidate,index)|
+                    (candidate.segment==bridge.segment && candidate.bus==bridge.primary_bus
+                        && candidate.device==bridge.device && candidate.function==bridge.function)
+                        .then_some(*index))
+                    .or_else(||ntoskrnl::pnp::find_pnp_pci_function(
+                        bridge.segment,bridge.primary_bus,bridge.device,bridge.function));
+                let Some(parent_index)=parent_index else { continue; };
+                Some(Some(parent_index))
+            };
+            let parent_index=match parent { Some(p)=>p,None=>continue };
+            match ntoskrnl::pnp::register_pci_function(&function,parent_index) {
+                Ok(index)=>{
+                    registered_count+=1;
+                    if let Some(slot)=registered.iter_mut().find(|slot|slot.is_none()) {
+                        *slot=Some((function,index));
+                    }
+                }
+                Err(ntoskrnl::pnp::PnpError::DuplicateDevice)=>{
+                    if let Some(index)=ntoskrnl::pnp::find_pnp_pci_function(
+                        function.segment,function.bus,function.device,function.function) {
+                        if let Some(slot)=registered.iter_mut().find(|slot|slot.is_none()) {
+                            *slot=Some((function,index));
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    registered_count
+}
+
 /// Discover xHCI, measure its assigned BAR, map it uncached and publish a stable
 /// ntoskrnl-owned PnP record. This is resource preparation, not controller takeover:
 /// no bus mastering, DMA ring allocation, reset, or interrupt source is enabled here.
@@ -1432,6 +1534,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(firmware_madt) => {
                     let _ = platform_drivers::mark_ready(platform_drivers::Stage::Acpi);
+                    let _pnp_enumerated=enumerate_acpi_pci_devices(info.rsdp_address);
                     let discovery = (|| -> Result<usize, hal::HalError> {
                         if hal::cpu_index_for_apic(bsp_apic_id).is_none() { hal::initialize_bsp(bsp_apic_id)?; }
                         let mut discovered = 0usize;
