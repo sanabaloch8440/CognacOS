@@ -2,7 +2,7 @@
 #![no_main]
 use core::{cell::UnsafeCell,ffi::c_void,mem::MaybeUninit,sync::atomic::{AtomicBool,AtomicU64,Ordering}};
 use cognacos_hal_contract::{DeviceServiceTable,HalServiceTable,KernelIoServiceTable};
-use cognacos_ucx01020::dma::{DeviceDma,DmaBuffer,UCX_DMA_COMMON_BUFFER_FLAGS};
+use cognacos_ucx01020::dma::{DeviceDma,DmaBuffer};
 use cognacos_ucx01020::root_hub::{self,PortStatus,RootHubNotifications,RootHubPortIo,SetupPacket};
 use cognacos_ucx01020::wdm::{UrbHeader,URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER,URB_FUNCTION_CONTROL_TRANSFER};
 const EXT_MAGIC:u64=0x434f_474e_4143_5543;
