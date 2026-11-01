@@ -755,6 +755,21 @@ mod pnp_tree_tests {
     }
 
     #[test]
+    fn devnode_holds_and_releases_its_pdo_reference() {
+        let mut driver: crate::io::DriverObject = unsafe { core::mem::zeroed() };
+        let mut device: *mut crate::io::DeviceObject = core::ptr::null_mut();
+        assert_eq!(unsafe { crate::io::io_create_device(
+            &mut driver, 0, core::ptr::null_mut(), 0x22, 0, 0, &mut device,
+        ) }, crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        let root = register_root_device().unwrap();
+        assert_eq!(bind_pnp_device_object(root, device), Ok(()));
+        assert_eq!(query_pnp_device(root).unwrap().device_object, device as usize);
+        assert_eq!(transition_pnp_device(root, PNP_DEVICE_REMOVED, 0), Ok(()));
+        assert_eq!(query_pnp_device(root).unwrap().device_object, 0);
+        unsafe { crate::io::io_delete_device(device); }
+    }
+
+    #[test]
     fn pnp_identity_includes_pci_segment_and_duplicate_bdfs_are_rejected() {
         let mut first = sample_function();
         first.device = 6;
