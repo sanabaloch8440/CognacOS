@@ -315,6 +315,14 @@ pub fn requester_identity(device: usize) -> Option<(u16, u8, u8)> {
         .map(|r| (r.segment, r.bus, r.devfn))
 }
 
+/// Resolve a previously registered PnP requester by its PCI BDF tuple.
+pub fn requester_handle_for_bdf(segment:u16,bus:u8,pci_device:u8,function:u8)->Option<usize>{
+    if pci_device>=32||function>=8{return None;}
+    let devfn=(pci_device<<3)|function;
+    let entries=REQUESTERS.lock();
+    entries.iter().find(|r|r.used&&r.segment==segment&&r.bus==bus&&r.devfn==devfn).map(|r|r.device)
+}
+
 #[cfg(test)]
 mod requester_tests {
     use super::*;
