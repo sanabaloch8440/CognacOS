@@ -3371,6 +3371,57 @@ mod wdm_tests {
   unsafe{io_delete_device(device);}
  }
 
+ fn test_fs_mount_and_dismount_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  let stack=unsafe{io_get_current_irp_stack_location(irp)};
+  if stack.is_null(){return STATUS_INVALID_PARAMETER}
+  match unsafe{(*stack).minor_function} {
+   IRP_MN_MOUNT_VOLUME=>{
+    let vpb=unsafe{ptr::read_unaligned((*stack).parameters.as_ptr().add(12).cast::<*mut Vpb>())};
+    if vpb.is_null(){return STATUS_INVALID_PARAMETER}
+    let driver=unsafe{(*device).driver_object};
+    let mut volume=ptr::null_mut();
+    let status=unsafe{io_create_device(driver,0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut volume)};
+    if status!=STATUS_SUCCESS{return status}
+    unsafe{(*vpb).device_object=volume;}
+    unsafe{io_complete_irp_status(irp,STATUS_SUCCESS,0,0);}
+    STATUS_SUCCESS
+   }
+   0|IRP_MN_VERIFY_VOLUME=>{
+    unsafe{io_complete_irp_status(irp,STATUS_SUCCESS,0,0);}
+    STATUS_SUCCESS
+   }
+   _=>STATUS_INVALID_DEVICE_REQUEST
+  }
+ }
+
+ #[test]
+ fn filesystem_mount_verify_and_dismount_use_real_wdm_irps_and_vpb() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[IRP_MJ_FILE_SYSTEM_CONTROL as usize]=Some(test_fs_mount_and_dismount_dispatch);
+  let mut fs_control:*mut DeviceObject=ptr::null_mut();
+  let mut disk:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut fs_control)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),FILE_DEVICE_DISK,0,0,&mut disk)},STATUS_SUCCESS);
+  assert!(!unsafe{(*disk).vpb}.is_null());
+  unsafe{io_register_file_system(fs_control);}
+  assert!(is_file_system_registered(fs_control));
+  assert_eq!(unsafe{io_verify_volume(disk,0)},STATUS_SUCCESS);
+  let vpb=unsafe{(*disk).vpb.cast::<Vpb>()};
+  assert_ne!(unsafe{(*vpb).flags}&crate::nt_abi::io::VPB_MOUNTED,0);
+  let volume=unsafe{(*vpb).device_object};
+  assert!(!volume.is_null());
+  assert_eq!(unsafe{(*volume).device_type},FILE_DEVICE_DISK_FILE_SYSTEM);
+  assert_eq!(io_dismount_volume(disk),STATUS_SUCCESS);
+  assert_eq!(unsafe{(*vpb).flags}&crate::nt_abi::io::VPB_MOUNTED,0);
+  assert!(unsafe{(*vpb).device_object}.is_null());
+  unsafe{
+   io_delete_device(volume);
+   io_delete_device(fs_control);
+   io_delete_device(disk);
+  }
+  assert!(!is_file_system_registered(fs_control));
+ }
+
 }
 
 
