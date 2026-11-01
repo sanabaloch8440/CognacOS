@@ -128,6 +128,9 @@ pub fn retry_last_known_good(
     if recovery_already_attempted || matches!(attempted, ControlSetAttempt::LastKnownGood(_)) {
         return Err(RecoveryError::RecoveryAlreadyAttempted);
     }
+    if matches!(attempted, ControlSetAttempt::Current(value) if value != selection.current) {
+        return Err(RecoveryError::InvalidSelection);
+    }
     let lkg = selection.last_known_good.ok_or(RecoveryError::MissingLastKnownGood)?;
     if lkg == 0 || lkg > 999 || lkg == selection.current {
         return Err(RecoveryError::InvalidSelection);
@@ -140,9 +143,6 @@ pub struct DeviceTreeEntry {
     pub device: PnpDeviceSnapshot,
 }
 
-/// Copy the current kernel PnP devnode table into a caller-owned immutable
-/// snapshot. Parent references are checked in a second pass so enumeration
-/// order does not affect validation. Removed and empty slots are omitted.
 /// Validate the live devnode hierarchy without allocating or changing it.
 /// The bounded ancestor walk rejects missing parents and cycles.
 pub fn validate_device_tree() -> Result<usize, DeviceTreeError> {
@@ -167,6 +167,9 @@ pub fn validate_device_tree() -> Result<usize, DeviceTreeError> {
     Ok(count)
 }
 
+/// Copy the current kernel PnP devnode table into a caller-owned immutable
+/// snapshot. Parent references are checked in a second pass so enumeration
+/// order does not affect validation. Removed and empty slots are omitted.
 pub fn build_device_tree(output: &mut [DeviceTreeEntry]) -> Result<usize, DeviceTreeError> {
     let mut count = 0usize;
     for index in 0..MAX_PNP_DEVICES {
@@ -190,6 +193,7 @@ pub fn build_device_tree(output: &mut [DeviceTreeEntry]) -> Result<usize, Device
 pub enum DeviceTreeError {
     BufferTooSmall,
     MissingParent,
+    ParentCycle,
 }
 
 #[cfg(test)]
