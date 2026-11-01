@@ -42,6 +42,7 @@ const IRP_MN_START_DEVICE: u8 = 0x00;
 const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
+const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
 
 unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -53,6 +54,22 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
         // A full ACPI namespace/AML interpreter and PDO publication path is
         // required before this bus driver can truthfully return BusRelations.
         IRP_MN_QUERY_DEVICE_RELATIONS => STATUS_NOT_SUPPORTED,
+        IRP_MN_QUERY_INTERFACE => {
+            let parameters = unsafe { &(*stack).parameters };
+            let guid = unsafe { core::ptr::read_unaligned(parameters.as_ptr().cast::<*const cognacos_nt_abi::bus::GUID>()) };
+            let size = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(8).cast::<u16>()) };
+            let version = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(10).cast::<u16>()) };
+            let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut ACPI_FIRMWARE_INTERFACE>()) };
+            if guid.is_null() || output.is_null() {
+                STATUS_INVALID_PARAMETER
+            } else if unsafe { *guid } != cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE
+                || version as u32 != ACPI_FIRMWARE_INTERFACE_VERSION
+                || (size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() {
+                STATUS_NOT_SUPPORTED
+            } else {
+                unsafe { CognacAcpiGetFirmwareInterface(output) }
+            }
+        },
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
         _ => STATUS_INVALID_DEVICE_REQUEST,
     };
