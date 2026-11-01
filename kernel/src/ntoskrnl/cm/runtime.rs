@@ -156,6 +156,10 @@ pub const HIVE_FLUSH_PREPARE: u32 = 1;
 pub const HIVE_FLUSH_DATA: u32 = 2;
 pub const HIVE_FLUSH_COMMIT: u32 = 3;
 pub const HIVE_FLUSH_RECOVER: u32 = 4;
+/// Persist the prepared Last Known Good slot and its journal metadata.
+pub const HIVE_FLUSH_LKG_PREPARE: u32 = 5;
+/// Persist the committed Last Known Good promotion marker.
+pub const HIVE_FLUSH_LKG_COMMIT: u32 = 6;
 const HIVE_SLOT_NAMES: [&str; 7] = ["SYSTEM", "SOFTWARE", "SECURITY", "SAM", "DEFAULT", "COMPONENTS", "BCD00000000"];
 #[derive(Clone, Copy)]
 struct MountedHive { bytes: *mut u8, len: usize, info: hive_backend::BaseInfo, journal: *mut u8, journal_len: usize, flush: Option<HiveFlush> }
@@ -186,6 +190,46 @@ pub unsafe fn mount_hive_bytes(name: &str, bytes: &'static [u8]) -> Result<(), i
     Ok(())
 }
 
+/// Recover a writable hive from its redo transaction first, then from the
+/// newest valid committed Last Known Good snapshot if the redo record or hive
+/// image is unusable. LKG slots live after the redo region in the caller's
+/// persistent journal buffer; no durability is assumed without the flush hook.
+fn recover_writable_hive(bytes:&mut [u8],journal:&mut [u8])->Result<bool,i32>{
+    let redo_len=hive_writer_backend::RedoJournal::capacity(bytes.len())
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    let slot_len=hive_writer_backend::LastKnownGoodSnapshot::capacity(bytes.len())
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    let lkg_end=redo_len.checked_add(slot_len.checked_mul(2)
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    let lkg_available=journal.len()>=lkg_end;
+
+    let redo_result=hive_writer_backend::RedoJournal::recover(bytes,journal);
+    let mut recovered=match redo_result {
+        Ok(value)=>value,
+        Err(_) if lkg_available=>false,
+        Err(_)=>return Err(STATUS_INVALID_PARAMETER),
+    };
+    let current_hive_valid=hive_backend::Hive::open(bytes).is_ok();
+    if !current_hive_valid {
+        if !lkg_available { return Err(STATUS_INVALID_PARAMETER); }
+        let (prefix,tail)=journal.split_at_mut(redo_len);
+        let _=prefix;
+        let (first,second)=tail.split_at_mut(slot_len);
+        hive_writer_backend::LastKnownGoodSnapshot::restore_best(bytes,first,second)
+            .map_err(|_|STATUS_INVALID_PARAMETER)?;
+        recovered=true;
+    } else if redo_result.is_err() {
+        if !lkg_available { return Err(STATUS_INVALID_PARAMETER); }
+        let (prefix,tail)=journal.split_at_mut(redo_len);
+        let _=prefix;
+        let (first,second)=tail.split_at_mut(slot_len);
+        hive_writer_backend::LastKnownGoodSnapshot::restore_best(bytes,first,second)
+            .map_err(|_|STATUS_INVALID_PARAMETER)?;
+        recovered=true;
+    }
+    Ok(recovered)
+}
+
 /// Mount a writable hive backed by caller-owned permanent memory and a durable
 /// redo journal. The flush callback must implement phase ordering: PREPARE
 /// durably records the before-image first; DATA persists the changed hive while
@@ -198,8 +242,7 @@ pub unsafe fn mount_writable_hive_bytes(
     if hive_writer_backend::RedoJournal::capacity(bytes.len()).filter(|n| *n <= journal.len()).is_none() {
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
-    let recovered = hive_writer_backend::RedoJournal::recover(bytes, journal)
-        .map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let recovered = recover_writable_hive(bytes,journal)?;
     if recovered {
         flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, bytes, journal)?;
     }
@@ -214,6 +257,47 @@ pub unsafe fn mount_writable_hive_bytes(
     Ok(())
 }
 
+/// Promote validated registry hives to Last Known Good after the caller has
+/// independently verified successful startup. Persistent backing must reserve
+/// RedoJournal::capacity(hive_len) plus two LastKnownGoodSnapshot slots and its
+/// flush callback must durably implement the LKG_PREPARE/LKG_COMMIT phases.
+pub unsafe fn mark_hives_boot_successful()->Result<usize,i32>{
+    let mut promoted=0usize;
+    for slot_index in 0..HIVE_SLOT_NAMES.len(){
+        let mounted=unsafe { MOUNTED_HIVES[slot_index] };
+        if mounted.bytes.is_null()||mounted.journal.is_null() { continue; }
+        let Some(flush)=mounted.flush else { continue; };
+        let Some(redo_len)=hive_writer_backend::RedoJournal::capacity(mounted.len) else { continue; };
+        let Some(slot_len)=hive_writer_backend::LastKnownGoodSnapshot::capacity(mounted.len) else { continue; };
+        let Some(needed)=slot_len.checked_mul(2).and_then(|n|redo_len.checked_add(n)) else { continue; };
+        if mounted.journal_len<needed { continue; }
+        let hive=unsafe { core::slice::from_raw_parts_mut(mounted.bytes,mounted.len) };
+        let journal=unsafe { core::slice::from_raw_parts_mut(mounted.journal,mounted.journal_len) };
+        if hive_backend::Hive::open(hive).is_err() { continue; }
+        let (redo,tail)=journal.split_at_mut(redo_len);
+        let _=redo;
+        let (first,second)=tail.split_at_mut(slot_len);
+        let a=hive_writer_backend::LastKnownGoodSnapshot::committed_generation(first);
+        let b=hive_writer_backend::LastKnownGoodSnapshot::committed_generation(second);
+        let (target,generation)=match (a,b){
+            (None,None)=>(first,1),
+            (Some(ga),None)=>(second,ga.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+            (None,Some(gb))=>(first,gb.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+            (Some(ga),Some(gb)) if ga<=gb=>(first,gb.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+            (Some(ga),Some(gb))=>(second,ga.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?),
+        };
+        hive_writer_backend::LastKnownGoodSnapshot::prepare(hive,target,generation)
+            .map_err(|_|STATUS_INVALID_PARAMETER)?;
+        flush(HIVE_SLOT_NAMES[slot_index],HIVE_FLUSH_LKG_PREPARE,hive,journal)?;
+        hive_writer_backend::LastKnownGoodSnapshot::commit(target)
+            .map_err(|_|STATUS_INVALID_PARAMETER)?;
+        flush(HIVE_SLOT_NAMES[slot_index],HIVE_FLUSH_LKG_COMMIT,hive,journal)?;
+        promoted+=1;
+    }
+    if promoted==0 { return Err(STATUS_NOT_SUPPORTED); }
+    Ok(promoted)
+}
+
 /// Mount a writable hive after replaying one Windows 8.1+ HvLE log file.
 /// The caller chooses the applicable LOG/LOG1/LOG2 according to the boot/storage
 /// policy and supplies scratch space for fail-closed replay.
@@ -225,7 +309,7 @@ pub unsafe fn mount_writable_hive_bytes_with_hvle_log(
     if hive_writer_backend::RedoJournal::capacity(bytes.len()).filter(|n| *n <= journal.len()).is_none() {
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
-    if hive_writer_backend::RedoJournal::recover(bytes, journal).map_err(|_| STATUS_INVALID_PARAMETER)? {
+    if recover_writable_hive(bytes,journal)? {
         flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, bytes, journal)?;
     }
     let report = hive_writer_backend::replay_hvle(bytes, log, scratch).map_err(|_| STATUS_INVALID_PARAMETER)?;
