@@ -313,3 +313,25 @@ mod multisz_tests{
         assert_eq!(MultiSzIter::new(&data).next(),None);
     }
 }
+
+
+#[cfg(test)]
+mod pci_enum_match_tests {
+    use super::*;
+
+    #[test]
+    fn pci_hardware_id_prefix_is_case_insensitive() {
+        let upper = [b'V' as u16,b'E' as u16,b'N' as u16,b'_' as u16,
+            b'8' as u16,b'0' as u16,b'8' as u16,b'6' as u16];
+        let lower = [b'v' as u16,b'e' as u16,b'n' as u16,b'_' as u16,
+            b'8' as u16,b'0' as u16,b'8' as u16,b'6' as u16];
+        assert!(eq_ascii(&upper,&lower));
+    }
+
+    #[test]
+    fn pci_hardware_id_hex_fields_are_fixed_width() {
+        let mut output=[0u16;4];
+        assert_eq!(append_hex4(0x01af,&mut output,0),Ok(4));
+        assert_eq!(output,[b'0' as u16,b'1' as u16,b'A' as u16,b'F' as u16]);
+    }
+}
