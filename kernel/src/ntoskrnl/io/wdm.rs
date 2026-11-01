@@ -3647,6 +3647,25 @@ mod wdm_tests {
   assert!(!is_file_system_registered(fs_control));
  }
 
+
+ #[test]
+ fn filesystem_mount_snapshot_pins_control_device_across_unregister() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[IRP_MJ_FILE_SYSTEM_CONTROL as usize]=Some(test_fs_mount_and_dismount_dispatch);
+  let mut fs:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut fs)},STATUS_SUCCESS);
+  unsafe{io_register_file_system(fs);}
+  assert_eq!(unsafe{(*fs).reference_count},2);
+  let snapshot=snapshot_registered_filesystems();
+  assert_eq!(snapshot.count,1);
+  assert_eq!(unsafe{(*fs).reference_count},3);
+  unsafe{io_unregister_file_system(fs);}
+  assert_eq!(unsafe{(*fs).reference_count},2);
+  drop(snapshot);
+  assert_eq!(unsafe{(*fs).reference_count},1);
+  unsafe{io_delete_device(fs);}
+ }
+
 }
 
 
