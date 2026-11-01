@@ -518,6 +518,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "PoStartNextPowerIrp" => po::runtime::PoStartNextPowerIrp as usize,
   "IoAllocateIrp" => crate::io::io_allocate_irp as usize,
   "IoFreeIrp" => crate::io::io_free_irp as usize,
+  "IoGetRelatedDeviceObject" => crate::io::io_get_related_device_object as usize,
   "IoCallDriver" => crate::io::io_call_driver as usize,
   "IofCallDriver" => crate::io::io_call_driver as usize,
   "IoCompleteRequest" => crate::io::io_complete_request as usize,
