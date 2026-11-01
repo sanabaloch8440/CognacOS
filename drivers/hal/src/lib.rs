@@ -11,7 +11,7 @@ pub const HAL_CONTRACT_VERSION: u32 = 1;
 /// Small NT I/O-manager service surface passed to native WDM drivers. Keeping
 /// completion in a versioned kernel table avoids static imports from a driver
 /// image while preserving the IoCompleteRequest calling convention.
-pub const KERNEL_IO_SERVICES_VERSION: u32 = 4;
+pub const KERNEL_IO_SERVICES_VERSION: u32 = 5;
 pub type CompleteIrp = unsafe extern "win64" fn(
     irp: *mut cognacos_nt_abi::io::IRP,
     priority_boost: i8,
@@ -32,6 +32,7 @@ pub type UnpinBuffer = unsafe extern "win64" fn(mdl:*mut core::ffi::c_void,syste
 pub type AttachDevice = unsafe extern "win64" fn(source:*mut core::ffi::c_void,target:*mut core::ffi::c_void)->*mut core::ffi::c_void;
 pub type DetachDevice = unsafe extern "win64" fn(target:*mut core::ffi::c_void);
 pub type PublishBusRelations = unsafe extern "win64" fn(bus:*mut core::ffi::c_void,children:*const *mut core::ffi::c_void,count:u32)->i32;
+pub type IrpOperation = unsafe extern "win64" fn(irp:*mut core::ffi::c_void);
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelIoServiceTable {
@@ -50,6 +51,8 @@ pub struct KernelIoServiceTable {
     pub attach_device:Option<AttachDevice>,
     pub detach_device:Option<DetachDevice>,
     pub publish_bus_relations:Option<PublishBusRelations>,
+    pub skip_current_stack:Option<IrpOperation>,
+    pub free_irp:Option<IrpOperation>,
 }
 impl KernelIoServiceTable {
     pub const fn compatible(&self) -> bool {
@@ -68,6 +71,8 @@ impl KernelIoServiceTable {
             && self.attach_device.is_some()
             && self.detach_device.is_some()
             && self.publish_bus_relations.is_some()
+            && self.skip_current_stack.is_some()
+            && self.free_irp.is_some()
     }
 }
 
