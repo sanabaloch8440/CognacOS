@@ -249,7 +249,7 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP)
         IRP_MN_START_DEVICE => {
             let raw = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<*const u8>()) };
             let translated = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<*const u8>()) };
-            if resource_list_has_ps2_ports_and_irq(raw, translated, handoff().map(|h| h.interrupt_vector).unwrap_or(0)) {
+            if unsafe { resource_list_has_ps2_ports_and_irq(raw, translated, handoff().map(|h| h.interrupt_vector).unwrap_or(0)) } {
                 START_RESOURCES_VALID.store(true, Ordering::Release);
                 let result = unsafe { I8042StartDevice() };
                 if result != STATUS_SUCCESS { START_RESOURCES_VALID.store(false, Ordering::Release); }
