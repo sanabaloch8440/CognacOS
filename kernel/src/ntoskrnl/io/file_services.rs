@@ -6,7 +6,7 @@
 //! a compatibility wrapper; it no longer owns an independent file I/O path.
 
 use crate::hal::IrqSpinLock;
-use crate::wdm::{self, DriverObject, DeviceObject, Irp, IoStackLocation};
+use crate::wdm::{self, DriverObject, DeviceObject, Irp, IoStackLocation, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
 use crate::nt_abi::io::FILE_OBJECT;
 use crate::nt_abi::object::UNICODE_STRING;
 use core::ffi::c_void;
