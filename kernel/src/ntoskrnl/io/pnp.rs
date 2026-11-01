@@ -416,6 +416,7 @@ pub unsafe fn import_pci_inventory(
     interface: &crate::nt_abi::bus::PCI_BUS_INTERFACE,
 ) -> Result<usize, PnpError> {
     use crate::nt_abi::ntstatus::{STATUS_SUCCESS, STATUS_NOT_FOUND};
+    use crate::nt_abi::bus::{PCI_BRIDGE_INFORMATION, PCI_DEVICE_INFORMATION};
     let header = &interface.header;
     if (header.size as usize) < core::mem::size_of::<crate::nt_abi::bus::PCI_BUS_INTERFACE>()
         || header.version as u32 != crate::nt_abi::bus::PCI_BUS_INTERFACE_VERSION
@@ -424,19 +425,67 @@ pub unsafe fn import_pci_inventory(
     }
     let query_counts = interface.query_counts.ok_or(PnpError::InvalidFunction)?;
     let query_function = interface.query_function.ok_or(PnpError::InvalidFunction)?;
+    let query_bridge = interface.query_bridge.ok_or(PnpError::InvalidFunction)?;
     let mut functions = 0u32;
     let mut bridges = 0u32;
     let mut xhci = 0u32;
     let status = unsafe { query_counts(header.context, &mut functions, &mut bridges, &mut xhci) };
     if status != STATUS_SUCCESS { return Err(PnpError::InvalidState); }
-    if functions as usize > MAX_PNP_DEVICES { return Err(PnpError::TableFull); }
+    if functions as usize > MAX_PNP_DEVICES || bridges as usize > MAX_PNP_DEVICES {
+        return Err(PnpError::TableFull);
+    }
+
+    // Fetch topology from pci.sys before publishing any devnodes. This keeps
+    // bridge discovery in the bus driver and lets the kernel PnP manager build
+    // the parent tree without touching PCI configuration space.
+    let mut topology = [PCI_BRIDGE_INFORMATION::default(); MAX_PNP_DEVICES];
+    for index in 0..bridges {
+        let status = unsafe { query_bridge(header.context, index, &mut topology[index as usize]) };
+        if status == STATUS_NOT_FOUND { return Err(PnpError::InvalidState); }
+        if status != STATUS_SUCCESS { return Err(PnpError::InvalidState); }
+        let bridge = topology[index as usize];
+        if bridge.device >= 32 || bridge.function >= 8
+            || bridge.secondary_bus <= bridge.primary_bus
+            || bridge.subordinate_bus < bridge.secondary_bus {
+            return Err(PnpError::InvalidFunction);
+        }
+    }
+
     let mut imported = 0usize;
     for index in 0..functions {
-        let mut information = crate::nt_abi::bus::PCI_DEVICE_INFORMATION::default();
+        let mut information = PCI_DEVICE_INFORMATION::default();
         let status = unsafe { query_function(header.context, index, &mut information) };
         if status == STATUS_NOT_FOUND { break; }
         if status != STATUS_SUCCESS { return Err(PnpError::InvalidState); }
-        match register_pci_information(&information, None) {
+
+        // Select the narrowest containing bridge range. Equal-width matches
+        // are ambiguous and rejected rather than creating a false parent.
+        let mut best: Option<PCI_BRIDGE_INFORMATION> = None;
+        let mut ambiguous = false;
+        for bridge in topology[..bridges as usize].iter().copied().filter(|bridge|
+            bridge.segment == information.segment
+                && bridge.secondary_bus <= information.bus
+                && information.bus <= bridge.subordinate_bus) {
+            match best {
+                None => { best = Some(bridge); ambiguous = false; }
+                Some(old) => {
+                    let old_width = old.subordinate_bus as u16 - old.secondary_bus as u16;
+                    let new_width = bridge.subordinate_bus as u16 - bridge.secondary_bus as u16;
+                    if new_width < old_width { best = Some(bridge); ambiguous = false; }
+                    else if new_width == old_width { ambiguous = true; }
+                }
+            }
+        }
+        if ambiguous { return Err(PnpError::InvalidFunction); }
+        let parent = if let Some(bridge) = best {
+            let parent = find_pnp_pci_function(
+                bridge.segment, bridge.primary_bus, bridge.device, bridge.function,
+            ).ok_or(PnpError::InvalidState)?;
+            Some(parent)
+        } else {
+            None
+        };
+        match register_pci_information(&information, parent) {
             Ok(_) => imported += 1,
             Err(PnpError::DuplicateDevice) => {},
             Err(error) => return Err(error),
