@@ -1165,7 +1165,7 @@ unsafe extern "win64" fn kernel_io_pin_buffer(
     if mdl.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
     unsafe{crate::ntoskrnl::mm::runtime::mm_probe_and_lock_pages(mdl,0,if write_access!=0{1}else{0});}
     let flags=unsafe{core::ptr::read_unaligned(mdl.cast::<u8>().add(0x0a).cast::<i16>())};
-    if flags&0x0002==0 {
+    if flags&(0x0002|0x0004)==0 {
         unsafe{crate::io::io_free_mdl(mdl);}
         return STATUS_ACCESS_VIOLATION
     }
@@ -1181,7 +1181,8 @@ unsafe extern "win64" fn kernel_io_unpin_buffer(mdl:*mut core::ffi::c_void,syste
     if mdl.is_null(){return}
     unsafe{
         if !system_address.is_null(){crate::ntoskrnl::mm::runtime::mm_unmap_locked_pages(system_address,mdl);}
-        crate::ntoskrnl::mm::runtime::mm_unlock_pages(mdl);
+        let flags=core::ptr::read_unaligned(mdl.cast::<u8>().add(0x0a).cast::<i16>());
+        if flags&0x0004==0{crate::ntoskrnl::mm::runtime::mm_unlock_pages(mdl);}
         crate::io::io_free_mdl(mdl);
     }
 }
