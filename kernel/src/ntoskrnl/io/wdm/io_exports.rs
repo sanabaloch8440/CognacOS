@@ -28,37 +28,3 @@ static mut CONFIGURATION_INFORMATION: ConfigurationInformation = ConfigurationIn
 pub extern "win64" fn io_get_configuration_information() -> *mut ConfigurationInformation {
     core::ptr::addr_of_mut!(CONFIGURATION_INFORMATION)
 }
-
-
-static IO_CANCEL_SPIN_LOCK: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
-/// Acquire the global NT I/O cancel spin lock and raise to DISPATCH_LEVEL.
-/// The caller must supply a writable KIRQL slot, as required by the WDK ABI.
-#[unsafe(export_name = "IoAcquireCancelSpinLock")]
-pub extern "win64" fn io_acquire_cancel_spin_lock(old_irql: *mut u8) {
-    if old_irql.is_null() {
-        return;
-    }
-    let previous = unsafe { crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level() };
-    while IO_CANCEL_SPIN_LOCK
-        .compare_exchange_weak(
-            false,
-            true,
-            core::sync::atomic::Ordering::Acquire,
-            core::sync::atomic::Ordering::Relaxed,
-        )
-        .is_err()
-    {
-        core::hint::spin_loop();
-    }
-    unsafe { old_irql.write(previous); }
-}
-
-/// Release the global cancel spin lock, then restore the caller's previous IRQL.
-#[unsafe(export_name = "IoReleaseCancelSpinLock")]
-pub extern "win64" fn io_release_cancel_spin_lock(old_irql: u8) {
-    IO_CANCEL_SPIN_LOCK.store(false, core::sync::atomic::Ordering::Release);
-    unsafe { crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql); }
-}
-

@@ -322,7 +322,7 @@ const fn make_storage_driver()->DriverObject {
 }
 static mut STORAGE_DRIVER:DriverObject=make_storage_driver();
 
-fn storage_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
+unsafe extern "win64" fn storage_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
  let stack=unsafe{wdm::io_get_current_irp_stack_location(irp)};
  if stack.is_null(){unsafe{wdm::io_complete_irp_status(irp,STATUS_INVALID_PARAMETER,0,0);}return STATUS_INVALID_PARAMETER}
