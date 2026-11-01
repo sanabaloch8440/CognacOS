@@ -786,9 +786,9 @@ pub fn boot_secure_boot_enabled()->Option<bool>{
     if flags&(1<<0)==0{None}else{Some(flags&(1<<1)!=0)}
 }
 pub fn boot_tpm_kernel_measurement_recorded()->bool{boot_security_flags()&(1<<5)!=0}
-static mut THREAD_SMOKE_STACK: [u8; 4096] = [0; 4096];
-static mut THREAD_BLOCK_STACK: [u8; 4096] = [0; 4096];
-static mut THREAD_WAKE_STACK: [u8; 4096] = [0; 4096];
+static mut THREAD_SMOKE_STACK: [u8; 16384] = [0; 16384];
+static mut THREAD_BLOCK_STACK: [u8; 16384] = [0; 16384];
+static mut THREAD_WAKE_STACK: [u8; 16384] = [0; 16384];
 static THREAD_SMOKE_RAN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static THREAD_BLOCK_STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
@@ -1525,7 +1525,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // Exercise a real saved-stack transition, thread trampoline, exit, and
         // return to the bootstrap context before enabling timer interrupts.
         let smoke_stack_ptr = core::ptr::addr_of_mut!(THREAD_SMOKE_STACK).cast::<u8>();
-        let smoke_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(smoke_stack_ptr, 4096);
+        let smoke_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(smoke_stack_ptr, 16384);
         let smoke_thread = match thread::spawn(smoke_stack, 1, thread_smoke_entry, core::ptr::null_mut()) {
             Ok(id) => id,
             Err(_) => { serial_write(b"FATAL: kernel thread context creation failed.\r\n"); halt(); }
@@ -1549,8 +1549,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         let block_stack_ptr = core::ptr::addr_of_mut!(THREAD_BLOCK_STACK).cast::<u8>();
         let wake_stack_ptr = core::ptr::addr_of_mut!(THREAD_WAKE_STACK).cast::<u8>();
-        let block_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(block_stack_ptr, 4096);
-        let wake_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(wake_stack_ptr, 4096);
+        let block_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(block_stack_ptr, 16384);
+        let wake_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(wake_stack_ptr, 16384);
         THREAD_BLOCK_STAGE.store(0, core::sync::atomic::Ordering::Release);
         let blocked_thread = match thread::spawn(block_stack, 1, thread_block_smoke_entry, core::ptr::null_mut()) {
             Ok(id) => id,
