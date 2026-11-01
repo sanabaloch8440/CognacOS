@@ -1,8 +1,8 @@
 //! Kernel-owned PCI/PnP resource handoff for the first xHCI controller.
 //! This is deliberately not a general PCI bus driver yet. The record is stable
-//! for the lifetime of the kernel and is published only after BAR sizing and
-//! uncached MMIO mapping have succeeded. Bus mastering stays disabled until an
-//! IOMMU requester domain and interrupt path are ready.
+//! for the lifetime of the kernel and is published after BAR sizing and real
+//! PCI PDO binding. usbxhci.sys maps the BAR through MmMapIoSpace; bus mastering
+//! stays disabled until its IOMMU-backed DMA allocations are ready.
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -116,7 +116,7 @@ pub fn publish_xhci(
     XHCI_PCI_DEVICE.bar_length.store(bar_length,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bar_virtual.store(bar_virtual,Ordering::Relaxed);
     XHCI_PCI_DEVICE.state.store(STATE_BAR_ASSIGNED,Ordering::Relaxed);
-    // Bind the stable PnP device-object address to its real PCI requester ID
+    // Bind the real PCI PDO address to its PCI requester ID
     // before exposing the object to driver/DMA-adapter consumers.
     let requester_status = unsafe {
         crate::dma::iommu::RdotDmaRegisterDeviceRequester(
