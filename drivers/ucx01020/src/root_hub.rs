@@ -23,6 +23,7 @@ pub struct PortStatus{pub status:u16,pub change:u16}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RootHubError{InvalidRequest,InvalidPort,BufferTooSmall,HardwareFailure,UnsupportedFeature}
 pub trait RootHubPortIo{
+ fn read_hub_status(&mut self)->Result<PortStatus,()>{Ok(PortStatus::default())}
  fn read_port(&mut self,port:u8)->Result<PortStatus,()>;
  fn set_feature(&mut self,port:u8,feature:u16)->Result<(),()>;
  fn clear_feature(&mut self,port:u8,feature:u16)->Result<(),()>;
@@ -44,11 +45,11 @@ pub fn handle_control<I:RootHubPortIo>(io:&mut I,setup:SetupPacket,port_count:u8
  match (setup.request_type,setup.request){
   (USB_RT_CLASS_DEVICE_IN,USB_REQ_GET_STATUS)=>{
    if setup.length<4{return Err(RootHubError::BufferTooSmall)}
-   out[..4].copy_from_slice(&[0,0,0,0]);Ok(4)
+   let s=io.read_hub_status().map_err(|_|RootHubError::HardwareFailure)?;let status=s.status.to_le_bytes();let change=s.change.to_le_bytes();out[..2].copy_from_slice(&status);out[2..4].copy_from_slice(&change);Ok(4)
   },
   (USB_RT_CLASS_DEVICE_IN,USB_REQ_GET_DESCRIPTOR)=>{
    let kind=(setup.value>>8) as u8;
-   let n=io.get_descriptor(kind,out).map_err(|_|RootHubError::HardwareFailure)?;
+   let limit=setup.length as usize;let n=io.get_descriptor(kind,&mut out[..limit]).map_err(|_|RootHubError::HardwareFailure)?;
    if n>out.len()||n>setup.length as usize{return Err(RootHubError::BufferTooSmall)}Ok(n)
   },
   (USB_RT_CLASS_OTHER_IN,USB_REQ_GET_STATUS)=>{
