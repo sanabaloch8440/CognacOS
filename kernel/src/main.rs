@@ -286,9 +286,9 @@ fn poll_ps2_keyboard_input(){
 
 
 
-// PCI configuration mechanism #1 helpers. BAR sizing is performed only during
-// early boot, before any driver binds; command decode and bus mastering are
-// disabled while probing; BARs are restored and bus mastering is forced off.
+// Temporary legacy PCI configuration access retained only for the VT-d
+// requester quarantine and bus-master safety hooks. Enumeration and BAR
+// discovery have been removed from NTOSKRNL and belong to PCI.sys.
 unsafe fn pci_config_select(bus:u8,device:u8,function:u8,offset:u8) {
     let address=0x8000_0000u32|((bus as u32)<<16)|((device as u32)<<11)
         |((function as u32)<<8)|((offset as u32)&0xfc);
@@ -297,46 +297,9 @@ unsafe fn pci_config_select(bus:u8,device:u8,function:u8,offset:u8) {
 unsafe fn pci_config_read32(bus:u8,device:u8,function:u8,offset:u8)->u32 {
     unsafe { pci_config_select(bus,device,function,offset); hal::read_port_u32(0x0cfc) }
 }
-unsafe fn pci_config_write32(bus:u8,device:u8,function:u8,offset:u8,value:u32) {
-    unsafe { pci_config_select(bus,device,function,offset); hal::write_port_u32(0x0cfc,value); }
-}
 unsafe fn pci_config_write16(bus:u8,device:u8,function:u8,offset:u8,value:u16) {
     unsafe { pci_config_select(bus,device,function,offset); hal::write_port_u16(0x0cfc,value); }
 }
-
-/// Determine the assigned BAR size without leaving the device configuration
-/// modified. This routine runs before device drivers and never enables bus master.
-unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
-    let low=unsafe{pci_config_read32(bus,device,function,0x10)};
-    let kind=(low>>1)&3;
-    if low&1!=0 || (kind!=0&&kind!=2) { return None; }
-    let high=if kind==2 {Some(unsafe{pci_config_read32(bus,device,function,0x14)})}else{None};
-    let decoded=pci::decode_memory_bar(low,high).ok()?;
-    if decoded.prefetchable { return None; }
-    let command=unsafe{pci_config_read32(bus,device,function,0x04)} as u16;
-    // Only touch BAR sizing registers with memory/I/O decoding and bus mastering off.
-    unsafe{pci_config_write16(bus,device,function,0x04,pci::command_for_bar_probe(command));}
-    unsafe{pci_config_write32(bus,device,function,0x10,u32::MAX);}
-    if kind==2 { unsafe{pci_config_write32(bus,device,function,0x14,u32::MAX);} }
-    let mask_low=unsafe{pci_config_read32(bus,device,function,0x10)};
-    let mask_high=if kind==2 {unsafe{pci_config_read32(bus,device,function,0x14)}}else{0};
-    // Restore BARs before decode; preserve decode bits but force bus mastering off.
-    unsafe{pci_config_write32(bus,device,function,0x10,low);}
-    if let Some(saved)=high { unsafe{pci_config_write32(bus,device,function,0x14,saved);} }
-    unsafe{pci_config_write16(bus,device,function,0x04,pci::command_after_bar_probe(command));}
-    let size=if kind==2 {
-        let mask=((mask_high as u64)<<32)|((mask_low as u64)&!0xf);
-        (!mask).wrapping_add(1)
-    } else {
-        (!(mask_low&!0xf)).wrapping_add(1) as u64
-    };
-    if size<0x1000||!size.is_power_of_two()||size>0x0400_0000
-        ||decoded.base&(size-1)!=0||decoded.base.checked_add(size).is_none() {
-        return None;
-    }
-    Some((decoded.base,size))
-}
-
 
 unsafe extern "C" fn vtd_alloc_table(_ctx:*mut core::ffi::c_void,pa_out:*mut u64,va_out:*mut *mut u64)->i32{
  if pa_out.is_null()||va_out.is_null(){return dma::iommu::vtd::STATUS_INVALID_PARAMETER}
@@ -485,11 +448,8 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
 }
 
 
-/// Enumerate ACPI-described PCIe ECAM segments into the kernel-owned PnP tree.
-/// Firmware MCFG allocations are validated before mapping; functions are read
-/// through ECAM, and downstream nodes are attached to the narrowest validated
-/// bridge range in the same segment. This inventory does not assign BARs or
-/// enable bus mastering; those operations remain part of device start.
+/// Compatibility call site for the staged PCI.sys cutover. PCI enumeration
+/// is no longer performed by the kernel.
 /// Transitional cutover: the kernel no longer walks MCFG buses or creates
 /// a second PCI inventory. PCI.sys is the sole owner of PCI enumeration.
 /// The PCI.sys-to-PnP PDO/BusRelations handoff is being connected in the next
@@ -498,9 +458,8 @@ fn enumerate_acpi_pci_devices(_rsdp_address:u64)->usize {
     0
 }
 
-/// Discover xHCI, measure its assigned BAR, map it uncached and publish a stable
-/// ntoskrnl-owned PnP record. This is resource preparation, not controller takeover:
-/// no bus mastering, DMA ring allocation, reset, or interrupt source is enabled here.
+/// Compatibility call site retained until PCI.sys publishes the xHCI PDO and
+/// assigned resources through the PnP relations/resource interfaces.
 /// Transitional cutover: xHCI discovery and BAR sizing must be initiated by
 /// PCI.sys and delivered as assigned resources through PnP. The former kernel
 /// implementation independently walked every bus, probed BARs and built a
