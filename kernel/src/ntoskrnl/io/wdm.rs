@@ -981,7 +981,7 @@ pub unsafe extern "win64" fn io_create_device(
  let object=&mut slot.object as *mut DeviceObject;
  if matches!(device_type,FILE_DEVICE_DISK|FILE_DEVICE_CD_ROM|FILE_DEVICE_TAPE|FILE_DEVICE_VIRTUAL_DISK) {
   slot.vpb.real_device=object;
-  slot.vpb.reference_count=1;
+  slot.vpb.reference_count=0;
   slot.object.vpb=ptr::addr_of_mut!(slot.vpb).cast();
  }
  unsafe { (*driver).device_object=object; output.write(object); }
