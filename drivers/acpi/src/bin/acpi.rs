@@ -3,7 +3,7 @@
 
 use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_acpi as acpi;
-use cognacos_nt_abi::{io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
+use cognacos_nt_abi::{bus::{ACPI_FIRMWARE_INTERFACE, INTERFACE_HEADER, ACPI_FIRMWARE_INTERFACE_VERSION}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
 const HANDOFF_MAGIC: u64 = 0x434f_474e_4143_4143; // COGNACAC
 const HANDOFF_VERSION: u32 = 1;
@@ -25,6 +25,7 @@ struct AcpiState {
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
     dmar_present: AtomicBool,
+    rsdp_address: core::sync::atomic::AtomicU64,
 }
 unsafe impl Sync for AcpiState {}
 static STATE: AcpiState = AcpiState {
@@ -33,6 +34,7 @@ static STATE: AcpiState = AcpiState {
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
     dmar_present: AtomicBool::new(false),
+    rsdp_address: core::sync::atomic::AtomicU64::new(0),
 };
 
 const IRP_MJ_PNP: usize = 0x1b;
@@ -105,9 +107,72 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         Err(acpi::AcpiError::BadSignature) | Err(acpi::AcpiError::MissingRoot) => {}
         Err(_) => return STATUS_INVALID_PARAMETER,
     }
+    STATE.rsdp_address.store(handoff.rsdp_address, Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
     object.driver_unload = Some(driver_unload);
+    STATUS_SUCCESS
+}
+
+/// Copy a validated firmware table through the versioned ACPI bus interface.
+/// The caller owns the destination buffer; no firmware physical pointer escapes.
+unsafe extern "win64" fn query_firmware_table(
+    context: PVOID,
+    signature: *const u8,
+    instance: u32,
+    buffer: PVOID,
+    buffer_length: u32,
+    required_length: *mut u32,
+) -> i32 {
+    if context.is_null() || signature.is_null() || required_length.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if !STATE.ready.load(Ordering::Acquire) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    let rsdp = context as u64;
+    if rsdp == 0 || rsdp != STATE.rsdp_address.load(Ordering::Acquire) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let signature = unsafe { core::slice::from_raw_parts(signature, 4) };
+    let signature = [signature[0], signature[1], signature[2], signature[3]];
+    let table = match unsafe { acpi::find_table(rsdp, signature, instance as usize) } {
+        Ok(table) => table,
+        Err(error) => return acpi::error_to_ntstatus(error),
+    };
+    let Ok(length) = u32::try_from(table.len()) else {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    };
+    unsafe { required_length.write(length); }
+    if buffer_length < length {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if buffer.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { core::ptr::copy_nonoverlapping(table.as_ptr(), buffer.cast::<u8>(), table.len()); }
+    STATUS_SUCCESS
+}
+
+/// Return ACPI.sys' stable, versioned firmware-table interface to a consumer.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacAcpiGetFirmwareInterface(
+    output: *mut ACPI_FIRMWARE_INTERFACE,
+) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    unsafe {
+        output.write(ACPI_FIRMWARE_INTERFACE {
+            header: INTERFACE_HEADER {
+                size: core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() as u16,
+                version: ACPI_FIRMWARE_INTERFACE_VERSION as u16,
+                context: STATE.rsdp_address.load(Ordering::Acquire) as PVOID,
+                interface_reference: None,
+                interface_dereference: None,
+            },
+            query_table: Some(query_firmware_table),
+        });
+    }
     STATUS_SUCCESS
 }
 
