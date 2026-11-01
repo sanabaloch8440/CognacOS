@@ -89,6 +89,14 @@ mod wdm_tests {
   STATUS_SUCCESS
  }
  #[test]
+ fn typed_irp_information_accessor_roundtrips() {
+  let mut irp=Irp{bytes:[0;IRP_SIZE_X64]};
+  unsafe {
+   assert!(io_set_irp_information(&mut irp,0x5678));
+   assert_eq!(io_get_irp_information(&irp),0x5678);
+  }
+ }
+ #[test]
  fn device_dispatch_uses_wdm_device_object_signature() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
   let mut device: *mut DeviceObject=ptr::null_mut();
@@ -169,6 +177,29 @@ mod wdm_tests {
   assert!(!next.is_null());
   assert_eq!(next as usize,irp as usize+IRP_SIZE_X64+IO_STACK_LOCATION_SIZE_X64);
   unsafe{io_free_irp(irp);}
+ }
+ #[test]
+ fn synchronous_fsd_builder_owns_iosb_event_and_read_packet() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let mut event=[0u64;3];
+  let mut iosb=IoStatusBlock{status:crate::nt_abi::io::IO_STATUS_BLOCK_STATUS{status:STATUS_PENDING},information:0};
+  let mut buffer=[0u8;16];
+  let mut offset=0x1234i64;
+  let irp=unsafe{io_build_synchronous_fsd_request(
+   IRP_MJ_READ as u32,device,buffer.as_mut_ptr().cast(),buffer.len() as u32,
+   &mut offset,event.as_mut_ptr().cast(),&mut iosb
+  )};
+  assert!(!irp.is_null());
+  let stack=unsafe{io_get_next_irp_stack_location(irp)};
+  assert!(!stack.is_null());
+  assert_eq!(unsafe{(*stack).major_function},IRP_MJ_READ);
+  assert_eq!(unsafe{io_read_stack_u32(stack,0)},buffer.len() as u32);
+  assert_eq!(unsafe{io_read_stack_i64(stack,8)},offset);
+  assert_eq!(unsafe{io_get_irp_user_buffer(irp)},buffer.as_mut_ptr().cast());
+  assert_eq!(unsafe{io_get_irp_status(irp)},STATUS_PENDING);
+  unsafe{io_free_irp(irp);io_delete_device(device);}
  }
  #[test]
  fn attach_detach_tracks_filter_stack_and_stack_depth() {
