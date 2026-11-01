@@ -42,6 +42,38 @@ fn abort_boot(error_control: u32) -> bool {
     error_control >= 2
 }
 
+fn name_eq(a: &[u16], b: &[u16]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| {
+        let fold = |c: u16| if (b'A' as u16..=b'Z' as u16).contains(&c) { c + 32 } else { c };
+        fold(*x) == fold(*y)
+    })
+}
+
+fn dependencies_initialized(
+    index: usize,
+    nodes: &[ServiceNode<'_>],
+    records: &[DriverInitRecord],
+) -> bool {
+    let node = &nodes[index];
+    for dependency in node.service_dependencies {
+        let Some(dep_index) = nodes.iter().position(|candidate| name_eq(candidate.name, dependency)) else {
+            return false;
+        };
+        if !matches!(records[dep_index].status, DriverInitStatus::Loaded(_)) {
+            return false;
+        }
+    }
+    for dependency in node.group_dependencies {
+        if !nodes.iter().enumerate().any(|(candidate_index, candidate)| {
+            name_eq(candidate.group, dependency)
+                && matches!(records[candidate_index].status, DriverInitStatus::Loaded(_))
+        }) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Schedule and initialize Boot/System-start candidates in one allocation-free
 /// pass. The caller supplies a bounded candidate snapshot decoded from SYSTEM.
 /// Driver objects and UTF-16 names are retained in caller-owned arrays and must
@@ -79,6 +111,17 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
 
     for &service_index in &schedule[..scheduled] {
         let node = &nodes[service_index];
+        // The order pass establishes a topological sequence, but initialization
+        // can still fail. Never start a dependent after its service/group
+        // prerequisite failed at runtime.
+        if !dependencies_initialized(service_index, nodes, records) {
+            let failure = RegistryDriverLoadError::DependencyFailed;
+            records[service_index] = DriverInitRecord {
+                service_index, error_control: 1, status: DriverInitStatus::Failed(failure),
+            };
+            report.failed += 1;
+            continue;
+        }
         let error_control = match crate::ntoskrnl::cm::service_config::query_service_details(
             hive, node.name, path_buffer,
         ) {
