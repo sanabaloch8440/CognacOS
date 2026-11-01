@@ -171,6 +171,10 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_register_file_system as usize)
   } else if requested.eq_ignore_ascii_case(b"IoUnregisterFileSystem") {
    Some(crate::io::io_unregister_file_system as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoRegisterFsRegistrationChange") {
+   Some(crate::io::io_register_fs_registration_change as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoUnregisterFsRegistrationChange") {
+   Some(crate::io::io_unregister_fs_registration_change as usize)
   } else if requested.eq_ignore_ascii_case(b"IoVerifyVolume") {
    Some(crate::io::io_verify_volume as usize)
   } else if requested.eq_ignore_ascii_case(b"IoAcquireVpbSpinLock") {
