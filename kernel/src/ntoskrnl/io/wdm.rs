@@ -31,8 +31,8 @@ pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
 pub type IoStatusBlock = crate::nt_abi::io::IO_STATUS_BLOCK;
 pub type DriverDispatch = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp) -> i32;
 pub type DriverUnload = unsafe extern "win64" fn(*mut DriverObject);
-pub type IoCompletionRoutine = unsafe extern "win64" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
-pub type DriverCancelRoutine = unsafe extern "win64" fn(*mut c_void, *mut c_void);
+pub type IoCompletionRoutine = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
+pub type DriverCancelRoutine = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp);
 
 #[repr(C)]
 pub struct DriverObject {
@@ -2337,7 +2337,7 @@ pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
    } else {ptr::null_mut()}
   } else {ptr::null_mut()}
  };
- unsafe{routine(device.cast(),irp.cast());}
+ unsafe{routine(device,irp);}
  // The cancel routine owns stopping the device; once it returns, drop any
  // remaining IRP-bound IOMMU mappings. Completion performs the same idempotent rundown.
  crate::dma::release_irp_mappings(irp.cast());
