@@ -26,6 +26,7 @@ pub fn check_wdm() -> Result<(), String> {
     let runtime = read("kernel/src/ntoskrnl/io/runtime.rs")?;
     let exports = read("kernel/src/ntoskrnl/mod.rs")?;
     let manifest = read("kernel/src/ntoskrnl/manifest_26100.json")?;
+    let nt_io_abi = read("shared/nt-abi/src/io.rs")?;
     let mut errors = Vec::new();
     let lines: Vec<_> = wdm.lines().collect();
     for pair in lines.windows(2) {
@@ -48,6 +49,31 @@ pub fn check_wdm() -> Result<(), String> {
         "pub unsafe extern \"win64\" fn io_csq_insert_irp_ex", "pub unsafe extern \"win64\" fn io_csq_remove_irp",
         "pub unsafe extern \"win64\" fn io_csq_remove_next_irp",
     ] { require(&wdm, required, &mut errors); }
+    for required in [
+        "pub struct VPB", "VPB_MOUNTED", "VPB_LOCKED", "VPB_PERSISTENT",
+        "VPB_REMOVE_PENDING", "VPB_RAW_MOUNT", "VPB_DIRECT_WRITES_ALLOWED",
+        "MAXIMUM_VOLUME_LABEL_LENGTH",
+    ] { require(&nt_io_abi, required, &mut errors); }
+    for required in [
+        "IRP_MJ_FILE_SYSTEM_CONTROL", "IRP_MN_MOUNT_VOLUME", "IRP_MN_VERIFY_VOLUME",
+        "fn io_dismount_volume", "mount_volume_completion", "dismount_volume_completion",
+        "pub unsafe extern \"win64\" fn io_verify_volume",
+        "pub unsafe extern \"win64\" fn io_acquire_vpb_spin_lock",
+        "pub unsafe extern \"win64\" fn io_release_vpb_spin_lock",
+    ] { require(&wdm, required, &mut errors); }
+    for required in ["io_verify_volume", "io_acquire_vpb_spin_lock", "io_release_vpb_spin_lock"] {
+        require(&runtime, required, &mut errors);
+    }
+    for required in ["IoVerifyVolume", "IoAcquireVpbSpinLock", "IoReleaseVpbSpinLock"] {
+        require(&exports, required, &mut errors);
+        if !manifest.contains(&format!("\"name\": \"{required}\"")) {
+            errors.push(format!("missing NTOSKRNL manifest entry: {required}"));
+        }
+        if !wdm.contains(&format!("export_name=\"{required}\""))
+            && !wdm.contains(&format!("export_name = \"{required}\"")) {
+            errors.push(format!("missing WDM PE export alias: {required}"));
+        }
+    }
     for symbol in [
         "IoAllocateIrp", "IoFreeIrp", "IoBuildDeviceIoControlRequest", "IoCallDriver",
         "IoCompleteRequest", "IoAcquireCancelSpinLock", "IoReleaseCancelSpinLock",
