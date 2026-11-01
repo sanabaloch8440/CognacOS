@@ -2020,7 +2020,7 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
   let volume=unsafe{(*vpb).device_object.cast::<DeviceObject>()};
   let volume_index=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,volume));
   let already_mounted_elsewhere=state.devices.iter().any(|s|s.used&&!ptr::eq(&s.vpb,vpb)
-   &&s.vpb.device_object==volume&&s.vpb.flags&crate::nt_abi::io::VPB_MOUNTED!=0);
+   &&s.vpb.device_object.cast::<DeviceObject>()==volume&&s.vpb.flags&crate::nt_abi::io::VPB_MOUNTED!=0);
   match (real_index,volume_index) {
    (Some(_),Some(vi)) if !volume.is_null()&&!already_mounted_elsewhere
       &&state.devices[vi].object.device_type==FILE_DEVICE_DISK_FILE_SYSTEM
