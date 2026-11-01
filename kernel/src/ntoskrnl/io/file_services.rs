@@ -8,6 +8,7 @@
 use crate::hal::IrqSpinLock;
 use crate::wdm::{self, DriverObject, DeviceObject, Irp, IoStackLocation, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
 use crate::nt_abi::io::FILE_OBJECT;
+use crate::ntoskrnl::ob::runtime as ob;
 use crate::nt_abi::object::UNICODE_STRING;
 use core::ffi::c_void;
 use core::ptr;
@@ -83,9 +84,6 @@ const fn empty_file_object() -> FILE_OBJECT {
 }
 
 struct HandleRecord {
-    token: usize,
-    owner: u64,
-    file_index: usize,
     active_io: u32,
     closing: bool,
     used: bool,
@@ -93,7 +91,7 @@ struct HandleRecord {
 }
 impl HandleRecord {
     const EMPTY: Self = Self {
-        token: 0, owner: 0, file_index: 0, active_io: 0, closing: false, used: false,
+        active_io: 0, closing: false, used: false,
         file_object: empty_file_object(),
     };
 }
@@ -102,11 +100,10 @@ struct State {
     files: [FileRecord; MAX_FILES],
     handles: [HandleRecord; MAX_HANDLES],
     next_generation: usize,
-    next_handle: usize,
 }
 impl State {
     const fn new() -> Self {
-        Self { files: [FileRecord::EMPTY; MAX_FILES], handles: [HandleRecord::EMPTY; MAX_HANDLES], next_generation: 1, next_handle: 1 }
+        Self { files: [FileRecord::EMPTY; MAX_FILES], handles: [HandleRecord::EMPTY; MAX_HANDLES], next_generation: 1 }
     }
 }
 unsafe impl Send for State {}
@@ -116,6 +113,7 @@ static DEVICE_INIT: AtomicUsize = AtomicUsize::new(0);
 static FILE_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static FILE_SYSTEM_DEVICE:AtomicUsize=AtomicUsize::new(0);
 static FILE_SYSTEM_INIT:AtomicUsize=AtomicUsize::new(0);
+static FILE_OBJECT_TYPE: AtomicUsize = AtomicUsize::new(0);
 static VOLUME_DEVICE:AtomicUsize=AtomicUsize::new(0);
 
 unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp) -> i32 {
@@ -413,28 +411,42 @@ pub fn mount_boot_system_files() {
     }
 }
 
-fn decode_handle(handle: usize) -> Result<usize, i32> {
-    let slot = handle & 0xff;
-    if slot == 0 || slot > MAX_HANDLES { return Err(STATUS_INVALID_HANDLE); }
-    Ok(slot - 1)
+const FILE_OBJECT_TYPE_NAME: [u16; 4] = [b'F' as u16, b'i' as u16, b'l' as u16, b'e' as u16];
+
+unsafe extern "win64" fn file_object_finalizer(body: *mut c_void) {
+    if body.is_null() { return; }
+    let mut state = STATE.lock();
+    if let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, body.cast::<FILE_OBJECT>())) {
+        *slot = HandleRecord::EMPTY;
+    }
 }
 
+/// Resolve a process-owned Object Manager handle and pin the FILE_OBJECT for I/O.
 fn pin_handle(owner: u64, handle: usize) -> Result<*mut FILE_OBJECT, i32> {
-    let index = decode_handle(handle)?;
+    if handle == 0 { return Err(STATUS_INVALID_HANDLE); }
+    let body = ob::reference_by_handle(handle as *mut c_void, 0, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false)?;
     let mut state = STATE.lock();
-    let h = &mut state.handles[index];
-    if !h.used || h.closing || h.token != handle >> 8 || h.owner != owner {
+    let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, body.cast::<FILE_OBJECT>()) && slot.used && !slot.closing) else {
+        drop(state);
+        let _ = ob::dereference_body(body);
         return Err(STATUS_INVALID_HANDLE);
-    }
-    h.active_io = h.active_io.checked_add(1).ok_or(STATUS_DEVICE_BUSY)?;
-    Ok(ptr::addr_of_mut!(h.file_object))
+    };
+    slot.active_io = match slot.active_io.checked_add(1) {
+        Some(value) => value,
+        None => { drop(state); let _ = ob::dereference_body(body); return Err(STATUS_DEVICE_BUSY); }
+    };
+    Ok(body.cast::<FILE_OBJECT>())
 }
-fn unpin_handle(handle: usize) {
-    if let Ok(index) = decode_handle(handle) {
-        let mut state = STATE.lock();
-        if state.handles[index].used && state.handles[index].active_io != 0 {
-            state.handles[index].active_io -= 1;
+fn unpin_handle(owner: u64, handle: usize) {
+    if handle == 0 { return; }
+    if let Ok(body) = ob::reference_by_handle(handle as *mut c_void, 0, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false) {
+        {
+            let mut state = STATE.lock();
+            if let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, body.cast::<FILE_OBJECT>())) {
+                slot.active_io = slot.active_io.saturating_sub(1);
+            }
         }
+        let _ = ob::dereference_body(body);
     }
 }
 
@@ -458,25 +470,47 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     };
     let file_source=STATE.lock().files[file_index].source;
     let device=if file_source==1{let d=VOLUME_DEVICE.load(Ordering::Acquire);if d==0{return Err(STATUS_UNRECOGNIZED_VOLUME)}d as *mut DeviceObject}else{ensure_file_device()?};
-    let (slot,token)={
-     let mut state=STATE.lock();
-     let slot=state.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-     let token=state.next_handle.wrapping_add(1).max(1)&(usize::MAX>>8);let token=token.max(1);state.next_handle=token;
-     let mut file_object=empty_file_object();file_object.device_object=device.cast();file_object.vpb=unsafe{(*device).vpb.cast()};
-     file_object.fs_context=(file_index+1) as *mut c_void;
-     state.handles[slot]=HandleRecord{token,owner,file_index,active_io:0,closing:false,used:true,file_object};
-     (slot,token)
+    let slot = {
+        let mut state = STATE.lock();
+        let slot = state.handles.iter().position(|h| !h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let mut file_object = empty_file_object();
+        file_object.device_object = device.cast();
+        file_object.vpb = unsafe { (*device).vpb.cast() };
+        file_object.fs_context = (file_index + 1) as *mut c_void;
+        state.handles[slot] = HandleRecord { active_io: 0, closing: false, used: true, file_object };
+        slot
     };
     let file_object = {
         let mut state = STATE.lock();
         ptr::addr_of_mut!(state.handles[slot].file_object)
     };
-    if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CREATE, 0, ptr::null_mut(), 0) {
-        let mut state = STATE.lock();
-        state.handles[slot] = HandleRecord::EMPTY;
+    let type_id = if FILE_OBJECT_TYPE.load(Ordering::Acquire) != 0 {
+        FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16
+    } else {
+        match ob::ensure_type(&FILE_OBJECT_TYPE_NAME, 1, 2, 4, 7, u32::MAX) {
+            Ok(id) => { FILE_OBJECT_TYPE.store(id as usize, Ordering::Release); id }
+            Err(status) => { STATE.lock().handles[slot] = HandleRecord::EMPTY; return Err(status); }
+        }
+    };
+    let _ = type_id;
+    if let Err(status) = unsafe {
+        ob::register_external_object_with_finalizer(
+            file_object.cast(), &FILE_OBJECT_TYPE_NAME, &[], false, ptr::null(), 0, file_object_finalizer,
+        )
+    } {
+        STATE.lock().handles[slot] = HandleRecord::EMPTY;
         return Err(status);
     }
-    Ok((token << 8) | (slot + 1))
+    let object_handle = match ob::open_by_pointer(file_object.cast(), 1, owner as usize, true, 0) {
+        Ok(handle) => handle,
+        Err(status) => { ob::unregister_object(file_object.cast()); return Err(status); }
+    };
+    if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CREATE, 0, ptr::null_mut(), 0) {
+        let _ = ob::close_handle(object_handle, owner as usize);
+        ob::unregister_object(file_object.cast());
+        return Err(status);
+    }
+    Ok(object_handle as usize)
 }
 
 /// Read from an explicit byte offset using IRP_MJ_READ.
@@ -487,7 +521,7 @@ pub fn read_at_for_process(owner: u64, handle: usize, offset: usize, out: &mut [
     let byte_offset: i64 = offset.try_into().map_err(|_| STATUS_INVALID_PARAMETER)?;
     let file_object = pin_handle(owner, handle)?;
     let result = dispatch_file_irp(file_object, IRP_MJ_READ, byte_offset, out.as_mut_ptr(), out.len());
-    unpin_handle(handle);
+    unpin_handle(owner, handle);
     result
 }
 
@@ -526,29 +560,39 @@ pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, a
 /// Issue IRP_MJ_CLEANUP followed by IRP_MJ_CLOSE before releasing the FILE_OBJECT.
 pub fn close(handle: usize) -> Result<(), i32> { close_for_process(0, handle) }
 pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
-    let index = decode_handle(handle)?;
-    let file_object = {
+    if handle == 0 { return Err(STATUS_INVALID_HANDLE); }
+    let body = ob::reference_by_handle(handle as *mut c_void, 0, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false)?;
+    let file_object = body.cast::<FILE_OBJECT>();
+    {
         let mut state = STATE.lock();
-        let h = &mut state.handles[index];
-        if !h.used || h.token != handle >> 8 || h.owner != owner || h.closing {
+        let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object) && slot.used && !slot.closing) else {
+            drop(state);
+            let _ = ob::dereference_body(body);
             return Err(STATUS_INVALID_HANDLE);
+        };
+        if slot.active_io != 0 {
+            drop(state);
+            let _ = ob::dereference_body(body);
+            return Err(STATUS_DEVICE_BUSY);
         }
-        if h.active_io != 0 { return Err(STATUS_DEVICE_BUSY); }
-        h.closing = true;
-        ptr::addr_of_mut!(h.file_object)
-    };
+        slot.closing = true;
+    }
     if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CLEANUP, 0, ptr::null_mut(), 0) {
-        let mut state = STATE.lock();
-        state.handles[index].closing = false;
+        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object)) { slot.closing = false; }
+        let _ = ob::dereference_body(body);
         return Err(status);
     }
     if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CLOSE, 0, ptr::null_mut(), 0) {
-        let mut state = STATE.lock();
-        state.handles[index].closing = false;
+        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object)) { slot.closing = false; }
+        let _ = ob::dereference_body(body);
         return Err(status);
     }
-    let mut state = STATE.lock();
-    state.handles[index] = HandleRecord::EMPTY;
+    ob::close_handle(handle as *mut c_void, owner as usize)?;
+    if !ob::unregister_object(body) {
+        let _ = ob::dereference_body(body);
+        return Err(STATUS_INVALID_HANDLE);
+    }
+    let _ = ob::dereference_body(body);
     Ok(())
 }
 
