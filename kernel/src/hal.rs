@@ -1146,3 +1146,16 @@ mod driver_service_publication_tests {
         }
     }
 }
+
+
+/// Enable or mask the already configured I/O-APIC route associated with a
+/// registered device vector. This is the HAL backend for WDM interrupt APIs.
+pub unsafe fn set_device_interrupt_vector_enabled(vector:u8,enabled:bool)->Result<(),HalError>{
+    let i=vector as usize;
+    if i>=256||!device_interrupt_handler_registered(vector){return Err(HalError::InvalidTransition);}
+    let io_base=DEVICE_ROUTE_IO_BASE[i].load(core::sync::atomic::Ordering::Acquire);
+    let gsi_base=DEVICE_ROUTE_GSI_BASE[i].load(core::sync::atomic::Ordering::Acquire);
+    let gsi=DEVICE_ROUTE_GSI[i].load(core::sync::atomic::Ordering::Acquire);
+    if io_base==0{return Err(HalError::InvalidTransition);}
+    unsafe{set_device_interrupt_route_enabled(io_base,gsi_base,gsi,enabled)}
+}
