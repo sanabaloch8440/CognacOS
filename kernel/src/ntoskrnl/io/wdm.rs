@@ -2275,15 +2275,17 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
   if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
   return STATUS_UNRECOGNIZED_VOLUME
  }
+ let mut owns_reservation=true;
  for fs in candidates.0[..candidates.1].iter().copied() {
   // A synchronous FSD rejection releases the reservation in its completion
   // routine; reacquire it before asking the next registered filesystem.
-  {
+  if !owns_reservation {
    let mut state=WDM.lock();
    let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_DELETE_PENDING};
-   if slot.mount_in_progress { /* this request still owns the mount attempt */ }
-   else {slot.mount_in_progress=true;}
+   if slot.mount_in_progress{return STATUS_PENDING;}
+   slot.mount_in_progress=true;
   }
+  owns_reservation=false;
   let status=dispatch_mount_request(device,vpb,fs);
   if status==STATUS_PENDING{return STATUS_PENDING}
   let mut vpb_irql=0u8;
