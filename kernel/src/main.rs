@@ -1756,6 +1756,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         let mut local_timer_ready = false;
         if info.rsdp_address != 0 {
+            // Publish the firmware RSDP to the HAL's table service before
+            // ACPI.sys imports HalAcpiGetTableEx during DriverEntry.
+            let firmware_madt = acpi::discover_madt(info.rsdp_address);
             // ACPI.sys validates firmware tables as a native boot-start
             // driver before PCI.sys receives the MCFG-derived ECAM windows.
             let acpi_driver_ready=initialize_acpi_driver(info.rsdp_address);
@@ -1775,7 +1778,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 }
                 enumerated
             } else { 0 };
-            match acpi::discover_madt(info.rsdp_address) {
+            match firmware_madt {
                 Ok(firmware_madt) => {
                     let _ = platform_drivers::mark_ready(platform_drivers::Stage::Acpi);
                     let discovery = (|| -> Result<usize, hal::HalError> {
