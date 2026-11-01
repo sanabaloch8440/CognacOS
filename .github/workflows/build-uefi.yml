@@ -625,18 +625,26 @@ jobs:
                       },
                   }[path.name]
                   assert imports == expected_imports, f"{path}: unexpected imports: {imports}"
-                  assert len(iat_rvas) == 1, f"{path}: expected one contiguous kernel/HAL IAT"
-                  first_thunk = iat_rvas[0]
-                  iat_section = next(
-                      (struct.unpack_from("<I", p, section_table+i*40+36)[0]
-                       for i in range(section_count)
-                       if struct.unpack_from("<I", p, section_table+i*40+12)[0] <= first_thunk
-                       < struct.unpack_from("<I", p, section_table+i*40+12)[0]
-                       + max(struct.unpack_from("<I", p, section_table+i*40+8)[0],
-                             struct.unpack_from("<I", p, section_table+i*40+16)[0])),
-                      0,
+                  # Each imported DLL has its own FirstThunk array. A driver
+                  # importing both ntoskrnl.exe and hal.dll must therefore have
+                  # one IAT per import descriptor, not one shared/contiguous IAT.
+                  assert len(iat_rvas) == len(imports), (
+                      f"{path}: expected one IAT per imported DLL; "
+                      f"found {len(iat_rvas)} for {len(imports)} DLLs"
                   )
-                  assert iat_section & 0x80000000, f"{path}: IAT is not in writable data"
+                  for first_thunk in iat_rvas:
+                      iat_section = next(
+                          (struct.unpack_from("<I", p, section_table+i*40+36)[0]
+                           for i in range(section_count)
+                           if struct.unpack_from("<I", p, section_table+i*40+12)[0] <= first_thunk
+                           < struct.unpack_from("<I", p, section_table+i*40+12)[0]
+                           + max(struct.unpack_from("<I", p, section_table+i*40+8)[0],
+                                 struct.unpack_from("<I", p, section_table+i*40+16)[0])),
+                          0,
+                      )
+                      assert iat_section & 0x80000000, (
+                          f"{path}: IAT at RVA 0x{first_thunk:x} is not in writable data"
+                      )
               else:
                   assert (import_rva, import_size) == (0, 0), f"{path}: unexpected PE imports: {import_rva:#x}/{import_size}"
 
