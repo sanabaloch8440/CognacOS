@@ -249,7 +249,7 @@ unsafe extern "win64" fn ucx_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
  let minor=unsafe{core::ptr::read(stack.cast::<u8>().add(1))};
  let mut information=0usize;let mut completed_inside=false;
  let status=match major{
-  0x1b=>match minor{0x00|0x03|0x04|0x05|0x06|0x17|0x02=>STATUS_SUCCESS,_=>STATUS_INVALID_DEVICE_REQUEST},
+  0x1b=>match minor{0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x08|0x09|0x0a|0x0b|0x0c|0x0d|0x0f|0x10|0x11|0x12|0x14|0x15|0x16|0x17|0x18=>STATUS_SUCCESS,0x07|0x13=>STATUS_INVALID_DEVICE_REQUEST,_=>STATUS_INVALID_DEVICE_REQUEST},
   0x16=>STATUS_SUCCESS,
   IRP_MJ_INTERNAL_DEVICE_CONTROL=>{
    if device as u64==ROOT_HUB_DEVICE.load(Ordering::Acquire){
