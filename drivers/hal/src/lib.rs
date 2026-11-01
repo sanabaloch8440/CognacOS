@@ -11,7 +11,7 @@ pub const HAL_CONTRACT_VERSION: u32 = 1;
 /// Small NT I/O-manager service surface passed to native WDM drivers. Keeping
 /// completion in a versioned kernel table avoids static imports from a driver
 /// image while preserving the IoCompleteRequest calling convention.
-pub const KERNEL_IO_SERVICES_VERSION: u32 = 3;
+pub const KERNEL_IO_SERVICES_VERSION: u32 = 4;
 pub type CompleteIrp = unsafe extern "win64" fn(
     irp: *mut cognacos_nt_abi::io::IRP,
     priority_boost: i8,
@@ -29,6 +29,9 @@ pub type GetIrpStackLocation = unsafe extern "win64" fn(irp: *mut core::ffi::c_v
 pub type CompleteIrpStatus = unsafe extern "win64" fn(irp: *mut core::ffi::c_void, status: i32, information: usize, priority_boost: i8);
 pub type PinBuffer = unsafe extern "win64" fn(buffer:*mut core::ffi::c_void,length:u32,write_access:u8,mdl_out:*mut *mut core::ffi::c_void,system_address_out:*mut *mut core::ffi::c_void)->i32;
 pub type UnpinBuffer = unsafe extern "win64" fn(mdl:*mut core::ffi::c_void,system_address:*mut core::ffi::c_void);
+pub type AttachDevice = unsafe extern "win64" fn(source:*mut core::ffi::c_void,target:*mut core::ffi::c_void)->*mut core::ffi::c_void;
+pub type DetachDevice = unsafe extern "win64" fn(target:*mut core::ffi::c_void);
+pub type PublishBusRelations = unsafe extern "win64" fn(bus:*mut core::ffi::c_void,children:*const *mut core::ffi::c_void,count:u32)->i32;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelIoServiceTable {
@@ -44,6 +47,9 @@ pub struct KernelIoServiceTable {
     pub complete_irp_status: Option<CompleteIrpStatus>,
     pub pin_buffer:Option<PinBuffer>,
     pub unpin_buffer:Option<UnpinBuffer>,
+    pub attach_device:Option<AttachDevice>,
+    pub detach_device:Option<DetachDevice>,
+    pub publish_bus_relations:Option<PublishBusRelations>,
 }
 impl KernelIoServiceTable {
     pub const fn compatible(&self) -> bool {
@@ -59,6 +65,9 @@ impl KernelIoServiceTable {
             && self.complete_irp_status.is_some()
             && self.pin_buffer.is_some()
             && self.unpin_buffer.is_some()
+            && self.attach_device.is_some()
+            && self.detach_device.is_some()
+            && self.publish_bus_relations.is_some()
     }
 }
 
