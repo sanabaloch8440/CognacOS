@@ -439,3 +439,20 @@ mod pnp_tree_tests {
         transition_pnp_device(other_index, PNP_DEVICE_REMOVED, 0).unwrap();
     }
 }
+
+/// Find an already enumerated PCI devnode by its complete segment/BDF identity.
+/// Removed nodes are excluded so a restarted device cannot accidentally bind to
+/// a stale lifecycle record.
+pub fn find_pnp_pci_function(segment:u16,bus:u8,device:u8,function:u8)->Option<u32>{
+    let _guard=lock_pnp_table();
+    PNP_DEVICES.iter().enumerate().find_map(|(i,node)|{
+        let state=node.state.load(Ordering::Acquire);
+        if state!=PNP_DEVICE_EMPTY && state!=PNP_DEVICE_REMOVED
+            && node.segment.load(Ordering::Relaxed)==segment as u32
+            && node.bus.load(Ordering::Relaxed)==bus as u32
+            && node.device.load(Ordering::Relaxed)==device as u32
+            && node.function.load(Ordering::Relaxed)==function as u32 {
+            Some(i as u32)
+        } else { None }
+    })
+}
