@@ -187,7 +187,7 @@ pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     // Enabling PCI Command.BME is permitted only for a PnP-registered requester
     // with four live IOMMU-backed xHCI common buffers. Ordinary configuration
     // writes cannot bypass the device-scoped DMA gate.
-    if offset<=4 && offset.saturating_add(count)>4 {
+    if offset<=5 && offset.saturating_add(count)>4 {
         let current=match unsafe{pci_read_dword(bus_number,slot_number,4)}{Some(v)=>v as u16,None=>return 0};
         let mut requested=current;
         for index in 0..count {
