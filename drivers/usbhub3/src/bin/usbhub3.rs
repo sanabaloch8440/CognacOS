@@ -94,7 +94,7 @@ unsafe extern "win64" fn hub_interrupt_complete(_device:*mut c_void,irp:*mut c_v
   let buffer=unsafe{&*INTERRUPT_BUFFER.0.get()};
   for port in 1..=PORT_COUNT.load(Ordering::Acquire) as usize{
    if buffer[port/8]&(1<<(port%8))!=0{
-    let rt=unsafe{runtime_mut()};rt.pending_ports[(port-1)/64].fetch_or(1u64<<((port-1)%64),Ordering::Release);
+    let rt=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};let cell=unsafe{&(*rt).pending_ports[(port-1)/64]};cell.fetch_or(1u64<<((port-1)%64),Ordering::Release);
    }
   }
   submit_root_hub_interrupt();
