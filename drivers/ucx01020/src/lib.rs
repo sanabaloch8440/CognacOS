@@ -178,13 +178,15 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
     /// not directly from an ISR.
     pub fn complete(&mut self,id:u64,h:EndpointHandle,status:UcxStatus,bytes:u32)->Result<Completion,UcxStatus>{
         let ri=self.requests.iter().position(|r|r.used&&r.request.id==id).ok_or(UcxStatus::AlreadyCompleted)?;
-        let req=self.requests[ri].request;
+        let record=self.requests[ri];
+        let req=record.request;
         if req.endpoint!=h || req.generation!=h.generation {return Err(UcxStatus::StaleGeneration)}
         if bytes>req.requested_length {return Err(UcxStatus::InvalidParameter)}
-        self.requests[ri]=RequestRecord::EMPTY;
+        let completion_status=if record.cancelling{UcxStatus::Cancelled}else{status};
         let ei=self.endpoint_index(h)?;
+        self.requests[ri]=RequestRecord::EMPTY;
         self.endpoints[ei].outstanding=self.endpoints[ei].outstanding.saturating_sub(1);
-        Ok(Completion{request_id:id,status:if self.requests[ri].cancelling{UcxStatus::Cancelled}else{status},bytes_transferred:bytes})
+        Ok(Completion{request_id:id,status:completion_status,bytes_transferred:bytes})
     }
     pub fn begin_abort_endpoint(&mut self,h:EndpointHandle)->Result<usize,UcxStatus>{
         let ei=self.endpoint_index(h)?;
