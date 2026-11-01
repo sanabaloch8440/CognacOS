@@ -1186,6 +1186,30 @@ unsafe extern "win64" fn kernel_io_unpin_buffer(mdl:*mut core::ffi::c_void,syste
     }
 }
 
+unsafe extern "win64" fn kernel_io_attach_device(source:*mut core::ffi::c_void,target:*mut core::ffi::c_void)->*mut core::ffi::c_void {
+    unsafe{crate::io::io_attach_device_to_device_stack(source.cast(),target.cast()).cast()}
+}
+unsafe extern "win64" fn kernel_io_detach_device(target:*mut core::ffi::c_void) {
+    unsafe{crate::io::io_detach_device(target.cast());}
+}
+#[repr(C)]
+struct KernelDeviceRelations{
+    count:u32,
+    objects:[*mut crate::ntoskrnl::io::wdm::DeviceObject;64],
+}
+unsafe extern "win64" fn kernel_io_publish_bus_relations(
+    bus:*mut core::ffi::c_void,children:*const *mut core::ffi::c_void,count:u32
+)->i32 {
+    if bus.is_null()||count>64||(count!=0&&children.is_null()){return cognacos_nt_abi::ntstatus::STATUS_INVALID_PARAMETER}
+    let mut relations=KernelDeviceRelations{count,objects:[core::ptr::null_mut();64]};
+    for i in 0..count as usize{
+        let child=unsafe{core::ptr::read_unaligned(children.add(i))};
+        if child.is_null(){return cognacos_nt_abi::ntstatus::STATUS_INVALID_PARAMETER}
+        relations.objects[i]=child.cast();
+    }
+    unsafe{crate::ntoskrnl::io::wdm::IoPnPProcessBusRelations(bus.cast(),(&relations as *const KernelDeviceRelations).cast())}
+}
+
 /// Live WDM service table for native drivers. Every callback reaches the same
 /// DEVICE_OBJECT/IRP tables used by the kernel's IoCallDriver/PnP manager.
 pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceTable {
@@ -1202,6 +1226,9 @@ pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceT
         complete_irp_status:Some(kernel_io_complete_status),
         pin_buffer:Some(kernel_io_pin_buffer),
         unpin_buffer:Some(kernel_io_unpin_buffer),
+        attach_device:Some(kernel_io_attach_device),
+        detach_device:Some(kernel_io_detach_device),
+        publish_bus_relations:Some(kernel_io_publish_bus_relations),
     }
 }
 
