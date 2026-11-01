@@ -87,8 +87,8 @@ fn finish_pending(p:Pending,bytes:&[u8],status:i32,io:&KernelIoServiceTable){
   core::ptr::write_unaligned((p.urb as *mut u8).add(core::mem::size_of::<UrbHeader>()+12).cast::<u32>(),n as u32);
  }}
  if n!=0&&p.mapped!=0{unsafe{core::ptr::copy_nonoverlapping(bytes.as_ptr(),p.mapped as *mut u8,n);}}
- if let Some(complete)=io.complete_irp_status{unsafe{complete(p.irp as *mut c_void,status,n,0);}}
  if let Some(unpin)=io.unpin_buffer{unsafe{unpin(p.mdl as *mut c_void,p.mapped as *mut c_void);}}
+ if let Some(complete)=io.complete_irp_status{unsafe{complete(p.irp as *mut c_void,status,n,0);}}
 }
 
 unsafe extern "win64" fn ucx_cancel_routine(_device:*mut c_void,irp:*mut c_void){
