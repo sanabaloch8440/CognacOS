@@ -66,6 +66,33 @@ pub trait EcamWindowExt {
     }
 }
 
+impl EcamWindowExt for EcamWindow {
+    fn validate(&self) -> Result<(), PciError> {
+        if self.virtual_base == 0 || self.physical_base == 0 || self.bus_end < self.bus_start
+            || self.virtual_base & 0xfff != 0 || self.physical_base & 0xfffff != 0 {
+            return Err(PciError::InvalidWindow);
+        }
+        let span = ((self.bus_end as u64 - self.bus_start as u64) + 1)
+            .checked_mul(1 << 20).ok_or(PciError::AddressOverflow)?;
+        self.virtual_base.checked_add(span).ok_or(PciError::AddressOverflow)?;
+        self.physical_base.checked_add(span).ok_or(PciError::AddressOverflow)?;
+        Ok(())
+    }
+
+    fn register_address(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<*mut u8, PciError> {
+        self.validate()?;
+        if segment != self.segment || bus < self.bus_start || bus > self.bus_end || device >= 32 || function >= 8 {
+            return Err(PciError::InvalidBdf);
+        }
+        if offset >= 4096 { return Err(PciError::InvalidOffset); }
+        let bus_offset = (bus as u64 - self.bus_start as u64) << 20;
+        let bdf_offset = ((device as u64) << 15) | ((function as u64) << 12) | offset as u64;
+        let address = self.virtual_base.checked_add(bus_offset)
+            .and_then(|v| v.checked_add(bdf_offset)).ok_or(PciError::AddressOverflow)?;
+        Ok(address as *mut u8)
+    }
+}
+
 /// A checked translation window used by bus/resource code. It only translates
 /// addresses inside an explicitly supplied firmware/bridge window; identity
 /// translation is never assumed for arbitrary PCI resources.
