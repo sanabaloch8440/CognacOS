@@ -44,6 +44,8 @@ pub struct XhciDriverExtension {
     runtime_lock: AtomicBool,
     event_sink:core::sync::atomic::AtomicU64,
     event_context:core::sync::atomic::AtomicU64,
+    operational_offset:core::sync::atomic::AtomicU32,
+    port_count:core::sync::atomic::AtomicU32,
     runtime: UnsafeCell<MaybeUninit<XhciRuntimeResources>>,
 }
 unsafe impl Sync for XhciDriverExtension {}
@@ -258,6 +260,8 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         || !kernel_io.compatible() { return DRIVER_NOT_SUPPORTED; }
     let mut platform = Platform { ext, hal, dev };
     let Some(caps) = read_capabilities(&mut platform, ext.mmio_length) else { return DRIVER_NOT_SUPPORTED; };
+    ext.operational_offset.store(caps.cap_length as u32,Ordering::Release);
+    ext.port_count.store(caps.max_ports as u32,Ordering::Release);
     let slots = (ext.max_slots as u8).min(caps.max_slots);
     let resources = match xhci::start_controller(&mut platform, &caps, slots, POLL_BUDGET) {
         Ok(resources) => resources,
