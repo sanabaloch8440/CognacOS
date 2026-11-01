@@ -427,10 +427,11 @@ mod pnp_tree_tests {
 
     #[test]
     fn pnp_identity_includes_pci_segment_and_duplicate_bdfs_are_rejected() {
-        let first = sample_function();
+        let mut first = sample_function();
+        first.device = 6;
         let index = register_pci_function(&first, None).unwrap();
         assert_eq!(register_pci_function(&first, None), Err(PnpError::DuplicateDevice));
-        let mut other_segment = sample_function();
+        let mut other_segment = first;
         other_segment.segment = 3;
         let other_index = register_pci_function(&other_segment, None).unwrap();
         assert_ne!(index, other_index);
