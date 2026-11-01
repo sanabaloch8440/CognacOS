@@ -705,7 +705,7 @@ pub fn run_ext4_readme_test() -> bool {
 
     // Verify that the mounted ext4 volume is reachable through the public
     // FILE_OBJECT/IRP file-service path, not only through the block parser.
-    let handle=match crate::file_services::open_for_process(0,b"README.txt"){
+    let handle=match crate::file_services::open_for_process(0,b"\\README.txt"){
         Ok(handle)=>handle,
         Err(_)=>return false,
     };
