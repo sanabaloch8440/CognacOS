@@ -1731,13 +1731,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 // The SYSTEM hive has been validated by the registry-backed
                 // ACPI boot-driver load. Publish milestones only after their
                 // corresponding initialization operation has succeeded.
-                if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::Registry).is_err()
-                    || BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
+                if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::Registry).is_err() {
                     halt();
                 }
                 let enumerated = enumerate_acpi_pci_devices(info.rsdp_address);
                 if matches!(boot_orchestration::validate_device_tree(), Ok(count) if count != 0) {
-                    if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::DeviceTree).is_err() {
+                    if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err()
+                        || BOOT_COORDINATOR.advance(boot_orchestration::BootStage::DeviceTree).is_err() {
                         halt();
                     }
                 }
