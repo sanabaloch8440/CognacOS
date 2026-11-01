@@ -46,7 +46,6 @@ pub struct XhciDriverExtension {
 }
 unsafe impl Sync for XhciDriverExtension {}
 
-#[repr(C)]
 type DriverDispatch = unsafe extern "win64" fn(*mut c_void,*mut c_void)->i32;
 #[repr(C)]
 struct DriverObject {
@@ -148,7 +147,7 @@ impl XhciPlatform for Platform<'_> {
 
 static XHCI_FDO:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static XHCI_EXTENSION:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
-extern "win64" fn xhci_dispatch(_device:*mut c_void,irp:*mut c_void)->i32{
+unsafe extern "win64" fn xhci_dispatch(_device:*mut c_void,irp:*mut c_void)->i32{
     const STATUS_SUCCESS:i32=0;
     const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
     const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
