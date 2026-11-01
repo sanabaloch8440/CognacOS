@@ -1396,6 +1396,7 @@ impl<const N:usize> TransferTracker<N>{
   let residual=event.status&0x00ff_ffff;if residual>r.length{return Err(TransferError::ResidualTooLarge)}
   Ok(TransferResult{trb_dma:r.trb_dma,slot_id:r.slot_id,endpoint_id:r.endpoint_id,completion_code:code,bytes_transferred:r.length-residual})
  }
+}
 /// Capability proving that a slot has been disabled and its DMA has been
 /// quiesced. Construct only after the Disable Slot command has completed and
 /// the platform has synchronized/revoked every DMA mapping for that slot.
@@ -1408,6 +1409,7 @@ impl SlotDmaQuiesced {
  /// completed the platform DMA teardown/fence for every endpoint in the slot.
  pub unsafe fn after_disable_slot_and_dma_fence() -> Self { Self { _private: () } }
 }
+impl<const N:usize> TransferTracker<N>{
  /// Forget in-flight requests only after hardware can no longer DMA to them.
  pub fn cancel_slot(&mut self,slot_id:u8,_quiesced:&SlotDmaQuiesced)->usize{
   let mut n=0;
