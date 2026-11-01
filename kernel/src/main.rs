@@ -23,6 +23,7 @@ mod hal;
 mod smp;
 mod platform_drivers;
 mod boot_orchestration;
+static BOOT_COORDINATOR: boot_orchestration::BootCoordinator = boot_orchestration::BootCoordinator::new();
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
 #[path = "ntoskrnl/io/runtime.rs"]
@@ -1727,7 +1728,20 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             // driver before PCI.sys receives the MCFG-derived ECAM windows.
             let acpi_driver_ready=initialize_acpi_driver(info.rsdp_address);
             let _pnp_enumerated=if acpi_driver_ready {
-                enumerate_acpi_pci_devices(info.rsdp_address)
+                // The SYSTEM hive has been validated by the registry-backed
+                // ACPI boot-driver load. Publish milestones only after their
+                // corresponding initialization operation has succeeded.
+                if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::Registry).is_err()
+                    || BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
+                    halt();
+                }
+                let enumerated = enumerate_acpi_pci_devices(info.rsdp_address);
+                if matches!(boot_orchestration::validate_device_tree(), Ok(count) if count != 0) {
+                    if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::DeviceTree).is_err() {
+                        halt();
+                    }
+                }
+                enumerated
             } else { 0 };
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(firmware_madt) => {
