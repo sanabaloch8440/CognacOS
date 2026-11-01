@@ -956,9 +956,6 @@ fn bind_xhci_pe_driver()->bool {
     if !hal_table.compatible() || !device_table.compatible() || !device_table.has_dma() || !device_table.has_interrupts() || !device_table.has_bus_master() || !kernel_io_table.compatible() {
         serial_write(b"xHCI bind: required HAL/device services are incomplete.\r\n"); return false;
     }
-    if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_MMIO_MAPPED,ntoskrnl::pnp::STATE_DMA_READY).is_err() {
-        serial_write(b"xHCI bind: PnP refused DMA-ready transition.\r\n"); return false;
-    }
     unsafe {
         let hal_ptr=core::ptr::addr_of_mut!(XHCI_HAL_SERVICES).cast::<cognacos_hal_contract::HalServiceTable>();
         hal_ptr.write(hal_table);
@@ -1030,6 +1027,12 @@ fn bind_xhci_pe_driver()->bool {
             Ok(image) => {
                 serial_write(b"xHCI bind: DriverEntry succeeded image="); serial_write_hex(image.image_base);
                 serial_write(b" size="); serial_write_hex(image.image_size as u64); serial_write(b"\r\n");
+                // DriverEntry has successfully mapped the BAR with MmMapIoSpace
+                // and initialized the per-PDO DMA adapter/common buffers.
+                if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_BAR_ASSIGNED,ntoskrnl::pnp::STATE_MMIO_MAPPED).is_err()
+                    ||ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_MMIO_MAPPED,ntoskrnl::pnp::STATE_DMA_READY).is_err(){
+                    serial_write(b"xHCI bind: PnP rejected post-DriverEntry MMIO/DMA state.\r\n");return false;
+                }
                 if !hal::device_interrupt_handler_registered(resources.interrupt_vector)
                     || platform_drivers::mark_ready(platform_drivers::Stage::XhciInterrupt).is_err() {
                     if let Some(set)=device_table.set_bus_master { let _=set(resources.device_object,false); }
