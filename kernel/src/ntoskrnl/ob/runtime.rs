@@ -176,6 +176,28 @@ pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u1
  {let _g=LOCK.lock();let s=state();if let Some(t)=s.types.iter().find(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Ok(t.id)}}
  register_type(name,gr,gw,gx,ga,valid)
 }
+
+pub fn file_object_type_id() -> Result<u16, i32> {
+    ensure_type(&[b'F' as u16, b'i' as u16, b'l' as u16, b'e' as u16], 1, 2, 4, 7, 0x001f_01ff)
+}
+pub unsafe fn create_file_object_handle_with_finalizer(
+    body: *mut c_void, owner: usize, access: u32,
+    finalizer: unsafe extern "win64" fn(*mut c_void),
+) -> Result<*mut c_void, i32> {
+    let type_name = [b'F' as u16, b'i' as u16, b'l' as u16, b'e' as u16];
+    file_object_type_id()?;
+    unsafe { register_external_object_with_finalizer(body, &type_name, &[], false, core::ptr::null(), 0, finalizer)?; }
+    match open_by_pointer(body, access, owner, true, 0) {
+        Ok(handle) => Ok(handle),
+        Err(status) => { unregister_object(body); Err(status) }
+    }
+}
+pub fn reference_file_object_handle(handle: *mut c_void, owner: usize, access: u32) -> Result<*mut c_void, i32> {
+    reference_by_handle(handle, access, file_object_type_id()?, owner, false)
+}
+pub fn close_file_object_handle(handle: *mut c_void, owner: usize) -> Result<(), i32> { close_handle(handle, owner) }
+pub fn release_file_object_reference(body: *mut c_void) -> bool { dereference_body(body) }
+pub fn unregister_file_object(body: *mut c_void) -> bool { unregister_object(body) }
 pub unsafe fn register_external_object(body:*mut c_void,type_name:&[u16],name:&[u16],permanent:bool,sd:*const u8,sd_len:usize)->Result<u16,i32>{
  let ty=ensure_type(type_name,1,2,4,7,u32::MAX)?;unsafe{register_object(body,ty,name,permanent,sd,sd_len)?;}Ok(ty)
 }

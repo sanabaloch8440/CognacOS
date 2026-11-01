@@ -89,6 +89,14 @@ mod wdm_tests {
   STATUS_SUCCESS
  }
  #[test]
+ fn typed_irp_information_accessor_roundtrips() {
+  let mut irp=Irp{bytes:[0;IRP_SIZE_X64]};
+  unsafe {
+   assert!(io_set_irp_information(&mut irp,0x5678));
+   assert_eq!(io_get_irp_information(&irp),0x5678);
+  }
+ }
+ #[test]
  fn device_dispatch_uses_wdm_device_object_signature() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
   let mut device: *mut DeviceObject=ptr::null_mut();

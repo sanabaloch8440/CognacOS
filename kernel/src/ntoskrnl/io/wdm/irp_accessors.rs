@@ -30,6 +30,18 @@ pub unsafe fn io_get_irp_information(irp: *const Irp) -> usize {
     }
 }
 
+pub unsafe fn io_set_irp_information(irp: *mut Irp, information: usize) -> bool {
+    if irp.is_null() { return false; }
+    unsafe {
+        ptr::write_unaligned(
+            ptr::addr_of_mut!((*irp).bytes).cast::<u8>()
+                .add(IRP_IO_STATUS_INFORMATION_OFFSET).cast::<usize>(),
+            information
+        );
+    }
+    true
+}
+
 /// Return IRP.UserBuffer without exposing the opaque packet layout.
 pub unsafe fn io_get_irp_user_buffer(irp: *const Irp) -> *mut c_void {
     if irp.is_null() { return ptr::null_mut(); }
