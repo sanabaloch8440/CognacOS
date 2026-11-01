@@ -338,6 +338,23 @@ pub fn bind_pnp_device_object(
     result
 }
 
+/// Retire the devnode associated with a PDO/FDO after successful PnP removal.
+/// The retained I/O-manager reference is released by transition_pnp_device.
+pub fn remove_pnp_device_object(device: *mut crate::io::DeviceObject, status: i32) {
+    if device.is_null() || status != crate::nt_abi::ntstatus::STATUS_SUCCESS { return; }
+    let index = {
+        let _guard = lock_pnp_table();
+        PNP_DEVICES.iter().enumerate().find_map(|(index, node)| {
+            (node.device_object.load(Ordering::Acquire) == device as usize
+                && node.state.load(Ordering::Acquire) != PNP_DEVICE_REMOVED)
+                .then_some(index as u32)
+        })
+    };
+    if let Some(index) = index {
+        let _ = transition_pnp_device(index, PNP_DEVICE_REMOVED, status);
+    }
+}
+
 /// Copy the registry-selected service name for one devnode. A zero-length
 /// result means no installed Enum instance matched this hardware ID.
 pub fn query_pnp_device_service(index:u32,out:&mut[u16])->Option<usize>{
