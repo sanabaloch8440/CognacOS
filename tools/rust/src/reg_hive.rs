@@ -246,8 +246,16 @@ fn set_value(bytes: &mut [u8], key: u32, name: &str, kind: u32, data: &[u8]) -> 
 }
 
 pub fn convert_file(input: &Path, output: &Path) -> Result<(), String> {
-    let source = fs::read_to_string(input).map_err(|e| format!("{}: {e}", input.display()))?;
-    let values = parse_reg(&source)?;
+    convert_files(&[input.to_path_buf()], output)
+}
+
+pub fn convert_files(inputs: &[std::path::PathBuf], output: &Path) -> Result<(), String> {
+    if inputs.is_empty() { return Err("at least one .reg input is required".to_owned()); }
+    let mut values = Vec::new();
+    for input in inputs {
+        let source = fs::read_to_string(input).map_err(|e| format!("{}: {e}", input.display()))?;
+        values.extend(parse_reg(&source)?);
+    }
     // Capacity is a limit, not the final file size. The REGF writer grows HBINs
     // within this buffer and the result is truncated to the validated hive size.
     const CAPACITY: usize = 16 * 1024 * 1024;
@@ -270,8 +278,8 @@ pub fn convert_file(input: &Path, output: &Path) -> Result<(), String> {
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     fs::write(output, &bytes[..length]).map_err(|e| format!("{}: {e}", output.display()))?;
-    println!("Converted {} registry values into validated REGF hive ({} bytes): {}",
-        values.len(), length, output.display());
+    println!("Converted {} registry values from {} .reg source(s) into validated REGF hive ({} bytes): {}",
+        values.len(), inputs.len(), length, output.display());
     Ok(())
 }
 
