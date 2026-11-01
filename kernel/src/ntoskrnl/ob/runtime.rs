@@ -51,8 +51,8 @@ pub struct ObjectType { pub name:UnicodeString,pub type_index:u16,pub reserved:u
 struct TypeEntry { used:bool,id:u16,name:[u16;32],len:u8,gr:u32,gw:u32,gx:u32,ga:u32,valid:u32 }
 impl TypeEntry { const EMPTY:Self=Self{used:false,id:0,name:[0;32],len:0,gr:0,gw:0,gx:0,ga:0,valid:u32::MAX}; }
 #[derive(Clone,Copy)]
-struct Object { used:bool, deleting:bool, inserted:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16, finalizer:Option<unsafe extern "win64" fn(*mut c_void)> }
-impl Object { const EMPTY:Self=Self{used:false,deleting:false,inserted:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0,finalizer:None}; }
+struct Object { used:bool, deleting:bool, finalizing:bool, inserted:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16, finalizer:Option<unsafe extern "win64" fn(*mut c_void)> }
+impl Object { const EMPTY:Self=Self{used:false,deleting:false,finalizing:false,inserted:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0,finalizer:None}; }
 #[derive(Clone,Copy)]
 struct HandleEntry { used:bool,generation:u16,object:usize,owner:usize,access:u32,attributes:u32 }
 impl HandleEntry { const EMPTY:Self=Self{used:false,generation:1,object:0,owner:0,access:0,attributes:0}; }
@@ -200,11 +200,25 @@ pub fn object_rundown_complete(body:*mut c_void)->bool{
  if body.is_null(){return false}let _g=LOCK.lock();let s=state();raw_object_idx(s,body as usize).is_none()
 }
 fn reclaim_if_drained(s:&mut State,i:usize)->Option<(usize,Option<unsafe extern "win64" fn(*mut c_void)>)>{
- let o=s.objects.get(i)?;if !o.used||o.refs!=0||o.handles!=0||(o.permanent&&!o.deleting){return None}
- let result=(o.body,o.finalizer);s.objects[i]=Object::EMPTY;Some(result)
+ let o=s.objects.get(i)?;
+ if !o.used||o.finalizing||o.refs!=0||o.handles!=0||(o.permanent&&!o.deleting){return None}
+ let result=(o.body,o.finalizer);
+ s.objects[i].deleting=true;
+ s.objects[i].finalizing=true;
+ Some(result)
 }
 unsafe fn invoke_finalizer(v:Option<(usize,Option<unsafe extern "win64" fn(*mut c_void)>)>){
- if let Some((body,Some(f)))=v{unsafe{f(body as *mut c_void)}}
+ if let Some((body,finalizer))=v{
+  if let Some(f)=finalizer{unsafe{f(body as *mut c_void)}}
+  // Keep the body slot reserved until the finalizer has finished using it.
+  let _g=LOCK.lock();
+  let s=state();
+  if let Some(i)=raw_object_idx(s,body){
+   if s.objects[i].finalizing&&s.objects[i].refs==0&&s.objects[i].handles==0{
+    s.objects[i]=Object::EMPTY;
+   }
+  }
+ }
 }
 fn raw_object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o.used&&o.body==body)}
 fn audit_locked(s:&mut State,object:usize,owner:usize,operation:u8,desired:u32,granted:u32,status:i32){
