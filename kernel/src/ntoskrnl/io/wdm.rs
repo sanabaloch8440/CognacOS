@@ -1143,6 +1143,8 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
   for relation in manager.relations.iter_mut().filter(|r|r.used&&(r.bus==device||r.child==device)){*relation=PnpRelation::EMPTY;}
  }
  drop(state);
+ // Drop the upper device's pin on its immediate lower attachment after unlinking.
+ if !lower.is_null(){unsafe{io_dereference_device_object(lower);}}
  crate::ntoskrnl::po::device_power::unregister(device);
  io_release_pnp_resources(device);
 
@@ -1829,14 +1831,16 @@ pub unsafe extern "win64" fn io_attach_device_to_device_stack(
     }
     if !unsafe{(*top).attached_device.is_null()} { return ptr::null_mut(); }
     let stack_size=unsafe{(*top).stack_size};
-    if stack_size>=127 { return ptr::null_mut(); }
+    if stack_size<=0||stack_size>=127 { return ptr::null_mut(); }
+    // The attachment owns a reference to its immediate lower object.
+    let Some(next_reference_count)=state.devices[target_index].object.reference_count.checked_add(1) else { return ptr::null_mut(); };
     unsafe {
         (*top).attached_device=source;
         (*source).attached_device=ptr::null_mut();
         (*source).stack_size=stack_size+1;
     }
+    state.devices[target_index].object.reference_count=next_reference_count;
     state.devices[source_index].attached_to=top;
-    let _=target_index;
     top
 }
 
@@ -1845,15 +1849,28 @@ pub unsafe extern "win64" fn io_attach_device_to_device_stack(
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn io_detach_device(target:*mut DeviceObject) {
     if target.is_null(){return}
-    let mut state=WDM.lock();
-    let Some(index)=state.devices.iter().position(|s|s.used&&s.attached_to==target) else{return};
-    let source=&mut state.devices[index].object as *mut DeviceObject;
-    if unsafe{(*target).attached_device}!=source{return}
-    // A lower filter cannot be detached while another filter is still above
-    // it; doing so would orphan that upper attachment and corrupt stack depth.
-    if !unsafe{(*source).attached_device.is_null()} {return}
-    unsafe{(*target).attached_device=ptr::null_mut();(*source).attached_device=ptr::null_mut();(*source).stack_size=1;}
-    state.devices[index].attached_to=ptr::null_mut();
+    let released_lower={
+        let mut state=WDM.lock();
+        let Some(index)=state.devices.iter().position(|s|s.used&&s.attached_to==target) else{return};
+        let Some(target_index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,target)) else{return};
+        let source=&mut state.devices[index].object as *mut DeviceObject;
+        if unsafe{(*target).attached_device}!=source{return}
+        if !unsafe{(*source).attached_device.is_null()} {return}
+        // A live IRP or remove-lock owner must finish before stack topology changes.
+        if state.devices[index].active_dispatches!=0
+            ||state.devices[index].outstanding_irps!=0
+            ||state.devices[index].remove_lock_count!=0
+            ||state.devices[index].object.reference_count>1
+            ||state.devices[target_index].active_dispatches!=0
+            ||state.devices[target_index].outstanding_irps!=0
+            ||state.devices[target_index].remove_lock_count!=0
+        {return}
+        unsafe{(*target).attached_device=ptr::null_mut();(*source).attached_device=ptr::null_mut();(*source).stack_size=1;}
+        state.devices[index].attached_to=ptr::null_mut();
+        target
+    };
+    // Release outside WDM's lock: this may complete a pending lower deletion.
+    unsafe{io_dereference_device_object(released_lower);}
 }
 
 /// Initialize a caller-allocated WDM IRP and its trailing stack locations.
