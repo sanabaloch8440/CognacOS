@@ -13,6 +13,8 @@ pub type SizeT = u64;
 pub type Boolean = u8;
 pub type Kirql = u8;
 pub type LargeInteger = i64;
+pub type MmMapIoSpaceFn = unsafe extern "win64" fn(LargeInteger, SizeT, i32) -> Pvoid;
+pub type MmUnmapIoSpaceFn = unsafe extern "win64" fn(Pvoid, SizeT);
 
 pub type KeGetCurrentIrqlFn = unsafe extern "win64" fn() -> Kirql;
 pub type KeQueryActiveProcessorCountExFn = unsafe extern "win64" fn(Ushort) -> Ulong;
@@ -67,6 +69,8 @@ pub type SeSubjectContextFn = unsafe extern "win64" fn(*mut SeSecuritySubjectCon
 pub type PsAssignImpersonationTokenFn = unsafe extern "win64" fn(Handle, Handle) -> NtStatus;
 pub type PsReferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid) -> Pvoid;
 pub type PsDereferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid);
+const _: MmMapIoSpaceFn = crate::ntoskrnl::mm::runtime::mm_map_io_space;
+const _: MmUnmapIoSpaceFn = crate::ntoskrnl::mm::runtime::mm_unmap_io_space;
 const _: SeAccessCheckFn = crate::ntoskrnl::se::runtime::SeAccessCheck;
 const _: SePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SePrivilegeCheck;
 const _: SeSinglePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SeSinglePrivilegeCheck;
@@ -82,10 +86,12 @@ const _: PsDereferencePrimaryTokenFn = crate::process::PsDereferencePrimaryToken
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject, SeAccessCheck, SePrivilegeCheck, SeSinglePrivilegeCheck, SeValidSecurityDescriptor, SeCaptureSubjectContext, SeReleaseSubjectContext, SeLockSubjectContext, SeUnlockSubjectContext, PsAssignImpersonationToken, PsReferencePrimaryToken, PsDereferencePrimaryToken }
+pub enum AbiSignature { MmMapIoSpace, MmUnmapIoSpace, MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject, SeAccessCheck, SePrivilegeCheck, SeSinglePrivilegeCheck, SeValidSecurityDescriptor, SeCaptureSubjectContext, SeReleaseSubjectContext, SeLockSubjectContext, SeUnlockSubjectContext, PsAssignImpersonationToken, PsReferencePrimaryToken, PsDereferencePrimaryToken }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
+        "MmMapIoSpace" => AbiSignature::MmMapIoSpace,
+        "MmUnmapIoSpace" => AbiSignature::MmUnmapIoSpace,
         "KeGetCurrentIrql" => AbiSignature::KeGetCurrentIrql,
         "KeQueryActiveProcessorCountEx" => AbiSignature::KeQueryActiveProcessorCountEx,
         "KeQueryActiveProcessorCount" => AbiSignature::KeQueryActiveProcessorCount,
@@ -146,7 +152,7 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn documented_signatures_are_registered() {
-        for name in ["MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","MmBuildMdlForNonPagedPool","MmAdvanceMdl","MmCreateMdl","MmFreeMdl","MmPrepareMdlForReuse","MmBuildPartialMdl","MmProbeAndLockPages","MmUnlockPages","MmMapLockedPagesSpecifyCache","MmUnmapLockedPages","MmCopyVirtualMemory","PsLookupProcessByProcessId","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
+        for name in ["MmMapIoSpace","MmUnmapIoSpace","MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","MmBuildMdlForNonPagedPool","MmAdvanceMdl","MmCreateMdl","MmFreeMdl","MmPrepareMdlForReuse","MmBuildPartialMdl","MmProbeAndLockPages","MmUnlockPages","MmMapLockedPagesSpecifyCache","MmUnmapLockedPages","MmCopyVirtualMemory","PsLookupProcessByProcessId","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
         assert!(documented_signature("UnknownRoutine").is_none());
     }
     #[test]
