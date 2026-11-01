@@ -1195,7 +1195,7 @@ unsafe extern "win64" fn kernel_io_detach_device(target:*mut core::ffi::c_void) 
 #[repr(C)]
 struct KernelDeviceRelations{
     count:u32,
-    objects:[*mut crate::ntoskrnl::io::wdm::DeviceObject;64],
+    objects:[*mut crate::io::wdm::DeviceObject;64],
 }
 unsafe extern "win64" fn kernel_io_publish_bus_relations(
     bus:*mut core::ffi::c_void,children:*const *mut core::ffi::c_void,count:u32
@@ -1207,7 +1207,7 @@ unsafe extern "win64" fn kernel_io_publish_bus_relations(
         if child.is_null(){return cognacos_nt_abi::ntstatus::STATUS_INVALID_PARAMETER}
         relations.objects[i]=child.cast();
     }
-    unsafe{crate::ntoskrnl::io::wdm::IoPnPProcessBusRelations(bus.cast(),(&relations as *const KernelDeviceRelations).cast())}
+    unsafe{crate::io::wdm::IoPnPProcessBusRelations(bus.cast(),(&relations as *const KernelDeviceRelations).cast())}
 }
 
 unsafe extern "win64" fn kernel_io_mark_bus_pdo(device:*mut core::ffi::c_void)->i32{
