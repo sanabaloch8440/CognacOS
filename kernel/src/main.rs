@@ -299,6 +299,26 @@ unsafe fn pci_config_write16(bus:u8,device:u8,function:u8,offset:u8,value:u16) {
     let _=unsafe { hal::pci_config_write(0,bus,device,function,offset as u16,2,value as u32) };
 }
 
+unsafe extern "win64" fn hal_pci_read_config(
+ _context:nt_abi::types::PVOID,segment:u16,bus:u8,device:u8,function:u8,
+ offset:u16,width:u8,value:*mut u32,
+)->i32{
+ if value.is_null(){return nt_abi::ntstatus::STATUS_INVALID_PARAMETER}
+ match unsafe{hal::pci_config_read(segment,bus,device,function,offset,width)}{
+  Ok(v)=>{unsafe{value.write(v)};nt_abi::ntstatus::STATUS_SUCCESS}
+  Err(_)=>nt_abi::ntstatus::STATUS_INVALID_PARAMETER
+ }
+}
+unsafe extern "win64" fn hal_pci_write_config(
+ _context:nt_abi::types::PVOID,segment:u16,bus:u8,device:u8,function:u8,
+ offset:u16,width:u8,value:u32,
+)->i32{
+ match unsafe{hal::pci_config_write(segment,bus,device,function,offset,width,value)}{
+  Ok(())=>nt_abi::ntstatus::STATUS_SUCCESS,
+  Err(_)=>nt_abi::ntstatus::STATUS_INVALID_PARAMETER
+ }
+}
+
 unsafe extern "C" fn vtd_alloc_table(_ctx:*mut core::ffi::c_void,pa_out:*mut u64,va_out:*mut *mut u64)->i32{
  if pa_out.is_null()||va_out.is_null(){return dma::iommu::vtd::STATUS_INVALID_PARAMETER}
  let pa=match unsafe{memory::allocate_contiguous_pages(1)}{Ok(v)=>v,Err(_)=>return dma::iommu::vtd::STATUS_INSUFFICIENT_RESOURCES};
@@ -500,6 +520,8 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   handoff.windows[mapped]=PCI_ECAM_WINDOW{
    virtual_base,physical_base:allocation.base_address,segment:allocation.segment,
    bus_start:allocation.start_bus,bus_end:allocation.end_bus,
+   config_context:core::ptr::null_mut(),
+   read_config:Some(hal_pci_read_config),write_config:Some(hal_pci_write_config),
   };
   mapped+=1;
  }
