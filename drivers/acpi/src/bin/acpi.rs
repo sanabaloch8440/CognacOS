@@ -12,7 +12,6 @@ struct AcpiState {
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
     dmar_present: AtomicBool,
-    rsdp_address: core::sync::atomic::AtomicU64,
 }
 unsafe impl Sync for AcpiState {}
 static STATE: AcpiState = AcpiState {
@@ -21,7 +20,6 @@ static STATE: AcpiState = AcpiState {
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
     dmar_present: AtomicBool::new(false),
-    rsdp_address: core::sync::atomic::AtomicU64::new(0),
 };
 
 
@@ -90,7 +88,7 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
                 || (size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() {
                 STATUS_NOT_SUPPORTED
             } else {
-                unsafe { CognacAcpiGetFirmwareInterface(output) }
+                unsafe { cognac_acpi_get_firmware_interface(output) }
             }
         },
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
@@ -187,8 +185,7 @@ unsafe extern "win64" fn query_firmware_table(
 }
 
 /// Return ACPI.sys' stable, versioned firmware-table interface to a consumer.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn CognacAcpiGetFirmwareInterface(
+unsafe extern "win64" fn cognac_acpi_get_firmware_interface(
     output: *mut ACPI_FIRMWARE_INTERFACE,
 ) -> i32 {
     if output.is_null() { return STATUS_INVALID_PARAMETER; }
