@@ -24,19 +24,20 @@ pub const fn error_to_ntstatus(error: PciError) -> nt_abi::ntstatus::NTSTATUS {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EcamWindow {
-    /// Virtual address corresponding to bus_start/device 0/function 0/offset 0.
-    pub virtual_base: u64,
-    pub physical_base: u64,
-    pub segment: u16,
-    pub bus_start: u8,
-    pub bus_end: u8,
+pub type EcamWindow = nt_abi::bus::PCI_ECAM_WINDOW;
+
+/// PCI-specific checked operations for the shared ABI-only ECAM record.
+pub trait EcamWindowExt {
+    fn validate(&self) -> Result<(), PciError>;
+    fn register_address(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<*mut u8, PciError>;
+    unsafe fn read_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u8, PciError>;
+    unsafe fn read_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u16, PciError>;
+    unsafe fn read_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u32, PciError>;
+    unsafe fn write_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u32) -> Result<(), PciError>;
 }
 
-impl EcamWindow {
-    pub fn validate(&self) -> Result<(), PciError> {
+impl EcamWindowExt for EcamWindow {
+    fn validate(&self) -> Result<(), PciError> {
         if self.virtual_base == 0 || self.physical_base == 0 || self.bus_end < self.bus_start
             || self.virtual_base & 0xfffff != 0 || self.physical_base & 0xfffff != 0 {
             return Err(PciError::InvalidWindow);
@@ -48,9 +49,7 @@ impl EcamWindow {
         Ok(())
     }
 
-    /// Calculate the mapped virtual address for one ECAM register. ECAM uses
-    /// 1 MiB per bus, 32 devices, 8 functions and 4096 bytes per function.
-    pub fn register_address(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<*mut u8, PciError> {
+    fn register_address(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<*mut u8, PciError> {
         self.validate()?;
         if segment != self.segment || bus < self.bus_start || bus > self.bus_end || device >= 32 || function >= 8 {
             return Err(PciError::InvalidBdf);
@@ -63,24 +62,21 @@ impl EcamWindow {
         Ok(address as *mut u8)
     }
 
-    pub unsafe fn read_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u8, PciError> {
+    unsafe fn read_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u8, PciError> {
         let p = self.register_address(segment, bus, device, function, offset)?;
         Ok(unsafe { core::ptr::read_volatile(p) })
     }
-    pub unsafe fn read_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u16, PciError> {
+    unsafe fn read_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u16, PciError> {
         if offset & 1 != 0 { return Err(PciError::InvalidOffset); }
         let p = self.register_address(segment, bus, device, function, offset)?;
         Ok(unsafe { core::ptr::read_volatile(p.cast::<u16>()) })
     }
-    pub unsafe fn read_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u32, PciError> {
+    unsafe fn read_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u32, PciError> {
         if offset & 3 != 0 { return Err(PciError::InvalidOffset); }
         let p = self.register_address(segment, bus, device, function, offset)?;
         Ok(unsafe { core::ptr::read_volatile(p.cast::<u32>()) })
     }
-
-    /// Write one naturally aligned dword. Callers must apply PCI register
-    /// semantics (W1C status bits, BAR sizing, command bits) before writing.
-    pub unsafe fn write_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u32) -> Result<(), PciError> {
+    unsafe fn write_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u32) -> Result<(), PciError> {
         if offset & 3 != 0 { return Err(PciError::InvalidOffset); }
         let p = self.register_address(segment, bus, device, function, offset)?;
         unsafe { core::ptr::write_volatile(p.cast::<u32>(), value); }
