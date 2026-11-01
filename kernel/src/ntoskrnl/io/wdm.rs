@@ -3741,6 +3741,36 @@ mod wdm_tests {
   unsafe{io_delete_device(fs);}
  }
 
+
+ static FS_NOTIFY_ACTIVE:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ static FS_NOTIFY_INACTIVE:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ unsafe extern "win64" fn test_fs_registration_callback(device:*mut DeviceObject,active:u8) {
+  if device.is_null(){return}
+  if active!=0 {FS_NOTIFY_ACTIVE.fetch_add(1,core::sync::atomic::Ordering::SeqCst);}
+  else {FS_NOTIFY_INACTIVE.fetch_add(1,core::sync::atomic::Ordering::SeqCst);}
+ }
+ #[test]
+ fn filesystem_registration_notifications_cover_existing_new_and_removed_devices() {
+  FS_NOTIFY_ACTIVE.store(0,core::sync::atomic::Ordering::SeqCst);
+  FS_NOTIFY_INACTIVE.store(0,core::sync::atomic::Ordering::SeqCst);
+  let mut notifier:DriverObject=unsafe{core::mem::zeroed()};
+  let mut fs_driver:DriverObject=unsafe{core::mem::zeroed()};
+  fs_driver.major_function[IRP_MJ_FILE_SYSTEM_CONTROL as usize]=Some(test_fs_mount_and_dismount_dispatch);
+  let mut first:*mut DeviceObject=ptr::null_mut();
+  let mut second:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut fs_driver,0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut first)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut fs_driver,0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut second)},STATUS_SUCCESS);
+  unsafe{io_register_file_system(first);}
+  assert_eq!(unsafe{io_register_fs_registration_change(&mut notifier,Some(test_fs_registration_callback))},STATUS_SUCCESS);
+  assert_eq!(FS_NOTIFY_ACTIVE.load(core::sync::atomic::Ordering::SeqCst),1);
+  unsafe{io_register_file_system(second);}
+  assert_eq!(FS_NOTIFY_ACTIVE.load(core::sync::atomic::Ordering::SeqCst),2);
+  unsafe{io_unregister_file_system(second);}
+  assert_eq!(FS_NOTIFY_INACTIVE.load(core::sync::atomic::Ordering::SeqCst),1);
+  unsafe{io_unregister_fs_registration_change(&mut notifier,Some(test_fs_registration_callback));}
+  unsafe{io_unregister_file_system(first);io_delete_device(first);io_delete_device(second);}
+ }
+
 }
 
 
