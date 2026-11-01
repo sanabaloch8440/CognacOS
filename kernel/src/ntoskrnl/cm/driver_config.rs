@@ -93,3 +93,40 @@ pub fn query_bcd_element_raw<'a>(hive:&'a Hive<'a>,object_id:&[u16],element_id:&
  if value.kind!=3{return Err(Error::InvalidImagePath)}
  value.data(out).map_err(Error::Hive)
 }
+
+
+#[cfg(test)]
+mod control_set_tests {
+    use super::*;
+
+    #[test]
+    fn formats_control_set_names_using_three_decimal_digits() {
+        let cases = [
+            (1, "ControlSet001"),
+            (9, "ControlSet009"),
+            (10, "ControlSet010"),
+            (99, "ControlSet099"),
+            (100, "ControlSet100"),
+            (999, "ControlSet999"),
+        ];
+        for (number, expected) in cases {
+            let mut output = [0u16; 16];
+            let length = control_set_path(number, &mut output).unwrap();
+            let actual: String = String::from_utf16(&output[..length]).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_zero_and_out_of_range_control_set_numbers() {
+        let mut output = [0u16; 16];
+        assert_eq!(control_set_path(0, &mut output), Err(Error::InvalidControlSet));
+        assert_eq!(control_set_path(1000, &mut output), Err(Error::InvalidControlSet));
+    }
+
+    #[test]
+    fn rejects_truncated_control_set_name_buffer() {
+        let mut output = [0u16; 12];
+        assert_eq!(control_set_path(1, &mut output), Err(Error::BufferTooSmall));
+    }
+}
