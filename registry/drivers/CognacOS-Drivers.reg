@@ -28,7 +28,7 @@ Windows Registry Editor Version 5.00
 "Tag"=dword:00000002
 "ImagePath"="\\SystemRoot\\System32\\drivers\\pci.sys"
 
-; USBXHCI and Beep are separate service entries, not kernel hard-coded drivers.
+; USBXHCI, UCX and Beep are separate boot/service entries, not kernel hard-coded drivers.
 [HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\USBXHCI]
 "Type"=dword:00000001
 "Start"=dword:00000000
