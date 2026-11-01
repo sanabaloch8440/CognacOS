@@ -3238,6 +3238,30 @@ mod wdm_tests {
   unsafe{io_delete_device(upper);io_delete_device(lower);}
  }
 
+
+ #[test]
+ fn device_stack_reference_apis_return_owned_references() {
+  let mut lower_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut upper_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut lower:*mut DeviceObject=ptr::null_mut();
+  let mut upper:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut lower_driver,0,ptr::null_mut(),7,0,0,&mut lower)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut upper_driver,0,ptr::null_mut(),7,0,0,&mut upper)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_attach_device_to_device_stack(upper,lower)},lower);
+  let top=unsafe{io_get_attached_device_reference(lower)};
+  assert_eq!(top,upper);
+  assert_eq!(unsafe{(*upper).reference_count},2);
+  unsafe{io_dereference_device_object(top);}
+  let base=unsafe{io_get_device_attachment_base_ref(upper)};
+  assert_eq!(base,lower);
+  assert_eq!(unsafe{(*lower).reference_count},3);
+  unsafe{io_dereference_device_object(base);}
+  assert_eq!(unsafe{(*lower).reference_count},2);
+  unsafe{io_detach_device(lower);}
+  assert_eq!(unsafe{(*lower).reference_count},1);
+  unsafe{io_delete_device(upper);io_delete_device(lower);}
+ }
+
  #[test]
  fn three_level_filter_stack_detaches_only_from_the_top_down() {
   let mut base_driver:DriverObject=unsafe{core::mem::zeroed()};
