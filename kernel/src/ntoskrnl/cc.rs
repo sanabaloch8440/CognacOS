@@ -12,8 +12,6 @@ use crate::ntoskrnl::io::FileObject;
 use crate::ntoskrnl::io::IoStatusBlock;
 
 const STATUS_SUCCESS: i32 = 0;
-const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
-const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009A_u32 as i32;
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002_u32 as i32;
 const MAX_CACHE_MAPS: usize = 128;
 
@@ -207,6 +205,22 @@ pub(crate) fn cache_map_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_map_lifecycle_tracks_file_object_and_sizes() {
+        let mut file: FileObject = unsafe { core::mem::zeroed() };
+        let sizes = CcFileSizes { allocation_size: 8192, file_size: 4096, valid_data_length: 2048 };
+        unsafe { cc_initialize_cache_map(&mut file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
+        assert!(!file.private_cache_map.is_null());
+        assert_eq!(cache_map_count(), 1);
+        let changed = CcFileSizes { allocation_size: 8192, file_size: 2048, valid_data_length: 1024 };
+        unsafe { cc_set_file_sizes(&mut file, &changed); }
+        assert_eq!(unsafe { find_map(&mut file) }.map(|i| unsafe { (&*STATE.0.get())[i].sizes.file_size }), Some(2048));
+        assert_eq!(unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()) }, 1);
+        assert!(file.private_cache_map.is_null());
+        assert_eq!(cache_map_count(), 0);
+    }
+
     #[test]
     fn cache_file_sizes_reject_inconsistent_ranges() {
         assert!(valid_sizes(CcFileSizes { allocation_size: 4096, file_size: 2048, valid_data_length: 1024 }));
