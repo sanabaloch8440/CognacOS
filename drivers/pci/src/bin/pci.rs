@@ -445,6 +445,8 @@ unsafe extern "win64" fn write_config(
         return STATUS_INVALID_PARAMETER;
     };
     let result = match width {
+        1 => unsafe { window.write_u8(segment, bus, device, function, offset, value as u8) },
+        2 => unsafe { window.write_u16(segment, bus, device, function, offset, value as u16) },
         4 => unsafe { window.write_u32(segment, bus, device, function, offset, value) },
         _ => Err(pci::PciError::InvalidOffset),
     };
