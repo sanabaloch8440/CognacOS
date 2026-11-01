@@ -1622,6 +1622,20 @@ fn finalize_irp_status(irp:*mut Irp) {
  let _=copy_out;
 }
 
+/// Complete a kernel-owned IRP with an explicit status and information value.
+/// Native drivers use this service instead of depending on private IRP offsets.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn io_complete_irp_status(
+ irp:*mut Irp,status:i32,information:usize,priority_boost:i8
+) {
+ if irp.is_null(){return}
+ unsafe {
+  ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),status);
+  ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_INFORMATION_OFFSET).cast::<usize>(),information);
+  io_complete_request(irp,priority_boost);
+ }
+}
+
 #[unsafe(export_name = "IoCompleteRequest")]
 pub unsafe extern "win64" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
  if irp.is_null(){return}
