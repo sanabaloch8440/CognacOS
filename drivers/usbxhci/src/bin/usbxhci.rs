@@ -347,83 +347,94 @@ fn read_capabilities(io: &mut impl XhciRegisterIo, length: u64) -> Option<Capabi
     Some(caps)
 }
 
-/// Windows-native DriverEntry: validate the kernel handoff, parse real controller
-/// capability registers, allocate IOMMU-backed DMA structures, reset/start xHCI,
-/// and register an ISR/DPC event-ring path. Missing services fail closed.
+struct MmioMapping{base:*mut c_void,length:u64,keep:bool}
+impl Drop for MmioMapping{fn drop(&mut self){if !self.keep&&!self.base.is_null(){unsafe{MmUnmapIoSpace(self.base,self.length);}}}}
+
+/// Windows-native DriverEntry. Hardware access is through NTOSKRNL/HAL PE
+/// imports: MMIO mapping, DMA adapter, common buffers, PCI configuration,
+/// WDM device objects, interrupt connection and DPC scheduling.
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -> i32 {
-    if driver.is_null() { return DRIVER_INVALID_PARAMETER; }
-    let driver_object = unsafe { &mut *(driver as *mut DriverObject) };
-    let Some(ext) = (unsafe { driver_object.driver_extension.as_ref() }) else { return DRIVER_NOT_SUPPORTED; };
-    XHCI_EXTENSION.store(ext as *const _ as u64,Ordering::Release);
-    if ext.magic != EXTENSION_MAGIC || ext.version != 1
-        || (ext.size as usize) < core::mem::size_of::<XhciDriverExtension>()
-        || ext.mmio_base == 0 || ext.mmio_base & 3 != 0
-        || ext.mmio_length < 0x1000 || ext.mmio_length > MMIO_LIMIT
-        || ext.device_object == 0 || ext.interrupt_vector == 0 || ext.max_slots == 0 || ext.max_slots > 64
-        || ext.hal.is_null() || ext.device.is_null() || ext.kernel_io.is_null() || ext.fdo_out.is_null() { return DRIVER_INVALID_PARAMETER; }
-    let Some(hal) = (unsafe { ext.hal.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
-    let Some(dev) = (unsafe { ext.device.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
-    let Some(kernel_io) = (unsafe { ext.kernel_io.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
-    if !hal.compatible() || hal.version != HAL_CONTRACT_VERSION
-        || !dev.compatible() || dev.version != DEVICE_SERVICES_VERSION
-        || hal.read_mmio_u32.is_none() || hal.write_mmio_u32.is_none()
-        || !dev.has_dma() || !dev.has_interrupts() || !dev.has_bus_master()
-        || !kernel_io.compatible() { return DRIVER_NOT_SUPPORTED; }
-    let mut platform = Platform { ext, hal, dev };
-    let Some(caps) = read_capabilities(&mut platform, ext.mmio_length) else { return DRIVER_NOT_SUPPORTED; };
+pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32{
+    if driver.is_null(){return DRIVER_INVALID_PARAMETER}
+    let driver_object=unsafe{&mut *(driver as *mut DRIVER_OBJECT)};
+    let Some(ext)=(unsafe{driver_object.driver_extension.cast::<XhciDriverExtension>().as_ref()}) else{return DRIVER_NOT_SUPPORTED};
+    if ext.magic!=EXTENSION_MAGIC||ext.version!=1
+        ||(ext.size as usize)<core::mem::size_of::<XhciDriverExtension>()
+        ||ext.mmio_physical==0||ext.mmio_physical&3!=0
+        ||ext.mmio_length<0x1000||ext.mmio_length>MMIO_LIMIT
+        ||ext.device_object==0||ext.interrupt_vector<0x20||ext.interrupt_vector>0xdf
+        ||ext.interrupt_irql==0||ext.max_slots==0||ext.max_slots>64||ext.fdo_out.is_null(){
+        return DRIVER_INVALID_PARAMETER
+    }
+    let mapped=unsafe{MmMapIoSpace(ext.mmio_physical as i64,ext.mmio_length,0)};
+    if mapped.is_null(){return DRIVER_INSUFFICIENT_RESOURCES}
+    let mut mapping=MmioMapping{base:mapped,length:ext.mmio_length,keep:false};
+    ext.mmio_virtual.store(mapped as u64,Ordering::Release);
+
+    // DEVICE_DESCRIPTION v3: master, scatter/gather, 64-bit DMA addressing.
+    // IoGetDmaAdapter binds the adapter to this controller's PDO/IOMMU domain.
+    let description:[u8;12]=[3,0,0,0,1,1,0,0,1,0,0,1];
+    let mut map_registers=0u32;
+    let adapter=unsafe{IoGetDmaAdapter(ext.device_object as *mut DEVICE_OBJECT,description.as_ptr().cast(),&mut map_registers)};
+    if adapter.is_null()||map_registers==0{return DRIVER_NOT_SUPPORTED}
+    let adapter_prefix=unsafe{&*(adapter as *const DmaAdapterPrefix)};
+    if adapter_prefix.operations.is_null(){return DRIVER_NOT_SUPPORTED}
+    let operations=unsafe{&*adapter_prefix.operations};
+    if operations.size as usize<core::mem::size_of::<DmaOperationsPrefix>()
+        ||operations.allocate_common_buffer.is_none()||operations.free_common_buffer.is_none(){
+        return DRIVER_NOT_SUPPORTED
+    }
+    ext.dma_adapter.store(adapter as u64,Ordering::Release);
+    ext.ready.store(false,Ordering::Release);
+    ext.interrupt_requested.store(false,Ordering::Release);
+    ext.interrupt_object.store(0,Ordering::Release);
+
+    let mut platform=Platform{ext,maximum_dma_address:u64::MAX};
+    let Some(caps)=read_capabilities(&mut platform,ext.mmio_length) else{return DRIVER_NOT_SUPPORTED};
     ext.operational_offset.store(caps.cap_length as u32,Ordering::Release);
     ext.port_count.store(caps.max_ports as u32,Ordering::Release);
-    let slots = (ext.max_slots as u8).min(caps.max_slots);
-    let resources = match xhci::start_controller(&mut platform, &caps, slots, POLL_BUDGET) {
-        Ok(resources) => resources,
-        Err(xhci::RuntimeStartError::AllocationFailed) => return DRIVER_INSUFFICIENT_RESOURCES,
-        Err(xhci::RuntimeStartError::InvalidAllocation) => return DRIVER_INVALID_PARAMETER,
-        // start_controller returns this before allocating DMA resources. Do not
-        // continue controller initialization when bus mastering cannot be cleared.
-        Err(xhci::RuntimeStartError::BusMasterDisableFailed) => return DRIVER_DEVICE_NOT_READY,
-        Err(xhci::RuntimeStartError::InterruptRegistrationFailed) => return DRIVER_NOT_SUPPORTED,
-        Err(xhci::RuntimeStartError::InterruptEnableFailed) => return DRIVER_DEVICE_NOT_READY,
-        Err(xhci::RuntimeStartError::Controller(error)) => return match error {
-            xhci::ControllerInitError::ResetTimeout
-            | xhci::ControllerInitError::ControllerDidNotHalt
-            | xhci::ControllerInitError::ControllerDidNotStart => DRIVER_IO_TIMEOUT,
-            xhci::ControllerInitError::BusMasterEnableFailed
-            | xhci::ControllerInitError::RegisterIoFailure => DRIVER_DEVICE_NOT_READY,
-            xhci::ControllerInitError::UnsupportedPageSize
-            | xhci::ControllerInitError::InterruptNotRegistered => DRIVER_NOT_SUPPORTED,
-            xhci::ControllerInitError::InvalidCapabilities
-            | xhci::ControllerInitError::InvalidDmaConfiguration => DRIVER_INVALID_PARAMETER,
+    let dpc=core::ptr::addr_of_mut!(XHCI_DPC).cast::<c_void>();
+    unsafe{KeInitializeDpc(dpc,Some(xhci_dpc_routine),ext as *const _ as *mut c_void);}
+
+    let slots=(ext.max_slots as u8).min(caps.max_slots);
+    let resources=match xhci::start_controller(&mut platform,&caps,slots,POLL_BUDGET){
+        Ok(resources)=>resources,
+        Err(xhci::RuntimeStartError::AllocationFailed)=>return DRIVER_INSUFFICIENT_RESOURCES,
+        Err(xhci::RuntimeStartError::InvalidAllocation)=>return DRIVER_INVALID_PARAMETER,
+        Err(xhci::RuntimeStartError::BusMasterDisableFailed)=>return DRIVER_DEVICE_NOT_READY,
+        Err(xhci::RuntimeStartError::InterruptRegistrationFailed)=>return DRIVER_NOT_SUPPORTED,
+        Err(xhci::RuntimeStartError::InterruptEnableFailed)=>return DRIVER_DEVICE_NOT_READY,
+        Err(xhci::RuntimeStartError::Controller(error))=>return match error{
+            xhci::ControllerInitError::ResetTimeout|xhci::ControllerInitError::ControllerDidNotHalt
+            |xhci::ControllerInitError::ControllerDidNotStart=>DRIVER_IO_TIMEOUT,
+            xhci::ControllerInitError::BusMasterEnableFailed|xhci::ControllerInitError::RegisterIoFailure=>DRIVER_DEVICE_NOT_READY,
+            xhci::ControllerInitError::UnsupportedPageSize|xhci::ControllerInitError::InterruptNotRegistered=>DRIVER_NOT_SUPPORTED,
+            xhci::ControllerInitError::InvalidCapabilities|xhci::ControllerInitError::InvalidDmaConfiguration=>DRIVER_INVALID_PARAMETER,
         },
     };
-    // Bind a real kernel DEVICE_OBJECT to this DriverObject and publish
-    // the dispatch table consumed by IoCallDriver. The DMA requester remains
-    // the PCI PDO identity supplied separately in ext.device_object.
-    static DEVICE_NAME:[u16;19]=[
-        92,68,101,118,105,99,101,92,67,111,103,110,97,99,88,104,99,105,0
-    ];
-    let mut counted_name=cognacos_nt_abi::object::UNICODE_STRING{
-        length:36,maximum_length:38,buffer:DEVICE_NAME.as_ptr() as *mut u16
-    };
-    let mut fdo=core::ptr::null_mut::<c_void>();
+
+    static DEVICE_NAME:[u16;19]=[92,68,101,118,105,99,101,92,67,111,103,110,97,99,88,104,99,105,0];
+    let mut name=UNICODE_STRING{length:36,maximum_length:38,buffer:DEVICE_NAME.as_ptr() as *mut u16};
+    let mut fdo=core::ptr::null_mut::<DEVICE_OBJECT>();
     for entry in driver_object.major_function.iter_mut(){*entry=Some(xhci_dispatch);}
-    let Some(create_device)=kernel_io.create_device else{return DRIVER_NOT_SUPPORTED};
-    let create_status=unsafe{create_device(
-        driver,0,&mut counted_name,4,0,0,&mut fdo
-    )};
-    if create_status<0||fdo.is_null(){return create_status};
+    let create_status=unsafe{IoCreateDevice(driver_object,0,&mut name,4,0,0,&mut fdo)};
+    if create_status<0||fdo.is_null(){
+        let _=xhci::stop_controller(&mut platform,&caps,resources,POLL_BUDGET);
+        return if create_status<0{create_status}else{DRIVER_FAILED}
+    }
     XHCI_FDO.store(fdo as u64,Ordering::Release);
     unsafe{ext.fdo_out.write(fdo as u64);}
-    unsafe { (*ext.runtime.get()).write(resources); }
-    ext.ready.store(true, Ordering::Release);
-    if ext.interrupt_requested.swap(false, Ordering::AcqRel) {
-        if platform.set_interrupt_enabled(true).is_err() {
-            ext.ready.store(false, Ordering::Release);
-            let runtime = unsafe { (*ext.runtime.get()).assume_init_read() };
-            let _ = xhci::stop_controller(&mut platform, &caps, runtime, POLL_BUDGET);
-            return DRIVER_FAILED;
-        }
+    unsafe{(*ext.runtime.get()).write(resources);}
+    ext.ready.store(true,Ordering::Release);
+    if ext.interrupt_requested.swap(false,Ordering::AcqRel)&&platform.set_interrupt_enabled(true).is_err(){
+        ext.ready.store(false,Ordering::Release);
+        let runtime=unsafe{(*ext.runtime.get()).assume_init_read()};
+        let _=xhci::stop_controller(&mut platform,&caps,runtime,POLL_BUDGET);
+        unsafe{IoDeleteDevice(fdo);}
+        ext.mmio_virtual.store(0,Ordering::Release);
+        return DRIVER_FAILED
     }
+    mapping.keep=true;
     0
 }
 
