@@ -566,7 +566,6 @@ fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
 /// kernel-owned PnP resource record. PCI.sys remains the sole enumerator.
 fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     use core::mem::MaybeUninit;
-    use core::sync::atomic::Ordering;
     use nt_abi::bus::{PCI_BUS_INTERFACE,PCI_XHCI_INFORMATION,PCI_BRIDGE_INFORMATION,PCI_BUS_INTERFACE_VERSION,GUID_PCI_BUS_INTERFACE};
     let bus=unsafe{PCI_BUS_FDO};
     if bus.is_null(){serial_write(b"PCI xHCI: pci.sys bus FDO is unavailable.\r\n");return false}
@@ -590,7 +589,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     ) else {serial_write(b"PCI xHCI: pci.sys interface lacks required inventory/resource callbacks.\r\n");return false};
     let mut function_count=0u32;let mut bridge_count=0u32;let mut xhci_count=0u32;
     let status=unsafe{query_counts(interface.header.context,&mut function_count,&mut bridge_count,&mut xhci_count)};
-    if status!=nt_abi::ntstatus::STATUS_SUCCESS||xhci_count==0 {
+    if status!=nt_abi::ntstatus::STATUS_SUCCESS||function_count==0||xhci_count==0 {
         serial_write(b"PCI xHCI: pci.sys reports no xHCI endpoint in its completed inventory.\r\n");return false
     }
     let mut selected=None;
@@ -631,7 +630,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
         if result==nt_abi::ntstatus::STATUS_SUCCESS{Some(value)}else{None}
     };
     let write=|offset:u16,width:u8,value:u32|->bool{
-        unsafe{write_config(context,function.segment,function.bus,function.device,function.function,offset,width,value)}
+        (unsafe{write_config(context,function.segment,function.bus,function.device,function.function,offset,width,value)})
             ==nt_abi::ntstatus::STATUS_SUCCESS
     };
     // BAR sizing is a controlled configuration transaction: disable I/O,
