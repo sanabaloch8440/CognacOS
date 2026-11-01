@@ -3,7 +3,8 @@
 //! for the lifetime of the kernel and is published only after BAR sizing and
 //! uncached MMIO mapping have succeeded. Bus mastering stays disabled until an
 //! IOMMU requester domain and interrupt path are ready.
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 pub const XHCI_PNP_MAGIC: u64 = 0x434f_474e_4143_504e;
 pub const XHCI_PNP_VERSION: u32 = 1;
@@ -225,6 +226,7 @@ pub enum PnpError {
     DuplicateDevice,
     InvalidState,
     InvalidTransition,
+    Registry(crate::ntoskrnl::cm::service_config::ExtendedConfigError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,6 +261,8 @@ struct PnpDeviceNode {
     programming_interface: AtomicU32,
     last_status: core::sync::atomic::AtomicI32,
     start_attempts: AtomicU32,
+    service_name: UnsafeCell<[u16;128]>,
+    service_name_len: AtomicUsize,
 }
 impl PnpDeviceNode {
     const fn new() -> Self {
@@ -272,9 +276,46 @@ impl PnpDeviceNode {
             programming_interface: AtomicU32::new(0),
             last_status: core::sync::atomic::AtomicI32::new(0),
             start_attempts: AtomicU32::new(0),
+            service_name: UnsafeCell::new([0;128]),
+            service_name_len: AtomicUsize::new(0),
         }
     }
 }
+unsafe impl Sync for PnpDeviceNode {}
+/// Match every discovered PCI devnode against the installed Windows Enum\\PCI
+/// tree. The Enum instance's Service value selects a configured service; the
+/// Configuration Manager then validates that service's Start/Type/ImagePath.
+pub fn match_registry_services(hive:&crate::ntoskrnl::cm::hive::Hive<'_>)->Result<usize,PnpError>{
+    let mut matched=0usize;
+    for index in 0..MAX_PNP_DEVICES{
+        let Some(snapshot)=query_pnp_device(index as u32) else{continue};
+        if snapshot.state!=PNP_DEVICE_ENUMERATED{continue}
+        let mut name=[0u16;128];
+        let Some(length)=crate::ntoskrnl::cm::service_config::find_pci_device_service(
+            hive,snapshot.vendor_id,snapshot.device_id,&mut name,
+        ).map_err(PnpError::Registry)? else{continue};
+        if length==0||length>name.len(){return Err(PnpError::InvalidState)}
+        let _guard=lock_pnp_table();
+        let node=&PNP_DEVICES[index];
+        if node.state.load(Ordering::Acquire)!=PNP_DEVICE_ENUMERATED{continue}
+        unsafe{(*node.service_name.get()).fill(0);(*node.service_name.get())[..length].copy_from_slice(&name[..length]);}
+        node.service_name_len.store(length,Ordering::Release);
+        matched+=1;
+    }
+    Ok(matched)
+}
+
+/// Copy the registry-selected service name for one devnode. A zero-length
+/// result means no installed Enum instance matched this hardware ID.
+pub fn query_pnp_device_service(index:u32,out:&mut[u16])->Option<usize>{
+    let _guard=lock_pnp_table();
+    let node=PNP_DEVICES.get(index as usize)?;
+    let length=node.service_name_len.load(Ordering::Acquire);
+    if length==0||length>out.len(){return None}
+    unsafe{out[..length].copy_from_slice(&(*node.service_name.get())[..length]);}
+    Some(length)
+}
+
 static PNP_DEVICES: [PnpDeviceNode; MAX_PNP_DEVICES] =
     [const { PnpDeviceNode::new() }; MAX_PNP_DEVICES];
 static PNP_TABLE_LOCK: AtomicBool = AtomicBool::new(false);
