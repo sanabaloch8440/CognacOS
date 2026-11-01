@@ -207,23 +207,9 @@ pub mod bus {
         pub command: u16,
     }
 
-    /// Kernel-supplied PDO factory used by pci.sys while answering BusRelations.
-    /// The bus driver owns enumeration; the kernel callback allocates and tracks
-    /// the actual DEVICE_OBJECT using the bus driver's DRIVER_OBJECT.
-    pub type PPCI_CREATE_PDO = Option<
-        unsafe extern "win64" fn(
-            context: PVOID,
-            driver: *mut crate::io::DRIVER_OBJECT,
-            information: *const PCI_DEVICE_INFORMATION,
-            output: *mut *mut crate::io::DEVICE_OBJECT,
-        ) -> NTSTATUS,
-    >;
-    pub type PPCI_DELETE_PDO = Option<
-        unsafe extern "win64" fn(context: PVOID, device: *mut crate::io::DEVICE_OBJECT),
-    >;
-
-    /// MCFG-derived ECAM mapping passed from the kernel's early firmware
-    /// mapper to pci.sys. This is ABI-only; pci.sys validates and accesses it.
+    /// MCFG-derived ECAM aperture mapped by NTOSKRNL and consumed by pci.sys.
+    /// The driver uses the mapped virtual address directly; no kernel or HAL
+    /// callback pointers are embedded in this handoff.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct PCI_ECAM_WINDOW {
@@ -232,20 +218,15 @@ pub mod bus {
         pub segment: u16,
         pub bus_start: u8,
         pub bus_end: u8,
-        /// Configuration-space operations are supplied by HAL. PCI.sys must
-        /// use these callbacks rather than dereferencing the ECAM mapping.
-        pub config_context: PVOID,
-        pub read_config: PPCI_READ_CONFIG,
-        pub write_config: PPCI_WRITE_CONFIG,
     }
 
     pub const PCI_DRIVER_HANDOFF_MAGIC: u64 = 0x434f_474e_4143_5043;
-    pub const PCI_DRIVER_HANDOFF_VERSION: u32 = 4;
+    pub const PCI_DRIVER_HANDOFF_VERSION: u32 = 5;
     pub const PCI_DRIVER_HANDOFF_MAX_WINDOWS: usize = 16;
 
-    /// Versioned initialization contract between ntoskrnl and pci.sys.
-    /// The kernel maps ECAM; pci.sys owns enumeration and invokes the PDO
-    /// callbacks to materialize bus-enumerated device objects.
+    /// Data-only initialization contract between NTOSKRNL and pci.sys.
+    /// Device-object lifecycle is handled through the documented NTOSKRNL
+    /// IoCreateDevice/IoDeleteDevice imports, not private callback pointers.
     #[repr(C)]
     pub struct PCI_DRIVER_HANDOFF {
         pub magic: u64,
@@ -253,9 +234,6 @@ pub mod bus {
         pub version: u32,
         pub window_count: u32,
         pub reserved: u32,
-        pub pdo_context: PVOID,
-        pub create_pdo: PPCI_CREATE_PDO,
-        pub delete_pdo: PPCI_DELETE_PDO,
         pub windows: [PCI_ECAM_WINDOW; PCI_DRIVER_HANDOFF_MAX_WINDOWS],
     }
 
@@ -336,8 +314,8 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x50);
                 assert_eq!(core::mem::size_of::<PCI_XHCI_INFORMATION>(), 0x20);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INFORMATION>(), 0x12);
-                assert_eq!(core::mem::size_of::<PCI_ECAM_WINDOW>(), 0x30);
-                assert_eq!(core::mem::size_of::<PCI_DRIVER_HANDOFF>(), 0x330);
+                assert_eq!(core::mem::size_of::<PCI_ECAM_WINDOW>(), 0x18);
+                assert_eq!(core::mem::size_of::<PCI_DRIVER_HANDOFF>(), 0x198);
             }
         }
     }
