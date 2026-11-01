@@ -4,8 +4,8 @@
 //! fields used by this implementation. This is not a claim of complete WDM
 //! compatibility: dynamic IRP records/system buffers and the WDM cancel-safe
 //! queue API are implemented, but cancel-spin-lock parity, all driver-created IRP
-//! ownership variants, security descriptors, VPBs, and many IRP variants remain
-//! incomplete. Driver images must not be treated as generally loadable.
+//! ownership variants, security descriptors, and many IRP variants remain
+//! incomplete. VPB storage and mount arbitration are implemented below. Driver images must not be treated as generally loadable.
 use core::{ffi::c_void, ptr, ops::{Index, IndexMut}};
 use crate::hal::IrqSpinLock;
 
@@ -29,6 +29,14 @@ const IRP_INFORMATION_OFFSET: usize = 0x38;
 pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
 /// Use the canonical Windows IO_STATUS_BLOCK union layout shared with NTDLL and drivers.
 pub type IoStatusBlock = crate::nt_abi::io::IO_STATUS_BLOCK;
+pub type Vpb = crate::nt_abi::io::VPB;
+const IRP_MJ_FILE_SYSTEM_CONTROL: u8 = 0x0d;
+const IRP_MN_MOUNT_VOLUME: u8 = 0x01;
+const IRP_MN_VERIFY_VOLUME: u8 = 0x02;
+const FILE_DEVICE_DISK: u32 = 0x0000_0007;
+const FILE_DEVICE_CD_ROM: u32 = 0x0000_0002;
+const FILE_DEVICE_TAPE: u32 = 0x0000_001f;
+const FILE_DEVICE_VIRTUAL_DISK: u32 = 0x0000_0024;
 pub type DriverDispatch = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp) -> i32;
 pub type DriverUnload = unsafe extern "win64" fn(*mut DriverObject);
 pub type IoCompletionRoutine = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
@@ -98,7 +106,7 @@ pub struct IoStackLocation {
 }
 const _: () = assert!(core::mem::size_of::<IoStackLocation>() == IO_STACK_LOCATION_SIZE_X64);
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], vpb: Vpb, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 const PAGE_SIZE:usize=4096;
 #[repr(C)]
@@ -148,7 +156,7 @@ struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: IrpTable, thread
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, outstanding_irps:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, outstanding_irps:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], vpb:Vpb::empty(), object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -931,6 +939,7 @@ pub unsafe extern "win64" fn io_create_device(
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
  slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
+ slot.vpb=Vpb::empty();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.extension.fill(0);
  let next_device=unsafe{(*driver).device_object};
@@ -946,6 +955,11 @@ pub unsafe extern "win64" fn io_create_device(
   sector_size:0,spare1:0,device_object_extension:ptr::null_mut(),reserved:ptr::null_mut(),
  };
  let object=&mut slot.object as *mut DeviceObject;
+ if matches!(device_type,FILE_DEVICE_DISK|FILE_DEVICE_CD_ROM|FILE_DEVICE_TAPE|FILE_DEVICE_VIRTUAL_DISK) {
+  slot.vpb.real_device=object;
+  slot.vpb.reference_count=1;
+  slot.object.vpb=ptr::addr_of_mut!(slot.vpb).cast();
+ }
  unsafe { (*driver).device_object=object; output.write(object); }
  drop(state);
  let mut ob_name=[0u16;128];
