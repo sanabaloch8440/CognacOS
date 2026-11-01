@@ -70,6 +70,7 @@ static HAL_TABLE:AtomicU64=AtomicU64::new(0);
 static MMIO_BASE:AtomicU64=AtomicU64::new(0);
 static OPERATIONAL_OFFSET:AtomicU64=AtomicU64::new(0);
 static PORT_COUNT:AtomicU64=AtomicU64::new(0);
+static PARENT_BUS_DEVICE:AtomicU64=AtomicU64::new(0);
 fn lock_runtime(){while RUNTIME_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}}
 fn unlock_runtime(){RUNTIME_LOCK.store(false,Ordering::Release);}
 unsafe fn runtime_mut()->&'static mut Runtime{unsafe{(*RUNTIME.0.get()).assume_init_mut()}}
@@ -258,6 +259,7 @@ unsafe extern "win64" fn ucx_unload(driver:*mut c_void){
  if !RUNTIME_READY.swap(false,Ordering::AcqRel){return}
  let sink=EVENT_SINK_SLOT.load(Ordering::Acquire) as *mut AtomicU64;
  if !sink.is_null(){unsafe{(*sink).store(0,Ordering::Release);}}
+ let hub_sink=HUB_EVENT_SINK_SLOT.load(Ordering::Acquire) as *mut AtomicU64;if !hub_sink.is_null(){unsafe{(*hub_sink).store(0,Ordering::Release);}}
  let Some(io)=io_table() else{return};
  let mut pending=[Pending::EMPTY;MAX_PENDING];
  lock_runtime();let rt=unsafe{runtime_mut()};
@@ -266,6 +268,8 @@ unsafe extern "win64" fn ucx_unload(driver:*mut c_void){
  for p in pending.into_iter().filter(|p|p.used){finish_pending(p,&[],STATUS_DELETE_PENDING,io);}
  if let Some(delete)=io.delete_device{
   let root=ROOT_HUB_DEVICE.swap(0,Ordering::AcqRel);let controller=CONTROLLER_DEVICE.swap(0,Ordering::AcqRel);
+  let parent=PARENT_BUS_DEVICE.swap(0,Ordering::AcqRel);
+  if parent!=0{if let Some(publish)=io.publish_bus_relations{unsafe{publish(parent as *mut c_void,core::ptr::null(),0);}}}
   if root!=0{unsafe{delete(root as *mut c_void);}}
   if controller!=0{unsafe{delete(controller as *mut c_void);}}
  }
@@ -280,16 +284,14 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
   ||ext.root_hub_device_out.is_null()||ext.hub_event_sink.is_null()||ext.hub_event_context.is_null()||ext.mmio_base==0||ext.operational_offset<0x20||ext.port_count==0||ext.port_count>255{return STATUS_INVALID_PARAMETER}
  let io=unsafe{&*ext.kernel_io};let hal=unsafe{&*ext.hal};
  if !io.compatible()||!hal.compatible()||hal.read_mmio_u32.is_none()||hal.write_mmio_u32.is_none(){return STATUS_INVALID_DEVICE_REQUEST}
- KERNEL_IO.store(ext.kernel_io as u64,Ordering::Release);HAL_TABLE.store(ext.hal as u64,Ordering::Release);
+ KERNEL_IO.store(ext.kernel_io as u64,Ordering::Release);HAL_TABLE.store(ext.hal as u64,Ordering::Release);PARENT_BUS_DEVICE.store(ext.parent_bus_device,Ordering::Release);
  EVENT_SINK_SLOT.store(ext.event_sink as u64,Ordering::Release);EVENT_CONTEXT_SLOT.store(ext.event_context as u64,Ordering::Release);
  HUB_EVENT_SINK_SLOT.store(ext.hub_event_sink as u64,Ordering::Release);HUB_EVENT_CONTEXT_SLOT.store(ext.hub_event_context as u64,Ordering::Release);
  MMIO_BASE.store(ext.mmio_base,Ordering::Release);OPERATIONAL_OFFSET.store(ext.operational_offset as u64,Ordering::Release);PORT_COUNT.store(ext.port_count as u64,Ordering::Release);
  let runtime_ptr=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};unsafe{runtime_ptr.write(Runtime::new(ext.port_count as u8));}
  RUNTIME_READY.store(true,Ordering::Release);
  static CONTROLLER_NAME:[u16;18]=[92,68,101,118,105,99,101,92,67,111,103,110,97,99,85,67,88,0];
- static ROOT_NAME:[u16;22]=[92,68,101,118,105,99,101,92,67,111,103,110,97,99,82,111,111,116,72,117,98,0];
  let mut controller_name=cognacos_nt_abi::object::UNICODE_STRING{length:34,maximum_length:36,buffer:CONTROLLER_NAME.as_ptr() as *mut u16};
- let mut root_name=cognacos_nt_abi::object::UNICODE_STRING{length:42,maximum_length:44,buffer:ROOT_NAME.as_ptr() as *mut u16};
  for f in object.major_function.iter_mut(){*f=Some(ucx_dispatch);}
  object.driver_unload=Some(ucx_unload);
  let Some(create)=io.create_device else{return STATUS_INVALID_DEVICE_REQUEST};
