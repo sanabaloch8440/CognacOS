@@ -290,19 +290,13 @@ fn poll_ps2_keyboard_input(){
 
 
 
-// Temporary legacy PCI configuration access retained only for the VT-d
-// requester quarantine and bus-master safety hooks. Enumeration and BAR
-// discovery have been removed from NTOSKRNL and belong to PCI.sys.
-unsafe fn pci_config_select(bus:u8,device:u8,function:u8,offset:u8) {
-    let address=0x8000_0000u32|((bus as u32)<<16)|((device as u32)<<11)
-        |((function as u32)<<8)|((offset as u32)&0xfc);
-    unsafe { hal::write_port_u32(0x0cf8,address); }
-}
+// PCI configuration cycles are routed through HAL's validated MCFG/ECAM
+// windows. NTOSKRNL does not use legacy CF8/CFC port cycles.
 unsafe fn pci_config_read32(bus:u8,device:u8,function:u8,offset:u8)->u32 {
-    unsafe { pci_config_select(bus,device,function,offset); hal::read_port_u32(0x0cfc) }
+    unsafe { hal::pci_config_read(0,bus,device,function,offset as u16,4) }.unwrap_or(u32::MAX)
 }
 unsafe fn pci_config_write16(bus:u8,device:u8,function:u8,offset:u8,value:u16) {
-    unsafe { pci_config_select(bus,device,function,offset); hal::write_port_u16(0x0cfc,value); }
+    let _=unsafe { hal::pci_config_write(0,bus,device,function,offset as u16,2,value as u32) };
 }
 
 unsafe extern "C" fn vtd_alloc_table(_ctx:*mut core::ffi::c_void,pa_out:*mut u64,va_out:*mut *mut u64)->i32{
@@ -345,13 +339,10 @@ extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
         let Some(id)=dma::iommu::vtd::RequesterId::new_segment(0,r.bus,r.device,r.function) else{return false};
         if !dma::iommu::vtd::requester_domain_usable(id){return false}
     }
-    let address=0x8000_0000u32|((r.bus as u32)<<16)|((r.device as u32)<<11)
-        |((r.function as u32)<<8)|0x04;
-    unsafe{hal::write_port_u32(0x0cf8,address);}
-    let command=unsafe{hal::read_port_u32(0x0cfc)} as u16;
+    let command=unsafe{hal::pci_config_read(r.segment,r.bus,r.device,r.function,0x04,2)}.ok()? as u16;
     let next=if enabled{command|0x4}else{command&!0x4};
-    unsafe{hal::write_port_u16(0x0cfc,next);hal::write_port_u32(0x0cf8,address);}
-    let verify=unsafe{hal::read_port_u32(0x0cfc)} as u16;
+    if unsafe{hal::pci_config_write(r.segment,r.bus,r.device,r.function,0x04,2,next as u32)}.is_err(){return false}
+    let verify=unsafe{hal::pci_config_read(r.segment,r.bus,r.device,r.function,0x04,2)}.ok()? as u16;
     let ok=(verify&0x4!=0)==enabled;
     if ok {
         if enabled { unsafe{serial_write(b"xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.\r\n");} }
@@ -489,6 +480,11 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   create_pdo:Some(pci_create_pdo_callback),delete_pdo:Some(pci_delete_pdo_callback),
   windows:[PCI_ECAM_WINDOW::default();PCI_DRIVER_HANDOFF_MAX_WINDOWS],
  };
+ // Reject overlapping ECAM allocations before publishing any aperture to HAL.
+ for (i,allocation) in mcfg.allocations.iter().take(mcfg.count).enumerate() {
+  if mcfg.allocations.iter().take(i).any(|prior|prior.segment==allocation.segment
+   &&prior.start_bus<=allocation.end_bus&&allocation.start_bus<=prior.end_bus){return 0;}
+ }
  let mut mapped=0usize;
  for allocation in mcfg.allocations.iter().take(mcfg.count){
   let span=((allocation.end_bus as u64-allocation.start_bus as u64)+1).checked_mul(1<<20);
@@ -504,6 +500,11 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    bus_start:allocation.start_bus,bus_end:allocation.end_bus,
   };
   mapped+=1;
+ }
+ // Publish validated, already mapped apertures to HAL only after the complete
+ // MCFG set has been mapped and checked for overlap.
+ for window in handoff.windows.iter().take(mapped) {
+  if hal::register_pci_ecam_window(window.virtual_base,window.physical_base,window.segment,window.bus_start,window.bus_end).is_err(){return 0;}
  }
  unsafe{
   let handoff_ptr=core::ptr::addr_of_mut!(PCI_HANDOFF_STORAGE).cast::<PCI_DRIVER_HANDOFF>();
