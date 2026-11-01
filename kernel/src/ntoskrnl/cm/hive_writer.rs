@@ -373,3 +373,94 @@ impl RedoJournal{
  }
 }
 
+
+
+/// Two-slot Last Known Good registry-hive snapshot protocol. This is a
+/// CognacOS recovery primitive, not a Windows on-disk hive extension. The boot
+/// storage layer must persist a PREPARED slot before committing its marker, and
+/// only promote a snapshot after the corresponding boot has been verified.
+pub struct LastKnownGoodSnapshot;
+impl LastKnownGoodSnapshot {
+    const HEADER: usize = 32;
+    const PREPARED: u32 = 1;
+    const COMMITTED: u32 = 2;
+
+    pub fn capacity(hive_len: usize) -> Option<usize> {
+        Self::HEADER.checked_add(hive_len)
+    }
+
+    /// Write an inactive snapshot slot. Persist the complete slot after this
+    /// call; then call commit() and persist the slot again to promote it.
+    pub fn prepare(hive: &[u8], slot: &mut [u8], generation: u32) -> Result<(), Error> {
+        validate_regf_image(hive)?;
+        let need = Self::capacity(hive.len()).ok_or(Error::Journal)?;
+        if slot.len() < need || generation == 0 { return Err(Error::Journal); }
+        slot[..need].fill(0);
+        slot[Self::HEADER..need].copy_from_slice(hive);
+        slot[..4].copy_from_slice(b"CGLK");
+        w32(slot, 4, 1);
+        w32(slot, 8, Self::PREPARED);
+        w32(slot, 12, hive.len() as u32);
+        w32(slot, 16, generation);
+        w32(slot, 20, checksum(hive));
+        let header_sum = checksum(&slot[..24]);
+        w32(slot, 24, header_sum);
+        Ok(())
+    }
+
+    /// Promote a fully persisted PREPARED snapshot. The caller must persist the
+    /// updated slot after this operation; an interrupted marker update is
+    /// rejected by read_committed() and the previous slot remains available.
+    pub fn commit(slot: &mut [u8]) -> Result<(), Error> {
+        let (_, image) = Self::read_prepared(slot)?;
+        validate_regf_image(image)?;
+        w32(slot, 8, Self::COMMITTED);
+        let header_sum = checksum(&slot[..24]);
+        w32(slot, 24, header_sum);
+        Ok(())
+    }
+
+    fn read_prepared(slot: &[u8]) -> Result<(u32, &[u8]), Error> {
+        if slot.get(0..4) != Some(&b"CGLK"[..]) || r32(slot, 4)? != 1 {
+            return Err(Error::Journal);
+        }
+        let state = r32(slot, 8)?;
+        if state != Self::PREPARED && state != Self::COMMITTED { return Err(Error::Journal); }
+        let n = r32(slot, 12)? as usize;
+        let generation = r32(slot, 16)?;
+        if generation == 0 || slot.len() < Self::capacity(n).ok_or(Error::Journal)? {
+            return Err(Error::Journal);
+        }
+        if checksum(slot.get(0..24).ok_or(Error::Truncated)?) != r32(slot, 24)? {
+            return Err(Error::BadChecksum);
+        }
+        let image = slot.get(Self::HEADER..Self::HEADER + n).ok_or(Error::Truncated)?;
+        if checksum(image) != r32(slot, 20)? { return Err(Error::BadChecksum); }
+        Ok((generation, image))
+    }
+
+    fn read_committed(slot: &[u8]) -> Result<(u32, &[u8]), Error> {
+        if r32(slot, 8)? != Self::COMMITTED { return Err(Error::Journal); }
+        let (generation, image) = Self::read_prepared(slot)?;
+        validate_regf_image(image)?;
+        Ok((generation, image))
+    }
+
+    /// Restore the newest valid committed snapshot. A damaged newer slot is
+    /// ignored in favor of an older valid slot; the destination is untouched
+    /// if neither snapshot is valid.
+    pub fn restore_best(hive: &mut [u8], first: &[u8], second: &[u8]) -> Result<u32, Error> {
+        let a = Self::read_committed(first).ok().filter(|(_, image)| image.len() == hive.len());
+        let b = Self::read_committed(second).ok().filter(|(_, image)| image.len() == hive.len());
+        let (generation, image) = match (a, b) {
+            (Some(a), Some(b)) => if a.0 >= b.0 { a } else { b },
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => return Err(Error::Journal),
+        };
+        // read_committed validated the full image before the destination is
+        // changed, so recovery is all-or-nothing from the caller's perspective.
+        hive.copy_from_slice(image);
+        Ok(generation)
+    }
+}
