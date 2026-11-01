@@ -310,3 +310,5 @@ mod tests {
   assert_eq!(c.submit(e,RequestKind::Bulk,DmaBuffer{device_address:0x1000,length:8},9,u64::MAX),Err(UcxStatus::InvalidParameter));
  }
 }
+
+pub mod wdm;
