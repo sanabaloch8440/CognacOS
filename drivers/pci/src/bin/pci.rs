@@ -290,6 +290,32 @@ unsafe extern "win64" fn query_inventory_function(
 
 /// Return PCI.sys' versioned configuration-space interface. The interface
 /// exposes only checked ECAM access; resource assignment remains a PnP duty.
+unsafe extern "win64" fn query_inventory_bridge(
+    context: PVOID, index: u32, output: *mut cognacos_nt_abi::bus::PCI_BRIDGE_INFORMATION,
+) -> i32 {
+    if context.is_null() || output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    let handoff = unsafe { &*(context as *const PciDriverHandoff) };
+    let mut remaining = index as usize;
+    for window in 0..handoff.window_count as usize {
+        let count = unsafe { (*STATE.bridge_counts.get())[window] };
+        if remaining >= count { remaining -= count; continue; }
+        let Some(bridge) = (unsafe { (*STATE.bridges.get())[window][remaining] }) else {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        };
+        unsafe {
+            output.write(cognacos_nt_abi::bus::PCI_BRIDGE_INFORMATION {
+                segment: bridge.segment, primary_bus: bridge.primary_bus,
+                secondary_bus: bridge.secondary_bus, subordinate_bus: bridge.subordinate_bus,
+                device: bridge.device, function: bridge.function, reserved: 0,
+            });
+        }
+        return STATUS_SUCCESS;
+    }
+    STATUS_NOT_FOUND
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacPciGetBusInterface(
     output: *mut PCI_BUS_INTERFACE,
@@ -311,6 +337,7 @@ pub unsafe extern "win64" fn CognacPciGetBusInterface(
             write_config: Some(write_config),
             query_counts: Some(query_inventory_counts),
             query_function: Some(query_inventory_function),
+            query_bridge: Some(query_inventory_bridge),
         });
     }
     STATUS_SUCCESS
