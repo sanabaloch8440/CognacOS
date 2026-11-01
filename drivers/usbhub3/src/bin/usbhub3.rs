@@ -8,6 +8,7 @@ const EXT_MAGIC:u64=0x434f_474e_4143_4833;
 const CHILD_MAGIC:u64=0x434f_474e_5553_4233;
 const STATUS_SUCCESS:i32=0;
 const STATUS_PENDING:i32=0x103;
+const STATUS_MORE_PROCESSING_REQUIRED:i32=0xC0000016_u32 as i32;
 const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
 const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
 const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000009A_u32 as i32;
@@ -99,7 +100,8 @@ unsafe extern "win64" fn hub_interrupt_complete(_device:*mut c_void,irp:*mut c_v
   }
   submit_root_hub_interrupt();
  }
- STATUS_SUCCESS
+ if let Some(io)=io_table(){if let Some(free)=io.free_irp{unsafe{free(irp);}}}
+ STATUS_MORE_PROCESSING_REQUIRED
 }
 fn stop_root_hub_interrupt(){
  let irp=INTERRUPT_IRP.swap(0,Ordering::AcqRel);
