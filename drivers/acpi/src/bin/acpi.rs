@@ -5,19 +5,6 @@ use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicBool, Orderi
 use cognacos_acpi as acpi;
 use cognacos_nt_abi::{bus::{ACPI_FIRMWARE_INTERFACE, INTERFACE_HEADER, ACPI_FIRMWARE_INTERFACE_VERSION}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
-const HANDOFF_MAGIC: u64 = 0x434f_474e_4143_4143; // COGNACAC
-const HANDOFF_VERSION: u32 = 1;
-const MAX_HANDOFF_SIZE: usize = core::mem::size_of::<AcpiDriverHandoff>();
-
-#[repr(C)]
-pub struct AcpiDriverHandoff {
-    pub magic: u64,
-    pub size: u32,
-    pub version: u32,
-    /// Physical RSDP address from the UEFI boot handoff. Firmware tables must
-    /// be identity-mapped and remain resident for the duration of discovery.
-    pub rsdp_address: u64,
-}
 
 struct AcpiState {
     ready: AtomicBool,
@@ -36,6 +23,42 @@ static STATE: AcpiState = AcpiState {
     dmar_present: AtomicBool::new(false),
     rsdp_address: core::sync::atomic::AtomicU64::new(0),
 };
+
+
+// ACPI.sys obtains firmware tables through the HAL's Windows-compatible
+// HalAcpiGetTableEx export. It never dereferences a bootloader-supplied physical
+// address or calls a Rust-private kernel/HAL function.
+unsafe extern "win64" {
+    fn HalAcpiGetTableEx(signature: u32, instance: u32, table: *mut *mut core::ffi::c_void, table_size: *mut u32) -> i32;
+}
+core::arch::global_asm!(r#"
+.intel_syntax noprefix
+.section .text.import_thunks,"ax",@progbits
+.global HalAcpiGetTableEx
+.type HalAcpiGetTableEx,@function
+HalAcpiGetTableEx:
+    jmp QWORD PTR [rip + __imp_hal_HalAcpiGetTableEx]
+.size HalAcpiGetTableEx, .-HalAcpiGetTableEx
+
+.section .data.imports.hal,"aw",@progbits
+.p2align 3
+.global __imp_hal_HalAcpiGetTableEx
+.type __imp_hal_HalAcpiGetTableEx,@object
+__imp_hal_HalAcpiGetTableEx: .quad 0
+.size __imp_hal_HalAcpiGetTableEx,8
+"#);
+
+const MAX_ACPI_TABLE_LENGTH: u32 = 1024 * 1024;
+unsafe fn query_hal_table(signature: [u8; 4], instance: u32) -> Result<&'static [u8], i32> {
+    let mut table = core::ptr::null_mut();
+    let mut length = 0u32;
+    let status = unsafe { HalAcpiGetTableEx(u32::from_le_bytes(signature), instance, &mut table, &mut length) };
+    if status != STATUS_SUCCESS { return Err(status); }
+    if table.is_null() || length < 36 || length > MAX_ACPI_TABLE_LENGTH {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    Ok(unsafe { core::slice::from_raw_parts(table.cast::<u8>(), length as usize) })
+}
 
 const IRP_MJ_PNP: usize = 0x1b;
 const IRP_MN_START_DEVICE: u8 = 0x00;
@@ -87,22 +110,19 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
 pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -> i32 {
     if driver.is_null() { return STATUS_INVALID_PARAMETER; }
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
-    if object.driver_extension.is_null() { return STATUS_INVALID_PARAMETER; }
-    let handoff = unsafe { &*(object.driver_extension as *const AcpiDriverHandoff) };
-    if handoff.magic != HANDOFF_MAGIC || handoff.version != HANDOFF_VERSION
-        || (handoff.size as usize) < MAX_HANDOFF_SIZE || handoff.rsdp_address == 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    let madt = match unsafe { acpi::discover_madt(handoff.rsdp_address) } {
+    let madt_bytes = match unsafe { query_hal_table(*b"APIC", 0) } {
+        Ok(bytes) => bytes,
+        Err(status) => return status,
+    };
+    let madt = match acpi::parse_madt(madt_bytes) {
         Ok(info) => info,
         Err(error) => return acpi::error_to_ntstatus(error),
     };
     unsafe { (*STATE.madt.get()).write(madt); }
 
-    // MCFG and DMAR are optional ACPI tables. If present, they must validate;
-    // malformed firmware data is not silently ignored.
-    match unsafe { acpi::find_table(handoff.rsdp_address, *b"MCFG", 0) } {
+    // MCFG and DMAR are optional. HAL reports a missing table distinctly from
+    // malformed firmware data; malformed tables fail driver initialization.
+    match unsafe { query_hal_table(*b"MCFG", 0) } {
         Ok(bytes) => match acpi::parse_mcfg(bytes) {
             Ok(info) => {
                 STATE.mcfg_count.store(info.count, Ordering::Release);
@@ -110,21 +130,17 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             }
             Err(error) => return acpi::error_to_ntstatus(error),
         },
-        Err(acpi::AcpiError::MissingRoot) | Err(acpi::AcpiError::BadSignature) => {}
-        Err(acpi::AcpiError::Truncated) | Err(acpi::AcpiError::BadLength)
-        | Err(acpi::AcpiError::BadChecksum) | Err(acpi::AcpiError::MalformedEntry)
-        | Err(acpi::AcpiError::TooManyEntries) | Err(acpi::AcpiError::AddressOutOfRange)
-        | Err(acpi::AcpiError::MissingMadt) => return STATUS_INVALID_PARAMETER,
+        Err(STATUS_NOT_FOUND) => {}
+        Err(status) => return status,
     }
-    match unsafe { acpi::find_table(handoff.rsdp_address, *b"DMAR", 0) } {
+    match unsafe { query_hal_table(*b"DMAR", 0) } {
         Ok(bytes) => match acpi::parse_dmar(bytes) {
             Ok(_) => STATE.dmar_present.store(true, Ordering::Release),
             Err(error) => return acpi::error_to_ntstatus(error),
         },
-        Err(acpi::AcpiError::BadSignature) | Err(acpi::AcpiError::MissingRoot) => {}
-        Err(_) => return STATUS_INVALID_PARAMETER,
+        Err(STATUS_NOT_FOUND) => {}
+        Err(status) => return status,
     }
-    STATE.rsdp_address.store(handoff.rsdp_address, Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
     object.driver_unload = Some(driver_unload);
@@ -147,15 +163,14 @@ unsafe extern "win64" fn query_firmware_table(
     if !STATE.ready.load(Ordering::Acquire) {
         return STATUS_DEVICE_NOT_READY;
     }
-    let rsdp = context as u64;
-    if rsdp == 0 || rsdp != STATE.rsdp_address.load(Ordering::Acquire) {
+    if context != core::ptr::addr_of!(STATE).cast_mut().cast() {
         return STATUS_INVALID_PARAMETER;
     }
     let signature = unsafe { core::slice::from_raw_parts(signature, 4) };
     let signature = [signature[0], signature[1], signature[2], signature[3]];
-    let table = match unsafe { acpi::find_table(rsdp, signature, instance as usize) } {
+    let table = match unsafe { query_hal_table(signature, instance) } {
         Ok(table) => table,
-        Err(error) => return acpi::error_to_ntstatus(error),
+        Err(status) => return status,
     };
     let Ok(length) = u32::try_from(table.len()) else {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -183,7 +198,7 @@ pub unsafe extern "win64" fn CognacAcpiGetFirmwareInterface(
             header: INTERFACE_HEADER {
                 size: core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() as u16,
                 version: ACPI_FIRMWARE_INTERFACE_VERSION as u16,
-                context: STATE.rsdp_address.load(Ordering::Acquire) as PVOID,
+                context: core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>(),
                 interface_reference: None,
                 interface_dereference: None,
             },
@@ -191,28 +206,6 @@ pub unsafe extern "win64" fn CognacAcpiGetFirmwareInterface(
         });
     }
     STATUS_SUCCESS
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn CognacAcpiQueryMadt(output: *mut acpi::MadtInfo) -> i32 {
-    if output.is_null() { return STATUS_INVALID_PARAMETER; }
-    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
-    unsafe { output.write((*STATE.madt.get()).assume_init_read()); }
-    STATUS_SUCCESS
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn CognacAcpiQueryMcfg(output: *mut acpi::McfgInfo) -> i32 {
-    if output.is_null() { return STATUS_INVALID_PARAMETER; }
-    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
-    if STATE.mcfg_count.load(Ordering::Acquire) == 0 { return STATUS_NOT_FOUND; }
-    unsafe { output.write((*STATE.mcfg.get()).assume_init_read()); }
-    STATUS_SUCCESS
-}
-
-#[unsafe(no_mangle)]
-pub extern "win64" fn CognacAcpiDmarPresent() -> u32 {
-    STATE.dmar_present.load(Ordering::Acquire) as u32
 }
 
 #[used]
