@@ -2230,7 +2230,7 @@ pub fn is_file_system_registered(device:*mut DeviceObject)->bool {
 #[unsafe(export_name="IoVerifyVolume")]
 pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw_mount:u8)->i32 {
  if device.is_null()||allow_raw_mount>1{return STATUS_INVALID_PARAMETER}
- if crate::ntoskrnl::ke::runtime::ke_get_current_irql()>=2{return STATUS_INVALID_DEVICE_REQUEST}
+ if unsafe{crate::ntoskrnl::ke::runtime::ke_get_current_irql()}>=2{return STATUS_INVALID_DEVICE_REQUEST}
  let (vpb,volume,remove_pending,mounted)={
   let mut state=WDM.lock();
   let Some(index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
@@ -2325,10 +2325,20 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
    let is_mounted=unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0};
    unsafe{io_release_vpb_spin_lock(vpb_irql);}
    if status>=0&&is_mounted{return STATUS_SUCCESS}
+   if status>=0&&!is_mounted {
+    let mut state=WDM.lock();
+    if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
+    drop(state);
+    let mut vpb_irql=0u8;
+    unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
+    unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
+    unsafe{io_release_vpb_spin_lock(vpb_irql);}
+    return STATUS_INVALID_DEVICE_REQUEST
+   }
    if status!=STATUS_UNRECOGNIZED_VOLUME&&status!=STATUS_INVALID_DEVICE_REQUEST {
     let mut state=WDM.lock();
     if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
-    let _state=state;
+    drop(state);
     let mut vpb_irql=0u8;
     unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
     unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
