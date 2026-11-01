@@ -43,6 +43,10 @@ static RUNTIME:RuntimeCell=RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
 static RUNTIME_READY:AtomicBool=AtomicBool::new(false);static RUNTIME_LOCK:AtomicBool=AtomicBool::new(false);
 static KERNEL_IO:AtomicU64=AtomicU64::new(0);static DRIVER_OBJECT:AtomicU64=AtomicU64::new(0);
 static HUB_DEVICE:AtomicU64=AtomicU64::new(0);static ROOT_HUB:AtomicU64=AtomicU64::new(0);static PORT_COUNT:AtomicU64=AtomicU64::new(0);
+static ROOT_DEVICE_ID:[u16;15]=[85,83,66,92,82,79,79,84,95,72,85,66,51,48,0];
+static ROOT_INSTANCE_ID:[u16;5]=[48,48,48,48,0];
+static ROOT_HARDWARE_IDS:[u16;17]=[85,83,66,92,82,79,79,84,95,72,85,66,51,48,0,0,0];
+static ROOT_COMPATIBLE_IDS:[u16;34]=[85,83,66,92,67,108,97,115,115,95,48,57,38,83,117,98,67,108,97,115,115,95,48,48,38,80,114,111,116,95,48,48,0,0];
 static HUB_EVENT_SINK_SLOT:AtomicU64=AtomicU64::new(0);
 fn lock(){while RUNTIME_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}}
 fn unlock(){RUNTIME_LOCK.store(false,Ordering::Release);}
@@ -125,6 +129,11 @@ unsafe extern "win64" fn hub_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
    if let Some(done)=io.complete_irp_status{unsafe{done(irp,status,0,0);}}return status
   }
   if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_INVALID_DEVICE_REQUEST,0,0);}}return STATUS_INVALID_DEVICE_REQUEST
+ }
+ if major==0x1b&&minor==0x13{
+  let id=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};
+  let value=match id{0=>ROOT_DEVICE_ID.as_ptr(),1=>ROOT_INSTANCE_ID.as_ptr(),2=>ROOT_HARDWARE_IDS.as_ptr(),3=>ROOT_COMPATIBLE_IDS.as_ptr(),_=>core::ptr::null()};
+  if !value.is_null(){if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,value as usize,0);}}return STATUS_SUCCESS}
  }
  if major==0x1b&&minor==0x07{
   let relation=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};
