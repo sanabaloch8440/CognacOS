@@ -308,7 +308,24 @@ pub fn register_pci_function(
     parent: Option<u32>,
 ) -> Result<u32, PnpError> {
     let h = function.header;
-    if function.device >= 32 || function.function >= 8 || h.vendor_id == 0 || h.vendor_id == 0xffff {
+    register_pci_information(&crate::nt_abi::bus::PCI_DEVICE_INFORMATION {
+        segment: function.segment, bus: function.bus, device: function.device,
+        function: function.function, header_type: h.header_type, revision_id: h.revision_id,
+        programming_interface: h.programming_interface, subclass: h.subclass,
+        class_code: h.class_code, reserved: 0, vendor_id: h.vendor_id,
+        device_id: h.device_id, command: h.command,
+    }, parent)
+}
+
+/// Register a bus-neutral PCI inventory record supplied by pci.sys. This is
+/// the kernel PnP boundary: the bus driver owns configuration access and
+/// enumeration; NTOSKRNL owns devnode identity and lifecycle.
+pub fn register_pci_information(
+    function: &crate::nt_abi::bus::PCI_DEVICE_INFORMATION,
+    parent: Option<u32>,
+) -> Result<u32, PnpError> {
+    if function.device >= 32 || function.function >= 8
+        || function.vendor_id == 0 || function.vendor_id == 0xffff {
         return Err(PnpError::InvalidFunction);
     }
     let _guard = lock_pnp_table();
@@ -349,6 +366,42 @@ pub fn register_pci_function(
     node.start_attempts.store(0, Ordering::Relaxed);
     node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
     Ok(index as u32)
+}
+
+/// Import the bounded inventory published by pci.sys through its versioned
+/// bus interface. Each returned function is validated again before a devnode
+/// is published. Parent/bridge relationships are added by the topology pass.
+pub unsafe fn import_pci_inventory(
+    interface: &crate::nt_abi::bus::PCI_BUS_INTERFACE,
+) -> Result<usize, PnpError> {
+    use crate::nt_abi::ntstatus::{STATUS_SUCCESS, STATUS_NOT_FOUND};
+    let header = &interface.header;
+    if header.size as usize < core::mem::size_of::<crate::nt_abi::bus::PCI_BUS_INTERFACE>()
+        || header.version as u32 != crate::nt_abi::bus::PCI_BUS_INTERFACE_VERSION
+        || header.context.is_null() {
+        return Err(PnpError::InvalidFunction);
+    }
+    let query_counts = interface.query_counts.ok_or(PnpError::InvalidFunction)?;
+    let query_function = interface.query_function.ok_or(PnpError::InvalidFunction)?;
+    let mut functions = 0u32;
+    let mut bridges = 0u32;
+    let mut xhci = 0u32;
+    let status = unsafe { query_counts(header.context, &mut functions, &mut bridges, &mut xhci) };
+    if status != STATUS_SUCCESS { return Err(PnpError::InvalidState); }
+    if functions as usize > MAX_PNP_DEVICES { return Err(PnpError::TableFull); }
+    let mut imported = 0usize;
+    for index in 0..functions {
+        let mut information = crate::nt_abi::bus::PCI_DEVICE_INFORMATION::default();
+        let status = unsafe { query_function(header.context, index, &mut information) };
+        if status == STATUS_NOT_FOUND { break; }
+        if status != STATUS_SUCCESS { return Err(PnpError::InvalidState); }
+        match register_pci_information(&information, None) {
+            Ok(_) => imported += 1,
+            Err(PnpError::DuplicateDevice) => {},
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(imported)
 }
 
 /// Apply the PnP lifecycle transition only after the relevant operation has
