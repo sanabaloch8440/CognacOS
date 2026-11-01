@@ -204,7 +204,7 @@ pub unsafe fn configure_pci_msi(segment:u16,bus:u8,device:u8,function:u8,capabil
         let mask_offset=off+if is64{16}else{12};
         unsafe{pci_config_write(segment,bus,device,function,mask_offset,4,0)?;}
     }
-    control|=1;
+    control=(control&!(7<<4))|1;
     unsafe{pci_config_write(segment,bus,device,function,off+2,2,control as u32)?;}
     Ok(())
 }
@@ -480,6 +480,17 @@ pub fn interrupts_enabled() -> bool {
 #[inline] pub unsafe fn write_mmio_u8(address:*mut u8,value:u8){unsafe{core::ptr::write_volatile(address,value);}}
 #[inline] pub unsafe fn write_mmio_u16(address:*mut u16,value:u16){unsafe{core::ptr::write_volatile(address,value);core::sync::atomic::fence(Ordering::SeqCst);}}
 #[inline] pub unsafe fn write_mmio_u64(address:*mut u64,value:u64){unsafe{core::ptr::write_volatile(address,value);core::sync::atomic::fence(Ordering::SeqCst);}}
+
+#[cfg(test)]
+mod pci_hal_tests {
+    use super::*;
+    #[test]
+    fn msi_message_uses_xapic_destination_and_rejects_unrepresentable_ids() {
+        assert_eq!(pci_msi_message(2,0x51),Ok((0xfee0_2000,0x51)));
+        assert_eq!(pci_msi_message(256,0x51),Err(HalError::InvalidInterruptBase));
+        assert_eq!(pci_msi_message(1,0x1f),Err(HalError::InvalidInterruptBase));
+    }
+}
 
 /// Validate a device MMIO span before a platform-specific mapper maps it.
 /// Mapping/cache attributes are deliberately not guessed by this helper.
