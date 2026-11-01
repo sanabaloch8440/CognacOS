@@ -172,7 +172,7 @@ See [keyboard driver stack design](docs/keyboard-driver-stack.md) for the curren
 - [ ] Implement a user-mode Service Control Manager process, registry service database, service dependency graph, start-type policy, driver/service start RPC, status reporting, and shutdown control. Kernel driver loading is not SCM integration.
 - [ ] Validate boot success/failure, rollback, recovery, service ordering, and session startup in QEMU with Windows-generated SYSTEM hive fixtures. Do not mark Session Manager or SCM complete until actual user-mode processes execute.
 
-The initial P5 implementation lives in `kernel/src/boot_orchestration.rs`. Its policy and hierarchy primitives are integrated into the kernel boot path; the unchecked user-mode handoffs and persistent recovery transaction remain explicit work.
+The initial P5 implementation lives in `kernel/src/boot_orchestration.rs`. The monotonic stage tracker and live PnP hierarchy validator are wired into the boot path. Current/LKG selection and retry are policy primitives only: they are not yet connected to service loading or a persistent hive transaction. Session Manager and SCM remain unimplemented user-mode handoffs.
 
 ## Acceptance rules
 
