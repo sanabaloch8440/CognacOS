@@ -18,7 +18,13 @@ pub(crate) enum RegistryInitError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SystemRegistryState {
     pub control_sets: ControlSetSelection,
+    pub boot_driver_count: usize,
 }
+
+// Boot runs this before secondary processors and the general scheduler are
+// online. The fixed storage therefore remains stable for the next boot phase.
+static mut BOOT_DRIVER_SERVICE_NAMES: [[u16; 128]; 64] = [[0; 128]; 64;]
+
 
 /// Validate the mounted SYSTEM hive and its active control-set selection.
 ///
@@ -31,6 +37,15 @@ pub(crate) fn initialize_system_registry(
     let hive = Hive::open(bytes).map_err(|_| RegistryInitError::InvalidSystemHive)?;
     let control_sets = driver_config::query_control_set_selection(&hive)
         .map_err(|_| RegistryInitError::InvalidControlSet)?;
+    let names = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_DRIVER_SERVICE_NAMES).cast::<[u16; 128]>(),
+            64,
+        )
+    };
+    let boot_driver_count =
+        crate::ntoskrnl::cm::service_config::enumerate_boot_driver_services(&hive, names)
+            .map_err(|_| RegistryInitError::InvalidSystemHive)?;
 
-    Ok(SystemRegistryState { control_sets })
+    Ok(SystemRegistryState { control_sets, boot_driver_count })
 }
