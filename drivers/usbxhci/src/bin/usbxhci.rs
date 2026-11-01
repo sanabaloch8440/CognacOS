@@ -2,9 +2,103 @@
 #![no_main]
 
 use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
-use cognacos_hal_contract::{DeviceServiceTable, HalServiceTable, KernelIoServiceTable, DEVICE_SERVICES_VERSION, HAL_CONTRACT_VERSION};
-use cognacos_nt_abi::types::PVOID;
+use cognacos_nt_abi::{types::PVOID, io::{DRIVER_OBJECT, DEVICE_OBJECT, IRP}};
+use cognacos_nt_abi::object::UNICODE_STRING;
 use cognacos_usbxhci::{self as xhci, Capabilities, DmaAllocation, XhciPlatform, XhciRegisterIo, XhciRuntimeResources};
+
+type InterruptServiceRoutine = unsafe extern "win64" fn(*mut c_void,*mut c_void)->u8;
+type DpcRoutine = unsafe extern "win64" fn(*mut c_void,*mut c_void,*mut c_void,*mut c_void);
+type CreateDevice = unsafe extern "win64" fn(*mut DRIVER_OBJECT,u32,*mut UNICODE_STRING,u32,u32,u8,*mut *mut DEVICE_OBJECT)->i32;
+type DeleteDevice = unsafe extern "win64" fn(*mut DEVICE_OBJECT);
+type GetDmaAdapter = unsafe extern "win64" fn(*mut DEVICE_OBJECT,*const c_void,*mut u32)->*mut c_void;
+type MapIoSpace = unsafe extern "win64" fn(i64,u64,i32)->*mut c_void;
+type UnmapIoSpace = unsafe extern "win64" fn(*mut c_void,u64);
+type AllocateCommonBuffer = unsafe extern "win64" fn(*mut c_void,u32,*mut i64,u8)->*mut c_void;
+type FreeCommonBuffer = unsafe extern "win64" fn(*mut c_void,u32,i64,*mut c_void,u8);
+type GetBusData = unsafe extern "win64" fn(u32,u32,u32,*mut u8,u32,u32)->u32;
+type SetBusData = unsafe extern "win64" fn(u32,u32,u32,*const u8,u32,u32)->u32;
+type ConnectInterrupt = unsafe extern "win64" fn(*mut *mut c_void,Option<InterruptServiceRoutine>,*mut c_void,*mut c_void,u32,u8,u8,u32,u8,u64,u8)->i32;
+type DisconnectInterrupt = unsafe extern "win64" fn(*mut c_void);
+type InitializeDpc = unsafe extern "win64" fn(*mut c_void,Option<DpcRoutine>,*mut c_void);
+type InsertQueueDpc = unsafe extern "win64" fn(*mut c_void,*mut c_void,*mut c_void)->u8;
+type GetCurrentIrpStack = unsafe extern "win64" fn(*mut IRP)->*mut cognacos_nt_abi::io::IO_STACK_LOCATION;
+type CompleteRequest = unsafe extern "win64" fn(*mut IRP,i8);
+
+unsafe extern "win64" {
+    fn IoCreateDevice(driver:*mut DRIVER_OBJECT,extension_size:u32,name:*mut UNICODE_STRING,device_type:u32,characteristics:u32,exclusive:u8,output:*mut *mut DEVICE_OBJECT)->i32;
+    fn IoDeleteDevice(device:*mut DEVICE_OBJECT);
+    fn IoGetDmaAdapter(device:*mut DEVICE_OBJECT,description:*const c_void,map_registers:*mut u32)->*mut c_void;
+    fn MmMapIoSpace(physical_address:i64,length:u64,cache_type:i32)->*mut c_void;
+    fn MmUnmapIoSpace(base:*mut c_void,length:u64);
+    fn HalAllocateCommonBuffer(adapter:*mut c_void,length:u32,logical:*mut i64,cache_enabled:u8)->*mut c_void;
+    fn HalFreeCommonBuffer(adapter:*mut c_void,length:u32,logical:i64,virtual_address:*mut c_void,cache_enabled:u8);
+    fn HalGetBusDataByOffset(bus_type:u32,bus:u32,slot:u32,buffer:*mut u8,offset:u32,length:u32)->u32;
+    fn HalSetBusDataByOffset(bus_type:u32,bus:u32,slot:u32,buffer:*const u8,offset:u32,length:u32)->u32;
+    fn IoConnectInterrupt(interrupt:*mut *mut c_void,routine:Option<InterruptServiceRoutine>,context:*mut c_void,spin_lock:*mut c_void,vector:u32,irql:u8,synchronize_irql:u8,mode:u32,share:u8,affinity:u64,floating_save:u8)->i32;
+    fn IoDisconnectInterrupt(interrupt:*mut c_void);
+    fn KeInitializeDpc(dpc:*mut c_void,routine:Option<DpcRoutine>,context:*mut c_void);
+    fn KeInsertQueueDpc(dpc:*mut c_void,arg1:*mut c_void,arg2:*mut c_void)->u8;
+    fn IoGetCurrentIrpStackLocation(irp:*mut IRP)->*mut cognacos_nt_abi::io::IO_STACK_LOCATION;
+    fn IoCompleteRequest(irp:*mut IRP,priority_boost:i8);
+}
+
+core::arch::global_asm!(r#"
+.intel_syntax noprefix
+.section .text.import_thunks,"ax",@progbits
+.macro thunk name, slot
+.global \name
+.type \name,@function
+\name:
+    jmp QWORD PTR [rip + \slot]
+.size \name, .-\name
+.endm
+thunk IoCreateDevice, __imp_ntoskrnl_IoCreateDevice
+thunk IoDeleteDevice, __imp_ntoskrnl_IoDeleteDevice
+thunk IoGetDmaAdapter, __imp_ntoskrnl_IoGetDmaAdapter
+thunk MmMapIoSpace, __imp_ntoskrnl_MmMapIoSpace
+thunk MmUnmapIoSpace, __imp_ntoskrnl_MmUnmapIoSpace
+thunk IoConnectInterrupt, __imp_ntoskrnl_IoConnectInterrupt
+thunk IoDisconnectInterrupt, __imp_ntoskrnl_IoDisconnectInterrupt
+thunk KeInitializeDpc, __imp_ntoskrnl_KeInitializeDpc
+thunk KeInsertQueueDpc, __imp_ntoskrnl_KeInsertQueueDpc
+thunk IoGetCurrentIrpStackLocation, __imp_ntoskrnl_IoGetCurrentIrpStackLocation
+thunk IoCompleteRequest, __imp_ntoskrnl_IoCompleteRequest
+thunk HalAllocateCommonBuffer, __imp_hal_HalAllocateCommonBuffer
+thunk HalFreeCommonBuffer, __imp_hal_HalFreeCommonBuffer
+thunk HalGetBusDataByOffset, __imp_hal_HalGetBusDataByOffset
+thunk HalSetBusDataByOffset, __imp_hal_HalSetBusDataByOffset
+.section .data.imports.ntoskrnl,"aw",@progbits
+.p2align 3
+.macro iat name
+.global __imp_ntoskrnl_\name
+.type __imp_ntoskrnl_\name,@object
+__imp_ntoskrnl_\name: .quad 0
+.size __imp_ntoskrnl_\name,8
+.endm
+iat IoCreateDevice
+iat IoDeleteDevice
+iat IoGetDmaAdapter
+iat MmMapIoSpace
+iat MmUnmapIoSpace
+iat IoConnectInterrupt
+iat IoDisconnectInterrupt
+iat KeInitializeDpc
+iat KeInsertQueueDpc
+iat IoGetCurrentIrpStackLocation
+iat IoCompleteRequest
+.section .data.imports.hal,"aw",@progbits
+.p2align 3
+.macro hiat name
+.global __imp_hal_\name
+.type __imp_hal_\name,@object
+__imp_hal_\name: .quad 0
+.size __imp_hal_\name,8
+.endm
+hiat HalAllocateCommonBuffer
+hiat HalFreeCommonBuffer
+hiat HalGetBusDataByOffset
+hiat HalSetBusDataByOffset
+"#);
 
 const EXTENSION_MAGIC: u64 = 0x434f_474e_4143_5848; // "COGNACXH"
 const DRIVER_FAILED: i32 = 0xC0000001u32 as i32;
