@@ -830,8 +830,3 @@ mod wdm_tests {
 }
 
 
-// ---- Requestor session query ------------------------------------------------
-/// NTSTATUS IoGetRequestorSessionId(PIRP Irp, PULONG pSessionId).
-/// Only IRPs owned by the kernel's tracked I/O manager are accepted; unknown
-/// requestor identity fails rather than being silently treated as session zero.
-#[unsafe(export_name = "IoGetRequestorSessionId")]

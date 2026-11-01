@@ -1,3 +1,4 @@
+#[repr(C)]
 pub struct IoCsq {
  pub type_:u32,pub padding:u32,
  pub insert_irp:*mut c_void,pub remove_irp:*mut c_void,pub peek_next_irp:*mut c_void,

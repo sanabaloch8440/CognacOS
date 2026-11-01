@@ -51,6 +51,3 @@ pub unsafe extern "win64" fn io_delete_symbolic_link(link_name:*mut UnicodeStrin
 }
 
 
-/// Windows x64 IO_CSQ public storage layout. The queue remains driver-owned;
-/// all operations are routed through its callbacks as required by WDM.
-#[repr(C)]

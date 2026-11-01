@@ -1,3 +1,4 @@
+#[unsafe(export_name = "IoGetRequestorSessionId")]
 pub unsafe extern "win64" fn io_get_requestor_session_id(irp: *mut Irp, session_id: *mut u32) -> i32 {
     const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
     const STATUS_NOT_FOUND: i32 = 0xC000_0225_u32 as i32;

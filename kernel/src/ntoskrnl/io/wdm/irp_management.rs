@@ -659,6 +659,3 @@ pub unsafe extern "win64" fn io_set_completion_routine(
 }
 
 
-/// Attach a filter/filesystem device above the current top of a device stack.
-/// The returned object is the lower device that receives forwarded IRPs.
-#[unsafe(no_mangle)]

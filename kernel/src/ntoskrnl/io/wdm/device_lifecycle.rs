@@ -117,7 +117,3 @@ pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u
  STATUS_SUCCESS
 }
 
-/// Bounded CM_RESOURCE_LIST parser and resource arbiter for WDM start IRPs.
-/// The caller must pass kernel-captured CM_RESOURCE_LIST pointers, never raw
-/// user pointers. This reserves translated I/O ports, memory ranges and IRQs;
-/// it does not program the underlying bus or replace a hardware bus driver.

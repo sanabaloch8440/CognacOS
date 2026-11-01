@@ -1,3 +1,4 @@
+#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn io_attach_device_to_device_stack(
     source:*mut DeviceObject, target:*mut DeviceObject
 )->*mut DeviceObject {

@@ -1,3 +1,4 @@
+#[unsafe(export_name = "IoBuildAsynchronousFsdRequest")]
 pub unsafe extern "win64" fn io_build_asynchronous_fsd_request(
  major:u32, device:*mut DeviceObject, buffer:*mut c_void, length:u32,
  starting_offset:*const i64, io_status:*mut IoStatusBlock

@@ -1,11 +1,11 @@
-//! Partial Windows x64 WDM object/IRP ABI foundation.
-//!
-//! Layouts and dispatch conventions here follow the public x64 WDK ABI for the
-//! fields used by this implementation. This is not a claim of complete WDM
-//! compatibility: dynamic IRP records/system buffers and the WDM cancel-safe
-//! queue API are implemented, but cancel-spin-lock parity, all driver-created IRP
-//! ownership variants, security descriptors, and many IRP variants remain
-//! incomplete. VPB storage and mount arbitration are implemented below. Driver images must not be treated as generally loadable.
+// Partial Windows x64 WDM object/IRP ABI foundation.
+//
+// Layouts and dispatch conventions here follow the public x64 WDK ABI for the
+// fields used by this implementation. This is not a claim of complete WDM
+// compatibility: dynamic IRP records/system buffers and the WDM cancel-safe
+// queue API are implemented, but cancel-spin-lock parity, all driver-created IRP
+// ownership variants, security descriptors, and many IRP variants remain
+// incomplete. VPB storage and mount arbitration are implemented below. Driver images must not be treated as generally loadable.
 use core::{ffi::c_void, ptr, ops::{Index, IndexMut}};
 use crate::hal::IrqSpinLock;
 
