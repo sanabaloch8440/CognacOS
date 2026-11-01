@@ -435,7 +435,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed){return STATUS_SUCCESS}
  if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&!c.committed){return STATUS_DEVICE_BUSY}
  for r in resources[..count].iter() {
-  for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=device) {
+  for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=resource_owner) {
    let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length};
    if claim.owner!=resource_owner && resources_overlap(r,&existing){return STATUS_DEVICE_BUSY}
   }
@@ -479,9 +479,11 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
 /// STOP_DEVICE/REMOVE_DEVICE completion. Safe to call repeatedly.
 pub(crate) fn io_release_pnp_resources(device:*mut DeviceObject){
  if device.is_null(){return}
- let mut arbiter=RESOURCE_ARBITER.lock();
+ // Resolve the stack base before taking the arbiter lock. START takes the
+ // WDM lock first and the resource lock second; preserve that global order.
  let owner=unsafe{io_get_device_attachment_base_ref(device)};
  if owner.is_null(){return}
+ let mut arbiter=RESOURCE_ARBITER.lock();
  for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner){*c=ResourceClaim::EMPTY;}
 }
 
