@@ -62,6 +62,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   else if requested.eq_ignore_ascii_case(b"CcCopyRead") { Some(cc::cc_copy_read as usize) }
   else if requested.eq_ignore_ascii_case(b"CcCopyWrite") { Some(cc::cc_copy_write as usize) }
   else if requested.eq_ignore_ascii_case(b"CcFlushCache") { Some(cc::cc_flush_cache as usize) }
+  else if requested.eq_ignore_ascii_case(b"CcSetReadAheadGranularity") { Some(cc::cc_set_read_ahead_granularity as usize) }
   else if requested.eq_ignore_ascii_case(b"CcCanIWrite") { Some(cc::cc_can_i_write as usize) }
   else { None };
   if cache.is_some() { return cache.map(|p| p as u64); }
