@@ -260,7 +260,13 @@ unsafe extern "win64" fn ucx_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
   },
   _=>STATUS_INVALID_DEVICE_REQUEST,
  };
- if status!=STATUS_PENDING&&!completed_inside{if let Some(complete)=io.complete_irp_status{unsafe{complete(irp,status,information,0);}}}
+ if status!=STATUS_PENDING&&!completed_inside{
+  if major==IRP_MJ_INTERNAL_DEVICE_CONTROL{
+   let urb=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<*mut UrbHeader>())};
+   if !urb.is_null(){unsafe{(*urb).status=if status==STATUS_SUCCESS{0}else{0xC0000001};}}
+  }
+  if let Some(complete)=io.complete_irp_status{unsafe{complete(irp,status,information,0);}}
+ }
  status
 }
 unsafe extern "win64" fn ucx_event_sink(context:u64,event:*const XhciTrb){
