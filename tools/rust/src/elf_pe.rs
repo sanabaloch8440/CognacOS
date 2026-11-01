@@ -47,7 +47,7 @@ pub fn convert_elf64_to_pe32plus(blob:&[u8], image_base:u64, dll:bool)->Result<V
  segs.sort_by_key(|s|s.vaddr);
  if image_base&0xffff!=0||segs[0].vaddr-image_base<PAGE{return Err(bad("image base must be 64 KiB aligned with a nonzero section RVA"));}
  let peoff=0x80usize;let optional=240usize;
- let headers=align((peoff+4+20+optional+40*(segs.len()+1)) as u64,FILE_ALIGN)? as usize;
+ let headers=align((peoff+4+20+optional+40*(segs.len()+2)) as u64,FILE_ALIGN)? as usize;
  let mut raw_cursor=headers as u64;
  let mut raw_sizes=Vec::new();let mut raw_offsets=Vec::new();
  for s in &segs{let size=if s.filesz==0{0}else{align(s.filesz,FILE_ALIGN)?};raw_sizes.push(size);raw_offsets.push(if size==0{0}else{let x=raw_cursor;raw_cursor=raw_cursor.checked_add(size).ok_or("file size overflow")?;x});}
@@ -76,6 +76,132 @@ pub fn convert_elf64_to_pe32plus(blob:&[u8], image_base:u64, dll:bool)->Result<V
  Ok(out)
 }
 
+
+
+#[derive(Clone)]
+struct ImportSlot { dll:String, name:String, rva:u32, section:u16 }
+
+/// Find explicit IAT slots emitted by the driver's x86-64 import thunks.
+/// Symbols use __imp_ntoskrnl_<name> or __imp_hal_<name>; slots must be
+/// contiguous, writable, eight-byte aligned, and initially zero.
+fn collect_import_slots(elf:&[u8],image_base:u64)->Result<Vec<ImportSlot>,String>{
+ if elf.len()<64{return Err("truncated ELF import symbol table".into())}
+ let shoff=u64at(elf,40)?;let ents=u16at(elf,58)? as u64;let count=u16at(elf,60)? as u64;
+ if ents<64||count==0||shoff.checked_add(ents.checked_mul(count).ok_or("section table overflow")?).filter(|x|*x<=elf.len() as u64).is_none(){return Err("invalid ELF section-header table".into())}
+ let mut sections=Vec::new();
+ for i in 0..count{let o=usize::try_from(shoff+i*ents).map_err(|_|"section offset overflow")?;sections.push((u32at(elf,o)?,u32at(elf,o+4)?,u64at(elf,o+8)?,u64at(elf,o+16)?,u64at(elf,o+24)?,u64at(elf,o+32)?,u32at(elf,o+40)?,u32at(elf,o+44)?,u64at(elf,o+48)?,u64at(elf,o+56)?));}
+ let phoff=u64at(elf,32)?;let phents=u16at(elf,54)? as u64;let phnum=u16at(elf,56)? as u64;
+ let mut slots=Vec::new();
+ for sec in &sections{
+  let (_name,kind,_flags,_addr,off,size,link,_info,_align,entsize)=*sec;
+  if kind!=2{continue}
+  if link as usize>=sections.len()||entsize<24||size%entsize!=0{return Err("invalid ELF import symbol/string table".into())}
+  let strings_sec=sections[link as usize];let strings=slice(elf,strings_sec.4,strings_sec.5)?;
+  let table=slice(elf,off,size)?;
+  for sym in table.chunks_exact(entsize as usize){
+   let name_offset=u32::from_le_bytes(sym[0..4].try_into().unwrap()) as usize;
+   let info=sym[4];let shndx=u16::from_le_bytes(sym[6..8].try_into().unwrap());
+   let value=u64::from_le_bytes(sym[8..16].try_into().unwrap());
+   let symbol_size=u64::from_le_bytes(sym[16..24].try_into().unwrap());
+   if shndx==0||(info>>4)!=1||(info&15)!=1||name_offset>=strings.len(){continue}
+   let end=strings[name_offset..].iter().position(|b|*b==0).map(|n|name_offset+n).ok_or("unterminated ELF import symbol")?;
+   let symbol=std::str::from_utf8(&strings[name_offset..end]).map_err(|_|"non-UTF8 ELF import symbol")?;
+   let (dll,name)=if let Some(n)=symbol.strip_prefix("__imp_ntoskrnl_"){("ntoskrnl.exe",n)}
+    else if let Some(n)=symbol.strip_prefix("__imp_hal_"){("hal.dll",n)}
+    else{continue};
+   if name.is_empty()||name.len()>240||!name.is_ascii(){return Err(format!("invalid PE import name {name}"))}
+   if symbol_size!=8||value&7!=0||value<image_base||value-image_base>u32::MAX as u64{return Err(format!("invalid IAT slot for {name}"))}
+   let target=sections.get(shndx as usize).ok_or("IAT symbol has invalid section index")?;
+   if target.1!=1||target.2&3!=3||value<target.3||value.checked_add(8).is_none_or(|end|end>target.3+target.5){return Err(format!("IAT slot {name} is not in writable allocated data"))}
+   let mut found_file_slot=false;
+   for i in 0..phnum{
+    let o=usize::try_from(phoff+i*phents).map_err(|_|"program header offset overflow")?;
+    if u32at(elf,o)?!=PT_LOAD{continue}
+    let flags=u32at(elf,o+4)?;let file_off=u64at(elf,o+8)?;let va=u64at(elf,o+16)?;let file_size=u64at(elf,o+32)?;
+    if flags&PF_W!=0&&value>=va&&value.checked_add(8).is_some_and(|e|e<=va.saturating_add(file_size)){
+     let slot_off=file_off.checked_add(value-va).ok_or("IAT file offset overflow")?;
+     if u64at(elf,usize::try_from(slot_off).map_err(|_|"IAT offset overflow")?)?!=0{return Err(format!("IAT slot {name} is not initially zero"))}
+     found_file_slot=true;break;
+    }
+   }
+   if !found_file_slot{return Err(format!("IAT slot {name} is not backed by writable PT_LOAD data"))}
+   if slots.iter().any(|slot|slot.dll==dll&&slot.name==name){return Err(format!("duplicate PE import {dll}!{name}"))}
+   slots.push(ImportSlot{dll:dll.to_owned(),name:name.to_owned(),rva:(value-image_base) as u32,section:shndx});
+  }
+ }
+ slots.sort_by(|a,b|a.dll.cmp(&b.dll).then(a.rva.cmp(&b.rva)));
+ for group in slots.chunk_by(|a,b|a.dll==b.dll){
+  if group.windows(2).any(|pair|pair[1].section!=pair[0].section||pair[1].rva!=pair[0].rva+8){
+   return Err(format!("{} IAT slots must be contiguous and ordered",group[0].dll));
+  }
+ }
+ Ok(slots)
+}
+
+fn append_import_section(pe:&mut Vec<u8>,slots:&[ImportSlot])->Result<(),String>{
+ if slots.is_empty(){return Ok(())}
+ let mut groups:Vec<(String,Vec<ImportSlot>)>=Vec::new();
+ for slot in slots{
+  if let Some((_,items))=groups.iter_mut().find(|(dll,_)|*dll==slot.dll){items.push(slot.clone())}
+  else{groups.push((slot.dll.clone(),vec![slot.clone()])}
+ }
+ groups.sort_by(|a,b|a.0.cmp(&b.0));
+ for (dll,items) in &groups{
+  if items.windows(2).any(|pair|pair[1].section!=pair[0].section||pair[1].rva!=pair[0].rva+8){
+   return Err(format!("{dll} IAT is not contiguous"));
+  }
+ }
+ let descriptor_size=(groups.len()+1).checked_mul(20).ok_or("import descriptor size overflow")?;
+ let mut data=vec![0u8;descriptor_size];
+ let mut ilts=Vec::new();
+ for (_,items) in &groups{
+  while data.len()%8!=0{data.push(0)}
+  let offset=data.len();
+  data.resize(offset+(items.len()+1)*8,0);
+  ilts.push(offset);
+ }
+ let mut dll_offsets=Vec::new();
+ for (dll,_) in &groups{
+  let offset=data.len();data.extend_from_slice(dll.as_bytes());data.push(0);dll_offsets.push(offset);
+ }
+ let mut hint_names=Vec::new();
+ for (_,items) in &groups{
+  let mut offsets=Vec::new();
+  for item in items{
+   if data.len()%2!=0{data.push(0)}
+   let offset=data.len();data.extend_from_slice(&0u16.to_le_bytes());data.extend_from_slice(item.name.as_bytes());data.push(0);offsets.push(offset);
+  }
+  hint_names.push(offsets);
+ }
+ let peoff=u32at(pe,0x3c)? as usize;let coff=peoff+4;let nsec=u16at(pe,coff+2)? as usize;let opt=coff+20;let optsize=u16at(pe,coff+16)? as usize;let sh=opt+optsize;
+ let headers=u32at(pe,opt+60)? as usize;let new_header=sh.checked_add(nsec.checked_mul(40).ok_or("section table overflow")?).ok_or("section header overflow")?;
+ if new_header+40>headers{return Err("PE header has no room for .idata section header".into())}
+ let image_base=u64at(pe,opt+24)?;let _=image_base;
+ let file_align=u32at(pe,opt+36)? as usize;let sect_align=u32at(pe,opt+32)? as usize;
+ if file_align==0||!file_align.is_power_of_two()||sect_align==0||!sect_align.is_power_of_two(){return Err("invalid PE alignment for import section".into())}
+ let image_size=u32at(pe,opt+56)? as usize;let rva=(image_size+sect_align-1)&!(sect_align-1);
+ for (i,(_,items)) in groups.iter().enumerate(){
+  for (j,_) in items.iter().enumerate(){
+   let thunk_rva=rva.checked_add(hint_names[i][j]).ok_or("import name RVA overflow")?;
+   p64(&mut data,ilts[i]+j*8,thunk_rva as u64)?;
+  }
+  let desc=i*20;
+  p32(&mut data,desc,(rva+ilts[i]) as u32)?;
+  p32(&mut data,desc+12,(rva+dll_offsets[i]) as u32)?;
+  p32(&mut data,desc+16,items[0].rva)?;
+ }
+ let raw_off=(pe.len()+file_align-1)&!(file_align-1);let raw_size=(data.len()+file_align-1)&!(file_align-1);
+ pe.resize(raw_off+raw_size,0);pe[raw_off..raw_off+data.len()].copy_from_slice(&data);
+ put(pe,new_header,b".idata\0\0")?;p32(pe,new_header+8,data.len() as u32)?;p32(pe,new_header+12,rva as u32)?;p32(pe,new_header+16,raw_size as u32)?;p32(pe,new_header+20,raw_off as u32)?;p32(pe,new_header+36,0x40000040)?;
+ p16(pe,coff+2,(nsec+1) as u16)?;p32(pe,opt+56,align((rva+data.len()) as u64,sect_align as u64)? as u32)?;
+ p32(pe,opt+112+8,rva as u32)?;p32(pe,opt+112+12,descriptor_size as u32)?;
+ Ok(())
+}
+
+fn append_imports(pe:&mut Vec<u8>,elf:&[u8],image_base:u64)->Result<(),String>{
+ let slots=collect_import_slots(elf,image_base)?;
+ append_import_section(pe,&slots)
+}
 
 fn manifest_exports(elf:&[u8],manifest:&Path,image_base:u64)->Result<Vec<(String,u32,u64)>,String>{
  let json:serde_json::Value=serde_json::from_slice(&fs::read(manifest).map_err(|e|e.to_string())?).map_err(|e|format!("invalid export manifest: {e}"))?;
@@ -133,7 +259,7 @@ fn append_exports(pe:&mut Vec<u8>,exports:&[(String,u32,u64)])->Result<(),String
  Ok(())
 }
 
-pub fn convert_file(input:&Path,output:&Path,image_base:u64,dll:bool,export_manifest:Option<&Path>)->Result<(),String>{let data=fs::read(input).map_err(|e|e.to_string())?;let mut pe=convert_elf64_to_pe32plus(&data,image_base,dll)?;if let Some(path)=export_manifest{let exports=manifest_exports(&data,path,image_base)?;append_exports(&mut pe,&exports)?;}fs::write(output,&pe).map_err(|e|e.to_string())?;Ok(())}
+pub fn convert_file(input:&Path,output:&Path,image_base:u64,dll:bool,export_manifest:Option<&Path>)->Result<(),String>{let data=fs::read(input).map_err(|e|e.to_string())?;let mut pe=convert_elf64_to_pe32plus(&data,image_base,dll)?;append_imports(&mut pe,&data,image_base)?;if let Some(path)=export_manifest{let exports=manifest_exports(&data,path,image_base)?;append_exports(&mut pe,&exports)?;}fs::write(output,&pe).map_err(|e|e.to_string())?;Ok(())}
 
 #[cfg(test)]
 mod tests{
