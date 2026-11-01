@@ -277,19 +277,29 @@ pub fn enumerate_boot_driver_services(
             return Err(ExtendedConfigError::BufferTooSmall);
         }
 
-        // Validate the complete service configuration before considering it
-        // eligible. Unsupported service types and later start classes are not
-        // candidates for the early boot-driver pass.
-        let details = query_service_details(hive, &name[..name_length], &mut image_path)?;
-        if !matches!(details.base.start, SERVICE_BOOT_START | SERVICE_SYSTEM_START) {
+        // Services contains both kernel drivers and Win32 services. Read
+        // the common Start/Type fields first so ordinary user-mode services
+        // are skipped rather than rejected by the driver-only metadata parser.
+        let (start_type, service_type) = {
+            let base = driver_config::query_service(
+                hive, &name[..name_length], &mut image_path,
+            )?;
+            (base.start, base.service_type)
+        };
+        if !matches!(start_type, SERVICE_BOOT_START | SERVICE_SYSTEM_START) {
             continue;
         }
         if !matches!(
-            details.base.service_type & SERVICE_TYPE_MASK,
+            service_type & SERVICE_TYPE_MASK,
             SERVICE_KERNEL_DRIVER | SERVICE_FILE_SYSTEM_DRIVER
         ) {
             continue;
         }
+
+        // Only kernel/filesystem driver candidates require driver-specific
+        // Group, Tag and dependency validation.
+        let _details =
+            query_service_details(hive, &name[..name_length], &mut image_path)?;
         if count == output.len() {
             return Err(ExtendedConfigError::BufferTooSmall);
         }
