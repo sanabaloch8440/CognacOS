@@ -28,6 +28,8 @@ pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
 #[path = "ntoskrnl/io/runtime.rs"]
 pub(crate) mod io;
+#[path = "ntoskrnl/io/wdm.rs"]
+pub(crate) mod wdm;
 #[path = "ntoskrnl/io/file_services.rs"]
 pub(crate) mod file_services;
 #[path = "ntoskrnl/io/ata_disk.rs"]
