@@ -87,3 +87,20 @@ pub unsafe fn io_set_irp_user_buffer(irp: *mut Irp, buffer: *mut c_void) -> bool
     }
     true
 }
+
+/// Read a pointer-valued member of the IO_STACK_LOCATION.Parameters union.
+pub unsafe fn io_read_stack_pointer<T>(stack: *const IoStackLocation, offset: usize) -> *mut T {
+    if stack.is_null() || offset.checked_add(core::mem::size_of::<*mut T>()).map_or(true, |end| end > 0x20) {
+        return ptr::null_mut();
+    }
+    unsafe { ptr::read_unaligned((*stack).parameters.as_ptr().add(offset).cast::<*mut T>()) }
+}
+
+/// Write a pointer-valued member of the IO_STACK_LOCATION.Parameters union.
+pub unsafe fn io_write_stack_pointer<T>(stack: *mut IoStackLocation, offset: usize, value: *mut T) -> bool {
+    if stack.is_null() || offset.checked_add(core::mem::size_of::<*mut T>()).map_or(true, |end| end > 0x20) {
+        return false;
+    }
+    unsafe { ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(offset).cast::<*mut T>(), value); }
+    true
+}
