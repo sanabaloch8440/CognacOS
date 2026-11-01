@@ -42,6 +42,7 @@ use core::panic::PanicInfo;
 /// PCI.sys is the authoritative PCI bus enumerator. It is staged by the
 /// driver build and embedded separately from ntoskrnl for registry-selected
 /// initialization through the native PE driver loader.
+const ACPI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/acpi.sys"));
 const PCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pci.sys"));
 const USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhci.sys"));
 
@@ -464,6 +465,50 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
  true
 }
 
+
+const ACPI_HANDOFF_MAGIC:u64=0x434f_474e_4143_4143;
+const ACPI_HANDOFF_VERSION:u32=1;
+#[repr(C)]
+struct AcpiDriverHandoff { magic:u64,size:u32,version:u32,rsdp_address:u64 }
+static ACPI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static mut ACPI_DRIVER_OBJECT_STORAGE:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
+static mut ACPI_HANDOFF_STORAGE:core::mem::MaybeUninit<AcpiDriverHandoff>=core::mem::MaybeUninit::uninit();
+static mut ACPI_REGISTRY_IMAGE_BUFFER:[u8;ACPI_PE_IMAGE.len()]=[0;ACPI_PE_IMAGE.len()];
+
+/// Load ACPI.sys as an independent boot-start native driver. The firmware
+/// pointer is passed through a versioned, kernel-owned handoff record.
+fn initialize_acpi_driver(rsdp_address:u64)->bool{
+ use core::sync::atomic::Ordering;
+ if ACPI_PE_IMAGE.is_empty()||rsdp_address==0{return false}
+ if ACPI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return false}
+ unsafe{
+  let handoff=core::ptr::addr_of_mut!(ACPI_HANDOFF_STORAGE).cast::<AcpiDriverHandoff>();
+  handoff.write(AcpiDriverHandoff{magic:ACPI_HANDOFF_MAGIC,
+   size:core::mem::size_of::<AcpiDriverHandoff>() as u32,
+   version:ACPI_HANDOFF_VERSION,rsdp_address});
+  let driver=core::ptr::addr_of_mut!(ACPI_DRIVER_OBJECT_STORAGE).cast::<ntoskrnl::driver_loader::DriverObject>();
+  driver.write(core::mem::zeroed());
+  (*driver).object_type=4;(*driver).size=core::mem::size_of::<ntoskrnl::driver_loader::DriverObject>() as i16;
+  (*driver).driver_extension=handoff.cast();
+  let Some(system_bytes)=boot_hive_bytes("SYSTEM") else{return false};
+  let system_hive=match ntoskrnl::cm::hive::Hive::open(system_bytes){Ok(h)=>h,Err(_)=>return false};
+  const SERVICE:&[u16]=&[65,67,80,73];
+  const IMAGE_PATH:&[u16]=&[92,83,121,115,116,101,109,82,111,111,116,92,83,121,115,116,101,109,51,50,92,100,114,105,118,101,114,115,92,97,99,112,105,46,115,121,115];
+  let mut registry_path=[0u16;1024];
+  let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(ACPI_REGISTRY_IMAGE_BUFFER).cast::<u8>(),ACPI_PE_IMAGE.len());
+  ntoskrnl::driver_loader::load_registered_service_with_resolver(
+   &system_hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
+   |path,out|{
+    let equal=path.len()==IMAGE_PATH.len()&&path.iter().zip(IMAGE_PATH).all(|(a,b)|{
+     let a=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
+     let b=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};a==b
+    });
+    if !equal||out.len()<ACPI_PE_IMAGE.len(){return None}
+    out[..ACPI_PE_IMAGE.len()].copy_from_slice(ACPI_PE_IMAGE);Some(ACPI_PE_IMAGE.len())
+   },ntoskrnl::resolve
+  ).is_ok()
+ }
+}
 
 static PCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static mut PCI_DRIVER_OBJECT_STORAGE:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
@@ -1592,9 +1637,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         let mut local_timer_ready = false;
         if info.rsdp_address != 0 {
-            // PCI root bridges are discovered from MCFG independently of MADT
-            // availability; interrupt routing remains separately gated by MADT.
-            let _pnp_enumerated=enumerate_acpi_pci_devices(info.rsdp_address);
+            // ACPI.sys validates firmware tables as a native boot-start
+            // driver before PCI.sys receives the MCFG-derived ECAM windows.
+            let acpi_driver_ready=initialize_acpi_driver(info.rsdp_address);
+            let _pnp_enumerated=if acpi_driver_ready {
+                enumerate_acpi_pci_devices(info.rsdp_address)
+            } else { 0 };
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(firmware_madt) => {
                     let _ = platform_drivers::mark_ready(platform_drivers::Stage::Acpi);
