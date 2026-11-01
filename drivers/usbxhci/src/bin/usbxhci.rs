@@ -8,20 +8,8 @@ use cognacos_usbxhci::{self as xhci, Capabilities, DmaAllocation, XhciPlatform, 
 
 type InterruptServiceRoutine = unsafe extern "win64" fn(*mut c_void,*mut c_void)->u8;
 type DpcRoutine = unsafe extern "win64" fn(*mut c_void,*mut c_void,*mut c_void,*mut c_void);
-type CreateDevice = unsafe extern "win64" fn(*mut DRIVER_OBJECT,u32,*mut UNICODE_STRING,u32,u32,u8,*mut *mut DEVICE_OBJECT)->i32;
-type DeleteDevice = unsafe extern "win64" fn(*mut DEVICE_OBJECT);
-type GetDmaAdapter = unsafe extern "win64" fn(*mut DEVICE_OBJECT,*const c_void,*mut u32)->*mut c_void;
-type MapIoSpace = unsafe extern "win64" fn(i64,u64,i32)->*mut c_void;
-type UnmapIoSpace = unsafe extern "win64" fn(*mut c_void,u64);
 type AllocateCommonBuffer = unsafe extern "win64" fn(*mut c_void,u32,*mut i64,u8)->*mut c_void;
 type FreeCommonBuffer = unsafe extern "win64" fn(*mut c_void,u32,i64,*mut c_void,u8);
-type GetBusData = unsafe extern "win64" fn(u32,u32,u32,*mut u8,u32,u32)->u32;
-type SetBusData = unsafe extern "win64" fn(u32,u32,u32,*const u8,u32,u32)->u32;
-type ConnectInterrupt = unsafe extern "win64" fn(*mut *mut c_void,Option<InterruptServiceRoutine>,*mut c_void,*mut c_void,u32,u8,u8,u32,u8,u64,u8)->i32;
-type DisconnectInterrupt = unsafe extern "win64" fn(*mut c_void);
-type InitializeDpc = unsafe extern "win64" fn(*mut c_void,Option<DpcRoutine>,*mut c_void);
-type InsertQueueDpc = unsafe extern "win64" fn(*mut c_void,*mut c_void,*mut c_void)->u8;
-type CompleteRequest = unsafe extern "win64" fn(*mut IRP,i8);
 
 unsafe extern "win64" {
     fn IoCreateDevice(driver:*mut DRIVER_OBJECT,extension_size:u32,name:*mut UNICODE_STRING,device_type:u32,characteristics:u32,exclusive:u8,output:*mut *mut DEVICE_OBJECT)->i32;
@@ -255,8 +243,6 @@ impl XhciPlatform for Platform<'_>{
     }
 }
 
-static XHCI_FDO:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
-static XHCI_EXTENSION:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 unsafe extern "win64" fn xhci_dispatch(_device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
     const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
     const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
@@ -422,7 +408,6 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
         let _=xhci::stop_controller(&mut platform,&caps,resources,POLL_BUDGET);
         return if create_status<0{create_status}else{DRIVER_FAILED}
     }
-    XHCI_FDO.store(fdo as u64,Ordering::Release);
     unsafe{ext.fdo_out.write(fdo as u64);}
     unsafe{(*ext.runtime.get()).write(resources);}
     ext.ready.store(true,Ordering::Release);
