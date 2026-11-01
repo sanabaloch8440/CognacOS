@@ -201,7 +201,7 @@ pub fn find_pci_device_service(
         let hardware_key=pci_root.subkey_at(child_index)?;
         let mut hardware_name=[0u16;128];
         let hardware_len=hardware_key.name_utf16(&mut hardware_name)?;
-        if hardware_len<n||!eq(&hardware_name[..n],&wanted[..n]){continue}
+        if hardware_len<n||!eq_ascii(&hardware_name[..n],&wanted[..n]){continue}
         let instances=hardware_key.subkey_count()?;
         for instance_index in 0..instances{
             let instance=hardware_key.subkey_at(instance_index)?;
@@ -226,6 +226,14 @@ pub fn find_pci_device_service(
         }
     }
     Ok(None)
+}
+
+fn eq_ascii(a:&[u16],b:&[u16])->bool{
+    a.len()==b.len()&&a.iter().zip(b).all(|(x,y)|{
+        let x=if (b'A' as u16..=b'Z' as u16).contains(x){*x+32}else{*x};
+        let y=if (b'A' as u16..=b'Z' as u16).contains(y){*y+32}else{*y};
+        x==y
+    })
 }
 
 fn append_hex4(value:u16,out:&mut[u16],mut offset:usize)->Result<usize,ExtendedConfigError>{
