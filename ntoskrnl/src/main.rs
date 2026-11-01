@@ -24,28 +24,14 @@ mod boot_orchestration;
 static BOOT_COORDINATOR: boot_orchestration::BootCoordinator = boot_orchestration::BootCoordinator::new();
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
-#[path = "kernel/io/wdm.rs"]
-pub(crate) mod wdm;
-/// Compatibility namespace for existing kernel call sites. The implementation
-/// is the single WDM manager; no parallel legacy I/O runtime is retained.
-pub(crate) mod io {
-    pub use crate::wdm::*;
-    pub use crate::wdm::Irp as WdmIrp;
-    pub mod wdm {
-        pub use crate::wdm::*;
-    }
-}
-#[path = "kernel/io/file_services.rs"]
-pub(crate) mod file_services;
-#[path = "kernel/io/ata_disk.rs"]
-mod ata_disk;
 use cognacos_ext4 as extfs;
 pub(crate) use ntoskrnl::rtl_runtime::nls;
 #[path = "kernel/mod.rs"]
 mod ntoskrnl;
 pub(crate) use ntoskrnl::ps::process;
 pub(crate) use ntoskrnl::ke::syscall;
-pub(crate) use ntoskrnl::io::dma;
+pub(crate) use ntoskrnl::io as io;
+pub(crate) use ntoskrnl::io::{ata_disk, dma, file_services, wdm};
 #[path = "kernel/debug_console.rs"]
 mod debug_console;
 
