@@ -24,14 +24,15 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
  pub fn stop_submissions(&mut self){self.stopped=true;}
  pub fn restart(&mut self,generation:u32){self.generation=generation;self.stopped=false;}
  pub fn submit<H:TransferHardware>(&mut self,hw:&mut H,trb_dma:u64,buffer_dma:u64,length:u32,slot:u8,endpoint:u8)->Result<TransferToken,RuntimeError>{
-  if self.stopped||R==0||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
+  if self.stopped||R==0||N<4||!N.is_power_of_two()||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
   let p=self.pending.iter().position(|p|!p.used).ok_or(RuntimeError::QueueFull)?;
   let token=TransferToken{request_id:self.next_id,trb_dma,slot_id:slot,endpoint_id:endpoint,generation:self.generation};
   let req=TransferRequest{trb_dma,buffer_dma,length,endpoint_id:endpoint,slot_id:slot};
   self.tracker.reserve(req).map_err(RuntimeError::Transfer)?;
   let trb=Trb{parameter:buffer_dma,status:length,control:(TRB_TYPE_NORMAL<<TRB_TYPE_SHIFT)|TRB_IOC|((endpoint as u32)<<16)|((slot as u32)<<24)};
   let index=self.ring.push(trb).map_err(RuntimeError::Ring)?;
-  if hw.publish_trb(index,trb_dma,trb).is_err(){self.stopped=true;return Err(RuntimeError::PublishFailed)}
+  let published=self.ring.get(index).ok_or(RuntimeError::InvalidRequest)?;
+  if hw.publish_trb(index,trb_dma,published).is_err(){self.stopped=true;return Err(RuntimeError::PublishFailed)}
   self.pending[p]=Pending{used:true,token};
   fence(Ordering::Release);
   if hw.ring_endpoint_doorbell(slot,endpoint).is_err(){self.stopped=true;return Err(RuntimeError::DoorbellFailed)}
