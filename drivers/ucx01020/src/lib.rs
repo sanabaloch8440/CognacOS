@@ -326,6 +326,7 @@ mod tests {
 }
 
 pub mod wdm;
+pub mod dma;
 
 pub mod root_hub;
 pub mod streams;
