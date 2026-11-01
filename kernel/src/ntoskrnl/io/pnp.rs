@@ -404,7 +404,7 @@ pub fn query_pnp_device_ids(
             ascii(out, &mut hw_len, b"&DEV_")?; hex(out, &mut hw_len, snapshot.device_id as u32, 4)?;
         }
         hw_len = finish(out, hw_len)?;
-    } else { hw_len = if snapshot.is_root { 15 } else { 25 }; }
+    } else { hw_len = if snapshot.is_root { 15 } else { 23 }; }
     if let Some(out) = compatible_ids {
         out.fill(0);
         if snapshot.is_root { ascii(out, &mut compat_len, b"ROOT\\PNP0A08")?; }
@@ -417,7 +417,7 @@ pub fn query_pnp_device_ids(
             hex(out, &mut compat_len, ((snapshot.class_code as u32)<<8) | snapshot.subclass as u32, 4)?;
         }
         compat_len = finish(out, compat_len)?;
-    } else { compat_len = if snapshot.is_root { 14 } else { 31 }; }
+    } else { compat_len = if snapshot.is_root { 14 } else { 28 }; }
     Ok((hw_len, compat_len))
 }
 
@@ -534,6 +534,7 @@ pub unsafe fn import_pci_inventory(
         }
     }
 
+    let root_index = register_root_device()?;
     let mut imported = 0usize;
     for index in 0..functions {
         let mut information = PCI_DEVICE_INFORMATION::default();
@@ -566,7 +567,7 @@ pub unsafe fn import_pci_inventory(
             ).ok_or(PnpError::InvalidState)?;
             Some(parent)
         } else {
-            None
+            Some(root_index)
         };
         match register_pci_information(&information, parent) {
             Ok(_) => imported += 1,
@@ -662,6 +663,33 @@ mod pnp_tree_tests {
         assert_eq!(failed.last_status, 0xC000_0001u32 as i32);
         assert_eq!(failed.start_attempts, 1);
         transition_pnp_device(index, PNP_DEVICE_REMOVED, 0).unwrap();
+    }
+
+    #[test]
+    fn root_devnode_and_pci_ids_are_windows_multisz() {
+        let root = register_root_device().unwrap();
+        let snapshot = query_pnp_device(root).unwrap();
+        assert!(snapshot.is_root);
+        let mut hardware = [0u16; 64];
+        let mut compatible = [0u16; 64];
+        let lengths = query_pnp_device_ids(root, Some(&mut hardware), Some(&mut compatible)).unwrap();
+        assert_eq!(lengths, (15, 14));
+        assert_eq!(&hardware[..13], &"ROOT\\COGNACOS".encode_utf16().collect::<std::vec::Vec<_>>());
+        assert_eq!(hardware[13..15], [0, 0]);
+        assert_eq!(&compatible[..12], &"ROOT\\PNP0A08".encode_utf16().collect::<std::vec::Vec<_>>());
+        assert_eq!(compatible[12..14], [0, 0]);
+
+        let mut function = sample_function();
+        function.device = 21;
+        let child = register_pci_function(&function, Some(root)).unwrap();
+        let mut hw = [0u16; 64];
+        let mut compat = [0u16; 64];
+        let (hw_len, compat_len) = query_pnp_device_ids(child, Some(&mut hw), Some(&mut compat)).unwrap();
+        assert_eq!(hw_len, 23);
+        assert_eq!(compat_len, 28);
+        assert_eq!(&hw[..21], &"PCI\\VEN_8086&DEV_1234".encode_utf16().collect::<std::vec::Vec<_>>());
+        assert_eq!(&compat[..13], &"PCI\\CC_0C0330".encode_utf16().collect::<std::vec::Vec<_>>());
+        assert_eq!(&compat[15..26], &"PCI\\CC_0C03".encode_utf16().collect::<std::vec::Vec<_>>());
     }
 
     #[test]
