@@ -11,6 +11,7 @@ const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
 const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
 const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000009A_u32 as i32;
 const STATUS_DELETE_PENDING:i32=0xC0000056_u32 as i32;
+const STATUS_CANCELLED:i32=0xC0000120_u32 as i32;
 const MAX_PENDING:usize=32;
 pub const ROOT_HUB_INTERRUPT_PIPE:u64=0xC0AC_0001;
 const TRB_TYPE_PORT_STATUS_CHANGE:u8=34;
@@ -86,6 +87,14 @@ fn finish_pending(p:Pending,bytes:&[u8],status:i32,io:&KernelIoServiceTable){
  if let Some(unpin)=io.unpin_buffer{unsafe{unpin(p.mdl as *mut c_void,p.mapped as *mut c_void);}}
 }
 
+unsafe extern "win64" fn ucx_cancel_routine(_device:*mut c_void,irp:*mut c_void){
+ let Some(io)=io_table() else{return};
+ lock_runtime();let rt=unsafe{runtime_mut()};
+ let found=rt.pending.iter().position(|p|p.used&&p.irp==irp as u64);
+ let p=found.map(|i|{let p=rt.pending[i];rt.pending[i]=Pending::EMPTY;p});
+ unlock_runtime();
+ if let Some(p)=p{finish_pending(p,&[],STATUS_CANCELLED,io);}
+}
 fn try_complete_pending(){
  let Some(io)=io_table() else{return};
  if !RUNTIME_READY.load(Ordering::Acquire){return}
@@ -96,7 +105,11 @@ fn try_complete_pending(){
   if !rt.notifications.has_pending(){unlock_runtime();return}
   let Some(index)=rt.pending.iter().position(|p|p.used) else{unlock_runtime();return};
   let n=match rt.notifications.complete_interrupt(&mut payload){Ok(n)=>n,Err(_)=>{unlock_runtime();return}};
-  let mut p=rt.pending[index];p.length=p.length.min(n as u32);rt.pending[index]=Pending::EMPTY;
+  let p=rt.pending[index];
+  let Some(set_cancel)=io.set_cancel_routine else{unlock_runtime();return};
+  let old=unsafe{set_cancel(p.irp as *mut c_void,None)};
+  if old.is_none(){unlock_runtime();return}
+  let mut p=p;p.length=p.length.min(n as u32);rt.pending[index]=Pending::EMPTY;
   unlock_runtime();(p,n)
  };
  finish_pending(picked.0,&payload[..picked.1],STATUS_SUCCESS,io);
@@ -181,8 +194,11 @@ fn submit_interrupt_urb(irp:*mut c_void,urb:*mut UrbBulkInterrupt)->(i32,bool){
   if rt.notifications.has_pending(){
    let n=rt.notifications.complete_interrupt(&mut payload).unwrap_or(0);
    unlock_runtime();Some(n)
-  }else if let Some(slot)=rt.pending.iter_mut().find(|p|!p.used){
-   *slot=Pending{used:true,irp:irp as u64,urb:urb as u64,mdl:mdl as u64,mapped:mapped as u64,length:u.transfer_buffer_length};
+  }else if let Some(index)=rt.pending.iter().position(|p|!p.used){
+   rt.pending[index]=Pending{used:true,irp:irp as u64,urb:urb as u64,mdl:mdl as u64,mapped:mapped as u64,length:u.transfer_buffer_length};
+   let Some(set_cancel)=io.set_cancel_routine else{rt.pending[index]=Pending::EMPTY;unlock_runtime();unsafe{unpin(mdl,mapped);}return (STATUS_INVALID_DEVICE_REQUEST,false)};
+   let previous=unsafe{set_cancel(irp,Some(ucx_cancel_routine))};
+   if previous.is_some(){rt.pending[index]=Pending::EMPTY;unlock_runtime();unsafe{unpin(mdl,mapped);}return (STATUS_INVALID_DEVICE_REQUEST,false)}
    unlock_runtime();None
   }else{unlock_runtime();unsafe{unpin(mdl,mapped);}return (STATUS_INSUFFICIENT_RESOURCES,false)}
  };
@@ -261,11 +277,11 @@ unsafe extern "win64" fn ucx_unload(driver:*mut c_void){
  if !sink.is_null(){unsafe{(*sink).store(0,Ordering::Release);}}
  let hub_sink=HUB_EVENT_SINK_SLOT.load(Ordering::Acquire) as *mut AtomicU64;if !hub_sink.is_null(){unsafe{(*hub_sink).store(0,Ordering::Release);}}
  let Some(io)=io_table() else{return};
- let mut pending=[Pending::EMPTY;MAX_PENDING];
+ let mut pending_irps=[0u64;MAX_PENDING];
  lock_runtime();let rt=unsafe{runtime_mut()};
- for i in 0..MAX_PENDING{pending[i]=rt.pending[i];rt.pending[i]=Pending::EMPTY;}
+ for i in 0..MAX_PENDING{if rt.pending[i].used{pending_irps[i]=rt.pending[i].irp;}}
  unlock_runtime();
- for p in pending.into_iter().filter(|p|p.used){finish_pending(p,&[],STATUS_DELETE_PENDING,io);}
+ if let Some(cancel)=io.cancel_irp{for irp in pending_irps.into_iter().filter(|p|*p!=0){unsafe{cancel(irp as *mut c_void);}}}
  if let Some(delete)=io.delete_device{
   let root=ROOT_HUB_DEVICE.swap(0,Ordering::AcqRel);let controller=CONTROLLER_DEVICE.swap(0,Ordering::AcqRel);
   let parent=PARENT_BUS_DEVICE.swap(0,Ordering::AcqRel);
