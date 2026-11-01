@@ -293,7 +293,8 @@ unsafe extern "win64" fn xhci_isr(_interrupt:*mut c_void,context:*mut c_void)->u
     let status_ptr=(base+USBSTS as u64) as *const u32;
     let status=unsafe{status_ptr.read_volatile()};
     if status==u32::MAX||status&USBSTS_INTERRUPT==0{return 0}
-    unsafe{(base+USBSTS as u64 as *mut u32 as u64) as *mut u32}.write_volatile(status&0x3f);
+    let status_mut=(base+USBSTS as u64) as *mut u32;
+    unsafe{status_mut.write_volatile(status&0x3f);}
     let dpc=core::ptr::addr_of_mut!(XHCI_DPC).cast::<c_void>();
     let _=unsafe{KeInsertQueueDpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())};
     1
