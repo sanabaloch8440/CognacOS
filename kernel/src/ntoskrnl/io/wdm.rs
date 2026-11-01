@@ -907,6 +907,7 @@ pub unsafe extern "win64" fn io_start_next_packet(device: *mut DeviceObject, _ca
     if !next.is_null() { unsafe { invoke_start_io(device, next); } }
 }
 
+#[unsafe(export_name = "IoCreateDevice")]
 pub unsafe extern "win64" fn io_create_device(
  driver:*mut DriverObject, extension_size:u32, device_name:*mut UnicodeString,
  device_type:u32, characteristics:u32, exclusive:u8, output:*mut *mut DeviceObject
