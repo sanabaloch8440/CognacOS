@@ -19,7 +19,7 @@ const TRB_TYPE_PORT_STATUS_CHANGE:u8=34;
 struct XhciTrb{parameter:u64,status:u32,control:u32}
 #[repr(C)]
 pub struct UcxDriverExtension{
- magic:u64,size:u32,version:u32,
+ magic:u64,size:u32,version:u32,parent_bus_device:u64,
  kernel_io:*const KernelIoServiceTable,hal:*const HalServiceTable,
  event_sink:*mut AtomicU64,event_context:*mut AtomicU64,
  mmio_base:u64,operational_offset:u32,port_count:u32,
@@ -276,7 +276,7 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
  let object=unsafe{&mut *(driver as *mut DriverObject)};
  let Some(ext)=(unsafe{object.driver_extension.as_ref()}) else{return STATUS_INVALID_PARAMETER};
  if ext.magic!=EXT_MAGIC||ext.version!=1||ext.size as usize<core::mem::size_of::<UcxDriverExtension>()
-  ||ext.kernel_io.is_null()||ext.hal.is_null()||ext.event_sink.is_null()||ext.event_context.is_null()
+  ||ext.parent_bus_device==0||ext.kernel_io.is_null()||ext.hal.is_null()||ext.event_sink.is_null()||ext.event_context.is_null()
   ||ext.root_hub_device_out.is_null()||ext.hub_event_sink.is_null()||ext.hub_event_context.is_null()||ext.mmio_base==0||ext.operational_offset<0x20||ext.port_count==0||ext.port_count>255{return STATUS_INVALID_PARAMETER}
  let io=unsafe{&*ext.kernel_io};let hal=unsafe{&*ext.hal};
  if !io.compatible()||!hal.compatible()||hal.read_mmio_u32.is_none()||hal.write_mmio_u32.is_none(){return STATUS_INVALID_DEVICE_REQUEST}
@@ -295,8 +295,11 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
  let Some(create)=io.create_device else{return STATUS_INVALID_DEVICE_REQUEST};
  let mut controller=core::ptr::null_mut();let st=unsafe{create(driver,0,&mut controller_name,4,0,0,&mut controller)};
  if st<0||controller.is_null(){RUNTIME_READY.store(false,Ordering::Release);return st}
- let mut root=core::ptr::null_mut();let st=unsafe{create(driver,0,&mut root_name,0x22,0,0,&mut root)};
+ let mut root=core::ptr::null_mut();let st=unsafe{create(driver,0,core::ptr::null_mut(),0x22,0,0,&mut root)};
  if st<0||root.is_null(){if let Some(delete)=io.delete_device{unsafe{delete(controller);}}RUNTIME_READY.store(false,Ordering::Release);return st}
+ let Some(mark_pdo)=io.mark_bus_enumerated_pdo else{if let Some(delete)=io.delete_device{unsafe{delete(root);delete(controller);}}RUNTIME_READY.store(false,Ordering::Release);return STATUS_INVALID_DEVICE_REQUEST};
+ let mark_status=unsafe{mark_pdo(root)};
+ if mark_status<0{if let Some(delete)=io.delete_device{unsafe{delete(root);delete(controller);}}RUNTIME_READY.store(false,Ordering::Release);return mark_status}
  CONTROLLER_DEVICE.store(controller as u64,Ordering::Release);ROOT_HUB_DEVICE.store(root as u64,Ordering::Release);
  unsafe{ext.root_hub_device_out.write(root as u64);(*ext.event_context).store(runtime_ptr as u64,Ordering::Release);(*ext.event_sink).store(xhci_event_sink as usize as u64,Ordering::Release);}
  0
