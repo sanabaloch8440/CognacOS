@@ -2,6 +2,7 @@
 //! This module owns firmware-to-driver handoff and boot-start device staging;
 //! device-specific execution remains in the separately built driver images.
 use crate::*;
+use core::arch::asm;
 
 /// PCI.sys is the authoritative PCI bus enumerator. It is staged by the
 /// driver build and embedded separately from ntoskrnl for registry-selected
