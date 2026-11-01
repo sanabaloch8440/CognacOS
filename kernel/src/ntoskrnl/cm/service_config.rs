@@ -105,10 +105,7 @@ fn optional_multi_sz(key:Key<'_, '_>,name:&[u16],out:&mut[u16])->Result<usize,Ex
     Ok(n)
 }
 fn service_key<'h,'a>(hive:&'h Hive<'a>,service_name:&[u16])->Result<Key<'h,'a>,ExtendedConfigError>{
-    let mut select_path=[0u16;16];let sn=ascii("Select",&mut select_path)?;
-    let select=hive.find_path(&select_path[..sn])?;
-    let current=optional_dword(select,&[67,117,114,114,101,110,116])?.ok_or(ExtendedConfigError::Base(Error::MissingStart))?;
-    if current==0||current>999{return Err(ExtendedConfigError::Base(Error::InvalidImagePath))}
+    let current=driver_config::active_control_set(hive).map_err(ExtendedConfigError::Base)?;
     let mut path=[0u16;256];let prefix=if current<10{format_control(current,&mut path)?}
       else if current<100{format_control(current,&mut path)?}else{format_control(current,&mut path)?};
     let mut n=prefix;
@@ -290,11 +287,14 @@ pub fn query_group_tag_order(hive:&Hive<'_>,group:&[u16],out:&mut[u32])->Result<
     Ok(count)
 }
 fn active_control_set(hive:&Hive<'_>)->Result<u32,ExtendedConfigError>{
-    let mut select=[0u16;16];let n=ascii("Select",&mut select)?;
-    let key=hive.find_path(&select[..n])?;
-    let current=optional_dword(key,&[67,117,114,114,101,110,116])?.ok_or(ExtendedConfigError::Base(Error::MissingStart))?;
-    if current==0||current>999{return Err(ExtendedConfigError::Base(Error::InvalidImagePath))}
-    Ok(current)
+    driver_config::active_control_set(hive).map_err(ExtendedConfigError::Base)
+}
+
+/// Expose the validated SYSTEM\\Select state to boot policy and diagnostics.
+pub fn query_control_set_selection(
+    hive:&Hive<'_>,
+)->Result<driver_config::ControlSetSelection,ExtendedConfigError>{
+    driver_config::query_control_set_selection(hive).map_err(ExtendedConfigError::Base)
 }
 
 #[cfg(test)]

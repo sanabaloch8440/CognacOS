@@ -590,6 +590,12 @@ jobs:
           build/registry-hive-tests
           rustc --edition=2024 --test kernel/src/ntoskrnl/rtl_runtime/nls.rs -o build/nls-tests
           build/nls-tests
+      - name: Run host-side registry driver-configuration tests
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          rustc --edition=2024 --test tools/registry_config_host_tests.rs -o build/registry-config-tests
+          build/registry-config-tests
       - name: Run host-side registry runtime tests
         run: |
           set -euo pipefail

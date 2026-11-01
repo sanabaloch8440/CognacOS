@@ -3,21 +3,74 @@
 #![allow(dead_code)]
 use super::hive::{Error as HiveError,Hive,Key};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum Error{Hive(HiveError),MissingService,MissingImagePath,InvalidImagePath,MissingStart,MissingType,UnsupportedStart,BufferTooSmall}
+pub enum Error{Hive(HiveError),MissingService,MissingImagePath,InvalidImagePath,MissingStart,MissingType,MissingControlSet,InvalidControlSet,UnsupportedStart,BufferTooSmall}
 impl From<HiveError> for Error{fn from(e:HiveError)->Self{Self::Hive(e)}}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct ServiceConfig<'a>{pub start:u32,pub service_type:u32,pub image_path:&'a[u16],pub error_control:u32}
+
+/// The four control-set selectors stored under SYSTEM\\Select. `Current` is
+/// the control set selected for this boot; `Default` is the preferred next-boot
+/// set; `LastKnownGood` is the recovery set; and zero `Failed` means no failed
+/// control set is recorded. Optional selectors remain optional for old/minimal
+/// hives, but every nonzero selector must name an existing ControlSetNNN key.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ControlSetSelection{pub current:u32,pub default:Option<u32>,pub last_known_good:Option<u32>,pub failed:Option<u32>}
+
+fn optional_dword(key:Key<'_, '_>,name:&[u16])->Result<Option<u32>,Error>{
+    match key.find_value(name){
+        Ok(value)=>{if value.kind!=4||value.data_len!=4{return Err(Error::InvalidControlSet)}let mut raw=[0u8;4];value.data(&mut raw)?;Ok(Some(u32::from_le_bytes(raw)))},
+        Err(HiveError::NotFound)=>Ok(None),Err(error)=>Err(error.into()),
+    }
+}
+fn control_set_path(number:u32,out:&mut[u16])->Result<usize,Error>{
+    if number==0||number>999{return Err(Error::InvalidControlSet)}
+    let (prefix,digits)=if number<10{("ControlSet00",1)}else if number<100{("ControlSet0",2)}else{("ControlSet",3)};
+    let mut n=utf16_ascii(prefix,out)?;
+    if n+digits>out.len(){return Err(Error::BufferTooSmall)}
+    match digits {
+        1=>{out[n]=b'0' as u16+number as u16;n+=1;},
+        2=>{out[n]=b'0' as u16+(number/10) as u16;out[n+1]=b'0' as u16+(number%10) as u16;n+=2;},
+        _=>{out[n]=b'0' as u16+(number/100) as u16;out[n+1]=b'0' as u16+((number/10)%10) as u16;out[n+2]=b'0' as u16+(number%10) as u16;n+=3;},
+    }
+    Ok(n)
+}
+
+/// Parse and validate SYSTEM\\Select. A selector is not accepted merely
+/// because its DWORD is in range: its referenced ControlSetNNN key must exist.
+pub fn query_control_set_selection(hive:&Hive<'_>)->Result<ControlSetSelection,Error>{
+    let mut select_path=[0u16;16];let sn=utf16_ascii("Select",&mut select_path)?;
+    let select=hive.find_path(&select_path[..sn])?;
+    let current=optional_dword(select,&[67,117,114,114,101,110,116])?.ok_or(Error::MissingControlSet)?;
+    let default=optional_dword(select,&[68,101,102,97,117,108,116])?;
+    let last_known_good=optional_dword(select,&[76,97,115,116,75,110,111,119,110,71,111,111,100])?;
+    let failed=optional_dword(select,&[70,97,105,108,101,100])?;
+    validate_control_set_selector(current,false)?;
+    if let Some(value)=default{validate_control_set_selector(value,false)?;}
+    if let Some(value)=last_known_good{validate_control_set_selector(value,false)?;}
+    if let Some(value)=failed{validate_control_set_selector(value,true)?;}
+    for value in [Some(current),default,last_known_good,failed].into_iter().flatten(){
+        if value==0 {continue;}
+        let mut path=[0u16;16];let n=control_set_path(value,&mut path)?;
+        hive.find_path(&path[..n]).map_err(|error|if error==HiveError::NotFound{Error::InvalidControlSet}else{Error::Hive(error)})?;
+    }
+    Ok(ControlSetSelection{current,default,last_known_good,failed})
+}
+
+fn validate_control_set_selector(number:u32,allow_zero:bool)->Result<(),Error>{
+    if (number==0&&!allow_zero)||number>999{return Err(Error::InvalidControlSet)}
+    Ok(())
+}
+
+/// Resolve the control set selected for the current boot, never `Default`.
+pub fn active_control_set(hive:&Hive<'_>)->Result<u32,Error>{Ok(query_control_set_selection(hive)?.current)}
 fn dword(key:Key<'_, '_>,name:&[u16])->Result<u32,Error>{let v=key.find_value(name)?;if v.kind!=4||v.data_len!=4{return Err(Error::InvalidImagePath)}let mut b=[0u8;4];v.data(&mut b)?;Ok(u32::from_le_bytes(b))}
 fn utf16_ascii(s:&str,out:&mut[u16])->Result<usize,Error>{let mut n=0;for c in s.encode_utf16(){if n==out.len(){return Err(Error::BufferTooSmall)}out[n]=c;n+=1;}Ok(n)}
 pub fn query_service<'h,'b>(hive:&'h Hive<'h>,service_name:&[u16],path_buf:&'b mut[u16])->Result<ServiceConfig<'b>,Error>{
  if service_name.is_empty()||service_name.len()>128||service_name.iter().any(|c|*c==0||*c==b'\\' as u16){return Err(Error::InvalidImagePath)}
- let mut select_path=[0u16;16];let sn=utf16_ascii("Select",&mut select_path)?;
- let select=hive.find_path(&select_path[..sn])?;
- let current=dword(select,&[67,117,114,114,101,110,116])?;
- if current==0||current>999{return Err(Error::InvalidImagePath)}
- let control_name=if current<10{let mut b=[0u16;16];let n=utf16_ascii("ControlSet00",&mut b)?;b[n]=b'0' as u16+current as u16;(b,n+1)}else if current<100{let mut b=[0u16;16];let n=utf16_ascii("ControlSet0",&mut b)?;b[n]=b'0' as u16+(current/10) as u16;b[n+1]=b'0' as u16+(current%10) as u16;(b,n+2)}else{let mut b=[0u16;16];let n=utf16_ascii("ControlSet",&mut b)?;b[n]=b'0' as u16+(current/100) as u16;b[n+1]=b'0' as u16+((current/10)%10) as u16;b[n+2]=b'0' as u16+(current%10) as u16;(b,n+3)};
+ let current=active_control_set(hive)?;
+ let mut control_name=[0u16;16];let control_len=control_set_path(current,&mut control_name)?;
  let mut path=[0u16;256];let mut n=0;
- for c in control_name.0[..control_name.1].iter().copied().chain("\\Services\\".encode_utf16()).chain(service_name.iter().copied()){if n==path.len(){return Err(Error::InvalidImagePath)}path[n]=c;n+=1;}
+ for c in control_name[..control_len].iter().copied().chain("\\Services\\".encode_utf16()).chain(service_name.iter().copied()){if n==path.len(){return Err(Error::InvalidImagePath)}path[n]=c;n+=1;}
  let key=hive.find_path(&path[..n]).map_err(|e|if e==HiveError::NotFound{Error::MissingService}else{Error::Hive(e)})?;
  let start=dword(key,&[83,116,97,114,116]).map_err(|e|if e==Error::Hive(HiveError::NotFound){Error::MissingStart}else{e})?;
  let service_type=dword(key,&[84,121,112,101]).map_err(|e|if e==Error::Hive(HiveError::NotFound){Error::MissingType}else{e})?;
@@ -47,4 +100,49 @@ pub fn query_bcd_element_raw<'a>(hive:&'a Hive<'a>,object_id:&[u16],element_id:&
  let value=key.find_value(&[69,108,101,109,101,110,116])?;
  if value.kind!=3{return Err(Error::InvalidImagePath)}
  value.data(out).map_err(Error::Hive)
+}
+
+
+#[cfg(test)]
+mod control_set_tests {
+    use super::*;
+
+    #[test]
+    fn formats_control_set_names_using_three_decimal_digits() {
+        let cases = [
+            (1, "ControlSet001"),
+            (9, "ControlSet009"),
+            (10, "ControlSet010"),
+            (99, "ControlSet099"),
+            (100, "ControlSet100"),
+            (999, "ControlSet999"),
+        ];
+        for (number, expected) in cases {
+            let mut output = [0u16; 16];
+            let length = control_set_path(number, &mut output).unwrap();
+            let actual: String = String::from_utf16(&output[..length]).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_zero_and_out_of_range_control_set_numbers() {
+        let mut output = [0u16; 16];
+        assert_eq!(control_set_path(0, &mut output), Err(Error::InvalidControlSet));
+        assert_eq!(control_set_path(1000, &mut output), Err(Error::InvalidControlSet));
+    }
+
+    #[test]
+    fn rejects_truncated_control_set_name_buffer() {
+        let mut output = [0u16; 12];
+        assert_eq!(control_set_path(1, &mut output), Err(Error::BufferTooSmall));
+    }
+
+    #[test]
+    fn validates_required_and_optional_selectors_without_treating_failed_zero_as_a_set() {
+        assert_eq!(validate_control_set_selector(1, false), Ok(()));
+        assert_eq!(validate_control_set_selector(0, false), Err(Error::InvalidControlSet));
+        assert_eq!(validate_control_set_selector(0, true), Ok(()));
+        assert_eq!(validate_control_set_selector(1000, true), Err(Error::InvalidControlSet));
+    }
 }

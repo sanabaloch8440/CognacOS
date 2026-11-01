@@ -19,6 +19,7 @@
 - [Documentation website](https://umarfarooq7869.github.io/CognacOS/)
 - [Windows 11 x64 Ke compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md)
 - [Windows 11 x64 Se compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md)
+- [SYSTEM hive and driver configuration](docs/system-hive-driver-configuration.md) — control-set selection and registry-backed driver metadata
 - [Boot security guide](docs/boot-security.md)
 - [Keyboard driver stack](docs/keyboard-driver-stack.md) — kbdclass, kbdhid, HIDClass, and i8042prt
 - [USB driver stack](docs/usb-driver-stack.md) — Windows-style xHCI, UCX-equivalent, hub, and HID boundaries
