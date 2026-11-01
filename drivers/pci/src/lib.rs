@@ -44,6 +44,19 @@ pub trait EcamWindowExt {
         let p = self.register_address(segment, bus, device, function, offset)?;
         Ok(unsafe { core::ptr::read_volatile(p.cast::<u32>()) })
     }
+    unsafe fn write_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u8) -> Result<(), PciError> {
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        unsafe { core::ptr::write_volatile(p, value); }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        Ok(())
+    }
+    unsafe fn write_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u16) -> Result<(), PciError> {
+        if offset & 1 != 0 { return Err(PciError::InvalidOffset); }
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        unsafe { core::ptr::write_volatile(p.cast::<u16>(), value); }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        Ok(())
+    }
     unsafe fn write_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u32) -> Result<(), PciError> {
         if offset & 3 != 0 { return Err(PciError::InvalidOffset); }
         let p = self.register_address(segment, bus, device, function, offset)?;
