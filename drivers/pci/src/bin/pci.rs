@@ -273,7 +273,7 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
             if extension.is_null() {
                 unsafe { delete_pdo(pdo); }
                 for created_pdo in created[..created_count].iter().copied() {
-                    if !created_pdo.is_null() { unsafe { IoDeleteDevice(created_pdo); } }
+                    if !created_pdo.is_null() { unsafe { delete_pdo(created_pdo); } }
                 }
                 return Err(STATUS_INSUFFICIENT_RESOURCES);
             }
@@ -313,17 +313,13 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
 
 unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     STATE.ready.store(false, Ordering::Release);
-    let handoff_address = HANDOFF.load(Ordering::Acquire);
-    if handoff_address != 0 {
-        let count = STATE.pdo_count.swap(0, Ordering::AcqRel).min(MAX_PCI_PDOS);
-        for index in 0..count {
-            let pdo = unsafe { (*STATE.pdos.get())[index] };
-            if !pdo.is_null() {
-                unsafe { IoDeleteDevice(pdo); }
-                unsafe { (*STATE.pdos.get())[index] = core::ptr::null_mut(); }
-            }
+    let count = STATE.pdo_count.swap(0, Ordering::AcqRel).min(MAX_PCI_PDOS);
+    for index in 0..count {
+        let pdo = unsafe { (*STATE.pdos.get())[index] };
+        if !pdo.is_null() {
+            unsafe { delete_pdo(pdo); }
+            unsafe { (*STATE.pdos.get())[index] = core::ptr::null_mut(); }
         }
-
     }
     HANDOFF.store(0, Ordering::Release);
     DRIVER_OBJECT.store(0, Ordering::Release);
