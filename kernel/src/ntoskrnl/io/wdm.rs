@@ -980,7 +980,7 @@ pub unsafe extern "win64" fn io_create_device(
  };
  let object=&mut slot.object as *mut DeviceObject;
  if matches!(device_type,FILE_DEVICE_DISK|FILE_DEVICE_CD_ROM|FILE_DEVICE_TAPE|FILE_DEVICE_VIRTUAL_DISK) {
-  slot.vpb.real_device=object;
+  slot.vpb.real_device=object.cast();
   slot.vpb.reference_count=0;
   slot.object.vpb=ptr::addr_of_mut!(slot.vpb).cast();
  }
@@ -2017,7 +2017,7 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
   let real_index=real_index_any;
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
-  let volume=unsafe{(*vpb).device_object};
+  let volume=unsafe{(*vpb).device_object.cast::<DeviceObject>()};
   let volume_index=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,volume));
   let already_mounted_elsewhere=state.devices.iter().any(|s|s.used&&!ptr::eq(&s.vpb,vpb)
    &&s.vpb.device_object==volume&&s.vpb.flags&crate::nt_abi::io::VPB_MOUNTED!=0);
@@ -2079,7 +2079,7 @@ unsafe extern "win64" fn dismount_volume_completion(_device:*mut DeviceObject,ir
   let mut state=WDM.lock();
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
-  let volume=unsafe{(*vpb).device_object};
+  let volume=unsafe{(*vpb).device_object.cast::<DeviceObject>()};
   let volume_index=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,volume));
   if let Some(vi)=volume_index {
    unsafe{
@@ -2119,7 +2119,7 @@ fn io_dismount_volume(real_device:*mut DeviceObject)->i32 {
  };
  if volume.is_null(){return STATUS_SUCCESS}
  if refs!=0{return STATUS_DEVICE_BUSY}
- let target=unsafe{io_reference_device_object(volume)};
+ let target=unsafe{io_reference_device_object(volume.cast::<DeviceObject>())};
  if target.is_null(){return STATUS_DELETE_PENDING}
  let stack_size=unsafe{(*target).stack_size};
  if stack_size<=0 {unsafe{io_dereference_device_object(target);}return STATUS_INVALID_DEVICE_REQUEST}
@@ -2244,7 +2244,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
  if remove_pending{return STATUS_DELETE_PENDING}
  if mounted {
   if volume.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
-  let target=unsafe{io_reference_device_object(volume)};
+  let target=unsafe{io_reference_device_object(volume.cast::<DeviceObject>())};
   if target.is_null(){return STATUS_DELETE_PENDING}
   let stack_size=unsafe{(*target).stack_size};
   if stack_size<=0 {unsafe{io_dereference_device_object(target);}return STATUS_INVALID_DEVICE_REQUEST}
@@ -3547,7 +3547,7 @@ mod wdm_tests {
   assert_eq!(unsafe{io_verify_volume(disk,0)},STATUS_SUCCESS);
   let vpb=unsafe{(*disk).vpb.cast::<Vpb>()};
   assert_ne!(unsafe{(*vpb).flags}&crate::nt_abi::io::VPB_MOUNTED,0);
-  let volume=unsafe{(*vpb).device_object};
+  let volume=unsafe{(*vpb).device_object.cast::<DeviceObject>()};
   assert!(!volume.is_null());
   assert_eq!(unsafe{(*volume).device_type},FILE_DEVICE_DISK_FILE_SYSTEM);
   assert_eq!(io_dismount_volume(disk),STATUS_SUCCESS);
