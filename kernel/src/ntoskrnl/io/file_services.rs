@@ -1,13 +1,13 @@
-//! Read-only VFS provider routed through WDM FILE_OBJECT and IRP dispatch.
+//! VFS provider routed through WDM FILE_OBJECT and IRP dispatch.
 //!
-//! Registered immutable boot assets are exposed by an internal read-only device.
-//! Open/read/cleanup/close are represented by IRP_MJ_CREATE, IRP_MJ_READ,
-//! IRP_MJ_CLEANUP and IRP_MJ_CLOSE. The process-scoped token API is retained as
-//! a compatibility wrapper; it no longer owns an independent file I/O path.
+//! Immutable boot assets remain read-only; ext4 reads/writes are delegated to
+//! the ext4 filesystem implementation through its bounded block-device interface.
+//! Process-owned handles are issued and validated by the NT Object Manager.
 
 use crate::hal::IrqSpinLock;
-use crate::wdm::{self, DriverObject, DeviceObject, Irp, IoStackLocation, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
-use crate::nt_abi::io::FILE_OBJECT;
+use crate::wdm::{self, DriverObject, DeviceObject, Irp, IoStackLocation, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_WRITE, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
+use crate::nt_abi::io::{FILE_OBJECT, IO_STATUS_BLOCK, IO_STATUS_BLOCK_STATUS};
+use cognacos_ext4 as extfs;
 use crate::nt_abi::object::UNICODE_STRING;
 use core::ffi::c_void;
 use core::ptr;
@@ -23,6 +23,8 @@ pub const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
 pub const STATUS_END_OF_FILE: i32 = 0xC000_0011u32 as i32;
 pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009Au32 as i32;
 pub const STATUS_DEVICE_BUSY: i32 = 0x8000_0011u32 as i32;
+pub const STATUS_MEDIA_WRITE_PROTECTED: i32 = 0xC000_00A2u32 as i32;
+const STATUS_UNSUCCESSFUL: i32 = 0xC000_0001u32 as i32;
 const STATUS_UNRECOGNIZED_VOLUME:i32=0xC000_014F_u32 as i32;
 const FILE_DEVICE_DISK_FILE_SYSTEM:u32=8;
 const IRP_MN_MOUNT_VOLUME:u8=1;
@@ -108,6 +110,9 @@ impl State {
 }
 unsafe impl Send for State {}
 static STATE: IrqSpinLock<State> = IrqSpinLock::new(State::new());
+#[repr(C, align(8))]
+struct FileIoEvent { bytes: [u8; 0x18] }
+const _: () = assert!(core::mem::size_of::<FileIoEvent>() == 0x18);
 unsafe extern "win64" fn file_object_finalizer(body: *mut c_void) {
     let mut state = STATE.lock();
     if let Some(entry) = state.handles.iter_mut().find(|entry| {
@@ -151,37 +156,73 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
                 }
             }
         }
-        IRP_MJ_READ => {
+        IRP_MJ_READ | IRP_MJ_WRITE => {
             if file_object.is_null() {
                 status = STATUS_INVALID_PARAMETER;
             } else {
-                                let length = unsafe { wdm::io_read_stack_u32(stack, 0) as usize };
+                let is_write = major == IRP_MJ_WRITE;
+                let length = unsafe { wdm::io_read_stack_u32(stack, 0) as usize };
                 let requested_offset = unsafe { wdm::io_read_stack_i64(stack, 8) };
-                let output = unsafe { wdm::io_get_irp_user_buffer(irp).cast::<u8>() };
+                let buffer = unsafe { wdm::io_get_irp_user_buffer(irp).cast::<u8>() };
                 let index = unsafe { (*file_object).fs_context as usize };
-                if index == 0 || index > MAX_FILES || (length != 0 && output.is_null()) {
+                if index == 0 || index > MAX_FILES || (length != 0 && buffer.is_null()) {
                     status = STATUS_INVALID_PARAMETER;
                 } else {
-                    let file={let state=STATE.lock();if !state.files[index-1].used{None}else{Some(state.files[index-1])}};
-                    if let Some(file)=file{
-                     let offset=if requested_offset==FILE_USE_FILE_POINTER_POSITION{unsafe{(*file_object).current_byte_offset}}else{requested_offset};
-                     if offset<0{status=STATUS_INVALID_PARAMETER;}
-                     else if offset as usize>=file.length{status=STATUS_END_OF_FILE;}
-                     else{
-                      let count=core::cmp::min(length,file.length-offset as usize);
-                      if count!=0{
-                       if file.source==0{unsafe{ptr::copy_nonoverlapping((file.address+offset as usize) as *const u8,output,count);}information=count;}
-                       else if !output.is_null(){
-                        let out=unsafe{core::slice::from_raw_parts_mut(output,count)};
-                        match crate::ata_disk::read_ext4_root_file_range(&file.path[..file.path_len],offset as u64,out){
-                         Ok((size,read)) if size==file.length as u64=>information=read,
-                         _=>status=STATUS_OBJECT_NAME_NOT_FOUND,
+                    let file = {
+                        let state = STATE.lock();
+                        if !state.files[index - 1].used { None } else { Some(state.files[index - 1]) }
+                    };
+                    if let Some(file) = file {
+                        let offset = if requested_offset == FILE_USE_FILE_POINTER_POSITION {
+                            unsafe { (*file_object).current_byte_offset }
+                        } else { requested_offset };
+                        if offset < 0 {
+                            status = STATUS_INVALID_PARAMETER;
+                        } else if offset as usize >= file.length {
+                            status = STATUS_END_OF_FILE;
+                        } else {
+                            let count = core::cmp::min(length, file.length - offset as usize);
+                            if count != 0 {
+                                if file.source == 0 {
+                                    if is_write {
+                                        status = STATUS_MEDIA_WRITE_PROTECTED;
+                                    } else {
+                                        unsafe { ptr::copy_nonoverlapping((file.address + offset as usize) as *const u8, buffer, count); }
+                                        information = count;
+                                    }
+                                } else if is_write {
+                                    let input = unsafe { core::slice::from_raw_parts(buffer.cast_const(), count) };
+                                    match crate::ata_disk::ext4_block_device() {
+                                        Ok(volume) => match extfs::write_root_file_range(
+                                            volume, &file.path[..file.path_len], offset as u64, input,
+                                        ) {
+                                            Ok(written) if written == count => information = written,
+                                            Ok(_) => status = STATUS_UNSUCCESSFUL,
+                                            Err(extfs::Error::UnsupportedFormat) => status = STATUS_MEDIA_WRITE_PROTECTED,
+                                            Err(_) => status = STATUS_UNSUCCESSFUL,
+                                        },
+                                        Err(_) => status = STATUS_UNSUCCESSFUL,
+                                    }
+                                } else {
+                                    let output = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
+                                    match crate::ata_disk::ext4_block_device() {
+                                        Ok(mut volume) => match extfs::read_root_file_range(
+                                            &mut volume, &file.path[..file.path_len], offset as u64, output,
+                                        ) {
+                                            Ok((size, read)) if size == file.length as u64 => information = read,
+                                            _ => status = STATUS_OBJECT_NAME_NOT_FOUND,
+                                        },
+                                        Err(_) => status = STATUS_UNSUCCESSFUL,
+                                    }
+                                }
+                            }
+                            if status >= 0 && requested_offset == FILE_USE_FILE_POINTER_POSITION {
+                                unsafe { (*file_object).current_byte_offset = offset + information as i64; }
+                            }
                         }
-                       }else{status=STATUS_INVALID_PARAMETER;}
-                      }
-                      if status>=0&&requested_offset==FILE_USE_FILE_POINTER_POSITION{unsafe{(*file_object).current_byte_offset=offset+information as i64;}}
-                     }
-                    }else{status=STATUS_INVALID_HANDLE;}
+                    } else {
+                        status = STATUS_INVALID_HANDLE;
+                    }
                 }
             }
         }
@@ -246,6 +287,7 @@ const fn make_file_driver() -> DriverObject {
     let mut major: [Option<wdm::DriverDispatch>; 28] = [None; 28];
     major[IRP_MJ_CREATE as usize] = Some(file_dispatch);
     major[IRP_MJ_READ as usize] = Some(file_dispatch);
+    major[IRP_MJ_WRITE as usize] = Some(file_dispatch);
     major[IRP_MJ_CLEANUP as usize] = Some(file_dispatch);
     major[IRP_MJ_CLOSE as usize] = Some(file_dispatch);
     major[wdm::IRP_MJ_FILE_SYSTEM_CONTROL as usize] = Some(file_system_control_dispatch);
@@ -334,31 +376,45 @@ pub fn mount_ext4_volume(real_device:*mut DeviceObject)->i32{
 }
 
 fn dispatch_file_irp(file_object: *mut FILE_OBJECT, major: u8, offset: i64, buffer: *mut u8, length: usize) -> Result<usize, i32> {
-    if file_object.is_null() || (major == IRP_MJ_READ && length != 0 && buffer.is_null()) || length > u32::MAX as usize {
+    if file_object.is_null()
+        || ((major == IRP_MJ_READ || major == IRP_MJ_WRITE) && length != 0 && buffer.is_null())
+        || length > u32::MAX as usize {
         return Err(STATUS_INVALID_PARAMETER);
     }
     let device = unsafe { (*file_object).device_object.cast::<DeviceObject>() };
-    if device.is_null(){return Err(STATUS_INVALID_HANDLE)}
-    let stack_size = unsafe { (*device).stack_size };
-    let irp = unsafe { wdm::io_allocate_irp(stack_size, 0) };
+    if device.is_null() { return Err(STATUS_INVALID_HANDLE); }
+    let mut event = FileIoEvent { bytes: [0; 0x18] };
+    let mut io_status = IO_STATUS_BLOCK {
+        status: IO_STATUS_BLOCK_STATUS { status: wdm::STATUS_PENDING },
+        information: 0,
+    };
+    unsafe {
+        crate::ntoskrnl::ke::runtime::ke_initialize_event(event.bytes.as_mut_ptr().cast(), 0, 0);
+    }
+    let irp = unsafe {
+        wdm::io_build_synchronous_irp(
+            major, device, buffer.cast(), length as u32, offset,
+            event.bytes.as_mut_ptr().cast(), &mut io_status,
+        )
+    };
     if irp.is_null() { return Err(STATUS_INSUFFICIENT_RESOURCES); }
     let stack = unsafe { wdm::io_get_next_irp_stack_location(irp) };
     if stack.is_null() {
         unsafe { wdm::io_free_irp(irp); }
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
-    unsafe {
-        (*stack).major_function = major;
-        (*stack).file_object = file_object.cast::<c_void>();
-        if major == IRP_MJ_READ {
-            let _ = wdm::io_write_stack_u32(stack, 0, length as u32);
-            let _ = wdm::io_write_stack_i64(stack, 8, offset);
-            let _ = wdm::io_set_irp_user_buffer(irp, buffer.cast());
-        }
+    unsafe { (*stack).file_object = file_object.cast::<c_void>(); }
+    let _dispatch_status = unsafe { wdm::io_call_driver(device, irp) };
+    if unsafe { io_status.status.status } == wdm::STATUS_PENDING {
+        let wait_status = unsafe {
+            crate::ntoskrnl::ke::runtime::ke_wait_for_single_object(
+                event.bytes.as_mut_ptr().cast(), 0, 0, 0, ptr::null_mut(),
+            )
+        };
+        if wait_status < 0 { return Err(wait_status); }
     }
-    let status = unsafe { wdm::io_call_driver(device, irp) };
-    let information = unsafe { wdm::io_get_irp_information(irp) };
-    unsafe { wdm::io_free_irp(irp); }
+    let status = unsafe { io_status.status.status };
+    let information = io_status.information;
     if major == IRP_MJ_READ && status == STATUS_END_OF_FILE { return Ok(0); }
     if status < 0 { Err(status) } else { Ok(information) }
 }
@@ -451,7 +507,8 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     mount_boot_system_files();
     let registered = { let state = STATE.lock(); state.files.iter().position(|f| f.used && path_equal(&f.path[..f.path_len], path)) };
     let file_index = if let Some(index) = registered { index } else {
-        let size = crate::ata_disk::ext4_root_file_size(path).map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
+        let mut volume = crate::ata_disk::ext4_block_device().map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
+        let size = extfs::root_file_size(&mut volume, path).map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
         let mut state = STATE.lock();
         if let Some(index) = state.files.iter().position(|f| f.used && path_equal(&f.path[..f.path_len], path)) { index } else {
             let index = state.files.iter().position(|f| !f.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -496,6 +553,18 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
         return Err(status);
     }
     Ok(handle)
+}
+
+/// Write to an existing file extent through IRP_MJ_WRITE.
+pub fn write_at(handle: usize, offset: usize, input: &[u8]) -> Result<usize, i32> {
+    write_at_for_process(0, handle, offset, input)
+}
+pub fn write_at_for_process(owner: u64, handle: usize, offset: usize, input: &[u8]) -> Result<usize, i32> {
+    let byte_offset: i64 = offset.try_into().map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let file_object = pin_handle(owner, handle)?;
+    let result = dispatch_file_irp(file_object, IRP_MJ_WRITE, byte_offset, input.as_ptr() as *mut u8, input.len());
+    unpin_handle(file_object);
+    result
 }
 
 /// Read from an explicit byte offset using IRP_MJ_READ.

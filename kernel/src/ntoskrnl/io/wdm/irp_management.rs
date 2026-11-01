@@ -447,6 +447,100 @@ pub unsafe extern "win64" fn io_build_device_io_control_request(
  irp
 }
 
+/// Internal synchronous IRP builder used by file-object services. The
+/// Object Manager/I/O Manager retain the request until completion has copied
+/// the IOSB and signalled the caller's event.
+pub(crate) unsafe fn io_build_synchronous_irp(
+    major: u8,
+    device: *mut DeviceObject,
+    buffer: *mut c_void,
+    length: u32,
+    starting_offset: i64,
+    event: *mut c_void,
+    io_status: *mut IoStatusBlock,
+) -> *mut Irp {
+    let creator_thread = crate::thread::current_thread_id().unwrap_or(0);
+    if unsafe { crate::ntoskrnl::ke::runtime::ke_get_current_irql() } > 1
+        || device.is_null() || event.is_null() || io_status.is_null()
+        || major >= 28
+        || ((major == IRP_MJ_READ || major == IRP_MJ_WRITE) && length != 0 && buffer.is_null()) {
+        return ptr::null_mut();
+    }
+    #[cfg(not(test))]
+    if creator_thread == 0 { return ptr::null_mut(); }
+    let stack_size = {
+        let state = WDM.lock();
+        let Some(slot) = state.devices.iter().find(|slot| slot.used && !slot.deleting && ptr::eq(&slot.object, device)) else {
+            return ptr::null_mut();
+        };
+        slot.object.stack_size
+    };
+    if stack_size <= 0 { return ptr::null_mut(); }
+    let irp = unsafe { io_allocate_irp(stack_size, 0) };
+    if irp.is_null() { return ptr::null_mut(); }
+    let stack = unsafe { io_get_next_irp_stack_location(irp) };
+    if stack.is_null() { unsafe { io_free_irp(irp); } return ptr::null_mut(); }
+    {
+        let mut state = WDM.lock();
+        let Some(index) = state.irps.iter().position(|slot| slot.used && ptr::eq(&slot.object, irp)) else {
+            drop(state);
+            unsafe { io_free_irp(irp); }
+            return ptr::null_mut();
+        };
+        let slot = &mut state.irps[index];
+        slot.built_sync_ioctl = true;
+        slot.sync_thread_id = creator_thread;
+        slot.sync_event = event;
+        slot.requestor_pid = crate::thread::current_process_id();
+        slot.object.bytes[0x10..0x14].copy_from_slice(
+            &(0x04u32 | if major == IRP_MJ_WRITE { 0x40u32 } else { 0 }).to_le_bytes()
+        );
+        unsafe {
+            write_ptr(slot.object.bytes.as_mut_ptr(), 0x48, io_status.cast());
+            write_ptr(slot.object.bytes.as_mut_ptr(), 0x70, buffer);
+            ptr::write_unaligned(io_status.cast::<u8>().cast::<i32>(), STATUS_PENDING);
+            ptr::write_unaligned(io_status.cast::<u8>().add(8).cast::<usize>(), 0);
+            ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(), STATUS_PENDING);
+            ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(), 0);
+        }
+    }
+    if !{ let mut state = WDM.lock(); sync_queue_attach_locked(&mut state, irp, creator_thread) } {
+        unsafe { io_free_irp(irp); }
+        return ptr::null_mut();
+    }
+    unsafe {
+        (*stack).major_function = major;
+        if major == IRP_MJ_READ || major == IRP_MJ_WRITE {
+            let _ = io_write_stack_u32(stack, 0, length);
+            let _ = io_write_stack_i64(stack, 8, starting_offset);
+        }
+    }
+    irp
+}
+
+/// Windows x64 IoBuildSynchronousFsdRequest ABI.
+#[unsafe(export_name = "IoBuildSynchronousFsdRequest")]
+pub unsafe extern "win64" fn io_build_synchronous_fsd_request(
+    major_function: u32,
+    device: *mut DeviceObject,
+    buffer: *mut c_void,
+    length: u32,
+    starting_offset: *mut i64,
+    event: *mut c_void,
+    io_status: *mut IoStatusBlock,
+) -> *mut Irp {
+    if major_function > u8::MAX as u32 { return ptr::null_mut(); }
+    let major = major_function as u8;
+    if !(major == IRP_MJ_READ || major == IRP_MJ_WRITE || major == 0x09 || major == 0x10) {
+        return ptr::null_mut();
+    }
+    if (major == IRP_MJ_READ || major == IRP_MJ_WRITE) && starting_offset.is_null() {
+        return ptr::null_mut();
+    }
+    let offset = if starting_offset.is_null() { 0 } else { unsafe { *starting_offset } };
+    unsafe { io_build_synchronous_irp(major, device, buffer, length, offset, event, io_status) }
+}
+
 fn try_free_completed_sync_ioctl_irp(irp:*mut Irp) {
  if irp.is_null(){return}
  let ready={

@@ -2007,3 +2007,7 @@ mod inline_extent_enumeration_tests {
         assert_eq!(validate_inline_extent_root(&b, 100), Err(Error::InvalidExtentTree));
     }
 }
+
+
+pub mod file_io;
+pub use file_io::{read_root_file_range, root_file_size, write_root_file_range};
