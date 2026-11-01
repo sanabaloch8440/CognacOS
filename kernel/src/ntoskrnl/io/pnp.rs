@@ -202,3 +202,195 @@ pub fn register_xhci_interrupt_vector(vector:u8)->Result<(),()> {
         Err(_) => Err(()),
     }
 }
+
+
+/// Kernel-owned device-node table used by bus enumerators. The table is
+/// deliberately fixed-size for early boot (no heap dependency); it records
+/// discovery and lifecycle state separately from any driver-specific resource
+/// handoff such as the xHCI record above.
+pub const MAX_PNP_DEVICES: usize = 128;
+pub const PNP_NO_PARENT: u32 = u32::MAX;
+pub const PNP_DEVICE_EMPTY: u32 = 0;
+pub const PNP_DEVICE_ENUMERATED: u32 = 1;
+pub const PNP_DEVICE_RESOURCES_ASSIGNED: u32 = 2;
+pub const PNP_DEVICE_STARTED: u32 = 3;
+pub const PNP_DEVICE_FAILED: u32 = 4;
+pub const PNP_DEVICE_REMOVED: u32 = 5;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PnpError {
+    InvalidFunction,
+    InvalidParent,
+    TableFull,
+    DuplicateDevice,
+    InvalidState,
+    InvalidTransition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PnpDeviceSnapshot {
+    pub index: u32,
+    pub state: u32,
+    pub parent: u32,
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class_code: u8,
+    pub subclass: u8,
+    pub programming_interface: u8,
+    pub last_status: i32,
+    pub start_attempts: u32,
+}
+
+struct PnpDeviceNode {
+    state: AtomicU32,
+    parent: AtomicU32,
+    segment: AtomicU32,
+    bus: AtomicU32,
+    device: AtomicU32,
+    function: AtomicU32,
+    vendor_id: AtomicU32,
+    device_id: AtomicU32,
+    class_code: AtomicU32,
+    subclass: AtomicU32,
+    programming_interface: AtomicU32,
+    last_status: core::sync::atomic::AtomicI32,
+    start_attempts: AtomicU32,
+}
+impl PnpDeviceNode {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU32::new(PNP_DEVICE_EMPTY),
+            parent: AtomicU32::new(PNP_NO_PARENT),
+            segment: AtomicU32::new(0), bus: AtomicU32::new(0),
+            device: AtomicU32::new(0), function: AtomicU32::new(0),
+            vendor_id: AtomicU32::new(0), device_id: AtomicU32::new(0),
+            class_code: AtomicU32::new(0), subclass: AtomicU32::new(0),
+            programming_interface: AtomicU32::new(0),
+            last_status: core::sync::atomic::AtomicI32::new(0),
+            start_attempts: AtomicU32::new(0),
+        }
+    }
+}
+static PNP_DEVICES: [PnpDeviceNode; MAX_PNP_DEVICES] =
+    [const { PnpDeviceNode::new() }; MAX_PNP_DEVICES];
+static PNP_TABLE_LOCK: AtomicBool = AtomicBool::new(false);
+struct PnpTableGuard;
+impl Drop for PnpTableGuard {
+    fn drop(&mut self) { PNP_TABLE_LOCK.store(false, Ordering::Release); }
+}
+fn lock_pnp_table() -> PnpTableGuard {
+    while PNP_TABLE_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+    PnpTableGuard
+}
+
+fn valid_pnp_transition(from: u32, to: u32) -> bool {
+    match from {
+        PNP_DEVICE_ENUMERATED => to == PNP_DEVICE_RESOURCES_ASSIGNED || to == PNP_DEVICE_FAILED || to == PNP_DEVICE_REMOVED,
+        PNP_DEVICE_RESOURCES_ASSIGNED => to == PNP_DEVICE_STARTED || to == PNP_DEVICE_FAILED || to == PNP_DEVICE_REMOVED,
+        PNP_DEVICE_STARTED => to == PNP_DEVICE_REMOVED || to == PNP_DEVICE_FAILED,
+        PNP_DEVICE_FAILED => to == PNP_DEVICE_REMOVED,
+        _ => false,
+    }
+}
+
+/// Add a PCI function to the kernel PnP device tree. Enumeration is read-only:
+/// this function does not size BARs, enable decode/bus mastering, or start hardware.
+/// Parent indices identify the bus/bridge node when the enumerator has resolved
+/// the topology; root-bus functions use None.
+pub fn register_pci_function(
+    function: &cognacos_pci::PciFunction,
+    parent: Option<u32>,
+) -> Result<u32, PnpError> {
+    let h = function.header;
+    if function.device >= 32 || function.function >= 8 || h.vendor_id == 0 || h.vendor_id == 0xffff {
+        return Err(PnpError::InvalidFunction);
+    }
+    let _guard = lock_pnp_table();
+    let parent_index = parent.unwrap_or(PNP_NO_PARENT);
+    if parent_index != PNP_NO_PARENT {
+        let p = PNP_DEVICES.get(parent_index as usize).ok_or(PnpError::InvalidParent)?;
+        if p.state.load(Ordering::Acquire) == PNP_DEVICE_EMPTY || p.state.load(Ordering::Relaxed) == PNP_DEVICE_REMOVED {
+            return Err(PnpError::InvalidParent);
+        }
+    }
+    for (i, node) in PNP_DEVICES.iter().enumerate() {
+        let state = node.state.load(Ordering::Acquire);
+        if state == PNP_DEVICE_EMPTY || state == PNP_DEVICE_REMOVED { continue; }
+        if node.segment.load(Ordering::Relaxed) == function.segment as u32
+            && node.bus.load(Ordering::Relaxed) == function.bus as u32
+            && node.device.load(Ordering::Relaxed) == function.device as u32
+            && node.function.load(Ordering::Relaxed) == function.function as u32 {
+            return Err(PnpError::DuplicateDevice);
+        }
+        let _ = i;
+    }
+    let (index, node) = PNP_DEVICES.iter().enumerate()
+        .find(|(_, n)| {
+            let s = n.state.load(Ordering::Acquire);
+            s == PNP_DEVICE_EMPTY || s == PNP_DEVICE_REMOVED
+        }).ok_or(PnpError::TableFull)?;
+    node.parent.store(parent_index, Ordering::Relaxed);
+    node.segment.store(function.segment as u32, Ordering::Relaxed);
+    node.bus.store(function.bus as u32, Ordering::Relaxed);
+    node.device.store(function.device as u32, Ordering::Relaxed);
+    node.function.store(function.function as u32, Ordering::Relaxed);
+    node.vendor_id.store(h.vendor_id as u32, Ordering::Relaxed);
+    node.device_id.store(h.device_id as u32, Ordering::Relaxed);
+    node.class_code.store(h.class_code as u32, Ordering::Relaxed);
+    node.subclass.store(h.subclass as u32, Ordering::Relaxed);
+    node.programming_interface.store(h.programming_interface as u32, Ordering::Relaxed);
+    node.last_status.store(0, Ordering::Relaxed);
+    node.start_attempts.store(0, Ordering::Relaxed);
+    node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
+    Ok(index as u32)
+}
+
+/// Apply the PnP lifecycle transition only after the relevant operation has
+/// completed. A failed start is recorded as FAILED; it can never be reported as
+/// STARTED. The caller is responsible for unwinding hardware resources before
+/// removing a failed device, matching the Windows PnP start/remove contract.
+pub fn transition_pnp_device(index: u32, next: u32, status: i32) -> Result<(), PnpError> {
+    let _guard = lock_pnp_table();
+    let node = PNP_DEVICES.get(index as usize).ok_or(PnpError::InvalidState)?;
+    let current = node.state.load(Ordering::Acquire);
+    if !valid_pnp_transition(current, next) { return Err(PnpError::InvalidTransition); }
+    if current == PNP_DEVICE_RESOURCES_ASSIGNED && next == PNP_DEVICE_STARTED && status < 0 {
+        node.last_status.store(status, Ordering::Relaxed);
+        node.start_attempts.fetch_add(1, Ordering::Relaxed);
+        node.state.store(PNP_DEVICE_FAILED, Ordering::Release);
+        return Ok(());
+    }
+    if current == PNP_DEVICE_RESOURCES_ASSIGNED && next == PNP_DEVICE_STARTED {
+        node.start_attempts.fetch_add(1, Ordering::Relaxed);
+    }
+    node.last_status.store(status, Ordering::Relaxed);
+    node.state.store(next, Ordering::Release);
+    Ok(())
+}
+
+pub fn query_pnp_device(index: u32) -> Option<PnpDeviceSnapshot> {
+    let _guard = lock_pnp_table();
+    let node = PNP_DEVICES.get(index as usize)?;
+    let state = node.state.load(Ordering::Acquire);
+    if state == PNP_DEVICE_EMPTY { return None; }
+    Some(PnpDeviceSnapshot {
+        index, state, parent: node.parent.load(Ordering::Relaxed),
+        segment: node.segment.load(Ordering::Relaxed) as u16,
+        bus: node.bus.load(Ordering::Relaxed) as u8,
+        device: node.device.load(Ordering::Relaxed) as u8,
+        function: node.function.load(Ordering::Relaxed) as u8,
+        vendor_id: node.vendor_id.load(Ordering::Relaxed) as u16,
+        device_id: node.device_id.load(Ordering::Relaxed) as u16,
+        class_code: node.class_code.load(Ordering::Relaxed) as u8,
+        subclass: node.subclass.load(Ordering::Relaxed) as u8,
+        programming_interface: node.programming_interface.load(Ordering::Relaxed) as u8,
+        last_status: node.last_status.load(Ordering::Relaxed),
+        start_attempts: node.start_attempts.load(Ordering::Relaxed),
+    })
+}
