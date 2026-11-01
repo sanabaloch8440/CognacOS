@@ -217,7 +217,7 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
         self.endpoints[ei].outstanding=self.endpoints[ei].outstanding.saturating_sub(1);
         Ok(Some(Completion{request_id:req.id,status:UcxStatus::Cancelled,bytes_transferred:0}))
     }
-    pub fn finish_abort_endpoint(&mut self,h:EndpointHandle)->Result<(),UcxStatus>{
+    pub fn finish_abort_endpoint(&mut self,h:EndpointHandle,_q:&EndpointQuiesced)->Result<(),UcxStatus>{
         let ei=self.endpoint_index(h)?;
         if self.endpoints[ei].state!=EndpointState::Aborting{return Err(UcxStatus::InvalidState)}
         if self.endpoints[ei].outstanding!=0{return Err(UcxStatus::Busy)}
@@ -282,10 +282,10 @@ mod tests {
   c.submit(e,RequestKind::Bulk,DmaBuffer{device_address:0x9000,length:512},512,0xffff_ffff).unwrap();
   assert_eq!(c.begin_abort_endpoint(e),Ok(1));assert_eq!(c.outstanding_requests(),1);
   let q=unsafe{EndpointQuiesced::after_hardware_stop_and_dma_fence()};
-  assert_eq!(c.finish_abort_endpoint(e),Err(UcxStatus::Busy));
+  assert_eq!(c.finish_abort_endpoint(e,&q),Err(UcxStatus::Busy));
   assert_eq!(c.complete_cancelled_after_quiescence(e,&q).unwrap().unwrap().status,UcxStatus::Cancelled);
   assert_eq!(c.complete_cancelled_after_quiescence(e,&q),Ok(None));
-  assert_eq!(c.finish_abort_endpoint(e),Ok(()));assert_eq!(c.outstanding_requests(),0);
+  assert_eq!(c.finish_abort_endpoint(e,&q),Ok(()));assert_eq!(c.outstanding_requests(),0);
  }
  #[test]fn stale_controller_generation_rejects_old_device(){
   let mut c=started();let d=c.create_device(1,1).unwrap();c.begin_reset().unwrap();c.reset_complete(true).unwrap();
