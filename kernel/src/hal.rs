@@ -1210,6 +1210,9 @@ unsafe extern "win64" fn kernel_io_publish_bus_relations(
     unsafe{crate::ntoskrnl::io::wdm::IoPnPProcessBusRelations(bus.cast(),(&relations as *const KernelDeviceRelations).cast())}
 }
 
+unsafe extern "win64" fn kernel_io_mark_bus_pdo(device:*mut core::ffi::c_void)->i32{
+    unsafe{crate::io::io_mark_bus_enumerated_pdo(device.cast())}
+}
 unsafe extern "win64" fn kernel_io_skip_current_stack(irp:*mut core::ffi::c_void) {
     unsafe{crate::io::io_skip_current_irp_stack_location(irp.cast());}
 }
@@ -1238,6 +1241,7 @@ pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceT
         publish_bus_relations:Some(kernel_io_publish_bus_relations),
         skip_current_stack:Some(kernel_io_skip_current_stack),
         free_irp:Some(kernel_io_free_irp),
+        mark_bus_enumerated_pdo:Some(kernel_io_mark_bus_pdo),
     }
 }
 
