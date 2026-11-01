@@ -11,7 +11,7 @@ pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: Kernel
 
 pub(crate) mod alpc;
 pub(crate) mod alpc_resources; pub(crate) mod alpc_native; pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
-pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; mod zw; mod other;
+pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; mod cc; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 #[path = "io/pnp.rs"] pub(crate) mod pnp;
 pub(crate) mod driver_loader;
@@ -54,6 +54,19 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   };
  }
  if !(dll.eq_ignore_ascii_case(b"ntoskrnl.exe") || dll.eq_ignore_ascii_case(b"ntkrnlmp.exe") || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) { return None; }
+ // Cache Manager exports are resolved only to implemented, ABI-specific routines.
+ if let ImportSymbol::Name(requested) = symbol {
+  let cache = if requested.eq_ignore_ascii_case(b"CcInitializeCacheMap") { Some(cc::cc_initialize_cache_map as usize) }
+  else if requested.eq_ignore_ascii_case(b"CcUninitializeCacheMap") { Some(cc::cc_uninitialize_cache_map as usize) }
+  else if requested.eq_ignore_ascii_case(b"CcSetFileSizes") { Some(cc::cc_set_file_sizes as usize) }
+  else if requested.eq_ignore_ascii_case(b"CcCopyRead") { Some(cc::cc_copy_read as usize) }
+  else if requested.eq_ignore_ascii_case(b"CcCopyWrite") { Some(cc::cc_copy_write as usize) }
+  else if requested.eq_ignore_ascii_case(b"CcFlushCache") { Some(cc::cc_flush_cache as usize) }
+  else if requested.eq_ignore_ascii_case(b"CcCanIWrite") { Some(cc::cc_can_i_write as usize) }
+  else { None };
+  if cache.is_some() { return cache.map(|p| p as u64); }
+ }
+
  // Debug routines are shared kernel services, not NTDLL-only behavior.
  if let ImportSymbol::Name(requested) = symbol {
   let debug = if requested.eq_ignore_ascii_case(b"DbgPrint") { Some(dbg::DbgPrint as usize) }
@@ -883,7 +896,7 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoCreateDevice")) == Some(crate::io::io_create_device as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoDeleteDevice")) == Some(crate::io::io_delete_device as usize as u64)
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoGetRelatedDeviceObject")) == Some(crate::io::io_get_related_device_object as usize as u64)
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoGetRelatedDeviceObject")) == Some(crate::io::io_get_related_device_object as usize as u64)\n && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"CcInitializeCacheMap")) == Some(cc::cc_initialize_cache_map as usize as u64)\n && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"CcCopyRead")) == Some(cc::cc_copy_read as usize as u64)\n && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"CcCopyWrite")) == Some(cc::cc_copy_write as usize as u64)\n && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"CcFlushCache")) == Some(cc::cc_flush_cache as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmMapIoSpace")) == Some(mm::runtime::mm_map_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
