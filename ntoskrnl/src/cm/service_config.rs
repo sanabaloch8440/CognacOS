@@ -241,6 +241,67 @@ fn append_hex4(value:u16,out:&mut[u16],mut offset:usize)->Result<usize,ExtendedC
     Ok(offset)
 }
 
+
+/// Enumerate registry-configured Boot/System-start kernel and filesystem
+/// drivers from the active ControlSet\Services key.
+///
+/// The caller owns the fixed-size output array. No heap allocation or private
+/// driver list is used. Each returned name is a service key name and must be
+/// passed back through query_service_details before loading so metadata is
+/// revalidated at the point of use.
+pub fn enumerate_boot_driver_services(
+    hive: &Hive<'_>,
+    output: &mut [[u16; 128]],
+) -> Result<usize, ExtendedConfigError> {
+    let current = active_control_set(hive)?;
+    let mut path = [0u16; 64];
+    let mut length = format_control(current, &mut path)?;
+    for unit in "\\Services".encode_utf16() {
+        if length == path.len() {
+            return Err(ExtendedConfigError::BufferTooSmall);
+        }
+        path[length] = unit;
+        length += 1;
+    }
+    let services = hive.find_path(&path[..length])?;
+    let subkey_count = services.subkey_count()?;
+    let mut count = 0usize;
+    let mut image_path = [0u16; 1024];
+
+    for index in 0..subkey_count {
+        let service = services.subkey_at(index)?;
+        let mut name = [0u16; 128];
+        let name_length = service.name_utf16(&mut name)
+            .map_err(|_| ExtendedConfigError::BufferTooSmall)?;
+        if name_length == 0 || name_length > name.len() {
+            return Err(ExtendedConfigError::BufferTooSmall);
+        }
+
+        // Validate the complete service configuration before considering it
+        // eligible. Unsupported service types and later start classes are not
+        // candidates for the early boot-driver pass.
+        let details = query_service_details(hive, &name[..name_length], &mut image_path)?;
+        if !matches!(details.base.start, SERVICE_BOOT_START | SERVICE_SYSTEM_START) {
+            continue;
+        }
+        if !matches!(
+            details.base.service_type & SERVICE_TYPE_MASK,
+            SERVICE_KERNEL_DRIVER | SERVICE_FILE_SYSTEM_DRIVER
+        ) {
+            continue;
+        }
+        if count == output.len() {
+            return Err(ExtendedConfigError::BufferTooSmall);
+        }
+
+        output[count].fill(0);
+        output[count][..name_length].copy_from_slice(&name[..name_length]);
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 /// Read Control\\ServiceGroupOrder\\List from the active ControlSet.
 /// The caller receives the original validated REG_MULTI_SZ UTF-16 sequence.
 pub fn query_service_group_order(hive:&Hive<'_>,out:&mut[u16])->Result<usize,ExtendedConfigError>{
