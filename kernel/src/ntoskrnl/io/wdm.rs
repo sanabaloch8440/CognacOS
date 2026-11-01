@@ -1963,11 +1963,11 @@ pub unsafe extern "win64" fn io_get_lower_device_object(device:*mut DeviceObject
 /// drivers must send subsequent requests to the current top of the device stack,
 /// not retain a stale lower-device pointer from the original create operation.
 #[unsafe(export_name = "IoGetRelatedDeviceObject")]
-pub unsafe extern "win64" fn io_get_related_device_object(file_object: *mut FileObject) -> *mut DeviceObject {
+pub unsafe extern "win64" fn io_get_related_device_object(file_object: *mut FileObject) -> *mut crate::nt_abi::io::DEVICE_OBJECT {
     if file_object.is_null() { return ptr::null_mut(); }
     let device = unsafe { (*file_object).device_object };
     if device.is_null() { return ptr::null_mut(); }
-    unsafe { io_get_attached_device(device) }
+    unsafe { io_get_attached_device(device.cast()) }.cast()
 }
 
 /// Reset an allocated IRP for reuse without releasing its allocation.
@@ -3792,7 +3792,7 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
   let mut file:FileObject=unsafe{core::mem::zeroed()};
   file.device_object=device;
-  assert_eq!(unsafe{io_get_related_device_object(&mut file)},device);
+  assert_eq!(unsafe{io_get_related_device_object(&mut file)},device.cast());
   assert!(unsafe{io_get_related_device_object(ptr::null_mut())}.is_null());
   unsafe{io_delete_device(device);}
  }
