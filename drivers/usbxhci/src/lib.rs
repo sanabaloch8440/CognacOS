@@ -575,7 +575,10 @@ pub fn stop_controller<P: XhciPlatform>(
 
 
 pub const PORTSC_CCS:u32=1<<0;
+pub const PORTSC_PED:u32=1<<1;
+pub const PORTSC_OCA:u32=1<<3;
 pub const PORTSC_PLS_MASK:u32=0xf<<5;
+pub const PORTSC_SPEED_MASK:u32=0xf<<10;
 pub const PORTSC_PP:u32=1<<9;
 pub const PORTSC_LWS:u32=1<<16;
 pub const PORTSC_WAKE_ENABLE_MASK:u32=0x7<<25;
@@ -583,6 +586,28 @@ pub const PORTSC_LINK_U0:u8=0;
 pub const PORTSC_LINK_U3:u8=3;
 pub const PORTSC_LINK_RESUME:u8=15;
 const PORTSC_CHANGE_BITS:u32=0x7f<<17;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct XhciPortStatus {
+ pub port:u8, pub connected:bool, pub enabled:bool, pub over_current:bool,
+ pub powered:bool, pub link_state:u8, pub speed_id:u8, pub change_bits:u32,
+}
+/// Decode the Port ID from an xHCI Port Status Change Event TRB.
+pub fn port_id_from_event(event:&Trb)->Option<u8>{
+ if event.trb_type()!=TRB_TYPE_PORT_STATUS_CHANGE as u8 { return None; }
+ let port=(event.parameter>>24) as u8;
+ (port!=0).then_some(port)
+}
+/// Read the current PORTSC state for a port whose ID came from a validated
+/// Port Status Change Event. The event itself is only a notification; PORTSC
+/// is authoritative for connection, enable, over-current and speed state.
+pub fn read_port_status<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,port:u8)->Result<XhciPortStatus,XhciPowerError>{
+ let offset=portsc_offset(caps,port)?;
+ let value=io.read32(offset).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ Ok(XhciPortStatus{port,connected:value&PORTSC_CCS!=0,enabled:value&PORTSC_PED!=0,
+  over_current:value&PORTSC_OCA!=0,powered:value&PORTSC_PP!=0,
+  link_state:((value&PORTSC_PLS_MASK)>>5) as u8,
+  speed_id:((value&PORTSC_SPEED_MASK)>>10) as u8,change_bits:value&PORTSC_CHANGE_BITS})
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum XhciPowerError { InvalidPort, RegisterIoFailure, PortDisconnected, PortDidNotSuspend, PortDidNotResume, InterruptDisableFailed, ControllerDidNotHalt, ControllerDidNotStart, AlreadySuspended, NotSuspended }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -1190,6 +1215,18 @@ mod power_state_tests {
   }
  }
  fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,extended_capabilities_offset:0,context_size:32,page_size_mask:1}}
+ #[test] fn port_change_event_uses_portsc_as_authoritative_status(){
+  let mut mmio=PortMmio::new();
+  mmio.regs[0x440/4]=PORTSC_CCS|PORTSC_PED|PORTSC_PP|PORTSC_OCA|(3<<10)|(PORTSC_LINK_U3 as u32<<5)|(1<<17);
+  let event=Trb{parameter:1u64<<24,status:0,control:TRB_TYPE_PORT_STATUS_CHANGE<<TRB_TYPE_SHIFT};
+  assert_eq!(port_id_from_event(&event),Some(1));
+  let status=read_port_status(&mut mmio,&caps(),port_id_from_event(&event).unwrap()).unwrap();
+  assert!(status.connected&&status.enabled&&status.over_current&&status.powered);
+  assert_eq!(status.speed_id,3);assert_eq!(status.link_state,PORTSC_LINK_U3);
+  assert_ne!(status.change_bits,0);
+  assert_eq!(read_port_status(&mut mmio,&caps(),0),Err(XhciPowerError::InvalidPort));
+  let wrong=Trb::new(0,0,TRB_TYPE_TRANSFER_EVENT,true);assert_eq!(port_id_from_event(&wrong),None);
+ }
  #[test] fn connected_port_enters_u3_and_resumes_to_u0(){
   let mut mmio=PortMmio::new();
   let snapshot=suspend_port(&mut mmio,&caps(),1,8).unwrap();
