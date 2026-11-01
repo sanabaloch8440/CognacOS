@@ -930,8 +930,8 @@ fn bind_ucx_pe_driver()->bool{
    event_sink:core::ptr::addr_of_mut!((*xhci).event_sink),
    event_context:core::ptr::addr_of_mut!((*xhci).event_context),
    mmio_base:(*xhci).mmio_base,operational_offset,port_count,
-   hub_event_sink:core::ptr::addr_of_mut!(UCX_HUB_EVENT_SINK),
-   hub_event_context:core::ptr::addr_of_mut!(UCX_HUB_EVENT_CONTEXT),
+   hub_event_sink:core::ptr::addr_of!(UCX_HUB_EVENT_SINK).cast_mut(),
+   hub_event_context:core::ptr::addr_of!(UCX_HUB_EVENT_CONTEXT).cast_mut(),
    root_hub_device_out:core::ptr::addr_of_mut!(UCX_ROOT_HUB_DEVICE),
   });
   let driver=core::ptr::addr_of_mut!(UCX_DRIVER_OBJECT).cast::<ntoskrnl::driver_loader::DriverObject>();
