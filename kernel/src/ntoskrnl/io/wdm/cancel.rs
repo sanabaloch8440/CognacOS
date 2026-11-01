@@ -1,4 +1,3 @@
-#[repr(C)]
 static IO_CANCEL_SPIN_LOCK:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
 #[unsafe(export_name="IoAcquireCancelSpinLock")]
@@ -14,6 +13,7 @@ pub unsafe extern "win64" fn io_release_cancel_spin_lock(old_irql:u8){
  unsafe{crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql);}
 }
 
+#[repr(C)]
 pub struct IoCsq {
  pub type_:u32,pub padding:u32,
  pub insert_irp:*mut c_void,pub remove_irp:*mut c_void,pub peek_next_irp:*mut c_void,
@@ -91,7 +91,7 @@ pub unsafe extern "win64" fn io_csq_initialize_ex(csq:*mut IoCsq,insert:Option<C
 unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext,insert_context:*mut c_void,extended_api:bool)->i32 {
  if csq.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
  let extended=unsafe{ptr::read_unaligned(csq.cast::<u8>().cast::<u32>())}==IO_TYPE_CSQ_EX;
- let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let mut old_irql=0u8;unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
  let cancelled=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x44)!=0};
  let mut status=STATUS_SUCCESS;
@@ -121,7 +121,7 @@ unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpConte
   }
  }
  unsafe{csq_unlock(csq,queue_irql);}
- unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ unsafe{io_release_cancel_spin_lock(old_irql);}
  if cancelled {
   let complete:CsqCompleteCanceled=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,48))};
   unsafe{complete(csq,irp);}
@@ -143,20 +143,20 @@ pub unsafe extern "win64" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCsq
  let context_type=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).type_))};
  let irp=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).irp))};
  if context_type!=CSQ_CONTEXT_TYPE||irp.is_null()||unsafe{ptr::read_unaligned(ptr::addr_of!((*context).csq))}!=csq{return ptr::null_mut()}
- let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let mut old_irql=0u8;unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
  let cancel=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x44)!=0};
  let routine=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),IRP_CANCEL_ROUTINE_OFFSET)};
  let queue=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET)};
  if cancel||routine!=(csq_cancel_routine as *const () as *mut c_void)||queue!=csq.cast(){
-  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+  unsafe{csq_unlock(csq,queue_irql);}unsafe{io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
  }
  unsafe{csq_set_cancel_routine(irp,ptr::null_mut());}
  let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
  unsafe{remove(csq,irp);}
  write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
- unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ unsafe{csq_unlock(csq,queue_irql);}unsafe{io_release_cancel_spin_lock(old_irql);}
  unsafe{
   ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),0);
   ptr::write_unaligned(ptr::addr_of_mut!((*context).irp),ptr::null_mut());
@@ -167,25 +167,25 @@ pub unsafe extern "win64" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCsq
 #[unsafe(export_name = "IoCsqRemoveNextIrp")]
 pub unsafe extern "win64" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context:*mut c_void)->*mut Irp {
  if csq.is_null(){return ptr::null_mut()}
- let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let mut old_irql=0u8;unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
  let peek:CsqPeek=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,24))};
  let candidate=unsafe{peek(csq,ptr::null_mut(),peek_context)};
  if candidate.is_null()||unsafe{*ptr::addr_of!((*candidate).bytes).cast::<u8>().add(0x44)!=0} {
-  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+  unsafe{csq_unlock(csq,queue_irql);}unsafe{io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
  }
  let routine=unsafe{read_ptr(ptr::addr_of!((*candidate).bytes).cast::<u8>(),IRP_CANCEL_ROUTINE_OFFSET)};
  let queue=unsafe{read_ptr(ptr::addr_of!((*candidate).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET)};
  if routine!=(csq_cancel_routine as *const () as *mut c_void)||queue!=csq.cast(){
-  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+  unsafe{csq_unlock(csq,queue_irql);}unsafe{io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
  }
  unsafe{csq_set_cancel_routine(candidate,ptr::null_mut());}
  let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
  unsafe{remove(csq,candidate);}
  write_ptr(unsafe{ptr::addr_of_mut!((*candidate).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
- unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ unsafe{csq_unlock(csq,queue_irql);}unsafe{io_release_cancel_spin_lock(old_irql);}
  candidate
 }
 
@@ -260,11 +260,11 @@ pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
  if irp.is_null(){return 0}
  if !acquire_irp_active_op(irp){return 0}
  let mut old_irql=0u8;
- unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
  unsafe{*ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x44)=1;}
  let cancel_slot=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  let callback=unsafe{&*cancel_slot}.swap(ptr::null_mut(),core::sync::atomic::Ordering::AcqRel);
- unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ unsafe{io_release_cancel_spin_lock(old_irql);}
  if callback.is_null(){release_irp_active_op(irp);try_free_completed_sync_ioctl_irp(irp);return 0}
  let routine:DriverCancelRoutine=unsafe{core::mem::transmute(callback)};
  let device={

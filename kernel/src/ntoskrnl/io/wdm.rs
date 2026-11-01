@@ -5,6 +5,8 @@
 //! ABI state and helper visibility remain unchanged.
 
 include!("wdm/core.rs");
+include!("wdm/configuration.rs");
+include!("wdm/interrupts.rs");
 include!("wdm/device_lifecycle.rs");
 include!("wdm/pnp.rs");
 include!("wdm/device_objects.rs");

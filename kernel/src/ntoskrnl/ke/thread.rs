@@ -883,9 +883,39 @@ pub fn initialize(){
     }
 }
 
-fn smp_stress_io_dispatch(irp:&mut crate::io::Irp)->crate::io::IoStatus{
-    irp.information=irp.length;
-    crate::io::IoStatus::Success
+unsafe extern "win64" fn smp_stress_io_dispatch(_device:*mut crate::wdm::DeviceObject,irp:*mut crate::wdm::Irp)->i32{
+    unsafe{crate::wdm::io_complete_irp_status(irp,crate::nt_abi::ntstatus::STATUS_SUCCESS,0,0);}
+    crate::nt_abi::ntstatus::STATUS_SUCCESS
+}
+
+const fn make_smp_stress_driver()->crate::wdm::DriverObject{
+    let mut major:[Option<crate::wdm::DriverDispatch>;28]=[None;28];
+    major[crate::wdm::IRP_MJ_READ as usize]=Some(smp_stress_io_dispatch);
+    crate::wdm::DriverObject{
+        object_type:4,size:core::mem::size_of::<crate::wdm::DriverObject>() as i16,
+        device_object:core::ptr::null_mut(),flags:0,driver_start:core::ptr::null_mut(),
+        driver_size:0,driver_section:core::ptr::null_mut(),driver_extension:core::ptr::null_mut(),
+        driver_name:crate::nt_abi::object::UNICODE_STRING{length:0,maximum_length:0,buffer:core::ptr::null_mut()},
+        hardware_database:core::ptr::null_mut(),fast_io_dispatch:core::ptr::null_mut(),
+        driver_init:core::ptr::null_mut(),driver_start_io:core::ptr::null_mut(),driver_unload:None,
+        major_function:major,
+    }
+}
+static mut SMP_STRESS_DRIVER:crate::wdm::DriverObject=make_smp_stress_driver();
+
+fn smp_stress_issue_read(device:*mut crate::wdm::DeviceObject)->bool{
+    if device.is_null(){return false}
+    let stack_size=unsafe{(*device).stack_size};
+    if stack_size<=0{return false}
+    let irp=unsafe{crate::wdm::io_allocate_irp(stack_size,0)};
+    if irp.is_null(){return false}
+    let stack=unsafe{crate::wdm::io_get_next_irp_stack_location(irp)};
+    if stack.is_null(){unsafe{crate::wdm::io_free_irp(irp);}return false}
+    unsafe{(*stack).major_function=crate::wdm::IRP_MJ_READ;}
+    let dispatch=unsafe{crate::wdm::io_call_driver(device,irp)};
+    let status=unsafe{core::ptr::read_unaligned((*irp).bytes.as_ptr().add(0x30).cast::<i32>())};
+    unsafe{crate::wdm::io_free_irp(irp);}
+    dispatch>=0&&status>=0
 }
 
 extern "C" fn lock_stress_worker(argument:*mut c_void) {
@@ -893,7 +923,7 @@ extern "C" fn lock_stress_worker(argument:*mut c_void) {
         && !crate::ntoskrnl::ke::runtime::dispatcher_extended_self_test(){
         STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
     }
-    let device_id=argument as usize as u32;
+    let device=argument.cast::<crate::wdm::DeviceObject>();
     if let Ok(cpu)=cpu_index() {
         STRESS_CPU_MASK.fetch_or(1u64<<cpu,core::sync::atomic::Ordering::AcqRel);
     }
@@ -903,15 +933,8 @@ extern "C" fn lock_stress_worker(argument:*mut c_void) {
             *guard=(*guard).wrapping_add(1);
         }
         if round%8==0 {
-            let irp=crate::io::submit(device_id,crate::io::IRP_MJ_READ,0,32);
-            match irp {
-                Ok(id)=>{
-                    let valid=crate::io::dispatch_one(id)==Ok(crate::io::IoStatus::Success)
-                        && matches!(crate::io::query_irp(id),Some(r) if r.completed&&!r.in_flight&&r.status==crate::io::IoStatus::Success)
-                        && crate::io::release_irp(id).is_ok();
-                    if !valid{STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);}
-                },
-                Err(_)=>{STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);}
+            if !smp_stress_issue_read(device){
+                STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
             }
             match crate::object::create(crate::object::ObjectType::Event,0x1f) {
                 Ok(object)=>{
@@ -928,19 +951,16 @@ extern "C" fn lock_stress_worker(argument:*mut c_void) {
 }
 
 /// Exercise contended IRQ-save locking, cross-CPU wake IPIs, context switching,
-/// and thread-record teardown. Intended for the post-SMP boot self-test.
+/// and WDM IRP dispatch using the canonical DEVICE_OBJECT/IRP path.
 pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
     if online_cpus==0 || online_cpus>crate::hal::MAX_CPUS { return false; }
     *STRESS_LOCK.lock()=0;
     STRESS_COMPLETED.store(0,core::sync::atomic::Ordering::Release);
     STRESS_CPU_MASK.store(0,core::sync::atomic::Ordering::Release);
     STRESS_FAILURES.store(0,core::sync::atomic::Ordering::Release);
-    let mut dispatch:[Option<crate::io::DispatchFn>;16]=[None;16];
-    dispatch[crate::io::IRP_MJ_READ as usize]=Some(smp_stress_io_dispatch);
-    let device_id=match crate::io::register_device(b"\\Device\\SmpStress",dispatch){
-        Ok(id)=>id,
-        Err(_)=>return false,
-    };
+    let driver=core::ptr::addr_of_mut!(SMP_STRESS_DRIVER);
+    let mut device=core::ptr::null_mut();
+    if unsafe{crate::wdm::io_create_device(driver,0,core::ptr::null_mut(),0x0000_0007,0,0,&mut device)}<0||device.is_null(){return false}
     let mut cpu_ids=[0usize;8];
     let mut cpu_count=0usize;
     for cpu in 0..crate::hal::MAX_CPUS {
@@ -948,7 +968,10 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
             if cpu_count<cpu_ids.len(){cpu_ids[cpu_count]=cpu;cpu_count+=1;}
         }
     }
-    if cpu_count==0 || crate::hal::online_cpu_count()!=online_cpus { return false; }
+    if cpu_count==0 || crate::hal::online_cpu_count()!=online_cpus {
+        unsafe{crate::wdm::io_delete_device(device);}
+        return false;
+    }
     let smp_active=crate::smp::ipi_shootdowns_enabled();
     let worker_cpu_count=if smp_active{cpu_count}else{1};
     let mut ids=[0u64;8];
@@ -956,7 +979,7 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
         let stack: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(STRESS_STACKS[slot]) };
         let target_cpu=if smp_active{cpu_ids[slot%worker_cpu_count]}else{0};
         let affinity=1u64<<target_cpu;
-        match spawn(stack,affinity,lock_stress_worker,device_id as usize as *mut c_void) {
+        match spawn(stack,affinity,lock_stress_worker,device.cast()) {
             Ok(id)=>ids[slot]=id,
             Err(_)=>return false,
         }
@@ -978,12 +1001,14 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
             .is_some_and(|task|task.state==crate::scheduler::TaskState::Exited)
     });
     let expected_cpu_count=if smp_active{core::cmp::min(online_cpus,8)}else{1};
-    STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)==ids.len()
+    let passed=STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)==ids.len()
         && *STRESS_LOCK.lock()==8*256
         && STRESS_FAILURES.load(core::sync::atomic::Ordering::Acquire)==0
         && STRESS_CPU_MASK.load(core::sync::atomic::Ordering::Acquire).count_ones() as usize>=expected_cpu_count
         && ids.iter().all(|id|state(*id)==Some(ThreadState::Exited))
-        && scheduler_teardown_ok
+        && scheduler_teardown_ok;
+    unsafe{crate::wdm::io_delete_device(device);}
+    passed
 }
 
 /// Fast scheduler predicate for the interruptible idle loop.
