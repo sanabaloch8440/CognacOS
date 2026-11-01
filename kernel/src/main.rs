@@ -39,7 +39,7 @@ mod debug_console;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
-static USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhci.sys"));
+const USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhci.sys"));
 
 use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
 use cognacos_i8042prt::{Ps2KeyboardPort,PortIo,PowerAwarePortIo,PortError,controller_command,wait_output_full,wait_input_empty,CMD_READ_CONFIG,CMD_WRITE_CONFIG,CONFIG_KEYBOARD_IRQ,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
@@ -788,6 +788,7 @@ static mut XHCI_HAL_SERVICES: core::mem::MaybeUninit<cognacos_hal_contract::HalS
 static mut XHCI_DEVICE_SERVICES: core::mem::MaybeUninit<cognacos_hal_contract::DeviceServiceTable> = core::mem::MaybeUninit::uninit();
 static mut XHCI_DRIVER_OBJECT: core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject> = core::mem::MaybeUninit::uninit();
 static XHCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static mut XHCI_REGISTRY_IMAGE_BUFFER: [u8; USBXHCI_PE_IMAGE.len()] = [0; USBXHCI_PE_IMAGE.len()];
 
 
 fn bind_xhci_pe_driver()->bool {
@@ -848,7 +849,37 @@ fn bind_xhci_pe_driver()->bool {
         serial_write(b"xHCI bind: loading PE32+ usbxhci.sys bytes=");
         serial_write_decimal(USBXHCI_PE_IMAGE.len());
         serial_write(b" vector="); serial_write_hex(resources.interrupt_vector as u64); serial_write(b"\r\n");
-        match ntoskrnl::driver_loader::load_allocated_with_resolver(USBXHCI_PE_IMAGE,driver,core::ptr::null_mut(),ntoskrnl::resolve) {
+        let Some(system_bytes)=boot_hive_bytes("SYSTEM") else {
+            serial_write(b"xHCI bind: generated SYSTEM hive is not mounted; registry-selected load refused.\\r\\n");
+            return false;
+        };
+        let system_hive=match ntoskrnl::cm::hive::Hive::open(system_bytes) {
+            Ok(hive)=>hive,
+            Err(_)=>{
+                serial_write(b"xHCI bind: SYSTEM hive failed validation; registry-selected load refused.\\r\\n");
+                return false;
+            }
+        };
+        const XHCI_SERVICE_NAME:&[u16]=&[85,83,66,88,72,67,73];
+        const XHCI_IMAGE_PATH:&[u16]=&[92,83,121,115,116,101,109,82,111,111,116,92,83,121,115,116,101,109,51,50,92,100,114,105,118,101,114,115,92,117,115,98,120,104,99,105,46,115,121,115];
+        let mut registry_path=[0u16;1024];
+        let image_buffer=core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(XHCI_REGISTRY_IMAGE_BUFFER).cast::<u8>(),USBXHCI_PE_IMAGE.len());
+        let load_result=ntoskrnl::driver_loader::load_registered_service_with_resolver(
+            &system_hive,XHCI_SERVICE_NAME,&mut registry_path,image_buffer,driver,
+            core::ptr::null_mut(),
+            |image_path,output|{
+                let equal=image_path.len()==XHCI_IMAGE_PATH.len()
+                    &&image_path.iter().zip(XHCI_IMAGE_PATH).all(|(a,b)|{
+                        let a=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
+                        let b=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};
+                        a==b
+                    });
+                if !equal||output.len()<USBXHCI_PE_IMAGE.len(){return None;}
+                output[..USBXHCI_PE_IMAGE.len()].copy_from_slice(USBXHCI_PE_IMAGE);
+                Some(USBXHCI_PE_IMAGE.len())
+            },ntoskrnl::resolve);
+        match load_result {
             Ok(image) => {
                 serial_write(b"xHCI bind: DriverEntry succeeded image="); serial_write_hex(image.image_base);
                 serial_write(b" size="); serial_write_hex(image.image_size as u64); serial_write(b"\r\n");
@@ -869,13 +900,13 @@ fn bind_xhci_pe_driver()->bool {
                 serial_write(b" port_changes="); serial_write_hex(ext.port_change_count.load(Ordering::Acquire)); serial_write(b"\r\n");
                 true
             }
-            Err(ntoskrnl::driver_loader::DriverLoadError::EntryFailed(status)) => {
+            Err(ntoskrnl::driver_loader::RegistryDriverLoadError::Load(ntoskrnl::driver_loader::DriverLoadError::EntryFailed(status))) => {
                 serial_write(b"xHCI bind: DriverEntry returned NTSTATUS=");
                 serial_write_hex(status as u32 as u64);
                 serial_write(b"; controller remains unbound and bus mastering stays disabled.\r\n");
                 false
             }
-            Err(error) => {
+            Err(ntoskrnl::driver_loader::RegistryDriverLoadError::Load(error)) => {
                 use ntoskrnl::driver_loader::DriverLoadError as E;
                 serial_write(b"xHCI bind: PE loader rejected usbxhci.sys: ");
                 serial_write(match error {
@@ -891,6 +922,10 @@ fn bind_xhci_pe_driver()->bool {
                     E::NoMemory=>b"out of memory",E::EntryFailed(_)=>b"DriverEntry returned failure",
                 });
                 serial_write(b"; controller remains unbound and bus mastering stays disabled.\r\n");
+                false
+            }
+            Err(_registry_error) => {
+                serial_write(b"xHCI bind: registry service metadata, start type, or ImagePath rejected; driver remains unbound.\r\n");
                 false
             }
         }
