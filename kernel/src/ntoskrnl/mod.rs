@@ -14,10 +14,6 @@ pub(crate) mod alpc_resources; pub(crate) mod alpc_native; pub(crate) mod ex; #[
 pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 #[path = "io/pnp.rs"] pub(crate) mod pnp;
-/// WDM device/IRP runtime and kernel-owned PnP manager. Kept separate from
-/// the export catalogue in io.rs so the driver ABI implementation is explicit.
-#[path = "io/wdm.rs"]
-pub(crate) mod wdm;
 pub(crate) mod driver_loader;
 pub(crate) mod driver_order;
 pub(crate) mod driver_init;
