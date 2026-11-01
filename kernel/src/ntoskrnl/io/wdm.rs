@@ -31,7 +31,7 @@ pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
 pub type IoStatusBlock = crate::nt_abi::io::IO_STATUS_BLOCK;
 pub type DriverDispatch = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp) -> i32;
 pub type DriverUnload = unsafe extern "win64" fn(*mut DriverObject);
-pub type IoCompletionRoutine = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
+pub type IoCompletionRoutine = unsafe extern "win64" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
 pub type DriverCancelRoutine = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp);
 
 #[repr(C)]
@@ -1701,7 +1701,7 @@ pub unsafe extern "win64" fn io_complete_request(irp:*mut Irp, _priority_boost:i
   }
   if invoke {
    if let Some(routine)=routine {
-    let result=unsafe{routine(completion_device_object,irp,context)};
+    let result=unsafe{routine(completion_device_object.cast(),irp.cast(),context)};
     if result==0xC0000016u32 as i32 {
      {
       let mut state=WDM.lock();
