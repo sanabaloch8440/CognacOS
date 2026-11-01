@@ -132,7 +132,7 @@ mod tests {
     use super::*;
     #[test]
     fn ecam_bdf_offsets_are_correct() {
-        let w = EcamWindow { virtual_base: 0x1000_0000, physical_base: 0x8000_0000, segment: 0, bus_start: 0, bus_end: 255 };
+        let w = EcamWindow { virtual_base: 0x1000_0000, physical_base: 0x8000_0000, segment: 0, bus_start: 0, bus_end: 255, ..Default::default() };
         assert_eq!(w.register_address(0, 0, 0, 0, 0x100).unwrap() as u64, 0x1000_0100);
         assert_eq!(w.register_address(0, 2, 3, 1, 0x20).unwrap() as u64, 0x1021_9020);
         assert!(w.register_address(0, 0, 32, 0, 0).is_err());
