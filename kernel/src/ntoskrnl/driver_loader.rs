@@ -398,7 +398,7 @@ fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResol
 pub enum RegistryDriverLoadError{
  ServiceConfig(crate::ntoskrnl::cm::driver_config::Error),
  ServiceMetadata(crate::ntoskrnl::cm::service_config::ExtendedConfigError),
- StartTypeUnsupported,NotKernelDriver,ImageResolutionFailed,ImageTooLarge,
+ StartTypeUnsupported,NotKernelDriver,ImageResolutionFailed,ImageTooLarge,DependencyFailed,
  Load(DriverLoadError),
 }
 /// Resolve a service under the active ControlSet in SYSTEM, read its ImagePath,
@@ -443,14 +443,15 @@ where F:FnMut(&[u16],&mut[u8])->Option<usize>{
   0x005c,0x0053,0x0065,0x0072,0x0076,0x0069,0x0063,0x0065,0x0073,0x005c,
  ];
  let path_len=PREFIX.len().checked_add(service_name.len()).ok_or(RegistryDriverLoadError::ImageTooLarge)?;
- if service_name.is_empty()||path_len>registry_path.len()||path_len.checked_mul(2).is_none_or(|n|n>u16::MAX as usize){
+ if service_name.is_empty()||path_len>=registry_path.len()||path_len.checked_add(1).and_then(|n|n.checked_mul(2)).is_none_or(|n|n>u16::MAX as usize){
   return Err(RegistryDriverLoadError::ImageTooLarge);
  }
  registry_path[..PREFIX.len()].copy_from_slice(PREFIX);
  registry_path[PREFIX.len()..path_len].copy_from_slice(service_name);
+ registry_path[path_len]=0;
  let mut registry_key=crate::nt_abi::object::UNICODE_STRING{
   length:(path_len*2) as u16,
-  maximum_length:(path_len*2) as u16,
+  maximum_length:((path_len+1)*2) as u16,
   buffer:registry_path.as_mut_ptr(),
  };
  let entry_context=if context.is_null(){(&mut registry_key as *mut crate::nt_abi::object::UNICODE_STRING).cast()}else{context};
