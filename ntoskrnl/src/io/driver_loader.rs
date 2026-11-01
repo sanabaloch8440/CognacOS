@@ -12,6 +12,10 @@ const IMAGE_SCN_MEM_WRITE:u32=0x8000_0000;
 const IMAGE_SUBSYSTEM_NATIVE:u16=1;
 const MAX_SECTIONS:usize=32;
 const MAX_IMAGE_SIZE:usize=32*1024*1024;
+fn is_native_driver_dll(characteristics: u16) -> bool {
+ characteristics & IMAGE_FILE_DLL != 0 && characteristics & IMAGE_FILE_EXECUTABLE_IMAGE != 0
+}
+
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine, WrongSubsystem, NotDll, InvalidHeader, InvalidSection, ImageTooLarge, WrongBase, ImportsUnsupported, ImportNotFound, InvalidImport, RelocationsUnsupported, RelocationUnsupported, WxSection, EntryNotExecutable, MappingFailed, NoMemory, EntryFailed(i32) }
@@ -198,7 +202,7 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
  if u16at(file,coff)?!=0x8664{return Err(DriverLoadError::WrongMachine);}
  let count=u16at(file,coff+2)? as usize;
  let characteristics=u16at(file,coff+18)?;
- if characteristics&(IMAGE_FILE_DLL|IMAGE_FILE_EXECUTABLE_IMAGE)==0{return Err(DriverLoadError::NotDll);}
+ if !is_native_driver_dll(characteristics) { return Err(DriverLoadError::NotDll); }
  let opt_size=u16at(file,coff+16)? as usize;let opt=coff+20;
  if count==0||count>MAX_SECTIONS||opt_size<240||u16at(file,opt)?!=0x20b{return Err(DriverLoadError::InvalidHeader);}
  if u16at(file,opt+68)?!=IMAGE_SUBSYSTEM_NATIVE{return Err(DriverLoadError::WrongSubsystem);}
@@ -555,6 +559,14 @@ where F:FnMut(&[u16],&mut[u8])->Option<usize>{
 #[cfg(test)]
 mod pe_signature_tests {
  use super::*;
+ #[test]
+ fn requires_both_pe_dll_and_executable_image_characteristics() {
+  assert!(is_native_driver_dll(0x2002));
+  assert!(!is_native_driver_dll(0x0002));
+  assert!(!is_native_driver_dll(0x2000));
+  assert!(!is_native_driver_dll(0));
+ }
+
  #[test]
  fn driver_object_matches_windows_x64_size_and_dispatch_offset() {
   assert_eq!(core::mem::offset_of!(DriverObject, device_object), 0x08);
