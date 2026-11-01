@@ -95,7 +95,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -nF -e 'crate::ntoskrnl' -e 'crate::acpi::' kernel/src/hal.rs kernel/src/hal/apic.rs; then
+          if grep -nF -e 'crate::ntoskrnl' -e 'crate::acpi::' Hal/mod.rs Hal/apic.rs; then
             echo "HAL implementation must not depend on ntoskrnl or ACPI parsing types." >&2
             exit 1
           fi
@@ -103,7 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -RInF 'crate::apic' kernel/src --include='*.rs' || grep -RInE 'use crate::\{[^}]*apic' kernel/src --include='*.rs'; then
+          if grep -RInF 'crate::apic' ntoskrnl/src --include='*.rs' || grep -RInE 'use crate::\{[^}]*apic' ntoskrnl/src --include='*.rs'; then
             echo "APIC implementation must only be reached through HAL service contracts." >&2
             exit 1
           fi
@@ -111,8 +111,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test ! -e kernel/src/acpi.rs
-          test ! -e kernel/src/pci.rs
+          test ! -e ntoskrnl/src/acpi.rs
+          test ! -e ntoskrnl/src/pci.rs
           grep -Fq '#![no_std]' drivers/acpi/src/lib.rs
           grep -Fq '#![no_std]' drivers/pci/src/lib.rs
           echo "HAL and independent driver source-boundary checks passed."
@@ -173,7 +173,7 @@ jobs:
       - name: Test FAT32 partition-bounded stream and geometry validation
         run: cargo test --manifest-path drivers/fat32/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check freestanding kernel with FAT32 driver dependency
-        run: cargo check --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
+        run: cargo check --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none
       - name: Check storage stack library
         run: cargo check --manifest-path drivers/storage/Cargo.toml --lib
       - name: Test storage protocol and disk-class primitives
@@ -316,7 +316,7 @@ jobs:
             echo "NTDLL must not use the legacy DPL3 interrupt-gate syscall path." >&2
             exit 1
           fi
-          if grep -RInF 'install_user_gate(0x82' kernel/src; then
+          if grep -RInF 'install_user_gate(0x82' ntoskrnl/src; then
             echo "The kernel must not install the obsolete NT syscall interrupt gate." >&2
             exit 1
           fi
@@ -461,7 +461,7 @@ jobs:
               pub fn debug_trace_store_write(_: u64, _: &[u8]) -> bool { false }
           }
           mod debug {
-              include!(concat!(env!("GITHUB_WORKSPACE"), "/kernel/src/ntoskrnl/debug.rs"));
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/ntoskrnl/debug.rs"));
           }
           RS
           rustc --edition=2024 --test /tmp/cognacos-ntoskrnl-debug-tests.rs -o /tmp/cognacos-ntoskrnl-debug-tests
@@ -485,7 +485,7 @@ jobs:
               }
           }
           mod debug_console {
-              include!(concat!(env!("GITHUB_WORKSPACE"), "/kernel/src/ntoskrnl/debug_console.rs"));
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/ntoskrnl/debug_console.rs"));
           }
           RS
           rustc --edition=2024 --test /tmp/cognacos-debug-console-tests.rs -o /tmp/cognacos-debug-console-tests
@@ -493,18 +493,18 @@ jobs:
       - name: Test legacy kernel diagnostic trace publication and wraparound
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test kernel/src/ntoskrnl/ke/diagnostics.rs -o /tmp/cognacos-kernel-diagnostics-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/ke/diagnostics.rs -o /tmp/cognacos-kernel-diagnostics-tests
           /tmp/cognacos-kernel-diagnostics-tests
       - name: Test bounded ALPC transport core
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test kernel/src/ntoskrnl/alpc.rs -o /tmp/cognacos-alpc-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/alpc.rs -o /tmp/cognacos-alpc-tests
           /tmp/cognacos-alpc-tests
       - name: Test ALPC section/security/completion resource core
         shell: bash
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test kernel/src/ntoskrnl/alpc_resources.rs -o /tmp/cognacos-alpc-resource-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/alpc_resources.rs -o /tmp/cognacos-alpc-resource-tests
           /tmp/cognacos-alpc-resource-tests
       - name: Test Rust-native build and PE tooling
         run: cargo test --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml
@@ -561,7 +561,7 @@ jobs:
               assert struct.unpack_from("<I", p, opt+16)[0] != 0, f"{path}: no entry point"
               import_rva, import_size = struct.unpack_from("<II", p, opt+112+8)
               if path.name in ("pci.sys", "acpi.sys", "usbxhci.sys"):
-                  assert import_rva and import_size >= 40, f"{path}: missing required kernel/HAL import directory"
+                  assert import_rva and import_size >= 40, f"{path}: missing required ntoskrnl/HAL import directory"
                   section_count = struct.unpack_from("<H", p, pe+6)[0]
                   optional_size = struct.unpack_from("<H", p, pe+20)[0]
                   section_table = pe + 24 + optional_size
@@ -667,32 +667,32 @@ jobs:
       - name: Run host-side physical allocator map tests
         run: |
           mkdir -p build
-          rustc --edition=2021 --test kernel/src/ntoskrnl/mm/physical.rs -o build/memory-tests
+          rustc --edition=2021 --test ntoskrnl/src/ntoskrnl/mm/physical.rs -o build/memory-tests
           build/memory-tests
       - name: Run host-side ACPI NUMA topology tests
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2021 --test kernel/src/ntoskrnl/mm/topology.rs -o build/mm-topology-tests
+          rustc --edition=2021 --test ntoskrnl/src/ntoskrnl/mm/topology.rs -o build/mm-topology-tests
           build/mm-topology-tests
       - name: Run host-side Ke timer-generation regression tests
         run: |
           mkdir -p build
-          rustc --edition=2021 --test kernel/src/ntoskrnl/ke/timer_generation.rs -o build/ke-timer-generation-tests
+          rustc --edition=2021 --test ntoskrnl/src/ntoskrnl/ke/timer_generation.rs -o build/ke-timer-generation-tests
           build/ke-timer-generation-tests
       - name: Test native NT RTL memory ABI primitives
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test kernel/src/ntoskrnl/rtl_runtime/memory.rs -o build/rtl-memory-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/rtl_runtime/memory.rs -o build/rtl-memory-tests
           build/rtl-memory-tests
       - name: Run native Windows hive and NLS parser tests
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test kernel/src/ntoskrnl/cm/hive.rs -o build/registry-hive-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/cm/hive.rs -o build/registry-hive-tests
           build/registry-hive-tests
-          rustc --edition=2024 --test kernel/src/ntoskrnl/rtl_runtime/nls.rs -o build/nls-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/rtl_runtime/nls.rs -o build/nls-tests
           build/nls-tests
       - name: Run host-side registry driver-configuration tests
         run: |
@@ -704,13 +704,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test kernel/src/ntoskrnl/cm/runtime.rs -o build/registry-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/cm/runtime.rs -o build/registry-tests
           build/registry-tests
       - name: Run host-side Object Manager lifecycle and security tests
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test kernel/src/ntoskrnl/ob/runtime.rs -o build/object-manager-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/ob/runtime.rs -o build/object-manager-tests
           build/object-manager-tests --test-threads=1
       - name: Run host-side Security Reference Monitor tests
         run: |
@@ -722,25 +722,25 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test kernel/src/ntoskrnl/po/hibernate.rs -o build/hibernation-tests
+          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/po/hibernate.rs -o build/hibernation-tests
           build/hibernation-tests
       - name: Validate Windows x64 WDM source contracts
         run: cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-wdm-source-contracts
       - name: Build optimized freestanding kernel
         env:
-          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld -C link-arg=--undefined=IoAcquireCancelSpinLock -C link-arg=--undefined=IoReleaseCancelSpinLock -C link-arg=--undefined=IoBuildDeviceIoControlRequest -C link-arg=--undefined=IoCsqInitialize -C link-arg=--undefined=IoCsqInitializeEx -C link-arg=--undefined=IoCsqInsertIrp -C link-arg=--undefined=IoCsqInsertIrpEx -C link-arg=--undefined=IoCsqRemoveIrp -C link-arg=--undefined=IoCsqRemoveNextIrp -C link-arg=--undefined=PsAssignImpersonationToken -C link-arg=--undefined=PsReferencePrimaryToken -C link-arg=--undefined=PsDereferencePrimaryToken -C link-arg=--undefined=SeAccessCheck -C link-arg=--undefined=SePrivilegeCheck -C link-arg=--undefined=SeSinglePrivilegeCheck -C link-arg=--undefined=SeValidSecurityDescriptor -C link-arg=--undefined=SeCaptureSubjectContext -C link-arg=--undefined=SeReleaseSubjectContext -C link-arg=--undefined=SeLockSubjectContext -C link-arg=--undefined=SeUnlockSubjectContext
-        run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
+          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/ntoskrnl/linker.ld -C link-arg=--undefined=IoAcquireCancelSpinLock -C link-arg=--undefined=IoReleaseCancelSpinLock -C link-arg=--undefined=IoBuildDeviceIoControlRequest -C link-arg=--undefined=IoCsqInitialize -C link-arg=--undefined=IoCsqInitializeEx -C link-arg=--undefined=IoCsqInsertIrp -C link-arg=--undefined=IoCsqInsertIrpEx -C link-arg=--undefined=IoCsqRemoveIrp -C link-arg=--undefined=IoCsqRemoveNextIrp -C link-arg=--undefined=PsAssignImpersonationToken -C link-arg=--undefined=PsReferencePrimaryToken -C link-arg=--undefined=PsDereferencePrimaryToken -C link-arg=--undefined=SeAccessCheck -C link-arg=--undefined=SePrivilegeCheck -C link-arg=--undefined=SeSinglePrivilegeCheck -C link-arg=--undefined=SeValidSecurityDescriptor -C link-arg=--undefined=SeCaptureSubjectContext -C link-arg=--undefined=SeReleaseSubjectContext -C link-arg=--undefined=SeLockSubjectContext -C link-arg=--undefined=SeUnlockSubjectContext
+        run: cargo build --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none --release
       - name: Build debug kernel with in-kernel VM diagnostics
         env:
-          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld -C link-arg=--undefined=IoAcquireCancelSpinLock -C link-arg=--undefined=IoReleaseCancelSpinLock -C link-arg=--undefined=IoBuildDeviceIoControlRequest -C link-arg=--undefined=IoCsqInitialize -C link-arg=--undefined=IoCsqInitializeEx -C link-arg=--undefined=IoCsqInsertIrp -C link-arg=--undefined=IoCsqInsertIrpEx -C link-arg=--undefined=IoCsqRemoveIrp -C link-arg=--undefined=IoCsqRemoveNextIrp -C link-arg=--undefined=PsAssignImpersonationToken -C link-arg=--undefined=PsReferencePrimaryToken -C link-arg=--undefined=PsDereferencePrimaryToken -C link-arg=--undefined=SeAccessCheck -C link-arg=--undefined=SePrivilegeCheck -C link-arg=--undefined=SeSinglePrivilegeCheck -C link-arg=--undefined=SeValidSecurityDescriptor -C link-arg=--undefined=SeCaptureSubjectContext -C link-arg=--undefined=SeReleaseSubjectContext -C link-arg=--undefined=SeLockSubjectContext -C link-arg=--undefined=SeUnlockSubjectContext
-        run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --features diagnostic-vm
+          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/ntoskrnl/linker.ld -C link-arg=--undefined=IoAcquireCancelSpinLock -C link-arg=--undefined=IoReleaseCancelSpinLock -C link-arg=--undefined=IoBuildDeviceIoControlRequest -C link-arg=--undefined=IoCsqInitialize -C link-arg=--undefined=IoCsqInitializeEx -C link-arg=--undefined=IoCsqInsertIrp -C link-arg=--undefined=IoCsqInsertIrpEx -C link-arg=--undefined=IoCsqRemoveIrp -C link-arg=--undefined=IoCsqRemoveNextIrp -C link-arg=--undefined=PsAssignImpersonationToken -C link-arg=--undefined=PsReferencePrimaryToken -C link-arg=--undefined=PsDereferencePrimaryToken -C link-arg=--undefined=SeAccessCheck -C link-arg=--undefined=SePrivilegeCheck -C link-arg=--undefined=SeSinglePrivilegeCheck -C link-arg=--undefined=SeValidSecurityDescriptor -C link-arg=--undefined=SeCaptureSubjectContext -C link-arg=--undefined=SeReleaseSubjectContext -C link-arg=--undefined=SeLockSubjectContext -C link-arg=--undefined=SeUnlockSubjectContext
+        run: cargo build --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none --features diagnostic-vm
       - name: Convert debug and release kernels to PE32+
         run: |
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel-release.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe --export-manifest ntoskrnl/src/ntoskrnl/manifest_26100.json
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel-release.exe --export-manifest ntoskrnl/src/ntoskrnl/manifest_26100.json
           file build/cognacos-kernel.exe build/cognacos-kernel-release.exe
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp IoCreateDevice IoDeleteDevice MmMapIoSpace MmUnmapIoSpace
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe ntoskrnl/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp IoCreateDevice IoDeleteDevice MmMapIoSpace MmUnmapIoSpace
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe ntoskrnl/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
           python3 - <<'PY'
           import struct
           p = open("build/cognacos-kernel.exe", "rb").read()
@@ -868,7 +868,7 @@ jobs:
             cp target/x86_64-unknown-uefi/release/cognacos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
           fi
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
-          cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
+          cp build/cognacos-kernel.exe build/ntoskrnl/cognacos-kernel.exe
           cp target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
           cp build/dlls/kernel32.dll build/EFI/BOOT/kernel32.dll
           cp build/dlls/kernelbase.dll build/EFI/BOOT/kernelbase.dll
@@ -1201,7 +1201,7 @@ jobs:
           if base is None:
               print(f"Captured RIP 0x{rip:x} is outside all known NTDLL image ranges; NTDLL preferred base=0x{image_base:x}, image size=0x{image_size:x}.")
               print("This is not evidence that execution was inside NTDLL or that the PE loader is broken.")
-              print("Treat this RIP as a kernel/HAL/other-image address and use the kernel/HAL DWARF and QEMU exception trace above.")
+              print("Treat this RIP as a ntoskrnl/HAL/other-image address and use the ntoskrnl/HAL DWARF and QEMU exception trace above.")
               print("NTDLL source resolution requires a RIP inside its actual loaded image range; do not subtract the NTDLL preferred base from an unrelated address.")
               raise SystemExit(0)
           rva = rip - base
@@ -1548,7 +1548,7 @@ jobs:
             build/dlls/shell32.dll
             build/dlls/syssetup.dll
             build/dlls/rundll32.exe
-            build/kernel/cognacos-kernel.exe
+            build/ntoskrnl/cognacos-kernel.exe
             build/cognacos-uefi.img
             build/qemu-ps2-debug.launch.log
             build/qemu-persist-launch.log

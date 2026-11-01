@@ -47,8 +47,8 @@ These are implementation foundations, not declarations of full Windows 11 compat
 
 ## Repository map
 
-- kernel/src/ntoskrnl/ — NT executive, memory manager, I/O manager, process and object services
-- kernel/src/hal/ — hardware abstraction layer
+- ntoskrnl/src/ntoskrnl/ — NT executive, memory manager, I/O manager, process and object services
+- Hal/ — hardware abstraction layer
 - shared/nt-abi/ — shared NT-style Rust ABI definitions
 - ntdll/src/ — Rust NTDLL exports and native runtime
 - dlls/msvcrt/ — Rust PE32+ C runtime DLL with 1,330 pinned Windows 11 x64 exports, including working x64 memory/string primitives and explicit remaining stubs

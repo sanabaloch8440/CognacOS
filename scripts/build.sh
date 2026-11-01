@@ -78,13 +78,13 @@ check_toolchain() {
 }
 
 build_images() {
-  cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
+  cargo build --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none --release
   mkdir -p build
   cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus \
     target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe \
-    --export-manifest kernel/src/ntoskrnl/manifest_26100.json
+    --export-manifest ntoskrnl/src/ntoskrnl/manifest_26100.json
   cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports \
-    build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json
+    build/cognacos-kernel.exe ntoskrnl/src/ntoskrnl/manifest_26100.json
   cargo check --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi
 }
 
@@ -93,7 +93,7 @@ run_checks() {
   cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-ntdll-def
   cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-csrsrv-def
   cargo check --manifest-path shared/nt-abi/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
-  cargo check --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
+  cargo check --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none
   cargo check --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi
   cargo check --manifest-path ntdll/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
   cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu
