@@ -1,7 +1,8 @@
 #![no_std]
 #![no_main]
 use core::{cell::UnsafeCell,ffi::c_void,mem::MaybeUninit,sync::atomic::{AtomicBool,AtomicU64,Ordering}};
-use cognacos_hal_contract::KernelIoServiceTable;
+use cognacos_hal_contract::{KernelIoServiceTable,IoCompletionRoutine};
+use cognacos_ucx01020::wdm::{UrbHeader,URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER};
 use cognacos_nt_abi::types::PVOID;
 const EXT_MAGIC:u64=0x434f_474e_4143_4833;
 const CHILD_MAGIC:u64=0x434f_474e_5553_4233;
@@ -48,6 +49,62 @@ static ROOT_INSTANCE_ID:[u16;5]=[48,48,48,48,0];
 static ROOT_HARDWARE_IDS:[u16;17]=[85,83,66,92,82,79,79,84,95,72,85,66,51,48,0,0,0];
 static ROOT_COMPATIBLE_IDS:[u16;34]=[85,83,66,92,67,108,97,115,115,95,48,57,38,83,117,98,67,108,97,115,115,95,48,48,38,80,114,111,116,95,48,48,0,0];
 static HUB_EVENT_SINK_SLOT:AtomicU64=AtomicU64::new(0);
+static INTERRUPT_IRP:AtomicU64=AtomicU64::new(0);
+struct InterruptBuffer(UnsafeCell<[u8;32]>);unsafe impl Sync for InterruptBuffer{}
+struct InterruptUrbCell(UnsafeCell<MaybeUninit<UrbBulkInterrupt>>);unsafe impl Sync for InterruptUrbCell{}
+static INTERRUPT_BUFFER:InterruptBuffer=InterruptBuffer(UnsafeCell::new([0;32]));
+static INTERRUPT_URB:InterruptUrbCell=InterruptUrbCell(UnsafeCell::new(MaybeUninit::uninit()));
+#[repr(C)]struct UrbBulkInterrupt{header:UrbHeader,pipe_handle:u64,transfer_flags:u32,transfer_buffer_length:u32,transfer_buffer:*mut c_void,transfer_buffer_mdl:*mut c_void,urb_link:*mut c_void,hca:*mut c_void}
+fn submit_root_hub_interrupt(){
+ if !RUNTIME_READY.load(Ordering::Acquire)||INTERRUPT_IRP.load(Ordering::Acquire)!=0{return}
+ let Some(io)=io_table() else{return};
+ let (Some(allocate),Some(next),Some(set_completion),Some(call),Some(free))=(io.allocate_irp,io.next_stack_location,io.set_completion_routine,io.call_driver,io.free_irp) else{return};
+ let hub=HUB_DEVICE.load(Ordering::Acquire) as *mut c_void;if hub.is_null(){return}
+ let dev=unsafe{(*(hub as *mut DeviceObjectPrefix)).device_extension.cast::<HubFdoExtension>()};if dev.is_null(){return}
+ let lower=unsafe{(*dev).lower_device};if lower.is_null(){return}
+ let ports=PORT_COUNT.load(Ordering::Acquire) as usize;
+ let length=((ports+1+7)/8).min(32) as u32;if length==0{return}
+ let buffer=unsafe{(*INTERRUPT_BUFFER.0.get()).as_mut_ptr()};unsafe{core::ptr::write_bytes(buffer,0,32);}
+ let urb_ptr=unsafe{(*INTERRUPT_URB.0.get()).as_mut_ptr()};
+ unsafe{urb_ptr.write(UrbBulkInterrupt{
+  header:UrbHeader{length:core::mem::size_of::<UrbBulkInterrupt>() as u16,function:URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER,status:0,usbd_device_handle:0,usbd_flags:0},
+  pipe_handle:cognacos_ucx01020::UCX_ROOT_HUB_INTERRUPT_PIPE,transfer_flags:0,transfer_buffer_length:length,
+  transfer_buffer:buffer.cast(),transfer_buffer_mdl:core::ptr::null_mut(),urb_link:core::ptr::null_mut(),hca:core::ptr::null_mut()
+ });}
+ let irp=unsafe{allocate(1,0)};if irp.is_null(){return}
+ let stack=unsafe{next(irp)};if stack.is_null(){unsafe{free(irp);}return}
+ unsafe{
+  core::ptr::write(stack.cast::<u8>(),0x0f);
+  core::ptr::write(stack.cast::<u8>().add(1),0);
+  core::ptr::write_unaligned(stack.cast::<u8>().add(4).cast::<*mut c_void>(),urb_ptr.cast());
+  set_completion(irp,Some(hub_interrupt_complete as IoCompletionRoutine),core::ptr::null_mut(),1,1,1);
+ }
+ if INTERRUPT_IRP.compare_exchange(0,irp as u64,Ordering::AcqRel,Ordering::Acquire).is_err(){unsafe{free(irp);}return}
+ let status=unsafe{call(lower,irp)};
+ if status<0&&status!=STATUS_PENDING{
+  let _=INTERRUPT_IRP.compare_exchange(irp as u64,0,Ordering::AcqRel,Ordering::Acquire);
+ }
+}
+unsafe extern "win64" fn hub_interrupt_complete(_device:*mut c_void,irp:*mut c_void,_context:*mut c_void)->i32{
+ let _=INTERRUPT_IRP.compare_exchange(irp as u64,0,Ordering::AcqRel,Ordering::Acquire);
+ if !RUNTIME_READY.load(Ordering::Acquire){return STATUS_SUCCESS}
+ let urb=unsafe{(*INTERRUPT_URB.0.get()).assume_init_ref()};
+ if urb.header.status==0{
+  let buffer=unsafe{&*INTERRUPT_BUFFER.0.get()};
+  for port in 1..=PORT_COUNT.load(Ordering::Acquire) as usize{
+   if buffer[port/8]&(1<<(port%8))!=0{
+    let rt=unsafe{runtime_mut()};rt.pending_ports[(port-1)/64].fetch_or(1u64<<((port-1)%64),Ordering::Release);
+   }
+  }
+  submit_root_hub_interrupt();
+ }
+ STATUS_SUCCESS
+}
+fn stop_root_hub_interrupt(){
+ let irp=INTERRUPT_IRP.swap(0,Ordering::AcqRel);
+ if irp!=0{if let Some(io)=io_table(){if let Some(cancel)=io.cancel_irp{unsafe{cancel(irp as *mut c_void);}}}}
+}
+
 fn lock(){while RUNTIME_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}}
 fn unlock(){RUNTIME_LOCK.store(false,Ordering::Release);}
 unsafe fn runtime_mut()->&'static mut HubRuntime{unsafe{(*RUNTIME.0.get()).assume_init_mut()}}
@@ -146,6 +203,8 @@ unsafe extern "win64" fn hub_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
  if let Some(call)=io.call_driver{
   let status=unsafe{call(lower,irp)};
   if major==0x1b&&minor==0x02&&status!=0x103{
+   RUNTIME_READY.store(false,Ordering::Release);stop_root_hub_interrupt();
+   let sink=HUB_EVENT_SINK_SLOT.load(Ordering::Acquire) as *mut AtomicU64;if !sink.is_null(){unsafe{(*sink).store(0,Ordering::Release);}}
    if let Some(detach)=io.detach_device{unsafe{detach(lower);}}
    if let Some(delete)=io.delete_device{unsafe{delete(hub);}}
    HUB_DEVICE.store(0,Ordering::Release);
@@ -155,6 +214,7 @@ unsafe extern "win64" fn hub_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
 }
 unsafe extern "win64" fn hub_unload(_driver:*mut c_void){
  if !RUNTIME_READY.swap(false,Ordering::AcqRel){return}
+ stop_root_hub_interrupt();
  let sink=HUB_EVENT_SINK_SLOT.load(Ordering::Acquire) as *mut AtomicU64;if !sink.is_null(){unsafe{(*sink).store(0,Ordering::Release);}}
  let Some(io)=io_table() else{return};let hub=HUB_DEVICE.swap(0,Ordering::AcqRel);
  if hub!=0{let ext=unsafe{(*(hub as *mut DeviceObjectPrefix)).device_extension.cast::<HubFdoExtension>()};if !ext.is_null(){let lower=unsafe{(*ext).lower_device};if !lower.is_null(){if let Some(detach)=io.detach_device{unsafe{detach(lower);}}}}if let Some(delete)=io.delete_device{unsafe{delete(hub as *mut c_void);}}}
@@ -183,6 +243,7 @@ unsafe extern "win64" fn hub_unload(_driver:*mut c_void){
  let root_children=[ext.root_hub_device as *mut c_void];
  let relation_status=unsafe{publish(ext.parent_bus_device as *mut c_void,root_children.as_ptr(),1)};
  if relation_status<0{if let Some(detach)=io.detach_device{unsafe{detach(lower);}}if let Some(delete)=io.delete_device{unsafe{delete(hub);}}return relation_status}
+ submit_root_hub_interrupt();
  unsafe{(*ext.event_context).store(runtime_ptr as u64,Ordering::Release);(*ext.event_sink).store(hub_event_sink as usize as u64,Ordering::Release);ext.hub_device_out.write(hub as u64);ext.child_factory_out.write(Usbhub3CreateChildPdo as usize as u64);}
  STATUS_SUCCESS
 }
