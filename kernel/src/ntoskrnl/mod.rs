@@ -173,6 +173,10 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_unregister_file_system as usize)
   } else if requested.eq_ignore_ascii_case(b"IoVerifyVolume") {
    Some(crate::io::io_verify_volume as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoAcquireVpbSpinLock") {
+   Some(crate::io::io_acquire_vpb_spin_lock as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoReleaseVpbSpinLock") {
+   Some(crate::io::io_release_vpb_spin_lock as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetAttachedDevice") {
    Some(crate::io::io_get_attached_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetDeviceAttachmentBaseRef") {
