@@ -445,6 +445,18 @@ pub unsafe fn import_pci_inventory(
     Ok(imported)
 }
 
+/// Complete the bus-to-PnP discovery handoff and resolve registry-installed
+/// services for all newly visible PCI devnodes. Loading/start is a separate
+/// operation and is never implied by a successful hardware-ID match.
+pub unsafe fn import_pci_inventory_and_match(
+    interface:&crate::nt_abi::bus::PCI_BUS_INTERFACE,
+    hive:&crate::ntoskrnl::cm::hive::Hive<'_>,
+)->Result<(usize,usize),PnpError>{
+    let imported=unsafe{import_pci_inventory(interface)}?;
+    let matched=match_registry_services(hive)?;
+    Ok((imported,matched))
+}
+
 /// Apply the PnP lifecycle transition only after the relevant operation has
 /// completed. A failed start is recorded as FAILED; it can never be reported as
 /// STARTED. The caller is responsible for unwinding hardware resources before
