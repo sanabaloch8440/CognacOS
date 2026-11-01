@@ -336,6 +336,8 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x50);
                 assert_eq!(core::mem::size_of::<PCI_XHCI_INFORMATION>(), 0x20);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INFORMATION>(), 0x12);
+                assert_eq!(core::mem::size_of::<PCI_ECAM_WINDOW>(), 0x30);
+                assert_eq!(core::mem::size_of::<PCI_DRIVER_HANDOFF>(), 0x330);
             }
         }
     }
