@@ -1941,47 +1941,199 @@ pub unsafe extern "win64" fn io_reuse_irp(irp:*mut Irp, status:i32) {
 
 
 const MAX_REGISTERED_FILESYSTEMS:usize=16;
+const STATUS_UNRECOGNIZED_VOLUME:i32=0xC000_014F_u32 as i32;
+const STATUS_WRONG_VOLUME:i32=0xC000_0012_u32 as i32;
+const STATUS_MORE_PROCESSING_REQUIRED:i32=0xC000_0016_u32 as i32;
+const FILE_DEVICE_DISK_FILE_SYSTEM:u32=0x0000_0008;
+const FSCTL_DISMOUNT_VOLUME:u32=0x0009_0020;
+
 struct FileSystemRegistry { devices:[*mut DeviceObject;MAX_REGISTERED_FILESYSTEMS], count:usize }
 unsafe impl Send for FileSystemRegistry {}
 impl FileSystemRegistry { const fn new()->Self{Self{devices:[ptr::null_mut();MAX_REGISTERED_FILESYSTEMS],count:0}} }
 static FILESYSTEMS:IrqSpinLock<FileSystemRegistry>=IrqSpinLock::new(FileSystemRegistry::new());
 
-/// Register a filesystem control device so the I/O manager can discover it.
-/// Mount dispatch, VPB allocation and mount-volume arbitration are separate
-/// features and are not implied by registration alone.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn io_register_file_system(device:*mut DeviceObject) {
-    if device.is_null(){return}
-    let valid={let state=WDM.lock();state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device))};
-    if !valid{return}
-    let mut registry=FILESYSTEMS.lock();
-    if registry.devices[..registry.count].contains(&device){return}
-    if registry.count<MAX_REGISTERED_FILESYSTEMS {
-        let index=registry.count;
-        registry.devices[index]=device;
-        registry.count+=1;
+/// Completion owns the mount IRP. A successful FSD mount must publish a live
+/// FILE_DEVICE_DISK_FILE_SYSTEM volume device in VPB.DeviceObject; the I/O
+/// manager then commits VPB_MOUNTED and pins that volume device until dismount.
+unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,context:*mut c_void)->i32 {
+ if irp.is_null()||context.is_null(){return STATUS_MORE_PROCESSING_REQUIRED}
+ let vpb=context.cast::<Vpb>();
+ let mut status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ if status>=0 {
+  let mut state=WDM.lock();
+  let real_index=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb)&&!s.deleting);
+  let volume=unsafe{(*vpb).device_object};
+  let volume_index=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,volume));
+  match (real_index,volume_index) {
+   (Some(_),Some(vi)) if !volume.is_null()&&state.devices[vi].object.device_type==FILE_DEVICE_DISK_FILE_SYSTEM
+      &&state.devices[vi].object.reference_count<i32::MAX => {
+    state.devices[vi].object.reference_count+=1;
+    unsafe{(*vpb).flags|=crate::nt_abi::io::VPB_MOUNTED;}
+   }
+   _=>{
+    status=STATUS_INVALID_DEVICE_REQUEST;
+    unsafe{
+     ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),status);
+     (*vpb).flags&=!crate::nt_abi::io::VPB_MOUNTED;
     }
+   }
+  }
+ } else {
+  let _state=WDM.lock();
+  unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_MOUNTED;}
+ }
+ unsafe{io_free_irp(irp);}
+ STATUS_MORE_PROCESSING_REQUIRED
 }
 
-/// Remove a filesystem from discovery. The caller must first prevent new mount
-/// requests and drain existing volumes; this routine only removes registration.
+/// A verification IRP is allocated by the I/O manager and freed by its
+/// completion routine, including when the filesystem completes asynchronously.
+unsafe extern "win64" fn verify_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,_context:*mut c_void)->i32 {
+ if !irp.is_null(){unsafe{io_free_irp(irp);}}
+ STATUS_MORE_PROCESSING_REQUIRED
+}
+
+fn irp_completion_state(irp:*mut Irp)->Option<u8>{
+ let state=WDM.lock();
+ state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).map(|s|s.completion_state)
+}
+
+/// Build and dispatch the documented IRP_MJ_FILE_SYSTEM_CONTROL mount request.
+/// The FSD supplies VPB.DeviceObject; the I/O manager validates and publishes
+/// the mounted association from the completion routine.
+fn dispatch_mount_request(real_device:*mut DeviceObject,vpb:*mut Vpb,fs_device:*mut DeviceObject)->i32 {
+ if real_device.is_null()||vpb.is_null()||fs_device.is_null(){return STATUS_INVALID_PARAMETER}
+ let fs=unsafe{io_reference_device_object(fs_device)};
+ if fs.is_null(){return STATUS_DELETE_PENDING}
+ let stack_size=unsafe{(*fs).stack_size};
+ if stack_size<=0 {unsafe{io_dereference_device_object(fs);}return STATUS_INVALID_DEVICE_REQUEST}
+ let irp=unsafe{io_allocate_irp(stack_size,0)};
+ if irp.is_null(){unsafe{io_dereference_device_object(fs);}return STATUS_INSUFFICIENT_RESOURCES}
+ let stack=unsafe{io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(fs);}return STATUS_INSUFFICIENT_RESOURCES}
+ unsafe{
+  (*stack).major_function=IRP_MJ_FILE_SYSTEM_CONTROL;
+  (*stack).minor_function=IRP_MN_MOUNT_VOLUME;
+  let parameters=(*stack).parameters.as_mut_ptr();
+  ptr::write_unaligned(parameters.add(4).cast::<*mut DeviceObject>(),real_device);
+  ptr::write_unaligned(parameters.add(12).cast::<*mut Vpb>(),vpb);
+  io_set_completion_routine(irp,Some(mount_volume_completion),vpb.cast(),1,1,1);
+ }
+ let status=unsafe{io_call_driver(fs,irp)};
+ // WDM dispatch routines must complete synchronous requests. Complete a
+ // returned non-pending request if a driver failed to do so, preserving the
+ // returned status and ensuring the completion callback releases the packet.
+ if status!=STATUS_PENDING&&irp_completion_state(irp)==Some(0) {
+  unsafe{io_complete_irp_status(irp,status,0,0);}
+ }
+ unsafe{io_dereference_device_object(fs);}
+ status
+}
+
+/// Register an active filesystem control device. A filesystem must expose the
+/// FILE_SYSTEM_CONTROL dispatch entry before it can participate in mounts.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn io_register_file_system(device:*mut DeviceObject) {
+ if device.is_null(){return}
+ let valid={
+  let state=WDM.lock();
+  state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)
+   &&!s.object.driver_object.is_null()
+   &&unsafe{(*s.object.driver_object).major_function[IRP_MJ_FILE_SYSTEM_CONTROL as usize].is_some()})
+ };
+ if !valid||unsafe{io_reference_device_object(device)}.is_null(){return}
+ let mut registry=FILESYSTEMS.lock();
+ if registry.devices[..registry.count].contains(&device)||registry.count==MAX_REGISTERED_FILESYSTEMS {
+  drop(registry);
+  unsafe{io_dereference_device_object(device);}
+  return
+ }
+ registry.devices[registry.count]=device;
+ registry.count+=1;
+}
+
+/// Remove a filesystem from new mount discovery. In-flight IRPs and mounted
+/// volume device references independently keep the driver image alive.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn io_unregister_file_system(device:*mut DeviceObject) {
-    if device.is_null(){return}
-    let mut registry=FILESYSTEMS.lock();
-    let Some(index)=registry.devices[..registry.count].iter().position(|d|*d==device) else{return};
-    for i in index..registry.count-1 {registry.devices[i]=registry.devices[i+1];}
-    registry.count-=1;
-    let new_count=registry.count;
-    registry.devices[new_count]=ptr::null_mut();
+ if device.is_null(){return}
+ let removed={
+  let mut registry=FILESYSTEMS.lock();
+  let Some(index)=registry.devices[..registry.count].iter().position(|d|*d==device) else{return};
+  for i in index..registry.count-1 {registry.devices[i]=registry.devices[i+1];}
+  registry.count-=1;
+  registry.devices[registry.count]=ptr::null_mut();
+  true
+ };
+ if removed {unsafe{io_dereference_device_object(device);}}
 }
 
 pub fn is_file_system_registered(device:*mut DeviceObject)->bool {
-    if device.is_null(){return false}
-    let registry=FILESYSTEMS.lock();
-    registry.devices[..registry.count].contains(&device)
+ if device.is_null(){return false}
+ let registry=FILESYSTEMS.lock();
+ registry.devices[..registry.count].contains(&device)
 }
 
+/// Windows IoVerifyVolume contract: verify an existing mounted volume, or
+/// arbitrate an IRP_MN_MOUNT_VOLUME request across registered filesystem
+/// control devices when the media has not yet been mounted.
+#[unsafe(export_name="IoVerifyVolume")]
+pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw_mount:u8)->i32 {
+ if device.is_null()||allow_raw_mount>1{return STATUS_INVALID_PARAMETER}
+ let (vpb,volume,remove_pending,mounted)={
+  let state=WDM.lock();
+  let Some(slot)=state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+  if slot.object.vpb.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
+  let vpb=slot.object.vpb.cast::<Vpb>();
+  unsafe{(vpb,(*vpb).device_object,(*vpb).flags&crate::nt_abi::io::VPB_REMOVE_PENDING!=0,(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0)}
+ };
+ if remove_pending{return STATUS_DELETE_PENDING}
+ if mounted {
+  if volume.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
+  let target=unsafe{io_reference_device_object(volume)};
+  if target.is_null(){return STATUS_DELETE_PENDING}
+  let stack_size=unsafe{(*target).stack_size};
+  if stack_size<=0 {unsafe{io_dereference_device_object(target);}return STATUS_INVALID_DEVICE_REQUEST}
+  let irp=unsafe{io_allocate_irp(stack_size,0)};
+  if irp.is_null(){unsafe{io_dereference_device_object(target);}return STATUS_INSUFFICIENT_RESOURCES}
+  let stack=unsafe{io_get_next_irp_stack_location(irp)};
+  if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(target);}return STATUS_INSUFFICIENT_RESOURCES}
+  unsafe{
+   (*stack).major_function=IRP_MJ_FILE_SYSTEM_CONTROL;
+   (*stack).minor_function=IRP_MN_VERIFY_VOLUME;
+   ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(4).cast::<*mut Vpb>(),vpb);
+   io_set_completion_routine(irp,Some(verify_volume_completion),ptr::null_mut(),1,1,1);
+  }
+  let status=unsafe{io_call_driver(target,irp)};
+  if status!=STATUS_PENDING&&irp_completion_state(irp)==Some(0){unsafe{io_complete_irp_status(irp,status,0,0);}}
+  unsafe{io_dereference_device_object(target);}
+  return status
+ }
+ {
+  let _state=WDM.lock();
+  unsafe{
+   if allow_raw_mount!=0{(*vpb).flags|=crate::nt_abi::io::VPB_RAW_MOUNT;}
+   else{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
+  }
+ }
+ let candidates={
+  let registry=FILESYSTEMS.lock();
+  let mut list=[ptr::null_mut::<DeviceObject>();MAX_REGISTERED_FILESYSTEMS];
+  list[..registry.count].copy_from_slice(&registry.devices[..registry.count]);
+  (list,registry.count)
+ };
+ if candidates.1==0{return STATUS_UNRECOGNIZED_VOLUME}
+ for fs in candidates.0[..candidates.1].iter().copied() {
+  let status=dispatch_mount_request(device,vpb,fs);
+  if status==STATUS_PENDING{return STATUS_PENDING}
+  let is_mounted=unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0};
+  if status>=0&&is_mounted{return STATUS_SUCCESS}
+  if status!=STATUS_UNRECOGNIZED_VOLUME&&status!=STATUS_INVALID_DEVICE_REQUEST {
+   return status
+  }
+ }
+ STATUS_UNRECOGNIZED_VOLUME
+}
 
 const MAX_SYMBOLIC_LINKS:usize=32;
 const MAX_SYMBOLIC_LINK_CHARS:usize=260;
