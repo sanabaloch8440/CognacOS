@@ -34,7 +34,7 @@ static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
 static mut THREADED_DPC_WORKER_STACKS:[[u8;8192];crate::hal::MAX_CPUS]=[[0;8192];crate::hal::MAX_CPUS];
 static THREADED_DPC_WORKERS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[const{core::sync::atomic::AtomicU64::new(0)};crate::hal::MAX_CPUS];
 static THREADED_DPC_WORKERS_INITIALIZED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
-static mut PREEMPTION_TEST_STACKS:[[u8;8192];2]=[[0;8192];2];
+static mut PREEMPTION_TEST_STACKS:[[u8;16384];2]=[[0;16384];2];
 static PREEMPTION_TEST_BUSY_DONE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static PREEMPTION_TEST_OBSERVED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static PREEMPTION_TEST_PROGRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
@@ -431,8 +431,8 @@ pub fn timer_preemption_self_test()->bool{
     PREEMPTION_TEST_BUSY_DONE.store(false,core::sync::atomic::Ordering::Release);
     PREEMPTION_TEST_OBSERVED.store(false,core::sync::atomic::Ordering::Release);
     PREEMPTION_TEST_PROGRESS.store(0,core::sync::atomic::Ordering::Release);
-    let busy_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PREEMPTION_TEST_STACKS[0]).cast::<u8>(),8192)};
-    let observer_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PREEMPTION_TEST_STACKS[1]).cast::<u8>(),8192)};
+    let busy_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PREEMPTION_TEST_STACKS[0]).cast::<u8>(),16384)};
+    let observer_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PREEMPTION_TEST_STACKS[1]).cast::<u8>(),16384)};
     if spawn(busy_stack,1,preemption_busy_worker,core::ptr::null_mut()).is_err()
         ||spawn(observer_stack,1,preemption_observer_worker,core::ptr::null_mut()).is_err(){
         crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior);return false
