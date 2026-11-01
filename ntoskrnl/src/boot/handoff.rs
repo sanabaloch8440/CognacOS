@@ -36,30 +36,7 @@ pub fn boot_secure_boot_enabled()->Option<bool>{
     if flags&(1<<0)==0{None}else{Some(flags&(1<<1)!=0)}
 }
 pub fn boot_tpm_kernel_measurement_recorded()->bool{boot_security_flags()&(1<<5)!=0}
-static mut THREAD_SMOKE_STACK: [u8; 16384] = [0; 16384];
-static mut THREAD_BLOCK_STACK: [u8; 16384] = [0; 16384];
-static mut THREAD_WAKE_STACK: [u8; 16384] = [0; 16384];
-static THREAD_SMOKE_RAN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static THREAD_BLOCK_STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-extern "C" fn thread_smoke_entry(_argument: *mut core::ffi::c_void) {
-    THREAD_SMOKE_RAN.store(true, core::sync::atomic::Ordering::Release);
-}
-extern "C" fn thread_block_smoke_entry(_argument: *mut core::ffi::c_void) {
-    THREAD_BLOCK_STAGE.store(1, core::sync::atomic::Ordering::Release);
-    if thread::block_current().is_err() {
-        THREAD_BLOCK_STAGE.store(0xff, core::sync::atomic::Ordering::Release);
-        return;
-    }
-    THREAD_BLOCK_STAGE.store(3, core::sync::atomic::Ordering::Release);
-}
-extern "C" fn thread_wake_smoke_entry(argument: *mut core::ffi::c_void) {
-    if thread::wake(argument as u64).is_ok() {
-        THREAD_BLOCK_STAGE.store(2, core::sync::atomic::Ordering::Release);
-    } else {
-        THREAD_BLOCK_STAGE.store(0xfe, core::sync::atomic::Ordering::Release);
-    }
-}
 
 unsafe extern "C" {
     pub(crate) static __text_start: u8;
@@ -85,7 +62,7 @@ pub(crate) struct BootInfo {
     pub(crate) magic: u64,
     pub(crate) version: u32,
     pub(crate) struct_size: u32,
-    pml4_physical: u64,
+    pub(crate) pml4_physical: u64,
     pub(crate) memory_map: *const memory::MemoryDescriptor,
     pub(crate) memory_map_entries: usize,
     pub(crate) memory_descriptor_size: usize,
