@@ -451,30 +451,22 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
 }
 
 
-const ACPI_HANDOFF_MAGIC:u64=0x434f_474e_4143_4143;
-const ACPI_HANDOFF_VERSION:u32=1;
-#[repr(C)]
-struct AcpiDriverHandoff { magic:u64,size:u32,version:u32,rsdp_address:u64 }
 static ACPI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static mut ACPI_DRIVER_OBJECT_STORAGE:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
-static mut ACPI_HANDOFF_STORAGE:core::mem::MaybeUninit<AcpiDriverHandoff>=core::mem::MaybeUninit::uninit();
 static mut ACPI_REGISTRY_IMAGE_BUFFER:[u8;ACPI_PE_IMAGE.len()]=[0;ACPI_PE_IMAGE.len()];
 
-/// Load ACPI.sys as an independent boot-start native driver. The firmware
-/// pointer is passed through a versioned, kernel-owned handoff record.
+/// Load ACPI.sys as an independent boot-start native driver. Firmware table
+/// discovery is delegated to the Windows-compatible HalAcpiGetTableEx import;
+/// no private physical-address handoff is exposed to the driver.
 fn initialize_acpi_driver(rsdp_address:u64)->bool{
  use core::sync::atomic::Ordering;
  if ACPI_PE_IMAGE.is_empty()||rsdp_address==0{return false}
  if ACPI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return false}
  unsafe{
-  let handoff=core::ptr::addr_of_mut!(ACPI_HANDOFF_STORAGE).cast::<AcpiDriverHandoff>();
-  handoff.write(AcpiDriverHandoff{magic:ACPI_HANDOFF_MAGIC,
-   size:core::mem::size_of::<AcpiDriverHandoff>() as u32,
-   version:ACPI_HANDOFF_VERSION,rsdp_address});
   let driver=core::ptr::addr_of_mut!(ACPI_DRIVER_OBJECT_STORAGE).cast::<ntoskrnl::driver_loader::DriverObject>();
   driver.write(core::mem::zeroed());
   (*driver).object_type=4;(*driver).size=core::mem::size_of::<ntoskrnl::driver_loader::DriverObject>() as i16;
-  (*driver).driver_extension=handoff.cast();
+  (*driver).driver_extension=core::ptr::null_mut();
   let Some(system_bytes)=boot_hive_bytes("SYSTEM") else{return false};
   let system_hive=match ntoskrnl::cm::hive::Hive::open(system_bytes){Ok(h)=>h,Err(_)=>return false};
   const SERVICE:&[u16]=&[65,67,80,73];
