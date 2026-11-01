@@ -2,7 +2,8 @@
 //! Targets QEMU's primary IDE master; each ATA command transfers one sector.
 use cognacos_ext4 as extfs;
 use extfs::{ReadOnlyBlockDevice, BlockDevice};
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::wdm::{self, DriverObject, DeviceObject, Irp, IoStackLocation};
 use crate::hal::IrqSpinLock;
 
 const DATA: u16 = 0x1f0;
@@ -80,8 +81,8 @@ struct AtaPrimaryMaster { sectors: u64 }
 
 static STORAGE_DISK: IrqSpinLock<Option<AtaPrimaryMaster>> = IrqSpinLock::new(None);
 static DISK_CAPACITY: AtomicU64 = AtomicU64::new(0);
-static DISK_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
-static PARTITION_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
+static DISK_DEVICE: AtomicUsize = AtomicUsize::new(0);
+static PARTITION_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static PARTITION_START: AtomicU64 = AtomicU64::new(0);
 static PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
 static TRACE_PARTITION_START: AtomicU64 = AtomicU64::new(0);
@@ -290,146 +291,138 @@ fn read_root_file<D: ReadOnlyBlockDevice>(
     Ok(length)
 }
 
-fn success_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
-    irp.information = 0;
-    crate::io::IoStatus::Success
-}
+const IRP_MJ_CREATE:u8=0x00;
+const IRP_MJ_CLOSE:u8=0x02;
+const IRP_MJ_READ:u8=0x03;
+const IRP_MJ_WRITE:u8=0x04;
+const STATUS_INVALID_PARAMETER:i32=0xC000_000D_u32 as i32;
+const STATUS_IO_DEVICE_ERROR:i32=0xC000_0185_u32 as i32;
+const IRP_USER_BUFFER_OFFSET:usize=0x70;
+const IRP_STATUS_OFFSET:usize=0x30;
+const IRP_INFORMATION_OFFSET:usize=0x38;
 
-fn valid_kernel_buffer(irp: &crate::io::Irp) -> bool {
-    irp.user_buffer >= 0xffff_8000_0000_0000
-        && irp.length <= crate::io::MAX_IRP_BYTES
-        && irp.user_buffer.checked_add(irp.length as u64).is_some()
-}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum StorageError { Offline, InvalidRequest, Io }
 
-/// Disk class READ dispatch. The current I/O manager passes a kernel-owned
-/// system buffer here; user-mode buffers must be captured/validated before IRP
-/// dispatch and are never dereferenced directly by this callback.
-fn disk_read_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
-    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
-    let mut guard = STORAGE_DISK.lock();
-    let disk = match guard.as_mut() { Some(d) => d, None => return crate::io::IoStatus::NoSuchDevice };
-    let buffer = unsafe { core::slice::from_raw_parts_mut(irp.user_buffer as *mut u8, irp.length) };
-    match disk.read_at(irp.byte_offset, buffer) {
-        Ok(()) => { irp.information = irp.length; crate::io::IoStatus::Success }
-        Err(_) => crate::io::IoStatus::DeviceError,
+const fn make_storage_driver()->DriverObject {
+ let mut major:[Option<wdm::DriverDispatch>;28]=[None;28];
+ major[IRP_MJ_CREATE as usize]=Some(storage_dispatch);
+ major[IRP_MJ_CLOSE as usize]=Some(storage_dispatch);
+ major[IRP_MJ_READ as usize]=Some(storage_dispatch);
+ major[IRP_MJ_WRITE as usize]=Some(storage_dispatch);
+ DriverObject {
+  object_type:4,size:core::mem::size_of::<DriverObject>() as i16,
+  device_object:core::ptr::null_mut(),flags:0,driver_start:core::ptr::null_mut(),
+  driver_size:0,driver_section:core::ptr::null_mut(),driver_extension:core::ptr::null_mut(),
+  driver_name:crate::nt_abi::object::UNICODE_STRING{length:0,maximum_length:0,buffer:core::ptr::null_mut()},
+  hardware_database:core::ptr::null_mut(),fast_io_dispatch:core::ptr::null_mut(),
+  driver_init:core::ptr::null_mut(),driver_start_io:core::ptr::null_mut(),driver_unload:None,
+  major_function:major,
+ }
+}
+static mut STORAGE_DRIVER:DriverObject=make_storage_driver();
+
+fn storage_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
+ if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+ let stack=unsafe{wdm::io_get_current_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{wdm::io_complete_irp_status(irp,STATUS_INVALID_PARAMETER,0,0);}return STATUS_INVALID_PARAMETER}
+ let major=unsafe{(*stack).major_function};
+ let mut status=0i32;
+ let mut information=0usize;
+ if major==IRP_MJ_READ||major==IRP_MJ_WRITE {
+  let params=unsafe{(*stack).parameters.as_ptr()};
+  let length=unsafe{core::ptr::read_unaligned(params.cast::<u32>()) as usize};
+  let offset=unsafe{core::ptr::read_unaligned(params.add(8).cast::<i64>())};
+  let buffer=unsafe{core::ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_USER_BUFFER_OFFSET).cast::<*mut u8>())};
+  let is_partition=device as usize==PARTITION_DEVICE.load(Ordering::Acquire);
+  let capacity=if is_partition{PARTITION_CAPACITY.load(Ordering::Acquire)}else{DISK_CAPACITY.load(Ordering::Acquire)};
+  let end=if offset<0{None}else{(offset as u64).checked_add(length as u64)};
+  if buffer.is_null()&&length!=0||end.is_none_or(|value|value>capacity)||length>64*1024 {
+   status=STATUS_INVALID_PARAMETER;
+  } else {
+   let absolute=if is_partition {
+    PARTITION_START.load(Ordering::Acquire).checked_add(offset as u64)
+   } else {Some(offset as u64)};
+   match absolute {
+    Some(byte_offset)=>{
+     let mut guard=STORAGE_DISK.lock();
+     match guard.as_mut() {
+      Some(disk)=>{
+       let bytes=unsafe{core::slice::from_raw_parts_mut(buffer,length)};
+       let result=if major==IRP_MJ_READ{disk.read_at(byte_offset,bytes)}else{disk.write_at(byte_offset,bytes)};
+       match result {Ok(())=>information=length,Err(_)=>status=STATUS_IO_DEVICE_ERROR}
+      }
+      None=>status=STATUS_IO_DEVICE_ERROR,
+     }
     }
-}
-fn disk_write_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
-    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
-    let mut guard = STORAGE_DISK.lock();
-    let disk = match guard.as_mut() { Some(d) => d, None => return crate::io::IoStatus::NoSuchDevice };
-    let buffer = unsafe { core::slice::from_raw_parts(irp.user_buffer as *const u8, irp.length) };
-    match disk.write_at(irp.byte_offset, buffer) {
-        Ok(()) => { irp.information = irp.length; crate::io::IoStatus::Success }
-        Err(_) => crate::io::IoStatus::DeviceError,
-    }
-}
-fn disk_flush_cache() -> Result<(), crate::io::IoError> {
-    let mut guard = STORAGE_DISK.lock();
-    guard.as_mut().ok_or(crate::io::IoError::UnknownDevice)?.flush().map_err(|_| crate::io::IoError::DeviceBusy)
+    None=>status=STATUS_INVALID_PARAMETER,
+   }
+  }
+ } else if major!=IRP_MJ_CREATE&&major!=IRP_MJ_CLOSE {
+  status=STATUS_INVALID_PARAMETER;
+ }
+ unsafe{wdm::io_complete_irp_status(irp,status,information,0);}
+ status
 }
 
-/// Partition class READ dispatch: validate partition-relative bounds, translate
-/// to disk byte offsets, and forward through the registered disk object's IRP.
-fn partition_read_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
-    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
-    let end = match irp.byte_offset.checked_add(irp.length as u64) {
-        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
-    };
-    if end > PARTITION_CAPACITY.load(Ordering::Acquire) { return crate::io::IoStatus::DeviceError; }
-    let absolute = match PARTITION_START.load(Ordering::Acquire).checked_add(irp.byte_offset) {
-        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
-    };
-    let disk_id = DISK_DEVICE_ID.load(Ordering::Acquire);
-    if disk_id == 0 { return crate::io::IoStatus::NoSuchDevice; }
-    let child = match crate::io::submit_read_at(disk_id, absolute, irp.user_buffer as *mut u8, irp.length) {
-        Ok(id) => id, Err(_) => return crate::io::IoStatus::DeviceError,
-    };
-    let dispatched = crate::io::dispatch_one(child);
-    let result = crate::io::query_irp(child);
-    let _ = crate::io::release_irp(child);
-    match (dispatched, result) {
-        (Ok(crate::io::IoStatus::Success), Some(r)) if r.status == crate::io::IoStatus::Success && r.information == irp.length => {
-            irp.information = irp.length;
-            crate::io::IoStatus::Success
-        }
-        _ => crate::io::IoStatus::DeviceError,
-    }
+fn create_storage_device(name:&[u8],partition:bool)->Result<*mut DeviceObject,StorageError>{
+ if name.is_empty()||name.len()>128||name.len()%2!=0{return Err(StorageError::InvalidRequest)}
+ let mut name_units=[0u16;128];
+ for (index,pair) in name.chunks_exact(2).enumerate(){name_units[index]=u16::from_le_bytes([pair[0],pair[1]]);}
+ let mut unicode=crate::nt_abi::object::UNICODE_STRING{
+  length:name.len() as u16,maximum_length:name.len() as u16,buffer:name_units.as_mut_ptr()
+ };
+ let driver=core::ptr::addr_of_mut!(STORAGE_DRIVER);
+ let mut device=core::ptr::null_mut();
+ let status=unsafe{wdm::io_create_device(driver,0,&mut unicode,0x0000_0007,0,0,&mut device)};
+ if status<0||device.is_null(){return Err(StorageError::Offline)}
+ unsafe{(*device).sector_size=SECTOR_BYTES as u16;}
+ if partition{PARTITION_DEVICE.store(device as usize,Ordering::Release);}
+ else{DISK_DEVICE.store(device as usize,Ordering::Release);}
+ Ok(device)
 }
 
-fn partition_write_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
-    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
-    let end = match irp.byte_offset.checked_add(irp.length as u64) {
-        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
-    };
-    if end > PARTITION_CAPACITY.load(Ordering::Acquire) { return crate::io::IoStatus::DeviceError; }
-    let absolute = match PARTITION_START.load(Ordering::Acquire).checked_add(irp.byte_offset) {
-        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
-    };
-    let disk_id = DISK_DEVICE_ID.load(Ordering::Acquire);
-    if disk_id == 0 { return crate::io::IoStatus::NoSuchDevice; }
-    let child = match crate::io::submit_write_at(disk_id, absolute, irp.user_buffer as *const u8, irp.length) {
-        Ok(id) => id, Err(_) => return crate::io::IoStatus::DeviceError,
-    };
-    let dispatched = crate::io::dispatch_one(child);
-    let result = crate::io::query_irp(child);
-    let _ = crate::io::release_irp(child);
-    match (dispatched, result) {
-        (Ok(crate::io::IoStatus::Success), Some(r)) if r.status == crate::io::IoStatus::Success && r.information == irp.length => {
-            irp.information = irp.length;
-            crate::io::IoStatus::Success
-        }
-        _ => crate::io::IoStatus::DeviceError,
-    }
-}
-fn register_storage_device(name: &[u8], read: crate::io::DispatchFn, write: crate::io::DispatchFn) -> Result<u32, crate::io::IoError> {
-    let mut dispatch: [Option<crate::io::DispatchFn>; 16] = [None; 16];
-    dispatch[crate::io::IRP_MJ_CREATE as usize] = Some(success_dispatch);
-    dispatch[crate::io::IRP_MJ_CLOSE as usize] = Some(success_dispatch);
-    dispatch[crate::io::IRP_MJ_READ as usize] = Some(read);
-    dispatch[crate::io::IRP_MJ_WRITE as usize] = Some(write);
-    crate::io::register_device(name, dispatch)
+/// Synchronous WDM request helper used by the ext4 block-device adapter.
+/// The IRP is kernel-created and its UserBuffer is a caller-owned kernel buffer.
+fn storage_transfer(device:*mut DeviceObject,major:u8,offset:u64,buffer:*mut u8,length:usize)->Result<usize,StorageError>{
+ if device.is_null()||buffer.is_null()&&length!=0||length>64*1024{return Err(StorageError::InvalidRequest)}
+ let stack_size=unsafe{(*device).stack_size};
+ if stack_size<=0{return Err(StorageError::Offline)}
+ let irp=unsafe{wdm::io_allocate_irp(stack_size,0)};
+ if irp.is_null(){return Err(StorageError::Offline)}
+ let stack=unsafe{wdm::io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{wdm::io_free_irp(irp);}return Err(StorageError::Offline)}
+ unsafe{
+  (*stack).major_function=major;
+  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<u32>(),length as u32);
+  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<i64>(),offset as i64);
+  core::ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_USER_BUFFER_OFFSET).cast::<*mut u8>(),buffer);
+ }
+ let dispatch=unsafe{wdm::io_call_driver(device,irp)};
+ let status=unsafe{core::ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ let information=unsafe{core::ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>())};
+ unsafe{wdm::io_free_irp(irp);}
+ if dispatch<0||status<0{return Err(StorageError::Io)}
+ Ok(information)
 }
 
-/// Adapter which makes the registered I/O-manager device the sole block-device
-/// interface used by GPT and ext4. Reads are synchronous bounded READ IRPs.
-struct IoManagerBlockDevice { device_id: u32, capacity: u64 }
+struct IoManagerBlockDevice { device:*mut DeviceObject,capacity:u64 }
 impl ReadOnlyBlockDevice for IoManagerBlockDevice {
-    type DeviceError = crate::io::IoError;
-    fn capacity_bytes(&self) -> u64 { self.capacity }
-    fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Self::DeviceError> {
-        if out.len() > crate::io::MAX_IRP_BYTES { return Err(crate::io::IoError::BufferTooLarge); }
-        let id = crate::io::submit_read_at(self.device_id, offset, out.as_mut_ptr(), out.len())?;
-        let dispatched = crate::io::dispatch_one(id);
-        let result = crate::io::query_irp(id);
-        let release = crate::io::release_irp(id);
-        match (dispatched, result, release) {
-            (Ok(crate::io::IoStatus::Success), Some(r), Ok(()))
-                if r.status == crate::io::IoStatus::Success && r.information == out.len() => Ok(()),
-            (Err(e), _, _) => Err(e),
-            (_, _, Err(e)) => Err(e),
-            _ => Err(crate::io::IoError::UnknownIrp),
-        }
-    }
+ type DeviceError=StorageError;
+ fn capacity_bytes(&self)->u64{self.capacity}
+ fn read_at(&mut self,offset:u64,out:&mut[u8])->Result<(),Self::DeviceError>{
+  let count=storage_transfer(self.device,IRP_MJ_READ,offset,out.as_mut_ptr(),out.len())?;
+  if count==out.len(){Ok(())}else{Err(StorageError::Io)}
+ }
 }
 impl BlockDevice for IoManagerBlockDevice {
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::DeviceError> {
-        if data.len() > crate::io::MAX_IRP_BYTES { return Err(crate::io::IoError::BufferTooLarge); }
-        let id = crate::io::submit_write_at(self.device_id, offset, data.as_ptr(), data.len())?;
-        let dispatched = crate::io::dispatch_one(id);
-        let result = crate::io::query_irp(id);
-        let release = crate::io::release_irp(id);
-        match (dispatched, result, release) {
-            (Ok(crate::io::IoStatus::Success), Some(r), Ok(()))
-                if r.status == crate::io::IoStatus::Success && r.information == data.len() => Ok(()),
-            (Err(e), _, _) => Err(e),
-            (_, _, Err(e)) => Err(e),
-            _ => Err(crate::io::IoError::UnknownIrp),
-        }
-    }
-    fn flush(&mut self) -> Result<(), Self::DeviceError> {
-        disk_flush_cache()
-    }
+ fn write_at(&mut self,offset:u64,data:&[u8])->Result<(),Self::DeviceError>{
+  let count=storage_transfer(self.device,IRP_MJ_WRITE,offset,data.as_ptr() as *mut u8,data.len())?;
+  if count==data.len(){Ok(())}else{Err(StorageError::Io)}
+ }
+ fn flush(&mut self)->Result<(),Self::DeviceError>{
+  STORAGE_DISK.lock().as_mut().ok_or(StorageError::Offline)?.flush().map_err(|_|StorageError::Io)
+ }
 }
 
 /// Optional reserved GPT partition for crash-trace persistence. The partition
@@ -516,12 +509,9 @@ pub fn run_ext4_readme_test() -> bool {
     let disk = match AtaPrimaryMaster::initialize() { Ok(d) => d, Err(_) => return false };
     DISK_CAPACITY.store(disk.sectors.saturating_mul(SECTOR_BYTES as u64), Ordering::Release);
     *STORAGE_DISK.lock() = Some(disk);
-    let disk_id = match register_storage_device(b"\\Device\\Harddisk0", disk_read_dispatch, disk_write_dispatch) {
-        Ok(id) => id, Err(_) => return false,
-    };
-    DISK_DEVICE_ID.store(disk_id, Ordering::Release);
+    let disk_device=match create_storage_device(&[0x5c,0,0x44,0,0x65,0,0x76,0,0x69,0,0x63,0,0x65,0,0x5c,0,0x48,0,0x61,0,0x72,0,0x64,0,0x64,0,0x69,0,0x73,0,0x6b,0,0x30,0],false){Ok(device)=>device,Err(_)=>return false};
     unsafe { crate::serial_write(b"Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.\r\n"); }
-    let mut whole_disk = IoManagerBlockDevice { device_id: disk_id, capacity: DISK_CAPACITY.load(Ordering::Acquire) };
+    let mut whole_disk = IoManagerBlockDevice { device: disk_device, capacity: DISK_CAPACITY.load(Ordering::Acquire) };
     // A third, dedicated GPT partition is optional. Trace writes are disabled
     // unless the image explicitly reserves it; ext4 and GPT metadata are never used as scratch space.
     if let Ok(trace_partition) = extfs::read_gpt_partition(&mut whole_disk, 2, SECTOR_BYTES as u32) {
@@ -538,12 +528,9 @@ pub fn run_ext4_readme_test() -> bool {
     let capacity = match partition.capacity_bytes() { Ok(v) => v, Err(_) => return false };
     PARTITION_START.store(start, Ordering::Release);
     PARTITION_CAPACITY.store(capacity, Ordering::Release);
-    let partition_id = match register_storage_device(b"\\Device\\Harddisk0\\Partition1", partition_read_dispatch, partition_write_dispatch) {
-        Ok(id) => id, Err(_) => return false,
-    };
-    PARTITION_DEVICE_ID.store(partition_id, Ordering::Release);
+    let partition_device=match create_storage_device(&[0x5c,0,0x44,0,0x65,0,0x76,0,0x69,0,0x63,0,0x65,0,0x5c,0,0x48,0,0x61,0,0x72,0,0x64,0,0x64,0,0x69,0,0x73,0,0x6b,0,0x30,0,0x5c,0,0x50,0,0x61,0,0x72,0,0x74,0,0x69,0,0x74,0,0x69,0,0x6f,0,0x6e,0,0x31,0],true){Ok(device)=>device,Err(_)=>return false};
     unsafe { crate::serial_write(b"Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.\r\n"); }
-    let mut volume = IoManagerBlockDevice { device_id: partition_id, capacity };
+    let mut volume = IoManagerBlockDevice { device: partition_device, capacity };
     let sb = match extfs::read_superblock(&mut volume) { Ok(s) => s, Err(_) => return false };
     unsafe { crate::serial_write(b"ext4: partition superblock read through the registered partition READ interface.\r\n"); }
     let mut actual = [0u8; 128];

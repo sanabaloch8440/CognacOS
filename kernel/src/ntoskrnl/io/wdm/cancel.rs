@@ -1,4 +1,19 @@
 #[repr(C)]
+static IO_CANCEL_SPIN_LOCK:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+
+#[unsafe(export_name="IoAcquireCancelSpinLock")]
+pub unsafe extern "win64" fn io_acquire_cancel_spin_lock(old_irql:*mut u8){
+ if old_irql.is_null(){return}
+ let old=unsafe{crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level()};
+ while IO_CANCEL_SPIN_LOCK.compare_exchange_weak(false,true,core::sync::atomic::Ordering::Acquire,core::sync::atomic::Ordering::Relaxed).is_err(){core::hint::spin_loop();}
+ unsafe{old_irql.write(old);}
+}
+#[unsafe(export_name="IoReleaseCancelSpinLock")]
+pub unsafe extern "win64" fn io_release_cancel_spin_lock(old_irql:u8){
+ IO_CANCEL_SPIN_LOCK.store(false,core::sync::atomic::Ordering::Release);
+ unsafe{crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql);}
+}
+
 pub struct IoCsq {
  pub type_:u32,pub padding:u32,
  pub insert_irp:*mut c_void,pub remove_irp:*mut c_void,pub peek_next_irp:*mut c_void,
@@ -38,13 +53,13 @@ unsafe extern "win64" fn csq_cancel_routine(_device:*mut DeviceObject,irp:*mut I
  if irp.is_null(){return}
  let csq=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET).cast::<IoCsq>()};
  if csq.is_null(){return}
- let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let mut old_irql=0u8;unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
  let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
  unsafe{remove(csq,irp);}
  write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
  unsafe{csq_unlock(csq,queue_irql);}
- unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ unsafe{io_release_cancel_spin_lock(old_irql);}
  let complete:CsqCompleteCanceled=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,48))};
  unsafe{complete(csq,irp);}
 }
