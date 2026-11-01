@@ -30,10 +30,40 @@ pub type EcamWindow = nt_abi::bus::PCI_ECAM_WINDOW;
 pub trait EcamWindowExt {
     fn validate(&self) -> Result<(), PciError>;
     fn register_address(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<*mut u8, PciError>;
-    unsafe fn read_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u8, PciError>;
-    unsafe fn read_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u16, PciError>;
-    unsafe fn read_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u32, PciError>;
-    unsafe fn write_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u32) -> Result<(), PciError>;
+    unsafe fn read_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u8, PciError> {
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        Ok(unsafe { core::ptr::read_volatile(p) })
+    }
+    unsafe fn read_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u16, PciError> {
+        if offset & 1 != 0 { return Err(PciError::InvalidOffset); }
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        Ok(unsafe { core::ptr::read_volatile(p.cast::<u16>()) })
+    }
+    unsafe fn read_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u32, PciError> {
+        if offset & 3 != 0 { return Err(PciError::InvalidOffset); }
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        Ok(unsafe { core::ptr::read_volatile(p.cast::<u32>()) })
+    }
+    unsafe fn write_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u8) -> Result<(), PciError> {
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        unsafe { core::ptr::write_volatile(p, value); }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        Ok(())
+    }
+    unsafe fn write_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u16) -> Result<(), PciError> {
+        if offset & 1 != 0 { return Err(PciError::InvalidOffset); }
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        unsafe { core::ptr::write_volatile(p.cast::<u16>(), value); }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        Ok(())
+    }
+    unsafe fn write_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u32) -> Result<(), PciError> {
+        if offset & 3 != 0 { return Err(PciError::InvalidOffset); }
+        let p = self.register_address(segment, bus, device, function, offset)?;
+        unsafe { core::ptr::write_volatile(p.cast::<u32>(), value); }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 impl EcamWindowExt for EcamWindow {
@@ -60,55 +90,6 @@ impl EcamWindowExt for EcamWindow {
         let address = self.virtual_base.checked_add(bus_offset)
             .and_then(|v| v.checked_add(bdf_offset)).ok_or(PciError::AddressOverflow)?;
         Ok(address as *mut u8)
-    }
-
-    unsafe fn read_u8(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u8, PciError> {
-        let _ = self.register_address(segment, bus, device, function, offset)?;
-        if let Some(read) = self.read_config {
-            let mut value=0u32;
-            let status=unsafe{read(self.config_context,segment,bus,device,function,offset,1,&mut value)};
-            if status!=nt_abi::ntstatus::STATUS_SUCCESS{return Err(PciError::InvalidWindow)}
-            return Ok(value as u8);
-        }
-        let p = self.register_address(segment, bus, device, function, offset)?;
-        Ok(unsafe { core::ptr::read_volatile(p) })
-    }
-    unsafe fn read_u16(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u16, PciError> {
-        if offset & 1 != 0 { return Err(PciError::InvalidOffset); }
-        let _ = self.register_address(segment, bus, device, function, offset)?;
-        if let Some(read) = self.read_config {
-            let mut value=0u32;
-            let status=unsafe{read(self.config_context,segment,bus,device,function,offset,2,&mut value)};
-            if status!=nt_abi::ntstatus::STATUS_SUCCESS{return Err(PciError::InvalidWindow)}
-            return Ok(value as u16);
-        }
-        let p = self.register_address(segment, bus, device, function, offset)?;
-        Ok(unsafe { core::ptr::read_volatile(p.cast::<u16>()) })
-    }
-    unsafe fn read_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16) -> Result<u32, PciError> {
-        if offset & 3 != 0 { return Err(PciError::InvalidOffset); }
-        let _ = self.register_address(segment, bus, device, function, offset)?;
-        if let Some(read) = self.read_config {
-            let mut value=0u32;
-            let status=unsafe{read(self.config_context,segment,bus,device,function,offset,4,&mut value)};
-            if status!=nt_abi::ntstatus::STATUS_SUCCESS{return Err(PciError::InvalidWindow)}
-            return Ok(value);
-        }
-        let p = self.register_address(segment, bus, device, function, offset)?;
-        Ok(unsafe { core::ptr::read_volatile(p.cast::<u32>()) })
-    }
-    unsafe fn write_u32(&self, segment: u16, bus: u8, device: u8, function: u8, offset: u16, value: u32) -> Result<(), PciError> {
-        if offset & 3 != 0 { return Err(PciError::InvalidOffset); }
-        let _ = self.register_address(segment, bus, device, function, offset)?;
-        if let Some(write)=self.write_config {
-            let status=unsafe{write(self.config_context,segment,bus,device,function,offset,4,value)};
-            if status!=nt_abi::ntstatus::STATUS_SUCCESS{return Err(PciError::InvalidWindow)}
-            return Ok(());
-        }
-        let p = self.register_address(segment, bus, device, function, offset)?;
-        unsafe { core::ptr::write_volatile(p.cast::<u32>(), value); }
-        core::sync::atomic::fence(Ordering::SeqCst);
-        Ok(())
     }
 }
 
@@ -139,6 +120,30 @@ mod tests {
         assert!(w.register_address(0, 0, 0, 8, 0).is_err());
         assert!(w.register_address(0, 0, 0, 0, 4096).is_err());
     }
+    #[test]
+    fn ecam_reads_and_writes_use_mapped_mmio_with_width_validation() {
+        #[repr(align(4096))]
+        struct EcamPage([u8; 4096]);
+        let mut page = EcamPage([0; 4096]);
+        let window = EcamWindow {
+            virtual_base: page.0.as_mut_ptr() as u64,
+            physical_base: 0x8000_0000,
+            segment: 0,
+            bus_start: 0,
+            bus_end: 0,
+        };
+        unsafe {
+            window.write_u8(0, 0, 0, 0, 0x100, 0x5a).unwrap();
+            window.write_u16(0, 0, 0, 0, 0x102, 0x1234).unwrap();
+            window.write_u32(0, 0, 0, 0, 0x104, 0xdead_beef).unwrap();
+            assert_eq!(window.read_u8(0, 0, 0, 0, 0x100).unwrap(), 0x5a);
+            assert_eq!(window.read_u16(0, 0, 0, 0, 0x102).unwrap(), 0x1234);
+            assert_eq!(window.read_u32(0, 0, 0, 0, 0x104).unwrap(), 0xdead_beef);
+            assert!(window.write_u16(0, 0, 0, 0, 0x101, 1).is_err());
+            assert!(window.write_u32(0, 0, 0, 0, 0x102, 1).is_err());
+        }
+    }
+
     #[test]
     fn resource_translation_checks_entire_range() {
         let w = AddressWindow { bus_start: 0x1000, physical_start: 0x8000_0000, length: 0x1000 };

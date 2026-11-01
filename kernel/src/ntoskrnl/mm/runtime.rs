@@ -19,6 +19,48 @@ const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
 const STATUS_PARTIAL_COPY: i32 = 0x8000_000Du32 as i32;
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
 
+/// PVOID MmMapIoSpace(PHYSICAL_ADDRESS, SIZE_T, MEMORY_CACHING_TYPE).
+///
+/// The current x86-64 kernel VM provides a dedicated device-MMIO aperture
+/// with uncached, supervisor-only, NX mappings. Only MmNonCached (0) is
+/// implemented here; other cache policies are rejected rather than silently
+/// aliasing device memory with an incompatible PAT/cache type.
+#[unsafe(export_name = "MmMapIoSpace")]
+pub unsafe extern "win64" fn mm_map_io_space(
+    physical_address: i64,
+    number_of_bytes: u64,
+    cache_type: i32,
+) -> *mut c_void {
+    if physical_address < 0 || number_of_bytes == 0 || cache_type != 0 {
+        return core::ptr::null_mut();
+    }
+    match crate::ntoskrnl::mm::kernel_space::map_io_space(
+        physical_address as u64,
+        number_of_bytes,
+    ) {
+        Ok(address) => address as *mut c_void,
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+/// VOID MmUnmapIoSpace(PVOID, SIZE_T).
+///
+/// This releases only the virtual MMIO mapping. The physical BAR/device
+/// aperture is never returned to the physical-page allocator.
+#[unsafe(export_name = "MmUnmapIoSpace")]
+pub unsafe extern "win64" fn mm_unmap_io_space(
+    base_address: *mut c_void,
+    number_of_bytes: u64,
+) {
+    if base_address.is_null() || number_of_bytes == 0 {
+        return;
+    }
+    let _ = crate::ntoskrnl::mm::kernel_space::unmap_io_space(
+        base_address as u64,
+        number_of_bytes,
+    );
+}
+
 #[inline]
 fn entry_allowed(entry: u64, require_write: bool) -> bool {
     entry & PRESENT != 0 && entry & USER == 0 && (!require_write || entry & WRITE != 0)

@@ -13,6 +13,10 @@ pub type SizeT = u64;
 pub type Boolean = u8;
 pub type Kirql = u8;
 pub type LargeInteger = i64;
+pub(crate) type IoCreateDeviceFn = unsafe extern "win64" fn(*mut crate::io::wdm::DriverObject, Ulong, *mut crate::io::wdm::UnicodeString, Ulong, Ulong, Boolean, *mut *mut crate::io::wdm::DeviceObject) -> NtStatus;
+pub(crate) type IoDeleteDeviceFn = unsafe extern "win64" fn(*mut crate::io::wdm::DeviceObject);
+pub type MmMapIoSpaceFn = unsafe extern "win64" fn(LargeInteger, SizeT, i32) -> Pvoid;
+pub type MmUnmapIoSpaceFn = unsafe extern "win64" fn(Pvoid, SizeT);
 
 pub type KeGetCurrentIrqlFn = unsafe extern "win64" fn() -> Kirql;
 pub type KeQueryActiveProcessorCountExFn = unsafe extern "win64" fn(Ushort) -> Ulong;
@@ -67,6 +71,20 @@ pub type SeSubjectContextFn = unsafe extern "win64" fn(*mut SeSecuritySubjectCon
 pub type PsAssignImpersonationTokenFn = unsafe extern "win64" fn(Handle, Handle) -> NtStatus;
 pub type PsReferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid) -> Pvoid;
 pub type PsDereferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid);
+const _: [(); core::mem::size_of::<crate::io::wdm::DriverObject>()] = [(); core::mem::size_of::<cognacos_nt_abi::io::DRIVER_OBJECT>()];
+const _: [(); core::mem::align_of::<crate::io::wdm::DriverObject>()] = [(); core::mem::align_of::<cognacos_nt_abi::io::DRIVER_OBJECT>()];
+const _: [(); core::mem::size_of::<crate::io::wdm::DeviceObject>()] = [(); core::mem::size_of::<cognacos_nt_abi::io::DEVICE_OBJECT>()];
+const _: [(); core::mem::align_of::<crate::io::wdm::DeviceObject>()] = [(); core::mem::align_of::<cognacos_nt_abi::io::DEVICE_OBJECT>()];
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, flags) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, flags));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, device_extension) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, device_extension));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, alignment_requirement) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, alignment_requirement));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, device_queue) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, device_queue));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, device_object_extension) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, device_object_extension));
+
+const _: IoCreateDeviceFn = crate::io::io_create_device;
+const _: IoDeleteDeviceFn = crate::io::io_delete_device;
+const _: MmMapIoSpaceFn = crate::ntoskrnl::mm::runtime::mm_map_io_space;
+const _: MmUnmapIoSpaceFn = crate::ntoskrnl::mm::runtime::mm_unmap_io_space;
 const _: SeAccessCheckFn = crate::ntoskrnl::se::runtime::SeAccessCheck;
 const _: SePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SePrivilegeCheck;
 const _: SeSinglePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SeSinglePrivilegeCheck;
@@ -82,10 +100,14 @@ const _: PsDereferencePrimaryTokenFn = crate::process::PsDereferencePrimaryToken
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject, SeAccessCheck, SePrivilegeCheck, SeSinglePrivilegeCheck, SeValidSecurityDescriptor, SeCaptureSubjectContext, SeReleaseSubjectContext, SeLockSubjectContext, SeUnlockSubjectContext, PsAssignImpersonationToken, PsReferencePrimaryToken, PsDereferencePrimaryToken }
+pub enum AbiSignature { IoCreateDevice, IoDeleteDevice, MmMapIoSpace, MmUnmapIoSpace, MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject, SeAccessCheck, SePrivilegeCheck, SeSinglePrivilegeCheck, SeValidSecurityDescriptor, SeCaptureSubjectContext, SeReleaseSubjectContext, SeLockSubjectContext, SeUnlockSubjectContext, PsAssignImpersonationToken, PsReferencePrimaryToken, PsDereferencePrimaryToken }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
+        "IoCreateDevice" => AbiSignature::IoCreateDevice,
+        "IoDeleteDevice" => AbiSignature::IoDeleteDevice,
+        "MmMapIoSpace" => AbiSignature::MmMapIoSpace,
+        "MmUnmapIoSpace" => AbiSignature::MmUnmapIoSpace,
         "KeGetCurrentIrql" => AbiSignature::KeGetCurrentIrql,
         "KeQueryActiveProcessorCountEx" => AbiSignature::KeQueryActiveProcessorCountEx,
         "KeQueryActiveProcessorCount" => AbiSignature::KeQueryActiveProcessorCount,
@@ -146,7 +168,7 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn documented_signatures_are_registered() {
-        for name in ["MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","MmBuildMdlForNonPagedPool","MmAdvanceMdl","MmCreateMdl","MmFreeMdl","MmPrepareMdlForReuse","MmBuildPartialMdl","MmProbeAndLockPages","MmUnlockPages","MmMapLockedPagesSpecifyCache","MmUnmapLockedPages","MmCopyVirtualMemory","PsLookupProcessByProcessId","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
+        for name in ["IoCreateDevice","IoDeleteDevice","MmMapIoSpace","MmUnmapIoSpace","MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","MmBuildMdlForNonPagedPool","MmAdvanceMdl","MmCreateMdl","MmFreeMdl","MmPrepareMdlForReuse","MmBuildPartialMdl","MmProbeAndLockPages","MmUnlockPages","MmMapLockedPagesSpecifyCache","MmUnmapLockedPages","MmCopyVirtualMemory","PsLookupProcessByProcessId","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
         assert!(documented_signature("UnknownRoutine").is_none());
     }
     #[test]

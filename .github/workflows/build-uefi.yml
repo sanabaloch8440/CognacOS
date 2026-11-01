@@ -559,7 +559,66 @@ jobs:
               assert struct.unpack_from("<H", p, opt)[0] == 0x20b, f"{path}: not PE32+"
               assert struct.unpack_from("<H", p, opt+68)[0] == 1, f"{path}: not native subsystem"
               assert struct.unpack_from("<I", p, opt+16)[0] != 0, f"{path}: no entry point"
-              assert struct.unpack_from("<II", p, opt+112+8) == (0, 0), f"{path}: imports unsupported by stage-1 loader"
+              import_rva, import_size = struct.unpack_from("<II", p, opt+112+8)
+              if path.name == "pci.sys":
+                  assert import_rva and import_size >= 40, f"{path}: missing NTOSKRNL import directory"
+                  section_count = struct.unpack_from("<H", p, pe+6)[0]
+                  optional_size = struct.unpack_from("<H", p, pe+20)[0]
+                  section_table = pe + 24 + optional_size
+
+                  def rva_to_offset(rva):
+                      for index in range(section_count):
+                          sh = section_table + index * 40
+                          virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", p, sh+8)
+                          span = max(virtual_size, raw_size)
+                          if virtual_address <= rva < virtual_address + span:
+                              return raw_offset + (rva - virtual_address)
+                      raise AssertionError(f"{path}: RVA 0x{rva:x} is not backed by a PE section")
+
+                  def read_c_string(offset):
+                      end = p.find(b"\0", offset)
+                      assert end >= 0, f"{path}: unterminated import string"
+                      return p[offset:end].decode("ascii")
+
+                  imports = {}
+                  iat_rvas = []
+                  descriptor_offset = rva_to_offset(import_rva)
+                  descriptor_limit = descriptor_offset + import_size
+                  while descriptor_offset + 20 <= descriptor_limit:
+                      original_thunk, timestamp, forwarder, name_rva, first_thunk = struct.unpack_from("<IIIII", p, descriptor_offset)
+                      descriptor_offset += 20
+                      if not any((original_thunk, timestamp, forwarder, name_rva, first_thunk)):
+                          break
+                      dll = read_c_string(rva_to_offset(name_rva)).lower()
+                      assert original_thunk and first_thunk, f"{path}: import descriptor lacks lookup/IAT tables"
+                      iat_rvas.append(first_thunk)
+                      names = []
+                      index = 0
+                      while True:
+                          thunk = struct.unpack_from("<Q", p, rva_to_offset(original_thunk + index * 8))[0]
+                          if thunk == 0:
+                              break
+                          assert not (thunk & (1 << 63)), f"{path}: ordinal imports are not expected"
+                          hint_name = rva_to_offset(thunk & 0xffffffff)
+                          names.append(read_c_string(hint_name + 2))
+                          index += 1
+                      imports[dll] = names
+                  assert imports == {"ntoskrnl.exe": ["IoCreateDevice", "IoDeleteDevice"]}, f"{path}: unexpected imports: {imports}"
+                  assert len(iat_rvas) == 1, f"{path}: expected one contiguous NTOSKRNL IAT"
+                  first_thunk = iat_rvas[0]
+                  iat_section = next(
+                      (struct.unpack_from("<I", p, section_table+i*40+36)[0]
+                       for i in range(section_count)
+                       if struct.unpack_from("<I", p, section_table+i*40+12)[0] <= first_thunk
+                       < struct.unpack_from("<I", p, section_table+i*40+12)[0]
+                       + max(struct.unpack_from("<I", p, section_table+i*40+8)[0],
+                             struct.unpack_from("<I", p, section_table+i*40+16)[0])),
+                      0,
+                  )
+                  assert iat_section & 0x80000000, f"{path}: IAT is not in writable data"
+              else:
+                  assert (import_rva, import_size) == (0, 0), f"{path}: unexpected PE imports: {import_rva:#x}/{import_size}"
+
               assert struct.unpack_from("<II", p, opt+112+5*8) == (0, 0), f"{path}: relocations unsupported by stage-1 loader"
               print(f"validated native PE32+ driver: {path} ({len(p)} bytes)")
           PY
@@ -651,7 +710,7 @@ jobs:
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel-release.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
           file build/cognacos-kernel.exe build/cognacos-kernel-release.exe
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp IoCreateDevice IoDeleteDevice MmMapIoSpace MmUnmapIoSpace
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe kernel/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
           python3 - <<'PY'
           import struct
@@ -1036,13 +1095,13 @@ jobs:
             # these optional inventory addresses inaccessible. A failed GDB
             # memory read must not abort the remaining CPU/stack/backtrace capture.
             python
-            import gdb
-            for expression in ("x/4gx 0xffff8000e0006070", "x/gx 0xffff8000e0064318"):
-                try:
-                    gdb.execute(expression)
-                except gdb.error as error:
-                    print("Optional PCI image memory inspection unavailable: " + str(error))
-            end
+          import gdb
+          for expression in ("x/4gx 0xffff8000e0006070", "x/gx 0xffff8000e0064318"):
+              try:
+                  gdb.execute(expression)
+              except gdb.error as error:
+                  print("Optional PCI image memory inspection unavailable: " + str(error))
+          end
             info threads
             thread apply all info registers rip rsp
             thread apply all info line *$rip

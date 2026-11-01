@@ -55,7 +55,7 @@ pub struct KDeviceQueueEntry {
     pub padding: [u8; 3],
 }
 
-/// x64 WDK KDEVICE_QUEUE. DEVICE_OBJECT embeds this at offset 0x98.
+/// x64 WDK KDEVICE_QUEUE. DEVICE_OBJECT embeds this at offset 0xA0.
 #[repr(C)]
 pub struct KDeviceQueue {
     pub type_: i16,
@@ -75,11 +75,14 @@ pub struct DeviceObject {
     pub vpb: *mut c_void, pub device_extension: *mut c_void,
     pub device_type: u32, pub stack_size: i8, pub queue_padding: [u8; 3],
     pub queue: [u8; 0x48],
+    pub alignment_requirement: u32, pub device_queue_padding: [u8; 4],
     pub device_queue: KDeviceQueue, pub dpc: [u8; 0x40], pub active_thread_count: u32,
     pub security_descriptor: *mut c_void, pub device_lock: [u8; 0x18],
     pub sector_size: u16, pub spare1: u16, pub device_object_extension: *mut c_void,
     pub reserved: *mut c_void,
 }
+const _: () = assert!(core::mem::size_of::<DeviceObject>() == 0x150);
+const _: () = assert!(core::mem::offset_of!(DeviceObject, device_queue) == 0xA0);
 /// Opaque storage for the x64 WDK IRP. Fields used here are accessed by their
 /// documented x64 offsets to avoid pretending that Rust's high-level fields
 /// are the complete SDK definition.
@@ -149,7 +152,7 @@ impl WdmState {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
-    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],
+    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],alignment_requirement:0,device_queue_padding:[0;4],
     device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},dpc:[0;0x40],active_thread_count:0,
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
@@ -907,6 +910,7 @@ pub unsafe extern "win64" fn io_start_next_packet(device: *mut DeviceObject, _ca
     if !next.is_null() { unsafe { invoke_start_io(device, next); } }
 }
 
+#[unsafe(export_name = "IoCreateDevice")]
 pub unsafe extern "win64" fn io_create_device(
  driver:*mut DriverObject, extension_size:u32, device_name:*mut UnicodeString,
  device_type:u32, characteristics:u32, exclusive:u8, output:*mut *mut DeviceObject
@@ -928,11 +932,19 @@ pub unsafe extern "win64" fn io_create_device(
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
  slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
- slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
- slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
- slot.object.device_extension=if extension_size==0 {ptr::null_mut()} else {slot.extension.as_mut_ptr().cast()};
- slot.object.stack_size=1;
- slot.object.next_device=unsafe{(*driver).device_object};
+ slot.extension.fill(0);
+ let next_device=unsafe{(*driver).device_object};
+ slot.object=DeviceObject {
+  object_type:3,size:(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16,reference_count:1,
+  driver_object:driver,next_device,attached_device:ptr::null_mut(),current_irp:ptr::null_mut(),timer:ptr::null_mut(),
+  flags:0,characteristics, vpb:ptr::null_mut(),
+  device_extension:if extension_size==0 {ptr::null_mut()} else {slot.extension.as_mut_ptr().cast()},
+  device_type,stack_size:1,queue_padding:[0;3],queue:[0;0x48],
+  alignment_requirement:63,device_queue_padding:[0;4],
+  device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},
+  dpc:[0;0x40],active_thread_count:0,security_descriptor:ptr::null_mut(),device_lock:[0;0x18],
+  sector_size:0,spare1:0,device_object_extension:ptr::null_mut(),reserved:ptr::null_mut(),
+ };
  let object=&mut slot.object as *mut DeviceObject;
  unsafe { (*driver).device_object=object; output.write(object); }
  drop(state);
@@ -974,64 +986,6 @@ pub struct PciPdoExtension {
  pub version:u32,
  pub information:crate::nt_abi::bus::PCI_DEVICE_INFORMATION,
 }
-static PCI_PDO_CONTEXT_COOKIE:u64=0x5043_4950_444f_4358;
-
-/// Context value to place in the PCI driver handoff when installing the
-/// kernel's PDO factory callbacks.
-#[unsafe(no_mangle)]
-pub extern "win64" fn IoPciPdoContext()->*mut c_void {
- core::ptr::addr_of!(PCI_PDO_CONTEXT_COOKIE).cast_mut().cast()
-}
-
-/// Kernel callback supplied to pci.sys. The bus driver decides which PCI
-/// functions exist; this routine only materializes the PDO for one validated
-/// bus-reported function and binds it to the pci.sys DRIVER_OBJECT.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoPciCreatePdo(
- context:*mut c_void,
- driver:*mut DriverObject,
- information:*const crate::nt_abi::bus::PCI_DEVICE_INFORMATION,
- output:*mut *mut DeviceObject,
-)->i32 {
- if context!=IoPciPdoContext()||driver.is_null()||information.is_null()||output.is_null(){
-  return STATUS_INVALID_PARAMETER;
- }
- unsafe{output.write(ptr::null_mut());}
- let info=unsafe{*information};
- if info.device>=32||info.function>=8||info.vendor_id==0||info.vendor_id==0xffff{
-  return STATUS_INVALID_PARAMETER;
- }
- let mut device=ptr::null_mut();
- let status=unsafe{
-  io_create_device(driver,core::mem::size_of::<PciPdoExtension>() as u32,
-   ptr::null_mut(),0x22,0,0,&mut device)
- };
- if status!=STATUS_SUCCESS||device.is_null(){return status;}
- let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
- if extension.is_null(){unsafe{io_delete_device(device)};return STATUS_INSUFFICIENT_RESOURCES;}
- unsafe{
-  extension.write(PciPdoExtension{magic:PCI_PDO_EXTENSION_MAGIC,version:1,information:info});
-  // DO_BUS_ENUMERATED_DEVICE: this object is a physical PDO created by a bus.
-  (*device).flags|=0x0000_0200;
-  output.write(device);
- }
- STATUS_SUCCESS
-}
-
-/// Matching release callback for IoPciCreatePdo. IoDeleteDevice applies the
-/// normal object-reference, remove-lock and dispatch rundown rules.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoPciDeletePdo(context:*mut c_void,device:*mut DeviceObject) {
- if context!=IoPciPdoContext()||device.is_null(){return}
- let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
- if extension.is_null(){return}
- if unsafe{(*extension).magic}!=PCI_PDO_EXTENSION_MAGIC{return}
- unsafe{
-  (*extension).magic=0;
-  io_delete_device(device);
- }
-}
-
 unsafe extern "win64" fn io_object_manager_finalizer(object:*mut c_void){unsafe{io_delete_device(object.cast::<DeviceObject>());}}
 
 /// Begin driver unload only after all owned devices have completed active
@@ -1078,7 +1032,7 @@ pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  STATUS_SUCCESS
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoDeleteDevice")]
 pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
  let _ = crate::ntoskrnl::ob::runtime::unregister_object(device.cast());
