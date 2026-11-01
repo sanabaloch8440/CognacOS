@@ -304,25 +304,6 @@ unsafe fn pci_config_write16(bus:u8,device:u8,function:u8,offset:u8,value:u16) {
     let _=unsafe { hal::pci_config_write(0,bus,device,function,offset as u16,2,value as u32) };
 }
 
-unsafe extern "win64" fn hal_pci_read_config(
- _context:nt_abi::types::PVOID,segment:u16,bus:u8,device:u8,function:u8,
- offset:u16,width:u8,value:*mut u32,
-)->i32{
- if value.is_null(){return nt_abi::ntstatus::STATUS_INVALID_PARAMETER}
- match unsafe{hal::pci_config_read(segment,bus,device,function,offset,width)}{
-  Ok(v)=>{unsafe{value.write(v)};nt_abi::ntstatus::STATUS_SUCCESS}
-  Err(_)=>nt_abi::ntstatus::STATUS_INVALID_PARAMETER
- }
-}
-unsafe extern "win64" fn hal_pci_write_config(
- _context:nt_abi::types::PVOID,segment:u16,bus:u8,device:u8,function:u8,
- offset:u16,width:u8,value:u32,
-)->i32{
- match unsafe{hal::pci_config_write(segment,bus,device,function,offset,width,value)}{
-  Ok(())=>nt_abi::ntstatus::STATUS_SUCCESS,
-  Err(_)=>nt_abi::ntstatus::STATUS_INVALID_PARAMETER
- }
-}
 
 unsafe extern "C" fn vtd_alloc_table(_ctx:*mut core::ffi::c_void,pa_out:*mut u64,va_out:*mut *mut u64)->i32{
  if pa_out.is_null()||va_out.is_null(){return dma::iommu::vtd::STATUS_INVALID_PARAMETER}
@@ -520,18 +501,6 @@ static mut PCI_HANDOFF_STORAGE:core::mem::MaybeUninit<nt_abi::bus::PCI_DRIVER_HA
 static mut PCI_REGISTRY_IMAGE_BUFFER:[u8;PCI_PE_IMAGE.len()]=[0;PCI_PE_IMAGE.len()];
 static mut PCI_BUS_FDO:*mut io::wdm::DeviceObject=core::ptr::null_mut();
 
-unsafe extern "win64" fn pci_create_pdo_callback(
- context:nt_abi::types::PVOID,
- driver:*mut nt_abi::io::DRIVER_OBJECT,
- information:*const nt_abi::bus::PCI_DEVICE_INFORMATION,
- output:*mut *mut nt_abi::io::DEVICE_OBJECT,
-)->i32 {
- unsafe{io::wdm::IoPciCreatePdo(context,driver.cast(),information,output.cast())}
-}
-unsafe extern "win64" fn pci_delete_pdo_callback(context:nt_abi::types::PVOID,device:*mut nt_abi::io::DEVICE_OBJECT) {
- unsafe{io::wdm::IoPciDeletePdo(context,device.cast())}
-}
-
 /// Load PCI.sys from its registry service entry, pass it firmware-derived ECAM
 /// mappings and kernel PDO callbacks, then ask the PnP manager for BusRelations.
 /// Firmware discovery and MMIO mapping remain bootstrap responsibilities;
@@ -547,8 +516,6 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
  let mut handoff=PCI_DRIVER_HANDOFF{
   magic:PCI_DRIVER_HANDOFF_MAGIC,size:core::mem::size_of::<PCI_DRIVER_HANDOFF>() as u32,
   version:PCI_DRIVER_HANDOFF_VERSION,window_count:mcfg.count as u32,reserved:0,
-  pdo_context:io::wdm::IoPciPdoContext(),
-  create_pdo:Some(pci_create_pdo_callback),delete_pdo:Some(pci_delete_pdo_callback),
   windows:[PCI_ECAM_WINDOW::default();PCI_DRIVER_HANDOFF_MAX_WINDOWS],
  };
  // Reject overlapping ECAM allocations before publishing any aperture to HAL.
@@ -569,8 +536,6 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   handoff.windows[mapped]=PCI_ECAM_WINDOW{
    virtual_base,physical_base:allocation.base_address,segment:allocation.segment,
    bus_start:allocation.start_bus,bus_end:allocation.end_bus,
-   config_context:core::ptr::null_mut(),
-   read_config:Some(hal_pci_read_config),write_config:Some(hal_pci_write_config),
   };
   mapped+=1;
  }
