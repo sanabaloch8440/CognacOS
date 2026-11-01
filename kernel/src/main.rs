@@ -996,7 +996,7 @@ fn bind_xhci_pe_driver()->bool {
     }
     let hal_table=hal::driver_service_table();
     let device_table=hal::driver_device_service_table();
-    let kernel_io_table=hal::driver_kernel_io_service_table();
+    let kernel_io_table=io::driver_kernel_io_service_table();
     if !hal_table.compatible() || !device_table.compatible() || !device_table.has_dma() || !device_table.has_interrupts() || !device_table.has_bus_master() || !kernel_io_table.compatible() {
         serial_write(b"xHCI bind: required HAL/device services are incomplete.\r\n"); return false;
     }
