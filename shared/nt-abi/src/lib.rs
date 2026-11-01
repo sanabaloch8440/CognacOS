@@ -222,6 +222,38 @@ pub mod bus {
         unsafe extern "win64" fn(context: PVOID, device: *mut crate::io::DEVICE_OBJECT),
     >;
 
+    /// MCFG-derived ECAM mapping passed from the kernel's early firmware
+    /// mapper to pci.sys. This is ABI-only; pci.sys validates and accesses it.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct PCI_ECAM_WINDOW {
+        pub virtual_base: u64,
+        pub physical_base: u64,
+        pub segment: u16,
+        pub bus_start: u8,
+        pub bus_end: u8,
+    }
+
+    pub const PCI_DRIVER_HANDOFF_MAGIC: u64 = 0x434f_474e_4143_5043;
+    pub const PCI_DRIVER_HANDOFF_VERSION: u32 = 3;
+    pub const PCI_DRIVER_HANDOFF_MAX_WINDOWS: usize = 16;
+
+    /// Versioned initialization contract between ntoskrnl and pci.sys.
+    /// The kernel maps ECAM; pci.sys owns enumeration and invokes the PDO
+    /// callbacks to materialize bus-enumerated device objects.
+    #[repr(C)]
+    pub struct PCI_DRIVER_HANDOFF {
+        pub magic: u64,
+        pub size: u32,
+        pub version: u32,
+        pub window_count: u32,
+        pub reserved: u32,
+        pub pdo_context: PVOID,
+        pub create_pdo: PPCI_CREATE_PDO,
+        pub delete_pdo: PPCI_DELETE_PDO,
+        pub windows: [PCI_ECAM_WINDOW; PCI_DRIVER_HANDOFF_MAX_WINDOWS],
+    }
+
     pub type PPCI_QUERY_COUNTS = Option<
         unsafe extern "win64" fn(context: PVOID, functions: *mut u32, bridges: *mut u32, xhci: *mut u32) -> NTSTATUS,
     >;
