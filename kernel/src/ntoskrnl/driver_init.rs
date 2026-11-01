@@ -214,4 +214,45 @@ mod tests {
         assert_eq!(report.failed, 0);
         assert_eq!(report.fatal_service, None);
     }
+
+    #[test]
+    fn failed_service_dependency_blocks_dependent_driver() {
+        let dependency = [b'D' as u16, b'e' as u16, b'p' as u16];
+        let dependent = [b'C' as u16, b'h' as u16, b'i' as u16, b'l' as u16, b'd' as u16];
+        let dependencies: [&[u16]; 1] = [&dependency];
+        let nodes = [
+            ServiceNode { name: &dependency, group: &[], tag: None, start_type: 0,
+                service_dependencies: &[], group_dependencies: &[] },
+            ServiceNode { name: &dependent, group: &[], tag: None, start_type: 1,
+                service_dependencies: &dependencies, group_dependencies: &[] },
+        ];
+        let records = [
+            DriverInitRecord { service_index: 0, error_control: 1,
+                status: DriverInitStatus::Failed(RegistryDriverLoadError::DependencyFailed) },
+            DriverInitRecord::EMPTY,
+        ];
+        assert!(!dependencies_initialized(1, &nodes, &records));
+    }
+
+    #[test]
+    fn initialized_service_dependency_is_case_insensitive() {
+        let dependency = [b'D' as u16, b'E' as u16, b'P' as u16];
+        let dependent = [b'C' as u16, b'H' as u16, b'I' as u16, b'L' as u16, b'D' as u16];
+        let dependency_reference = [b'd' as u16, b'e' as u16, b'p' as u16];
+        let dependencies: [&[u16]; 1] = [&dependency_reference];
+        let nodes = [
+            ServiceNode { name: &dependency, group: &[], tag: None, start_type: 0,
+                service_dependencies: &[], group_dependencies: &[] },
+            ServiceNode { name: &dependent, group: &[], tag: None, start_type: 1,
+                service_dependencies: &dependencies, group_dependencies: &[] },
+        ];
+        let loaded = LoadedDriver { image_base: 0xffff_8000_0000_0000, image_size: 4096,
+            entry_point: 0xffff_8000_0000_1000, status: 0 };
+        let records = [
+            DriverInitRecord { service_index: 0, error_control: 1,
+                status: DriverInitStatus::Loaded(loaded) },
+            DriverInitRecord::EMPTY,
+        ];
+        assert!(dependencies_initialized(1, &nodes, &records));
+    }
 }
