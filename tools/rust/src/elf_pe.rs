@@ -321,7 +321,7 @@ mod tests{
   let first_name_rva=u64::from_le_bytes(pe[ilt_off..ilt_off+8].try_into().unwrap()) as usize;
   let first_name_off=raw+(first_name_rva-rva_base);
   assert_eq!(u16at(&pe,first_name_off).unwrap(),0);
-  assert_eq!(&pe[first_name_off+2..first_name_off+15],b"IoCreateDevice\0");
+  assert_eq!(&pe[first_name_off+2..first_name_off+17],b"IoCreateDevice\0");
  }
  #[test] fn converts_minimal_static_elf_to_amd64_pe32plus(){
   let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
