@@ -61,7 +61,7 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
  if irp.is_null()||context.is_null(){return STATUS_MORE_PROCESSING_REQUIRED}
  let vpb=context.cast::<Vpb>();
  let mut retry_device=ptr::null_mut();
- let mut status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ let mut status=unsafe{io_get_irp_status(irp)};
  if status>=0 {
   let mut state=WDM.lock();
   let real_index_any=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb));
