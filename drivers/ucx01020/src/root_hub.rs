@@ -55,7 +55,7 @@ pub fn handle_control<I:RootHubPortIo>(io:&mut I,setup:SetupPacket,port_count:u8
    let port=u8::try_from(setup.index).map_err(|_|RootHubError::InvalidPort)?;
    if port==0||port>port_count||setup.length<4{return Err(RootHubError::InvalidPort)}
    let s=io.read_port(port).map_err(|_|RootHubError::HardwareFailure)?;
-   out[..4].copy_from_slice(&s.status.to_le_bytes().into_iter().chain(s.change.to_le_bytes()).collect::<[u8;4]>());Ok(4)
+   let status=s.status.to_le_bytes();let change=s.change.to_le_bytes();out[..2].copy_from_slice(&status);out[2..4].copy_from_slice(&change);Ok(4)
   },
   (USB_RT_CLASS_OTHER_OUT,USB_REQ_SET_FEATURE)=>{
    let port=u8::try_from(setup.index).map_err(|_|RootHubError::InvalidPort)?;
