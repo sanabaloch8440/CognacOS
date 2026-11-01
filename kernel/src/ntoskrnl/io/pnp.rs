@@ -357,11 +357,11 @@ pub fn register_pci_information(
     node.bus.store(function.bus as u32, Ordering::Relaxed);
     node.device.store(function.device as u32, Ordering::Relaxed);
     node.function.store(function.function as u32, Ordering::Relaxed);
-    node.vendor_id.store(h.vendor_id as u32, Ordering::Relaxed);
-    node.device_id.store(h.device_id as u32, Ordering::Relaxed);
-    node.class_code.store(h.class_code as u32, Ordering::Relaxed);
-    node.subclass.store(h.subclass as u32, Ordering::Relaxed);
-    node.programming_interface.store(h.programming_interface as u32, Ordering::Relaxed);
+    node.vendor_id.store(function.vendor_id as u32, Ordering::Relaxed);
+    node.device_id.store(function.device_id as u32, Ordering::Relaxed);
+    node.class_code.store(function.class_code as u32, Ordering::Relaxed);
+    node.subclass.store(function.subclass as u32, Ordering::Relaxed);
+    node.programming_interface.store(function.programming_interface as u32, Ordering::Relaxed);
     node.last_status.store(0, Ordering::Relaxed);
     node.start_attempts.store(0, Ordering::Relaxed);
     node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
