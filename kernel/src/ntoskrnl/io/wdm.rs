@@ -1832,14 +1832,16 @@ pub unsafe extern "win64" fn io_attach_device_to_device_stack(
     if !unsafe{(*top).attached_device.is_null()} { return ptr::null_mut(); }
     let stack_size=unsafe{(*top).stack_size};
     if stack_size<=0||stack_size>=127 { return ptr::null_mut(); }
-    // The attachment owns a reference to its immediate lower object.
-    let Some(next_reference_count)=state.devices[target_index].object.reference_count.checked_add(1) else { return ptr::null_mut(); };
+    let Some(top_index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,top)) else { return ptr::null_mut(); };
+    // Pin the actual immediate lower object, which may be an existing filter
+    // above the original TargetDevice in a multi-level stack.
+    let Some(next_reference_count)=state.devices[top_index].object.reference_count.checked_add(1) else { return ptr::null_mut(); };
     unsafe {
         (*top).attached_device=source;
         (*source).attached_device=ptr::null_mut();
         (*source).stack_size=stack_size+1;
     }
-    state.devices[target_index].object.reference_count=next_reference_count;
+    state.devices[top_index].object.reference_count=next_reference_count;
     state.devices[source_index].attached_to=top;
     top
 }
