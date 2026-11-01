@@ -329,3 +329,5 @@ pub mod wdm;
 
 pub mod root_hub;
 pub mod streams;
+
+pub const UCX_ROOT_HUB_INTERRUPT_PIPE:u64=0xC0AC_0001;
