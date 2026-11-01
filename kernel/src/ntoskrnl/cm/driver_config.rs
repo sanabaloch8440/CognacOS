@@ -1,6 +1,6 @@
+#![allow(dead_code)]
 //! Registry-backed Windows driver service configuration.
 //! Resolves Select\\Current and reads Services entries from the original SYSTEM hive.
-#![allow(dead_code)]
 use super::hive::{Error as HiveError,Hive,Key};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum Error{Hive(HiveError),MissingService,MissingImagePath,InvalidImagePath,MissingStart,MissingType,MissingControlSet,InvalidControlSet,UnsupportedStart,BufferTooSmall}
