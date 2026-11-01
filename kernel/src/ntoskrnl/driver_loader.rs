@@ -23,6 +23,60 @@ struct DriverImageRecord { used:bool, driver:usize, base:u64, size:u32 }
 impl DriverImageRecord { const EMPTY:Self=Self{used:false,driver:0,base:0,size:0}; }
 static LOADED_DRIVER_IMAGES:crate::hal::IrqSpinLock<[DriverImageRecord;MAX_LOADED_DRIVER_IMAGES]>=
  crate::hal::IrqSpinLock::new([DriverImageRecord::EMPTY;MAX_LOADED_DRIVER_IMAGES]);
+
+pub type DriverReinitialize = unsafe extern "win64" fn(*mut DriverObject, *mut c_void, u32);
+const MAX_REINITIALIZE_CALLBACKS: usize = 128;
+#[derive(Clone, Copy)]
+struct ReinitializeRecord {
+ used: bool,
+ driver: *mut DriverObject,
+ routine: Option<DriverReinitialize>,
+ context: *mut c_void,
+}
+unsafe impl Send for ReinitializeRecord {}
+impl ReinitializeRecord {
+ const EMPTY: Self = Self { used: false, driver: core::ptr::null_mut(), routine: None, context: core::ptr::null_mut() };
+}
+static DRIVER_REINITIALIZE: crate::hal::IrqSpinLock<[ReinitializeRecord; MAX_REINITIALIZE_CALLBACKS]> =
+ crate::hal::IrqSpinLock::new([ReinitializeRecord::EMPTY; MAX_REINITIALIZE_CALLBACKS]);
+
+/// Register a one-shot DriverReinitialize callback for the end of the boot
+/// initialization pass. The callback is removed before invocation, so it may
+/// safely register another pass without running under the registry lock.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoRegisterDriverReinitialization(
+ driver: *mut DriverObject,
+ routine: Option<DriverReinitialize>,
+ context: *mut c_void,
+) {
+ if driver.is_null() || routine.is_none() { return; }
+ let mut callbacks = DRIVER_REINITIALIZE.lock();
+ if let Some(slot) = callbacks.iter_mut().find(|r| r.used && r.driver == driver) {
+  *slot = ReinitializeRecord { used: true, driver, routine, context };
+ } else if let Some(slot) = callbacks.iter_mut().find(|r| !r.used) {
+  *slot = ReinitializeRecord { used: true, driver, routine, context };
+ }
+}
+
+/// Invoke the callbacks registered by successfully initialized boot drivers.
+/// Count is the number of completed reinitialization passes (one for this boot).
+pub fn run_driver_reinitialization() -> usize {
+ let mut invoked = 0usize;
+ loop {
+  let record = {
+   let mut callbacks = DRIVER_REINITIALIZE.lock();
+   let Some(index) = callbacks.iter().position(|r| r.used) else { break; };
+   let record = callbacks[index];
+   callbacks[index] = ReinitializeRecord::EMPTY;
+   record
+  };
+  if let Some(routine) = record.routine {
+   unsafe { routine(record.driver, record.context, 1); }
+   invoked += 1;
+  }
+ }
+ invoked
+}
 fn remember_loaded_driver(driver:*mut DriverObject,base:u64,size:u32)->bool {
  if driver.is_null()||base==0||size==0{return false;}
  let mut records=LOADED_DRIVER_IMAGES.lock();
