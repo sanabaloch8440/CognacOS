@@ -92,6 +92,16 @@ impl EndpointQuiesced {
     pub unsafe fn after_hardware_stop_and_dma_fence()->Self { Self{_private:()} }
 }
 
+/// Evidence that the entire controller is halted and no ISR/DPC or DMA
+/// requester can still access controller-owned descriptors or buffers.
+pub struct ControllerQuiesced { _private:() }
+impl ControllerQuiesced {
+    /// # Safety
+    /// Caller must prove controller halt, bus-master disable, all requester
+    /// DMA unmaps/IOMMU invalidations, and interrupt/DPC rundown have completed.
+    pub unsafe fn after_controller_halt_and_dma_fence()->Self { Self{_private:()} }
+}
+
 /// Fixed-capacity UCX object/request core. The kernel adapter owns actual
 /// PnP objects, IRPs/URBs and DMA mappings; this core owns their UCX lifetimes.
 pub struct UcxCore<const E:usize,const R:usize> {
@@ -121,7 +131,7 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
         if self.controller_state!=ControllerState::Started { return Err(UcxStatus::InvalidState); }
         self.controller_state=ControllerState::Resetting; Ok(())
     }
-    pub fn reset_complete(&mut self,success:bool,_q:&EndpointQuiesced)->Result<(),UcxStatus>{
+    pub fn reset_complete(&mut self,success:bool,_q:&ControllerQuiesced)->Result<(),UcxStatus>{
         if self.controller_state!=ControllerState::Resetting { return Err(UcxStatus::InvalidState); }
         if self.requests.iter().any(|r|r.used){return Err(UcxStatus::Busy)}
         // Reset completion is published only after controller/DMA/DPC quiescence.
@@ -255,7 +265,7 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
         if self.controller_state==ControllerState::Removed||self.controller_state==ControllerState::Removing{return Err(UcxStatus::InvalidState)}
         self.controller_state=ControllerState::Removing;Ok(())
     }
-    pub fn finish_remove_controller(&mut self,_q:&EndpointQuiesced)->Result<(),UcxStatus>{
+    pub fn finish_remove_controller(&mut self,_q:&ControllerQuiesced)->Result<(),UcxStatus>{
         if self.controller_state!=ControllerState::Removing{return Err(UcxStatus::InvalidState)}
         if self.requests.iter().any(|r|r.used){return Err(UcxStatus::Busy)}
         self.endpoints=[EndpointRecord::EMPTY;E];
@@ -292,7 +302,7 @@ mod tests {
   assert_eq!(c.finish_abort_endpoint(e,&q),Ok(()));assert_eq!(c.outstanding_requests(),0);
  }
  #[test]fn stale_controller_generation_rejects_old_device(){
-  let mut c=started();let d=c.create_device(1,1).unwrap();c.begin_reset().unwrap();let q=unsafe{EndpointQuiesced::after_hardware_stop_and_dma_fence()};c.reset_complete(true,&q).unwrap();
+  let mut c=started();let d=c.create_device(1,1).unwrap();c.begin_reset().unwrap();let q=unsafe{ControllerQuiesced::after_controller_halt_and_dma_fence()};c.reset_complete(true,&q).unwrap();
   assert_eq!(c.validate_device(d),Err(UcxStatus::StaleGeneration));
  }
  #[test]fn root_hub_port_change_generation_invalidates_old_event(){
