@@ -16,15 +16,21 @@ static VPB_SPIN_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::Atomi
 #[unsafe(export_name="IoAcquireVpbSpinLock")]
 pub unsafe extern "win64" fn io_acquire_vpb_spin_lock(old_irql:*mut u8) {
  if old_irql.is_null(){return}
- let old=unsafe{crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level()};
- while VPB_SPIN_LOCK.compare_exchange_weak(false,true,core::sync::atomic::Ordering::Acquire,core::sync::atomic::Ordering::Relaxed).is_err(){core::hint::spin_loop();}
- unsafe{old_irql.write(old);}
+ #[cfg(test)] { unsafe{old_irql.write(0);} return; }
+ #[cfg(not(test))] {
+  let old=unsafe{crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level()};
+  while VPB_SPIN_LOCK.compare_exchange_weak(false,true,core::sync::atomic::Ordering::Acquire,core::sync::atomic::Ordering::Relaxed).is_err(){core::hint::spin_loop();}
+  unsafe{old_irql.write(old);}
+ }
 }
 
 #[unsafe(export_name="IoReleaseVpbSpinLock")]
 pub unsafe extern "win64" fn io_release_vpb_spin_lock(old_irql:u8) {
- VPB_SPIN_LOCK.store(false,core::sync::atomic::Ordering::Release);
- unsafe{crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql);}
+ #[cfg(test)] { let _=old_irql; return; }
+ #[cfg(not(test))] {
+  VPB_SPIN_LOCK.store(false,core::sync::atomic::Ordering::Release);
+  unsafe{crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql);}
+ }
 }
 
 pub use crate::nt_abi::ntstatus::{
@@ -1074,10 +1080,15 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
   match state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) {
    Some(slot) if !slot.object.vpb.is_null() => {
     let vpb=slot.object.vpb.cast::<Vpb>();
-    if unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0} {
+    let mut vpb_irql=0u8;
+    unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
+    let is_mounted=unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0};
+    if is_mounted {
      unsafe{(*vpb).flags|=crate::nt_abi::io::VPB_REMOVE_PENDING;}
-     true
-    } else {false}
+     slot.deleting=true;
+    }
+    unsafe{io_release_vpb_spin_lock(vpb_irql);}
+    is_mounted
    }
    _=>false
   }
@@ -2001,6 +2012,8 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
  if status>=0 {
   let mut state=WDM.lock();
   let real_index=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb)&&!s.deleting);
+  let mut vpb_irql=0u8;
+  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let volume=unsafe{(*vpb).device_object};
   let volume_index=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,volume));
   match (real_index,volume_index) {
@@ -2017,9 +2030,13 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
     }
    }
   }
+  unsafe{io_release_vpb_spin_lock(vpb_irql);}
  } else {
   let _state=WDM.lock();
+  let mut vpb_irql=0u8;
+  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_MOUNTED;}
+  unsafe{io_release_vpb_spin_lock(vpb_irql);}
  }
  unsafe{io_free_irp(irp);}
  STATUS_MORE_PROCESSING_REQUIRED
@@ -2040,6 +2057,8 @@ unsafe extern "win64" fn dismount_volume_completion(_device:*mut DeviceObject,ir
  let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
  if status>=0 {
   let mut state=WDM.lock();
+  let mut vpb_irql=0u8;
+  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let volume=unsafe{(*vpb).device_object};
   let volume_index=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,volume));
   if let Some(vi)=volume_index {
@@ -2051,6 +2070,7 @@ unsafe extern "win64" fn dismount_volume_completion(_device:*mut DeviceObject,ir
    }
    if state.devices[vi].object.reference_count>1 {state.devices[vi].object.reference_count-=1;}
   }
+  unsafe{io_release_vpb_spin_lock(vpb_irql);}
  }
  unsafe{io_free_irp(irp);}
  STATUS_MORE_PROCESSING_REQUIRED
@@ -2065,7 +2085,11 @@ fn io_dismount_volume(real_device:*mut DeviceObject)->i32 {
   let Some(slot)=state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,real_device)) else{return STATUS_INVALID_PARAMETER};
   if slot.object.vpb.is_null(){return STATUS_SUCCESS}
   let vpb=slot.object.vpb.cast::<Vpb>();
-  unsafe{(vpb,(*vpb).device_object,(*vpb).reference_count)}
+  let mut vpb_irql=0u8;
+  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
+  let snapshot=unsafe{(vpb,(*vpb).device_object,(*vpb).reference_count)};
+  unsafe{io_release_vpb_spin_lock(vpb_irql);}
+  snapshot
  };
  if volume.is_null(){return STATUS_SUCCESS}
  if refs!=0{return STATUS_DEVICE_BUSY}
@@ -2181,7 +2205,11 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
   let Some(slot)=state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
   if slot.object.vpb.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
   let vpb=slot.object.vpb.cast::<Vpb>();
-  unsafe{(vpb,(*vpb).device_object,(*vpb).flags&crate::nt_abi::io::VPB_REMOVE_PENDING!=0,(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0)}
+  let mut vpb_irql=0u8;
+  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
+  let snapshot=unsafe{(vpb,(*vpb).device_object,(*vpb).flags&crate::nt_abi::io::VPB_REMOVE_PENDING!=0,(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0)};
+  unsafe{io_release_vpb_spin_lock(vpb_irql);}
+  snapshot
  };
  if remove_pending{return STATUS_DELETE_PENDING}
  if mounted {
@@ -2207,10 +2235,13 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
  }
  {
   let _state=WDM.lock();
+  let mut vpb_irql=0u8;
+  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   unsafe{
    if allow_raw_mount!=0{(*vpb).flags|=crate::nt_abi::io::VPB_RAW_MOUNT;}
    else{(*vpb).flags&=!crate::nt_abi::io::VPB_RAW_MOUNT;}
   }
+  unsafe{io_release_vpb_spin_lock(vpb_irql);}
  }
  let candidates={
   let registry=FILESYSTEMS.lock();
