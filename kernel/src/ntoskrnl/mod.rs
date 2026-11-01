@@ -197,6 +197,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_release_vpb_spin_lock as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetAttachedDevice") {
    Some(crate::io::io_get_attached_device as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoGetAttachedDeviceReference") {
+   Some(crate::io::io_get_attached_device_reference as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetDeviceAttachmentBaseRef") {
    Some(crate::io::io_get_device_attachment_base_ref as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetLowerDeviceObject") {
@@ -205,6 +207,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_reuse_irp as usize)
   } else if requested.eq_ignore_ascii_case(b"IoAttachDeviceToDeviceStack") {
    Some(crate::io::io_attach_device_to_device_stack as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoAttachDeviceToDeviceStackSafe") {
+   Some(crate::io::io_attach_device_to_device_stack_safe as usize)
   } else if requested.eq_ignore_ascii_case(b"IoDetachDevice") {
    Some(crate::io::io_detach_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoInitializeIrp") {
