@@ -871,6 +871,8 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoCreateDevice")) == Some(crate::io::io_create_device as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoDeleteDevice")) == Some(crate::io::io_delete_device as usize as u64)
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmMapIoSpace")) == Some(mm::runtime::mm_map_io_space as usize as u64)
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentProcessorNumber")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryActiveProcessors")).is_some()
