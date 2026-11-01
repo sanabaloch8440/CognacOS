@@ -11,6 +11,7 @@ include!("wdm/device_lifecycle.rs");
 include!("wdm/pnp.rs");
 include!("wdm/device_objects.rs");
 include!("wdm/irp_management.rs");
+include!("wdm/irp_accessors.rs");
 include!("wdm/device_stack.rs");
 include!("wdm/filesystem.rs");
 include!("wdm/namespace.rs");
