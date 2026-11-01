@@ -932,11 +932,19 @@ pub unsafe extern "win64" fn io_create_device(
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
  slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
- slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
- slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
- slot.object.device_extension=if extension_size==0 {ptr::null_mut()} else {slot.extension.as_mut_ptr().cast()};
- slot.object.stack_size=1;slot.object.alignment_requirement=63;slot.object.device_queue_padding=[0;4];
- slot.object.next_device=unsafe{(*driver).device_object};
+ slot.extension.fill(0);
+ let next_device=unsafe{(*driver).device_object};
+ slot.object=DeviceObject {
+  object_type:3,size:(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16,reference_count:1,
+  driver_object:driver,next_device,attached_device:ptr::null_mut(),current_irp:ptr::null_mut(),timer:ptr::null_mut(),
+  flags:0,characteristics, vpb:ptr::null_mut(),
+  device_extension:if extension_size==0 {ptr::null_mut()} else {slot.extension.as_mut_ptr().cast()},
+  device_type,stack_size:1,queue_padding:[0;3],queue:[0;0x48],
+  alignment_requirement:63,device_queue_padding:[0;4],
+  device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},
+  dpc:[0;0x40],active_thread_count:0,security_descriptor:ptr::null_mut(),device_lock:[0;0x18],
+  sector_size:0,spare1:0,device_object_extension:ptr::null_mut(),reserved:ptr::null_mut(),
+ };
  let object=&mut slot.object as *mut DeviceObject;
  unsafe { (*driver).device_object=object; output.write(object); }
  drop(state);
