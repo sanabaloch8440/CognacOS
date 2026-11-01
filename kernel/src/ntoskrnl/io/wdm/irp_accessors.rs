@@ -1,8 +1,7 @@
-//! Typed accessors for the public x64 IRP and IO_STACK_LOCATION fields used
-//! by the I/O manager. Keep ABI offsets confined to this file; dispatchers
-//! should consume typed values rather than reaching into opaque IRP storage.
+// Typed accessors for the public x64 IRP and IO_STACK_LOCATION fields used
+// by the I/O manager. Keep ABI offsets confined to this file; dispatchers
+// should consume typed values rather than reaching into opaque IRP storage.
 
-use core::ptr;
 
 const IRP_IO_STATUS_STATUS_OFFSET: usize = 0x30;
 const IRP_IO_STATUS_INFORMATION_OFFSET: usize = 0x38;

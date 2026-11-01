@@ -567,6 +567,64 @@ pub unsafe extern "win64" fn io_build_synchronous_fsd_request(
     unsafe { io_build_synchronous_irp(major, device, buffer, length, offset, event, io_status) }
 }
 
+/// Submit a kernel-created synchronous IRP through the canonical WDM stack.
+/// This helper is shared by FILE_OBJECT services and block-device adapters so
+/// they use identical IOSB, event, MDL, completion, and rundown semantics.
+pub(crate) fn io_submit_synchronous_irp(
+    device: *mut DeviceObject,
+    file_object: *mut c_void,
+    major: u8,
+    offset: i64,
+    buffer: *mut c_void,
+    length: u32,
+) -> Result<usize, i32> {
+    if device.is_null() || major >= 28
+        || ((major == IRP_MJ_READ || major == IRP_MJ_WRITE) && length != 0 && buffer.is_null()) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let mut event = [0u64; 3];
+    let mut io_status = IoStatusBlock {
+        status: crate::nt_abi::io::IO_STATUS_BLOCK_STATUS { status: STATUS_PENDING },
+        information: 0,
+    };
+    unsafe {
+        crate::ntoskrnl::ke::runtime::ke_initialize_event(event.as_mut_ptr().cast(), 0, 0);
+    }
+    let irp = unsafe {
+        io_build_synchronous_irp(
+            major, device, buffer, length, offset, event.as_mut_ptr().cast(), &mut io_status,
+        )
+    };
+    if irp.is_null() { return Err(STATUS_INSUFFICIENT_RESOURCES); }
+    let stack = unsafe { io_get_next_irp_stack_location(irp) };
+    if stack.is_null() {
+        unsafe { io_free_irp(irp); }
+        return Err(STATUS_INSUFFICIENT_RESOURCES);
+    }
+    unsafe { (*stack).file_object = file_object; }
+    let dispatch_status = unsafe { io_call_driver(device, irp) };
+    if unsafe { io_status.status.status } == STATUS_PENDING {
+        if dispatch_status != STATUS_PENDING {
+            unsafe { io_free_irp(irp); }
+            return Err(if dispatch_status < 0 { dispatch_status } else { STATUS_INVALID_DEVICE_REQUEST });
+        }
+        let wait_status = unsafe {
+            crate::ntoskrnl::ke::runtime::ke_wait_for_single_object(
+                event.as_mut_ptr().cast(), 0, 0, 0, ptr::null_mut(),
+            )
+        };
+        if wait_status < 0 {
+            let _ = unsafe { io_cancel_irp(irp) };
+            while unsafe { io_status.status.status } == STATUS_PENDING {
+                core::hint::spin_loop();
+            }
+        }
+    }
+    let status = unsafe { io_status.status.status };
+    let information = io_status.information;
+    if status < 0 { Err(status) } else { Ok(information) }
+}
+
 fn try_free_completed_sync_ioctl_irp(irp:*mut Irp) {
  if irp.is_null(){return}
  let ready={
