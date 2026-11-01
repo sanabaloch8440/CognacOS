@@ -150,8 +150,7 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
             if file_object.is_null() {
                 status = STATUS_INVALID_PARAMETER;
             } else {
-                let params = unsafe { (*stack).parameters.as_ptr() };
-                let length = unsafe { wdm::io_read_stack_u32(stack, 0) as usize };
+                                let length = unsafe { wdm::io_read_stack_u32(stack, 0) as usize };
                 let requested_offset = unsafe { wdm::io_read_stack_i64(stack, 8) };
                 let output = unsafe { wdm::io_get_irp_user_buffer(irp).cast::<u8>() };
                 let index = unsafe { (*file_object).fs_context as usize };
@@ -349,7 +348,7 @@ fn dispatch_file_irp(file_object: *mut FILE_OBJECT, major: u8, offset: i64, buff
         if major == IRP_MJ_READ {
             let _ = wdm::io_write_stack_u32(stack, 0, length as u32);
             let _ = wdm::io_write_stack_i64(stack, 8, offset);
-            ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(0x70).cast::<*mut u8>(), buffer);
+            let _ = wdm::io_set_irp_user_buffer(irp, buffer.cast());
         }
     }
     let status = unsafe { wdm::io_call_driver(device, irp) };
