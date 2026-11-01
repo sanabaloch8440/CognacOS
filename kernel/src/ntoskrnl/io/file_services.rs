@@ -6,7 +6,7 @@
 //! a compatibility wrapper; it no longer owns an independent file I/O path.
 
 use crate::hal::IrqSpinLock;
-use crate::wdm::{self, DriverObject, DeviceObject, Irp, IoStackLocation, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
+use crate::wdm::{self, DriverObject, DeviceObject, Irp, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
 use crate::nt_abi::io::FILE_OBJECT;
 use crate::ntoskrnl::ob::runtime as ob;
 use crate::nt_abi::object::UNICODE_STRING;
@@ -482,15 +482,12 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
         let mut state = STATE.lock();
         ptr::addr_of_mut!(state.handles[slot].file_object)
     };
-    let type_id = if FILE_OBJECT_TYPE.load(Ordering::Acquire) != 0 {
-        FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16
-    } else {
+    if FILE_OBJECT_TYPE.load(Ordering::Acquire) == 0 {
         match ob::ensure_type(&FILE_OBJECT_TYPE_NAME, 1, 2, 4, 7, u32::MAX) {
-            Ok(id) => { FILE_OBJECT_TYPE.store(id as usize, Ordering::Release); id }
+            Ok(id) => { FILE_OBJECT_TYPE.store(id as usize, Ordering::Release); }
             Err(status) => { STATE.lock().handles[slot] = HandleRecord::EMPTY; return Err(status); }
         }
-    };
-    let _ = type_id;
+    }
     if let Err(status) = unsafe {
         ob::register_external_object_with_finalizer(
             file_object.cast(), &FILE_OBJECT_TYPE_NAME, &[], false, ptr::null(), 0, file_object_finalizer,
