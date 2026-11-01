@@ -551,7 +551,8 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
  // Children removed from BusRelations must go through real PnP teardown rather
  // than simply disappearing from the enumeration table.
  for child in removed[..removed_count].iter().copied(){
-  let _=unsafe{IoPnPRemoveDevice(child)};
+  let status=unsafe{IoPnPRemoveDevice(child)};
+  crate::ntoskrnl::pnp::remove_pnp_device_object(child,status);
  }
  STATUS_SUCCESS
 }
