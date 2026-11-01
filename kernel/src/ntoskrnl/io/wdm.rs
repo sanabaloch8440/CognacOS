@@ -1844,6 +1844,18 @@ pub unsafe extern "win64" fn io_attach_device_to_device_stack(
     top
 }
 
+/// WDK-safe attachment form. The output is cleared on entry and receives
+/// the lower device returned by IoAttachDeviceToDeviceStack only on success.
+#[unsafe(export_name = "IoAttachDeviceToDeviceStackSafe")]
+pub unsafe extern "win64" fn io_attach_device_to_device_stack_safe(
+ source:*mut DeviceObject,target:*mut DeviceObject,attached_to:*mut *mut DeviceObject
+) {
+ if attached_to.is_null(){return}
+ unsafe{attached_to.write(ptr::null_mut());}
+ let lower=unsafe{io_attach_device_to_device_stack(source,target)};
+ if !lower.is_null(){unsafe{attached_to.write(lower);}}
+}
+
 /// Detach the device attached above the supplied lower device, as returned by
 /// IoAttachDeviceToDeviceStack. Existing unrelated stack links are preserved.
 #[unsafe(no_mangle)]
@@ -1950,17 +1962,40 @@ pub unsafe extern "win64" fn io_get_attached_device(device:*mut DeviceObject)->*
 }
 
 /// Return the bottom/base object of an attachment stack.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoGetDeviceAttachmentBaseRef")]
 pub unsafe extern "win64" fn io_get_device_attachment_base_ref(device:*mut DeviceObject)->*mut DeviceObject {
     if device.is_null(){return ptr::null_mut()}
-    let state=WDM.lock();
-    let Some(mut index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
-    let mut base=device;
+    let mut state=WDM.lock();
+    let Some(mut index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting) else{return ptr::null_mut()};
     for _ in 0..MAX_WDM_DEVICES {
         let lower=state.devices[index].attached_to;
-        if lower.is_null(){return base}
-        let Some(lower_index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,lower)) else{return ptr::null_mut()};
-        base=lower;index=lower_index;
+        if lower.is_null(){
+            let Some(next)=state.devices[index].object.reference_count.checked_add(1) else{return ptr::null_mut()};
+            state.devices[index].object.reference_count=next;
+            return ptr::addr_of_mut!(state.devices[index].object);
+        }
+        let Some(lower_index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,lower)&&!s.deleting) else{return ptr::null_mut()};
+        index=lower_index;
+    }
+    ptr::null_mut()
+}
+
+/// Return and reference the top object in a device attachment stack.
+#[unsafe(export_name = "IoGetAttachedDeviceReference")]
+pub unsafe extern "win64" fn io_get_attached_device_reference(device:*mut DeviceObject)->*mut DeviceObject {
+    if device.is_null(){return ptr::null_mut()}
+    let mut state=WDM.lock();
+    let Some(mut index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting) else{return ptr::null_mut()};
+    for _ in 0..MAX_WDM_DEVICES {
+        let top=ptr::addr_of_mut!(state.devices[index].object);
+        let next=unsafe{(*top).attached_device};
+        if next.is_null(){
+            let Some(count)=state.devices[index].object.reference_count.checked_add(1) else{return ptr::null_mut()};
+            state.devices[index].object.reference_count=count;
+            return top;
+        }
+        let Some(next_index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,next)&&!s.deleting) else{return ptr::null_mut()};
+        index=next_index;
     }
     ptr::null_mut()
 }
