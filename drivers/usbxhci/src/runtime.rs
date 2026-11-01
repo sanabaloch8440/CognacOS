@@ -31,6 +31,7 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
   let p=self.pending.iter().position(|p|!p.used).ok_or(RuntimeError::QueueFull)?;
   let index_expected=self.ring.producer_index();
   let trb_dma=self.ring_dma.checked_add((index_expected as u64)*16).ok_or(RuntimeError::InvalidRequest)?;
+  if self.pending.iter().any(|p|p.used&&p.token.trb_dma==trb_dma){return Err(RuntimeError::QueueFull)}
   crate::validate_dma_span(self.ring_dma,(N as u64)*16,max_device_address).map_err(|_|RuntimeError::InvalidRequest)?;
   let token=TransferToken{request_id:self.next_id,trb_dma,slot_id:slot,endpoint_id:endpoint,generation:self.generation};
   crate::validate_dma_span(buffer_dma,length as u64,max_device_address).map_err(|_|RuntimeError::InvalidRequest)?;
