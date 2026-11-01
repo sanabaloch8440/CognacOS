@@ -405,7 +405,7 @@ pub extern "win64" fn io_release_cancel_spin_lock(old_irql: u8) {
     unsafe { crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql); }
 }
 
-#[path = "wdm.rs"] mod wdm;
+#[path = "wdm.rs"] pub(crate) mod wdm;
 pub use wdm::{
     io_allocate_irp, io_call_driver, io_complete_request, io_create_device,
     io_get_requestor_session_id, io_start_packet, io_start_next_packet, io_set_start_io_attributes,
