@@ -1218,6 +1218,15 @@ unsafe extern "win64" fn kernel_io_set_completion(
 ){
     unsafe{crate::io::io_set_completion_routine(irp.cast(),routine,context,success,error,cancel);}
 }
+unsafe extern "win64" fn kernel_io_set_cancel(
+    irp:*mut core::ffi::c_void,
+    routine:Option<cognacos_hal_contract::IoCancelRoutine>
+)->Option<cognacos_hal_contract::IoCancelRoutine>{
+    unsafe{crate::io::io_set_cancel_routine(irp.cast(),routine)}
+}
+unsafe extern "win64" fn kernel_io_cancel_irp(irp:*mut core::ffi::c_void)->u8{
+    unsafe{crate::io::io_cancel_irp(irp.cast())}
+}
 unsafe extern "win64" fn kernel_io_mark_bus_pdo(device:*mut core::ffi::c_void)->i32{
     unsafe{crate::io::io_mark_bus_enumerated_pdo(device.cast())}
 }
@@ -1251,6 +1260,8 @@ pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceT
         free_irp:Some(kernel_io_free_irp),
         mark_bus_enumerated_pdo:Some(kernel_io_mark_bus_pdo),
         set_completion_routine:Some(kernel_io_set_completion),
+        set_cancel_routine:Some(kernel_io_set_cancel),
+        cancel_irp:Some(kernel_io_cancel_irp),
     }
 }
 
