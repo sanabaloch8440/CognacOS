@@ -2055,6 +2055,7 @@ unsafe extern "win64" fn dismount_volume_completion(_device:*mut DeviceObject,ir
  if irp.is_null()||context.is_null(){return STATUS_MORE_PROCESSING_REQUIRED}
  let vpb=context.cast::<Vpb>();
  let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ let mut retry_device=ptr::null_mut();
  if status>=0 {
   let mut state=WDM.lock();
   let mut vpb_irql=0u8;
@@ -2069,10 +2070,16 @@ unsafe extern "win64" fn dismount_volume_completion(_device:*mut DeviceObject,ir
     (*vpb).volume_label=[0;32];
    }
    if state.devices[vi].object.reference_count>1 {state.devices[vi].object.reference_count-=1;}
+   if let Some(ri)=state.devices.iter().position(|s|s.used&&s.deleting&&ptr::eq(&s.vpb,vpb)) {
+    if unsafe{(*vpb).flags&crate::nt_abi::io::VPB_REMOVE_PENDING!=0} {
+     retry_device=ptr::addr_of_mut!(state.devices[ri].object);
+    }
+   }
   }
   unsafe{io_release_vpb_spin_lock(vpb_irql);}
  }
  unsafe{io_free_irp(irp);}
+ if !retry_device.is_null(){unsafe{io_delete_device(retry_device);}}
  STATUS_MORE_PROCESSING_REQUIRED
 }
 
