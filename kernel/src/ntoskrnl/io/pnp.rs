@@ -456,3 +456,14 @@ pub fn find_pnp_pci_function(segment:u16,bus:u8,device:u8,function:u8)->Option<u
         } else { None }
     })
 }
+
+/// Withdraw a failed xHCI resource publication after the caller has disabled
+/// DMA and unmapped its MMIO range. The static object can then be republished
+/// only after a fresh, validated resource-discovery pass.
+pub fn withdraw_xhci() {
+    XHCI_PCI_DEVICE.ready.store(false,Ordering::Release);
+    XHCI_PCI_DEVICE.state.store(0,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.bar_virtual.store(0,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.bar_length.store(0,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.bar_physical.store(0,Ordering::Relaxed);
+}
