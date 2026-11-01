@@ -1571,10 +1571,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         let mut local_timer_ready = false;
         if info.rsdp_address != 0 {
+            // PCI root bridges are discovered from MCFG independently of MADT
+            // availability; interrupt routing remains separately gated by MADT.
+            let _pnp_enumerated=enumerate_acpi_pci_devices(info.rsdp_address);
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(firmware_madt) => {
                     let _ = platform_drivers::mark_ready(platform_drivers::Stage::Acpi);
-                    let _pnp_enumerated=enumerate_acpi_pci_devices(info.rsdp_address);
                     let discovery = (|| -> Result<usize, hal::HalError> {
                         if hal::cpu_index_for_apic(bsp_apic_id).is_none() { hal::initialize_bsp(bsp_apic_id)?; }
                         let mut discovered = 0usize;
@@ -2139,6 +2141,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\r\n"),
                     }
                     serial_write(b"Local APIC timers enabled; BSP timer preemption validated; AP timer preemption remains disabled pending per-CPU self-tests.\r\n");
+                    // Only writable mounts with a durable backing callback and reserved
+                    // snapshot slots can be promoted; read-only boot assets are skipped.
+                    let _ = unsafe { ntoskrnl::cm::runtime::mark_hives_boot_successful() };
                     serial_write(b"cognacos-kd> type help for debugger commands\r\n");
                     loop {
                         crate::debug_console::poll();
