@@ -202,13 +202,14 @@ impl BlockDevice for AtaPrimaryMaster {
 }
 
 pub enum StorageError { Offline, InvalidRequest, Io }
+const STATUS_IO_DEVICE_ERROR: i32 = 0xC000_0185u32 as i32;
 
 const fn make_storage_driver()->DriverObject {
  let mut major:[Option<wdm::DriverDispatch>;28]=[None;28];
- major[IRP_MJ_CREATE as usize]=Some(storage_dispatch);
- major[IRP_MJ_CLOSE as usize]=Some(storage_dispatch);
- major[IRP_MJ_READ as usize]=Some(storage_dispatch);
- major[IRP_MJ_WRITE as usize]=Some(storage_dispatch);
+ major[wdm::IRP_MJ_CREATE as usize]=Some(storage_dispatch);
+ major[wdm::IRP_MJ_CLOSE as usize]=Some(storage_dispatch);
+ major[wdm::IRP_MJ_READ as usize]=Some(storage_dispatch);
+ major[wdm::IRP_MJ_WRITE as usize]=Some(storage_dispatch);
  DriverObject {
   object_type:4,size:core::mem::size_of::<DriverObject>() as i16,
   device_object:core::ptr::null_mut(),flags:0,driver_start:core::ptr::null_mut(),
@@ -222,22 +223,26 @@ const fn make_storage_driver()->DriverObject {
 static mut STORAGE_DRIVER:DriverObject=make_storage_driver();
 
 unsafe extern "win64" fn storage_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
- if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+ if device.is_null()||irp.is_null(){return wdm::STATUS_INVALID_PARAMETER}
  let stack=unsafe{wdm::io_get_current_irp_stack_location(irp)};
- if stack.is_null(){unsafe{wdm::io_complete_irp_status(irp,STATUS_INVALID_PARAMETER,0,0);}return STATUS_INVALID_PARAMETER}
+ if stack.is_null(){unsafe{wdm::io_complete_irp_status(irp,wdm::STATUS_INVALID_PARAMETER,0,0);}return wdm::STATUS_INVALID_PARAMETER}
  let major=unsafe{(*stack).major_function};
  let mut status=0i32;
  let mut information=0usize;
- if major==IRP_MJ_READ||major==IRP_MJ_WRITE {
-  let params=unsafe{(*stack).parameters.as_ptr()};
-  let length=unsafe{core::ptr::read_unaligned(params.cast::<u32>()) as usize};
-  let offset=unsafe{core::ptr::read_unaligned(params.add(8).cast::<i64>())};
-  let buffer=unsafe{core::ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_USER_BUFFER_OFFSET).cast::<*mut u8>())};
+ if major==wdm::IRP_MJ_READ||major==wdm::IRP_MJ_WRITE {
+  let length=unsafe{wdm::io_read_stack_u32(stack,0) as usize};
+  let offset=unsafe{wdm::io_read_stack_i64(stack,8)};
+  let mdl=unsafe{wdm::io_get_irp_mdl_address(irp)};
+  let buffer=if mdl.is_null(){
+   unsafe{wdm::io_get_irp_user_buffer(irp).cast::<u8>()}
+  }else{
+   unsafe{crate::ntoskrnl::mm::runtime::mm_get_system_address_for_mdl_safe(mdl,0x20).cast::<u8>()}
+  };
   let is_partition=device as usize==PARTITION_DEVICE.load(Ordering::Acquire);
   let capacity=if is_partition{PARTITION_CAPACITY.load(Ordering::Acquire)}else{DISK_CAPACITY.load(Ordering::Acquire)};
   let end=if offset<0{None}else{(offset as u64).checked_add(length as u64)};
   if buffer.is_null()&&length!=0||end.is_none_or(|value|value>capacity)||length>64*1024 {
-   status=STATUS_INVALID_PARAMETER;
+   status=wdm::STATUS_INVALID_PARAMETER;
   } else {
    let absolute=if is_partition {
     PARTITION_START.load(Ordering::Acquire).checked_add(offset as u64)
@@ -248,7 +253,7 @@ unsafe extern "win64" fn storage_dispatch(device:*mut DeviceObject,irp:*mut Irp)
      match guard.as_mut() {
       Some(disk)=>{
        let bytes=unsafe{core::slice::from_raw_parts_mut(buffer,length)};
-       let result=if major==IRP_MJ_READ{disk.read_at(byte_offset,bytes)}else{disk.write_at(byte_offset,bytes)};
+       let result=if major==wdm::IRP_MJ_READ{disk.read_at(byte_offset,bytes)}else{disk.write_at(byte_offset,bytes)};
        match result {Ok(())=>information=length,Err(_)=>status=STATUS_IO_DEVICE_ERROR}
       }
       None=>status=STATUS_IO_DEVICE_ERROR,
@@ -257,7 +262,7 @@ unsafe extern "win64" fn storage_dispatch(device:*mut DeviceObject,irp:*mut Irp)
     None=>status=STATUS_INVALID_PARAMETER,
    }
   }
- } else if major!=IRP_MJ_CREATE&&major!=IRP_MJ_CLOSE {
+ } else if major!=wdm::IRP_MJ_CREATE&&major!=wdm::IRP_MJ_CLOSE {
   status=STATUS_INVALID_PARAMETER;
  }
  unsafe{wdm::io_complete_irp_status(irp,status,information,0);}
@@ -284,25 +289,11 @@ fn create_storage_device(name:&[u8],partition:bool)->Result<*mut DeviceObject,St
 /// Synchronous WDM request helper used by the ext4 block-device adapter.
 /// The IRP is kernel-created and its UserBuffer is a caller-owned kernel buffer.
 fn storage_transfer(device:*mut DeviceObject,major:u8,offset:u64,buffer:*mut u8,length:usize)->Result<usize,StorageError>{
- if device.is_null()||buffer.is_null()&&length!=0||length>64*1024{return Err(StorageError::InvalidRequest)}
- let stack_size=unsafe{(*device).stack_size};
- if stack_size<=0{return Err(StorageError::Offline)}
- let irp=unsafe{wdm::io_allocate_irp(stack_size,0)};
- if irp.is_null(){return Err(StorageError::Offline)}
- let stack=unsafe{wdm::io_get_next_irp_stack_location(irp)};
- if stack.is_null(){unsafe{wdm::io_free_irp(irp);}return Err(StorageError::Offline)}
- unsafe{
-  (*stack).major_function=major;
-  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<u32>(),length as u32);
-  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<i64>(),offset as i64);
-  core::ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_USER_BUFFER_OFFSET).cast::<*mut u8>(),buffer);
- }
- let dispatch=unsafe{wdm::io_call_driver(device,irp)};
- let status=unsafe{core::ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
- let information=unsafe{core::ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>())};
- unsafe{wdm::io_free_irp(irp);}
- if dispatch<0||status<0{return Err(StorageError::Io)}
- Ok(information)
+ if device.is_null()||buffer.is_null()&&length!=0||length>64*1024
+  ||(major!=wdm::IRP_MJ_READ&&major!=wdm::IRP_MJ_WRITE){return Err(StorageError::InvalidRequest)}
+ let offset=i64::try_from(offset).map_err(|_|StorageError::InvalidRequest)?;
+ wdm::io_submit_synchronous_irp(device,core::ptr::null_mut(),major,offset,buffer.cast(),length as u32)
+  .map_err(|_|StorageError::Io)
 }
 
 pub struct IoManagerBlockDevice { device:*mut DeviceObject,capacity:u64 }
@@ -310,13 +301,13 @@ impl ReadOnlyBlockDevice for IoManagerBlockDevice {
  type DeviceError=StorageError;
  fn capacity_bytes(&self)->u64{self.capacity}
  fn read_at(&mut self,offset:u64,out:&mut[u8])->Result<(),Self::DeviceError>{
-  let count=storage_transfer(self.device,IRP_MJ_READ,offset,out.as_mut_ptr(),out.len())?;
+  let count=storage_transfer(self.device,wdm::IRP_MJ_READ,offset,out.as_mut_ptr(),out.len())?;
   if count==out.len(){Ok(())}else{Err(StorageError::Io)}
  }
 }
 impl BlockDevice for IoManagerBlockDevice {
  fn write_at(&mut self,offset:u64,data:&[u8])->Result<(),Self::DeviceError>{
-  let count=storage_transfer(self.device,IRP_MJ_WRITE,offset,data.as_ptr() as *mut u8,data.len())?;
+  let count=storage_transfer(self.device,wdm::IRP_MJ_WRITE,offset,data.as_ptr() as *mut u8,data.len())?;
   if count==data.len(){Ok(())}else{Err(StorageError::Io)}
  }
  fn flush(&mut self)->Result<(),Self::DeviceError>{
