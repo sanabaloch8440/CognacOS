@@ -148,6 +148,10 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
         Ok(h)
     }
     fn endpoint_index(&self,h:EndpointHandle)->Result<usize,UcxStatus>{
+        // Endpoint handles embed their owning device/controller generation. A
+        // reset invalidates every old endpoint even if its slot has not yet been
+        // recycled in the fixed-capacity table.
+        if h.device.controller!=self.controller { return Err(UcxStatus::StaleGeneration); }
         self.endpoints.iter().position(|e|e.used&&e.handle==h&&e.generation==h.generation)
             .ok_or(UcxStatus::InvalidHandle)
     }
@@ -165,6 +169,12 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
         let i=self.endpoint_index(h)?;let e=self.endpoints[i];
         if self.controller_state!=ControllerState::Started || e.state!=EndpointState::Running {return Err(UcxStatus::InvalidState)}
         if requested==0 || requested>e.max_transfer || requested>buffer.length {return Err(UcxStatus::InvalidParameter)}
+        let kind_matches=matches!((e.kind,kind),
+            (EndpointType::Control,RequestKind::Control) |
+            (EndpointType::Bulk,RequestKind::Bulk) |
+            (EndpointType::Interrupt,RequestKind::Interrupt) |
+            (EndpointType::Isochronous,RequestKind::Isochronous));
+        if !kind_matches { return Err(UcxStatus::InvalidParameter); }
         buffer.validate(1,max_dma)?;
         let slot=self.requests.iter().position(|r|!r.used).ok_or(UcxStatus::QueueFull)?;
         let id=self.next_request;self.next_request=self.next_request.wrapping_add(1).max(1);
@@ -223,9 +233,15 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
     /// The root-hub interrupt request is completed by the adapter after it has
     /// translated this into the pending hub notification.
     pub fn root_hub_port_changed(&mut self,port:u8)->Result<PortChange,UcxStatus>{
+        self.root_hub_port_changed_with_status(port,false,false,false)
+    }
+    /// Publish the hardware-observed root-port state with a generation token.
+    /// The xHCI adapter must read PORTSC before calling this method; this core
+    /// never invents connection or enable state from the event type alone.
+    pub fn root_hub_port_changed_with_status(&mut self,port:u8,connected:bool,enabled:bool,over_current:bool)->Result<PortChange,UcxStatus>{
         if port==0||port>self.port_count{return Err(UcxStatus::InvalidParameter)}
         let g=&mut self.port_generation[(port-1) as usize];*g=g.wrapping_add(1).max(1);
-        Ok(PortChange{port,connected:false,enabled:false,over_current:false,generation:*g})
+        Ok(PortChange{port,connected,enabled,over_current,generation:*g})
     }
     pub fn validate_port_generation(&self,change:PortChange)->Result<(),UcxStatus>{
         if change.port==0||change.port>self.port_count{return Err(UcxStatus::InvalidParameter)}
@@ -276,8 +292,17 @@ mod tests {
   assert_eq!(c.validate_device(d),Err(UcxStatus::StaleGeneration));
  }
  #[test]fn root_hub_port_change_generation_invalidates_old_event(){
-  let mut c=started();let a=c.root_hub_port_changed(2).unwrap();let b=c.root_hub_port_changed(2).unwrap();
+  let mut c=started();let a=c.root_hub_port_changed_with_status(2,true,true,false).unwrap();let b=c.root_hub_port_changed_with_status(2,false,false,true).unwrap();
+  assert!(a.connected&&a.enabled&&!a.over_current);
   assert_eq!(c.validate_port_generation(a),Err(UcxStatus::StaleGeneration));assert_eq!(c.validate_port_generation(b),Ok(()));
+ }
+ #[test]fn endpoint_rejects_wrong_request_type_and_stale_controller_generation(){
+  let mut c=started();let d=c.create_device(1,1).unwrap();
+  let e=c.create_endpoint(d,2,EndpointType::Interrupt,64).unwrap();c.start_endpoint(e).unwrap();
+  let b=DmaBuffer{device_address:0x8000,length:8};
+  assert_eq!(c.submit(e,RequestKind::Bulk,b,8,0xffff_ffff),Err(UcxStatus::InvalidParameter));
+  c.begin_reset().unwrap();c.reset_complete(true).unwrap();
+  assert_eq!(c.submit(e,RequestKind::Interrupt,b,8,0xffff_ffff),Err(UcxStatus::StaleGeneration));
  }
  #[test]fn rejects_bad_transfer_spans_and_lengths(){
   let mut c=started();let d=c.create_device(1,1).unwrap();let e=c.create_endpoint(d,3,EndpointType::Bulk,128).unwrap();c.start_endpoint(e).unwrap();
