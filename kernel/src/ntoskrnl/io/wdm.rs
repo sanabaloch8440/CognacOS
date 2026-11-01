@@ -2354,7 +2354,6 @@ pub unsafe extern "win64" fn io_unregister_fs_registration_change(
 /// arbitrate an IRP_MN_MOUNT_VOLUME request across registered filesystem
 /// control devices when the media has not yet been mounted.
 #[unsafe(export_name="IoVerifyVolume")]
-#[unsafe(export_name="IoVerifyVolume")]
 pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw_mount:u8)->i32 {
  if device.is_null()||allow_raw_mount>1{return STATUS_INVALID_PARAMETER}
  if unsafe{crate::ntoskrnl::ke::runtime::ke_get_current_irql()}>=2{return STATUS_INVALID_DEVICE_REQUEST}
