@@ -518,7 +518,6 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "IofCallDriver" => crate::io::io_call_driver as usize,
   "IoCompleteRequest" => crate::io::io_complete_request as usize,
   "IofCompleteRequest" => crate::io::io_complete_request as usize,
-  "IoGetCurrentIrpStackLocation" => crate::io::io_get_current_irp_stack_location as usize,
   "IoGetNextIrpStackLocation" => crate::io::io_get_next_irp_stack_location as usize,
   "IoSetCompletionRoutine" => crate::io::io_set_completion_routine as usize,
   "IoMarkIrpPending" => crate::io::io_mark_irp_pending as usize,
