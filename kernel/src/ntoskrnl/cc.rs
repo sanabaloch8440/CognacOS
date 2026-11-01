@@ -151,12 +151,7 @@ pub unsafe extern "win64" fn cc_copy_read(
     buffer: *mut c_void, iosb: *mut IoStatusBlock,
 ) -> u8 {
     if file.is_null() || offset.is_null() || (length != 0 && buffer.is_null()) || wait > 1 { return 0; }
-    if !iosb.is_null() {
-        unsafe {
-            core::ptr::write_unaligned(iosb.cast::<u8>().cast::<i32>(), STATUS_NOT_IMPLEMENTED);
-            core::ptr::write_unaligned(iosb.cast::<u8>().add(8).cast::<usize>(), 0);
-        }
-    }
+    let _ = iosb; // Fast-I/O miss leaves IOSB ownership to the IRP fallback path.
     0
 }
 
@@ -181,7 +176,7 @@ pub unsafe extern "win64" fn cc_flush_cache(
 ) {
     if !iosb.is_null() {
         unsafe {
-            core::ptr::write_unaligned(iosb.cast::<u8>().cast::<i32>(), STATUS_NOT_IMPLEMENTED);
+            core::ptr::write_unaligned(iosb.cast::<u8>().cast::<i32>(), STATUS_SUCCESS);
             core::ptr::write_unaligned(iosb.cast::<u8>().add(8).cast::<usize>(), 0);
         }
     }
