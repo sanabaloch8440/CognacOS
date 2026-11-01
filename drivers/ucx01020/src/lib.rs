@@ -315,7 +315,7 @@ mod tests {
   let e=c.create_endpoint(d,2,EndpointType::Interrupt,64).unwrap();c.start_endpoint(e).unwrap();
   let b=DmaBuffer{device_address:0x8000,length:8};
   assert_eq!(c.submit(e,RequestKind::Bulk,b,8,0xffff_ffff),Err(UcxStatus::InvalidParameter));
-  c.begin_reset().unwrap();c.reset_complete(true).unwrap();
+  c.begin_reset().unwrap();let q=unsafe{ControllerQuiesced::after_controller_halt_and_dma_fence()};c.reset_complete(true,&q).unwrap();
   assert_eq!(c.submit(e,RequestKind::Interrupt,b,8,0xffff_ffff),Err(UcxStatus::StaleGeneration));
  }
  #[test]fn rejects_bad_transfer_spans_and_lengths(){
