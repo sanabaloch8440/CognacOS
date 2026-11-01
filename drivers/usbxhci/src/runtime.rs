@@ -3,7 +3,7 @@
 use crate::{ProducerRing,Trb,TransferError,TransferRequest,TransferResult,TransferTracker,TRB_TYPE_NORMAL,TRB_TYPE_SHIFT,TRB_IOC,TRB_TRANSFER_LENGTH_MASK,TRB_TYPE_TRANSFER_EVENT};
 use core::sync::atomic::{fence,Ordering};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum RuntimeError{InvalidRequest,QueueFull,Ring(crate::XhciError),Transfer(TransferError),PublishFailed,DoorbellFailed,StaleCompletion}
+pub enum RuntimeError{InvalidRequest,QueueFull,Busy,Ring(crate::XhciError),Transfer(TransferError),PublishFailed,DoorbellFailed,StaleCompletion}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct TransferToken{pub request_id:u64,pub trb_dma:u64,pub slot_id:u8,pub endpoint_id:u8,pub generation:u32}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -16,18 +16,18 @@ pub trait TransferHardware{
 struct Pending{used:bool,token:TransferToken}
 impl Pending{const EMPTY:Self=Self{used:false,token:TransferToken{request_id:0,trb_dma:0,slot_id:0,endpoint_id:0,generation:0}};}
 /// Caller serializes submit and DPC completion with the endpoint's spin lock.
-pub struct TransferEngine<const R:usize,const N:usize>{ring:ProducerRing<N>,tracker:TransferTracker<R>,pending:[Pending;R],next_id:u64,generation:u32,stopped:bool}
+pub struct TransferEngine<const R:usize,const N:usize>{ring:ProducerRing<N>,ring_dma:u64,tracker:TransferTracker<R>,pending:[Pending;R],next_id:u64,generation:u32,stopped:bool}
 impl<const R:usize,const N:usize> TransferEngine<R,N>{
- pub const fn new(ring_dma:u64,generation:u32)->Self{Self{ring:ProducerRing::new_with_dma_base(ring_dma),tracker:TransferTracker::new(),pending:[Pending::EMPTY;R],next_id:1,generation,stopped:false}}
+ pub const fn new(ring_dma:u64,generation:u32)->Self{Self{ring:ProducerRing::new_with_dma_base(ring_dma),ring_dma,tracker:TransferTracker::new(),pending:[Pending::EMPTY;R],next_id:1,generation,stopped:false}}
  pub fn generation(&self)->u32{self.generation}
  pub fn outstanding(&self)->usize{self.tracker.len()}
  pub fn stop_submissions(&mut self){self.stopped=true;}
- pub fn restart(&mut self,generation:u32,q:&crate::SlotDmaQuiesced){
-  for slot in 1..=crate::MAX_SLOTS{let _=self.tracker.cancel_slot(slot,q);}
-  self.pending=[Pending::EMPTY;R];self.generation=generation;self.stopped=false;
+ pub fn restart(&mut self,generation:u32)->Result<(),RuntimeError>{
+  if self.tracker.len()!=0{return Err(RuntimeError::Busy)}
+  self.pending=[Pending::EMPTY;R];self.generation=generation;self.stopped=false;Ok(())
  }
  pub fn submit<H:TransferHardware>(&mut self,hw:&mut H,trb_dma:u64,buffer_dma:u64,length:u32,slot:u8,endpoint:u8,max_device_address:u64)->Result<TransferToken,RuntimeError>{
-  if self.stopped||R==0||N<4||!N.is_power_of_two()||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
+  if self.stopped||R==0||N<4||!N.is_power_of_two()||self.ring_dma==0||self.ring_dma&63!=0||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
   let p=self.pending.iter().position(|p|!p.used).ok_or(RuntimeError::QueueFull)?;
   let token=TransferToken{request_id:self.next_id,trb_dma,slot_id:slot,endpoint_id:endpoint,generation:self.generation};
   crate::validate_dma_span(buffer_dma,length as u64,max_device_address).map_err(|_|RuntimeError::InvalidRequest)?;
@@ -55,9 +55,9 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
  }
  /// Called only after Stop Endpoint/Disable Slot, DPC synchronization and the
  /// requester-scoped IOMMU unmap/invalidation have all succeeded.
- pub fn retire_slot_after_quiescence(&mut self,slot:u8,new_generation:u32,q:&crate::SlotDmaQuiesced)->usize{
+ pub fn retire_slot_after_quiescence(&mut self,slot:u8,q:&crate::SlotDmaQuiesced)->usize{
   let count=self.tracker.cancel_slot(slot,q);
   for p in self.pending.iter_mut(){if p.used&&p.token.slot_id==slot{*p=Pending::EMPTY;}}
-  self.generation=new_generation;count
+  count
  }
 }
