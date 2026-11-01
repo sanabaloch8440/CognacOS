@@ -1,0 +1,9 @@
+[package]
+name = "cognacos-ucx01020"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "CognacOS UCX 1.2.0-compatible USB host-controller extension core"
+
+[lib]
+path = "src/lib.rs"
