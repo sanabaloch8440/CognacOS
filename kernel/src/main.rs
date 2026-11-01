@@ -501,8 +501,8 @@ static mut PCI_HANDOFF_STORAGE:core::mem::MaybeUninit<nt_abi::bus::PCI_DRIVER_HA
 static mut PCI_REGISTRY_IMAGE_BUFFER:[u8;PCI_PE_IMAGE.len()]=[0;PCI_PE_IMAGE.len()];
 static mut PCI_BUS_FDO:*mut io::wdm::DeviceObject=core::ptr::null_mut();
 
-/// Load PCI.sys from its registry service entry, pass it firmware-derived ECAM
-/// mappings and kernel PDO callbacks, then ask the PnP manager for BusRelations.
+/// Load pci.sys from its registry service entry, pass it firmware-derived ECAM
+/// mappings, and let it create PDOs through the documented NTOSKRNL imports.
 /// Firmware discovery and MMIO mapping remain bootstrap responsibilities;
 /// PCI configuration-space enumeration is exclusively performed by PCI.sys.
 fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
