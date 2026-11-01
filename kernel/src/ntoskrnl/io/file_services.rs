@@ -2,8 +2,8 @@
 //!
 //! Registered immutable boot assets are exposed by an internal read-only device.
 //! Open/read/cleanup/close are represented by IRP_MJ_CREATE, IRP_MJ_READ,
-//! IRP_MJ_CLEANUP and IRP_MJ_CLOSE. The process-scoped token API is retained as
-//! a compatibility wrapper; it no longer owns an independent file I/O path.
+//! IRP_MJ_CLEANUP and IRP_MJ_CLOSE. Object Manager owns the process handles;
+//! the local slot array supplies only stable FILE_OBJECT backing storage.
 
 use crate::hal::IrqSpinLock;
 use crate::wdm::{self, DriverObject, DeviceObject, Irp, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
