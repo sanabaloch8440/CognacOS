@@ -941,7 +941,7 @@ extern "C" fn lock_stress_worker(argument:*mut c_void) {
         && !crate::ntoskrnl::ke::runtime::dispatcher_extended_self_test(){
         STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
     }
-    let device_id=argument as usize as u32;
+    let device=argument.cast::<crate::wdm::DeviceObject>();
     if let Ok(cpu)=cpu_index() {
         STRESS_CPU_MASK.fetch_or(1u64<<cpu,core::sync::atomic::Ordering::AcqRel);
     }
@@ -951,15 +951,8 @@ extern "C" fn lock_stress_worker(argument:*mut c_void) {
             *guard=(*guard).wrapping_add(1);
         }
         if round%8==0 {
-            let irp=crate::io::submit(device_id,crate::io::IRP_MJ_READ,0,32);
-            match irp {
-                Ok(id)=>{
-                    let valid=crate::io::dispatch_one(id)==Ok(crate::io::IoStatus::Success)
-                        && matches!(crate::io::query_irp(id),Some(r) if r.completed&&!r.in_flight&&r.status==crate::io::IoStatus::Success)
-                        && crate::io::release_irp(id).is_ok();
-                    if !valid{STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);}
-                },
-                Err(_)=>{STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);}
+            if !smp_stress_read(device) {
+                STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
             }
             match crate::object::create(crate::object::ObjectType::Event,0x1f) {
                 Ok(object)=>{
@@ -1001,7 +994,7 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
         let affinity=1u64<<target_cpu;
         match spawn(stack,affinity,lock_stress_worker,device.cast()) {
             Ok(id)=>ids[slot]=id,
-            Err(_)=>return false,
+            Err(_)=>{unsafe{crate::wdm::io_delete_device(device);}return false},
         }
     }
     let mut spins=0usize;
