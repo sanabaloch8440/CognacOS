@@ -75,6 +75,12 @@ const _: [(); core::mem::size_of::<crate::io::wdm::DriverObject>()] = [(); core:
 const _: [(); core::mem::align_of::<crate::io::wdm::DriverObject>()] = [(); core::mem::align_of::<cognacos_nt_abi::io::DRIVER_OBJECT>()];
 const _: [(); core::mem::size_of::<crate::io::wdm::DeviceObject>()] = [(); core::mem::size_of::<cognacos_nt_abi::io::DEVICE_OBJECT>()];
 const _: [(); core::mem::align_of::<crate::io::wdm::DeviceObject>()] = [(); core::mem::align_of::<cognacos_nt_abi::io::DEVICE_OBJECT>()];
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, flags) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, flags));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, device_extension) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, device_extension));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, alignment_requirement) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, alignment_requirement));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, device_queue) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, device_queue));
+const _: () = assert!(core::mem::offset_of!(crate::io::wdm::DeviceObject, device_object_extension) == core::mem::offset_of!(cognacos_nt_abi::io::DEVICE_OBJECT, device_object_extension));
+
 const _: IoCreateDeviceFn = crate::io::io_create_device;
 const _: IoDeleteDeviceFn = crate::io::io_delete_device;
 const _: MmMapIoSpaceFn = crate::ntoskrnl::mm::runtime::mm_map_io_space;
