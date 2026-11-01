@@ -410,10 +410,10 @@ pub use wdm::{
     io_allocate_irp, io_call_driver, io_complete_request, io_complete_irp_status, io_create_device, io_mark_bus_enumerated_pdo,
     io_get_requestor_session_id, io_start_packet, io_start_next_packet, io_set_start_io_attributes,
     io_delete_device, io_unload_driver, io_detach_device, io_attach_device_to_device_stack,
-    io_get_attached_device, io_get_device_attachment_base_ref, io_get_lower_device_object,
+    io_get_attached_device, io_get_device_attachment_base_ref, io_get_lower_device_object, io_get_related_device_object,
     io_initialize_irp, io_copy_current_irp_stack_location_to_next,
     io_skip_current_irp_stack_location, io_reuse_irp, lookup_device_object, io_register_file_system,
-    io_unregister_file_system, io_verify_volume, io_acquire_vpb_spin_lock, io_release_vpb_spin_lock,
+    io_unregister_file_system, io_register_fs_registration_change, io_unregister_fs_registration_change, io_verify_volume, io_acquire_vpb_spin_lock, io_release_vpb_spin_lock,
     io_create_symbolic_link, io_delete_symbolic_link,
     io_reference_device_object, io_dereference_device_object, io_acquire_device_remove_lock,
     io_release_device_remove_lock, io_begin_device_power_transition, io_complete_device_power_transition,
@@ -426,7 +426,7 @@ pub use wdm::{
     io_allocate_mdl, io_free_mdl, DriverCancelRoutine,
     io_free_irp, io_get_current_irp_stack_location,
     io_get_next_irp_stack_location, io_mark_irp_pending, io_set_completion_routine,
-    DeviceObject, DriverObject, IoCompletionRoutine, IoStackLocation, IoStatusBlock,
+    DeviceObject, DriverObject, FileObject, IoCompletionRoutine, IoStackLocation, IoStatusBlock,
     UnicodeString,
 };
 pub(crate) use wdm::{io_set_device_power_state, io_begin_pnp_transition, io_complete_pnp_transition, io_pnp_state, io_prepare_pnp_resources, io_finish_pnp_resources, io_release_pnp_resources};
