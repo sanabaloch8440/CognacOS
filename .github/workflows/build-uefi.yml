@@ -1009,6 +1009,9 @@ jobs:
             x/wx &cognacos_kernel::VT_D_REQUESTER_OWNER
             x/wx &cognacos_kernel::ntoskrnl::pnp::XHCI_INTERRUPT_VECTOR
             x/bx &cognacos_kernel::XHCI_DRIVER_BINDING_STARTED
+            echo \\n===== PCI.sys inventory state (PE base 0xffff8000e0000000) =====\\n
+            x/4gx 0xffff8000e0006070
+            x/gx 0xffff8000e0064318
             info threads
             thread apply all info registers rip rsp
             thread apply all info line *$rip
