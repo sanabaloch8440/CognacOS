@@ -3784,6 +3784,18 @@ mod wdm_tests {
   unsafe{io_unregister_file_system(first);io_delete_device(first);io_delete_device(second);}
  }
 
+ #[test]
+ fn related_device_lookup_uses_file_object_device() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let mut file:FileObject=unsafe{core::mem::zeroed()};
+  file.device_object=device;
+  assert_eq!(unsafe{io_get_related_device_object(&mut file)},device);
+  assert!(unsafe{io_get_related_device_object(ptr::null_mut())}.is_null());
+  unsafe{io_delete_device(device);}
+ }
+
 }
 
 
