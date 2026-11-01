@@ -11,7 +11,7 @@ pub const HAL_CONTRACT_VERSION: u32 = 1;
 /// Small NT I/O-manager service surface passed to native WDM drivers. Keeping
 /// completion in a versioned kernel table avoids static imports from a driver
 /// image while preserving the IoCompleteRequest calling convention.
-pub const KERNEL_IO_SERVICES_VERSION: u32 = 7;
+pub const KERNEL_IO_SERVICES_VERSION: u32 = 8;
 pub type CompleteIrp = unsafe extern "win64" fn(
     irp: *mut cognacos_nt_abi::io::IRP,
     priority_boost: i8,
@@ -36,6 +36,9 @@ pub type IrpOperation = unsafe extern "win64" fn(irp:*mut core::ffi::c_void);
 pub type MarkBusPdo = unsafe extern "win64" fn(device:*mut core::ffi::c_void)->i32;
 pub type IoCompletionRoutine = unsafe extern "win64" fn(device:*mut core::ffi::c_void,irp:*mut core::ffi::c_void,context:*mut core::ffi::c_void)->i32;
 pub type SetCompletionRoutine = unsafe extern "win64" fn(irp:*mut core::ffi::c_void,routine:Option<IoCompletionRoutine>,context:*mut core::ffi::c_void,success:u8,error:u8,cancel:u8);
+pub type IoCancelRoutine = unsafe extern "win64" fn(device:*mut core::ffi::c_void,irp:*mut core::ffi::c_void);
+pub type SetCancelRoutine = unsafe extern "win64" fn(irp:*mut core::ffi::c_void,routine:Option<IoCancelRoutine>)->Option<IoCancelRoutine>;
+pub type CancelIrp = unsafe extern "win64" fn(irp:*mut core::ffi::c_void)->u8;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelIoServiceTable {
@@ -58,6 +61,8 @@ pub struct KernelIoServiceTable {
     pub free_irp:Option<IrpOperation>,
     pub mark_bus_enumerated_pdo:Option<MarkBusPdo>,
     pub set_completion_routine:Option<SetCompletionRoutine>,
+    pub set_cancel_routine:Option<SetCancelRoutine>,
+    pub cancel_irp:Option<CancelIrp>,
 }
 impl KernelIoServiceTable {
     pub const fn compatible(&self) -> bool {
@@ -80,6 +85,8 @@ impl KernelIoServiceTable {
             && self.free_irp.is_some()
             && self.mark_bus_enumerated_pdo.is_some()
             && self.set_completion_routine.is_some()
+            && self.set_cancel_routine.is_some()
+            && self.cancel_irp.is_some()
     }
 }
 
