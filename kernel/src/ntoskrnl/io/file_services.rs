@@ -590,6 +590,33 @@ mod tests {
     }
 
     #[test]
+    fn duplicated_handles_share_file_object_until_last_close() {
+        let path = b"\\SystemRoot\\Tests\\duplicate-wdm.dll";
+        let _ = register_static(path, TEST_BYTES);
+        let handle = open_for_process(73, path).unwrap();
+        let duplicate = ob::duplicate_handle(handle as *mut c_void, 73, 73, 1, true, false).unwrap() as usize;
+        close_for_process(73, handle).unwrap();
+        let mut out = [0u8; 4];
+        assert_eq!(read_at_for_process(73, duplicate, 0, &mut out), Ok(4));
+        assert_eq!(&out, b"MZ-t");
+        close_for_process(73, duplicate).unwrap();
+        assert_eq!(read_at_for_process(73, duplicate, 0, &mut out), Err(STATUS_INVALID_HANDLE));
+    }
+
+    #[test]
+    fn outstanding_object_reference_defers_file_cleanup() {
+        let path = b"\\SystemRoot\\Tests\\rundown-wdm.dll";
+        let _ = register_static(path, TEST_BYTES);
+        let handle = open_for_process(91, path).unwrap();
+        let file_object = pin_handle(91, handle).unwrap();
+        let body = file_object.cast::<c_void>();
+        close_for_process(91, handle).unwrap();
+        assert!(!ob::object_rundown_complete(body));
+        unpin_handle(file_object);
+        assert!(ob::object_rundown_complete(body));
+    }
+
+    #[test]
     fn sequential_reads_advance_file_object_position() {
         let path = b"\\SystemRoot\\Tests\\sequential-wdm.dll";
         let _ = register_static(path, TEST_BYTES);
