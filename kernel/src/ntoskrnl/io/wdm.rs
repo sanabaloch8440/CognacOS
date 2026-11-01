@@ -130,7 +130,7 @@ pub struct IoStackLocation {
 }
 const _: () = assert!(core::mem::size_of::<IoStackLocation>() == IO_STACK_LOCATION_SIZE_X64);
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], vpb: Vpb, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, mount_in_progress: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], vpb: Vpb, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 const PAGE_SIZE:usize=4096;
 #[repr(C)]
@@ -180,7 +180,7 @@ struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: IrpTable, thread
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, outstanding_irps:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], vpb:Vpb::empty(), object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, outstanding_irps:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, mount_in_progress:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], vpb:Vpb::empty(), object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -962,7 +962,7 @@ pub unsafe extern "win64" fn io_create_device(
  if unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0{return STATUS_DELETE_PENDING}
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.mount_in_progress=false;slot.attached_to=ptr::null_mut();
  slot.vpb=Vpb::empty();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.extension.fill(0);
@@ -2011,7 +2011,8 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
  let mut status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
  if status>=0 {
   let mut state=WDM.lock();
-  let real_index=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb)&&!s.deleting);
+  let real_index_any=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb));
+  let real_index=real_index_any.filter(|i|!state.devices[*i].deleting);
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let volume=unsafe{(*vpb).device_object};
@@ -2035,8 +2036,10 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
    }
   }
   unsafe{io_release_vpb_spin_lock(vpb_irql);}
+  if let Some(ri)=real_index_any {state.devices[ri].mount_in_progress=false;}
  } else {
-  let _state=WDM.lock();
+  let mut state=WDM.lock();
+  if let Some(ri)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.vpb,vpb)){state.devices[ri].mount_in_progress=false;}
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   unsafe{
@@ -2215,14 +2218,18 @@ pub fn is_file_system_registered(device:*mut DeviceObject)->bool {
 pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw_mount:u8)->i32 {
  if device.is_null()||allow_raw_mount>1{return STATUS_INVALID_PARAMETER}
  let (vpb,volume,remove_pending,mounted)={
-  let state=WDM.lock();
-  let Some(slot)=state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
-  if slot.object.vpb.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
-  let vpb=slot.object.vpb.cast::<Vpb>();
+  let mut state=WDM.lock();
+  let Some(index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+  if state.devices[index].object.vpb.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
+  let vpb=state.devices[index].object.vpb.cast::<Vpb>();
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let snapshot=unsafe{(vpb,(*vpb).device_object,(*vpb).flags&crate::nt_abi::io::VPB_REMOVE_PENDING!=0,(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0)};
   unsafe{io_release_vpb_spin_lock(vpb_irql);}
+  if !snapshot.2&&!snapshot.3 {
+   if state.devices[index].mount_in_progress{return STATUS_PENDING;}
+   state.devices[index].mount_in_progress=true;
+  }
   snapshot
  };
  if remove_pending{return STATUS_DELETE_PENDING}
@@ -2263,16 +2270,35 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
   list[..registry.count].copy_from_slice(&registry.devices[..registry.count]);
   (list,registry.count)
  };
- if candidates.1==0{return STATUS_UNRECOGNIZED_VOLUME}
+ if candidates.1==0 {
+  let mut state=WDM.lock();
+  if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
+  return STATUS_UNRECOGNIZED_VOLUME
+ }
  for fs in candidates.0[..candidates.1].iter().copied() {
+  // A synchronous FSD rejection releases the reservation in its completion
+  // routine; reacquire it before asking the next registered filesystem.
+  {
+   let mut state=WDM.lock();
+   let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_DELETE_PENDING};
+   if slot.mount_in_progress { /* this request still owns the mount attempt */ }
+   else {slot.mount_in_progress=true;}
+  }
   let status=dispatch_mount_request(device,vpb,fs);
   if status==STATUS_PENDING{return STATUS_PENDING}
+  let mut vpb_irql=0u8;
+  unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let is_mounted=unsafe{(*vpb).flags&crate::nt_abi::io::VPB_MOUNTED!=0};
+  unsafe{io_release_vpb_spin_lock(vpb_irql);}
   if status>=0&&is_mounted{return STATUS_SUCCESS}
   if status!=STATUS_UNRECOGNIZED_VOLUME&&status!=STATUS_INVALID_DEVICE_REQUEST {
+   let mut state=WDM.lock();
+   if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
    return status
   }
  }
+ let mut state=WDM.lock();
+ if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){slot.mount_in_progress=false;}
  STATUS_UNRECOGNIZED_VOLUME
 }
 
