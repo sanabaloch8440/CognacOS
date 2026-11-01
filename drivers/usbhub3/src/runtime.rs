@@ -65,7 +65,7 @@ impl<const P:usize> HubRuntime<P>{
  /// must pass zero only after PnP references and IRPs have drained.
  pub fn disconnect<S:HubServices>(&mut self,s:&mut S,port:u8,outstanding:u16)->Result<(),EnumerationError>{
   let i=self.index(port)?;let old=self.ports[i];self.ports[i].generation=self.ports[i].generation.wrapping_add(1).max(1);self.ports[i].state=EnumerationState::Removing;
-  if let Ok(p)=self.hub.port_mut(port){let _=p.transition(PortEvent::Disconnect);}
+  if let Ok(p)=self.hub.port_mut(port){let _=p.transition(PortEvent::Disconnect);if p.state()==PortState::Removing{let _=p.transition(PortEvent::Disconnect);}}
   if old.child.is_some(){if outstanding!=0{return Err(EnumerationError::OutstandingReferences)}s.remove_child_pdo(port,old.generation,old.pdo_id).map_err(|_|EnumerationError::PdoRemoveFailed)?;}
   self.ports[i]=PortRecord{state:EnumerationState::Idle,generation:self.ports[i].generation,pdo_id:0,child:None};Ok(())
  }
