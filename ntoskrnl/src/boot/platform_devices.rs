@@ -13,6 +13,76 @@ const USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhc
 const UCX01020_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ucx01020.sys"));
 const USBHUB3_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbhub3.sys"));
 
+
+/// Resolve a registry ImagePath against the native driver images staged by the
+/// kernel build. The PE loader remains independent of the image source; this
+/// catalog is only the current boot media provider. Unknown paths are refused.
+fn driver_image_path_eq(path: &[u16], ascii: &[u8]) -> bool {
+    path.len() == ascii.len() && path.iter().zip(ascii).all(|(unit, byte)| {
+        let unit = if (b'A' as u16..=b'Z' as u16).contains(unit) { *unit + 32 } else { *unit };
+        let byte = if (b'A'..=b'Z').contains(byte) { *byte + 32 } else { *byte };
+        unit == byte as u16
+    })
+}
+
+fn resolve_builtin_driver_image(path: &[u16], output: &mut [u8]) -> Option<usize> {
+    const PREFIX: &[u16] = &[92, 83, 121, 115, 116, 101, 109, 82, 111, 111, 116, 92, 83, 121, 115, 116, 101, 109, 51, 50, 92, 100, 114, 105, 118, 101, 114, 115, 92];
+    if path.len() <= PREFIX.len()
+        || !path[..PREFIX.len()].iter().zip(PREFIX).all(|(a, b)| {
+            let a = if (b'A' as u16..=b'Z' as u16).contains(a) { *a + 32 } else { *a };
+            let b = if (b'A' as u16..=b'Z' as u16).contains(b) { *b + 32 } else { *b };
+            a == b
+        })
+    {
+        return None;
+    }
+    let name = &path[PREFIX.len()..];
+    if name.iter().any(|unit| *unit == 0 || *unit == b'\\' as u16 || *unit == b'/' as u16) {
+        return None;
+    }
+    let image: &[u8] = if driver_image_path_eq(name, b"acpi.sys") { ACPI_PE_IMAGE }
+        else if driver_image_path_eq(name, b"pci.sys") { PCI_PE_IMAGE }
+        else if driver_image_path_eq(name, b"usbxhci.sys") { USBXHCI_PE_IMAGE }
+        else if driver_image_path_eq(name, b"ucx01020.sys") { UCX01020_PE_IMAGE }
+        else if driver_image_path_eq(name, b"usbhub3.sys") { USBHUB3_PE_IMAGE }
+        else { return None };
+    if image.is_empty() || image.len() > output.len() {
+        return None;
+    }
+    output[..image.len()].copy_from_slice(image);
+    Some(image.len())
+}
+
+#[cfg(test)]
+mod driver_image_source_tests {
+    use super::*;
+
+    fn path(name: &str) -> [u16; 96] {
+        let mut result = [0u16; 96];
+        let mut count = 0;
+        for unit in "\\SystemRoot\\System32\\drivers\\".encode_utf16().chain(name.encode_utf16()) {
+            result[count] = unit;
+            count += 1;
+        }
+        result[..count].to_vec().try_into().unwrap_or([0; 96])
+    }
+
+    #[test]
+    fn image_path_matching_is_case_insensitive_and_rejects_other_directories() {
+        let canonical = path("ACPI.SYS");
+        assert!(driver_image_path_eq(&canonical["\\SystemRoot\\System32\\drivers\\".encode_utf16().count()..canonical.iter().position(|u| *u == 0).unwrap_or(canonical.len())], b"acpi.sys"));
+        let mut output = [0u8; 16];
+        assert_eq!(resolve_builtin_driver_image(&path("..\\acpi.sys"), &mut output), None);
+        assert_eq!(resolve_builtin_driver_image(&path("unknown.sys"), &mut output), None);
+    }
+
+    #[test]
+    fn image_path_resolution_refuses_insufficient_output() {
+        let mut output = [];
+        assert_eq!(resolve_builtin_driver_image(&path("acpi.sys"), &mut output), None);
+    }
+}
+
 use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
 use cognacos_i8042prt::{Ps2KeyboardPort,PortIo,PowerAwarePortIo,PortError,controller_command,wait_output_full,wait_input_empty,CMD_READ_CONFIG,CMD_WRITE_CONFIG,CONFIG_KEYBOARD_IRQ,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
 use kbdus::{Modifiers,translate_packet,VK_SHIFT,VK_CAPITAL,VK_CONTROL,VK_MENU};
@@ -438,14 +508,7 @@ pub(crate) fn initialize_acpi_driver(rsdp_address:u64)->bool{
   let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(ACPI_REGISTRY_IMAGE_BUFFER).cast::<u8>(),ACPI_PE_IMAGE.len());
   ntoskrnl::driver_loader::load_registered_service_with_resolver(
    &system_hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
-   |path,out|{
-    let equal=path.len()==IMAGE_PATH.len()&&path.iter().zip(IMAGE_PATH).all(|(a,b)|{
-     let a=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
-     let b=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};a==b
-    });
-    if !equal||out.len()<ACPI_PE_IMAGE.len(){return None}
-    out[..ACPI_PE_IMAGE.len()].copy_from_slice(ACPI_PE_IMAGE);Some(ACPI_PE_IMAGE.len())
-   },ntoskrnl::resolve
+   |image_path, output| resolve_builtin_driver_image(image_path, output),ntoskrnl::resolve
   ).is_ok()
  }
 }
@@ -514,14 +577,7 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
   let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PCI_REGISTRY_IMAGE_BUFFER).cast::<u8>(),PCI_PE_IMAGE.len());
   let loaded=ntoskrnl::driver_loader::load_registered_service_with_resolver(
    &system_hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
-   |path,out|{
-    let equal=path.len()==IMAGE_PATH.len()&&path.iter().zip(IMAGE_PATH).all(|(a,b)|{
-     let a=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
-     let b=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};a==b
-    });
-    if !equal||out.len()<PCI_PE_IMAGE.len(){return None;}
-    out[..PCI_PE_IMAGE.len()].copy_from_slice(PCI_PE_IMAGE);Some(PCI_PE_IMAGE.len())
-   },ntoskrnl::resolve);
+   |image_path, output| resolve_builtin_driver_image(image_path, output),ntoskrnl::resolve);
   if loaded.is_err(){return 0;}
   let mut bus=core::ptr::null_mut();
   let status=io::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
@@ -808,14 +864,7 @@ fn bind_usbhub3_pe_driver()->bool{
   let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(USBHUB3_REGISTRY_IMAGE_BUFFER).cast::<u8>(),USBHUB3_PE_IMAGE.len());
   let result=ntoskrnl::driver_loader::load_registered_service_with_resolver(
    &hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
-   |image_path,out|{
-    let equal=image_path.len()==IMAGE_PATH.len()&&image_path.iter().zip(IMAGE_PATH).all(|(a,b)|{
-     let aa=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
-     let bb=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};aa==bb
-    });
-    if !equal||out.len()<USBHUB3_PE_IMAGE.len(){return None}
-    out[..USBHUB3_PE_IMAGE.len()].copy_from_slice(USBHUB3_PE_IMAGE);Some(USBHUB3_PE_IMAGE.len())
-   },ntoskrnl::resolve
+   |image_path, output| resolve_builtin_driver_image(image_path, output),ntoskrnl::resolve
   );
   match result{
    Ok(image) if USBHUB3_DEVICE!=0&&USBHUB3_CHILD_FACTORY!=0=>{
@@ -865,14 +914,7 @@ fn bind_ucx_pe_driver()->bool{
   let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(UCX_REGISTRY_IMAGE_BUFFER).cast::<u8>(),UCX01020_PE_IMAGE.len());
   let loaded=ntoskrnl::driver_loader::load_registered_service_with_resolver(
    &system_hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
-   |image_path,out|{
-    let equal=image_path.len()==IMAGE_PATH.len()&&image_path.iter().zip(IMAGE_PATH).all(|(a,b)|{
-     let aa=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
-     let bb=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};aa==bb
-    });
-    if !equal||out.len()<UCX01020_PE_IMAGE.len(){return None}
-    out[..UCX01020_PE_IMAGE.len()].copy_from_slice(UCX01020_PE_IMAGE);Some(UCX01020_PE_IMAGE.len())
-   },ntoskrnl::resolve
+   |image_path, output| resolve_builtin_driver_image(image_path, output),ntoskrnl::resolve
   );
   match loaded{
    Ok(image) if UCX_ROOT_HUB_DEVICE!=0=>{
@@ -975,17 +1017,7 @@ fn bind_xhci_pe_driver()->bool {
         let load_result=ntoskrnl::driver_loader::load_registered_service_with_resolver(
             &system_hive,XHCI_SERVICE_NAME,&mut registry_path,image_buffer,driver,
             core::ptr::null_mut(),
-            |image_path,output|{
-                let equal=image_path.len()==XHCI_IMAGE_PATH.len()
-                    &&image_path.iter().zip(XHCI_IMAGE_PATH).all(|(a,b)|{
-                        let a=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
-                        let b=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};
-                        a==b
-                    });
-                if !equal||output.len()<USBXHCI_PE_IMAGE.len(){return None;}
-                output[..USBXHCI_PE_IMAGE.len()].copy_from_slice(USBXHCI_PE_IMAGE);
-                Some(USBXHCI_PE_IMAGE.len())
-            },ntoskrnl::resolve);
+            |image_path, output| resolve_builtin_driver_image(image_path, output),ntoskrnl::resolve);
         match load_result {
             Ok(image) => {
                 serial_write(b"xHCI bind: DriverEntry succeeded image="); serial_write_hex(image.image_base);
