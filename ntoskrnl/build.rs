@@ -75,7 +75,7 @@ fn main() {
     );
     for (key, filename) in images {
         generated.push_str(&format!(
-            "    ({:?}, include_bytes!(concat!(env!(\"OUT_DIR\"), \"/drivers/{}\"))),\n",
+            "    ({:?}, &include_bytes!(concat!(env!(\"OUT_DIR\"), \"/drivers/{}\"))[..]),\n",
             key, filename
         ));
     }
