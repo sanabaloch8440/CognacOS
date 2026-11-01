@@ -207,6 +207,21 @@ pub mod bus {
         pub command: u16,
     }
 
+    /// Kernel-supplied PDO factory used by pci.sys while answering BusRelations.
+    /// The bus driver owns enumeration; the kernel callback allocates and tracks
+    /// the actual DEVICE_OBJECT using the bus driver's DRIVER_OBJECT.
+    pub type PPCI_CREATE_PDO = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            driver: *mut crate::io::DRIVER_OBJECT,
+            information: *const PCI_DEVICE_INFORMATION,
+            output: *mut *mut crate::io::DEVICE_OBJECT,
+        ) -> NTSTATUS,
+    >;
+    pub type PPCI_DELETE_PDO = Option<
+        unsafe extern "win64" fn(context: PVOID, device: *mut crate::io::DEVICE_OBJECT),
+    >;
+
     pub type PPCI_QUERY_COUNTS = Option<
         unsafe extern "win64" fn(context: PVOID, functions: *mut u32, bridges: *mut u32, xhci: *mut u32) -> NTSTATUS,
     >;
