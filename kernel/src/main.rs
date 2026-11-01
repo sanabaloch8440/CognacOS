@@ -712,15 +712,14 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     if size<0x1000||size>0x10000||!size.is_power_of_two()||function.bar_physical&(size-1)!=0 {
         return false
     }
-    let bar_virtual=match kernel_vm::map_io_space(function.bar_physical,size){
-        Ok(address)=>address,
-        Err(_)=>{return false}
-    };
+    // Keep the BAR physical in the PnP resource record. usbxhci.sys maps it
+    // through the documented MmMapIoSpace export after DriverEntry.
+    let Some(pnp_index)=ntoskrnl::pnp::find_pnp_pci_function(function.segment,function.bus,function.device,function.function) else{return false};
+    let Some(pnp_snapshot)=ntoskrnl::pnp::query_pnp_device(pnp_index) else{return false};
+    if pnp_snapshot.device_object==0{return false}
     if ntoskrnl::pnp::publish_xhci(&path,function.vendor_id,function.device_id,
-        function.interrupt_line,function.interrupt_pin,function.bar_physical,size,bar_virtual).is_err() {
-        let _=kernel_vm::unmap_io_space(bar_virtual,size);
-        return false
-    }
+        function.interrupt_line,function.interrupt_pin,pnp_snapshot.device_object as *mut core::ffi::c_void,
+        function.bar_physical,size,0).is_err(){return false}
     if platform_drivers::mark_ready(platform_drivers::Stage::PciXhciResources).is_err(){return false}
     
     if !initialize_vtd_from_acpi(&path){
@@ -945,7 +944,7 @@ fn bind_xhci_pe_driver()->bool {
     }
     let requester_key=((resources.segment as u32)<<16)|((resources.bus as u32)<<8)
         |((resources.device as u32)<<3)|resources.function as u32;
-    if resources.interrupt_vector==0 || resources.bar_virtual==0 || resources.bar_length<0x1000
+    if resources.interrupt_vector==0 || resources.bar_physical==0 || resources.bar_length<0x1000
         || !dma::iommu::available()
         || VT_D_REQUESTER_OWNER.load(Ordering::Acquire)!=requester_key {
         serial_write(b"xHCI bind: safe IOMMU DMA or masked interrupt route unavailable; bus mastering stays disabled.\r\n");
