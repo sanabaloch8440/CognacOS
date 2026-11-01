@@ -11,7 +11,7 @@ pub const HAL_CONTRACT_VERSION: u32 = 1;
 /// Small NT I/O-manager service surface passed to native WDM drivers. Keeping
 /// completion in a versioned kernel table avoids static imports from a driver
 /// image while preserving the IoCompleteRequest calling convention.
-pub const KERNEL_IO_SERVICES_VERSION: u32 = 2;
+pub const KERNEL_IO_SERVICES_VERSION: u32 = 3;
 pub type CompleteIrp = unsafe extern "win64" fn(
     irp: *mut cognacos_nt_abi::io::IRP,
     priority_boost: i8,
@@ -27,6 +27,8 @@ pub type CallDriver = unsafe extern "win64" fn(device: *mut core::ffi::c_void, i
 pub type AllocateIrp = unsafe extern "win64" fn(stack_size: i8, charge_quota: u8) -> *mut core::ffi::c_void;
 pub type GetIrpStackLocation = unsafe extern "win64" fn(irp: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
 pub type CompleteIrpStatus = unsafe extern "win64" fn(irp: *mut core::ffi::c_void, status: i32, information: usize, priority_boost: i8);
+pub type PinBuffer = unsafe extern "win64" fn(buffer:*mut core::ffi::c_void,length:u32,write_access:u8,mdl_out:*mut *mut core::ffi::c_void,system_address_out:*mut *mut core::ffi::c_void)->i32;
+pub type UnpinBuffer = unsafe extern "win64" fn(mdl:*mut core::ffi::c_void,system_address:*mut core::ffi::c_void);
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelIoServiceTable {
@@ -40,6 +42,8 @@ pub struct KernelIoServiceTable {
     pub current_stack_location: Option<GetIrpStackLocation>,
     pub next_stack_location: Option<GetIrpStackLocation>,
     pub complete_irp_status: Option<CompleteIrpStatus>,
+    pub pin_buffer:Option<PinBuffer>,
+    pub unpin_buffer:Option<UnpinBuffer>,
 }
 impl KernelIoServiceTable {
     pub const fn compatible(&self) -> bool {
@@ -53,6 +57,8 @@ impl KernelIoServiceTable {
             && self.current_stack_location.is_some()
             && self.next_stack_location.is_some()
             && self.complete_irp_status.is_some()
+            && self.pin_buffer.is_some()
+            && self.unpin_buffer.is_some()
     }
 }
 
