@@ -428,9 +428,14 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  let raw_count=match unsafe{parse_cm_resource_list(allocated,&mut raw)}{Ok(n)=>n,Err(e)=>return e};
  let count=match unsafe{parse_cm_resource_list(translated,&mut resources)}{Ok(n)=>n,Err(e)=>return e};
  if allocated.is_null()!=translated.is_null()||raw_count!=count{return STATUS_INVALID_PARAMETER}
- // Require the bus-provided raw and translated lists to describe the same
- // number of reservable resources; translation may change addresses, not count.
- for i in 0..count { for j in i+1..count { if resources_overlap(&resources[i],&resources[j]) { return STATUS_INVALID_PARAMETER; } } }
+ // Translation may relocate a resource but cannot change its resource class.
+ // In particular, a bus must not turn a DMA channel into an IRQ or MMIO claim.
+ for i in 0..count {
+  if raw[i].kind!=resources[i].kind{return STATUS_INVALID_PARAMETER}
+  for j in i+1..count {
+   if resources_overlap(&resources[i],&resources[j]) { return STATUS_INVALID_PARAMETER; }
+  }
+ }
  let mut arbiter=RESOURCE_ARBITER.lock();
  if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed){return STATUS_SUCCESS}
  if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&!c.committed){return STATUS_DEVICE_BUSY}
