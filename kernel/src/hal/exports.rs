@@ -144,24 +144,6 @@ pub unsafe extern "win64" fn hal_get_bus_data_by_offset(
     }
     let count = length.min(256 - offset);
     let _guard = PCI_CONFIG_LOCK.lock();
-    // Enabling PCI Command.BME is permitted only for a PnP-registered requester
-    // with four live IOMMU-backed xHCI common buffers. Ordinary configuration
-    // writes cannot bypass the device-scoped DMA gate.
-    if offset<=4 && offset.saturating_add(count)>4 {
-        let current=match unsafe{pci_read_dword(bus_number,slot_number,4)}{Some(v)=>v as u16,None=>return 0};
-        let mut requested=current;
-        for index in 0..count {
-            let at=offset+index;
-            if at==4 {requested=(requested&0xff00)|unsafe{buffer.add(index as usize).read()} as u16;}
-            if at==5 {requested=(requested&0x00ff)|((unsafe{buffer.add(index as usize).read()} as u16)<<8);}
-        }
-        if current&(1<<2)==0 && requested&(1<<2)!=0 {
-            let device=(slot_number&0x1f) as u8;
-            let function=((slot_number>>5)&7) as u8;
-            let Some(handle)=crate::dma::iommu::requester_handle_for_bdf(0,bus_number as u8,device,function) else{return 0};
-            if crate::dma::iommu::common_allocation_count(handle)<4{return 0;}
-        }
-    }
     let vendor = match unsafe { pci_read_dword(bus_number, slot_number, 0) } {
         Some(value) => value & 0xffff,
         None => return 0,
@@ -202,6 +184,24 @@ pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     }
     let count = length.min(256 - offset);
     let _guard = PCI_CONFIG_LOCK.lock();
+    // Enabling PCI Command.BME is permitted only for a PnP-registered requester
+    // with four live IOMMU-backed xHCI common buffers. Ordinary configuration
+    // writes cannot bypass the device-scoped DMA gate.
+    if offset<=4 && offset.saturating_add(count)>4 {
+        let current=match unsafe{pci_read_dword(bus_number,slot_number,4)}{Some(v)=>v as u16,None=>return 0};
+        let mut requested=current;
+        for index in 0..count {
+            let at=offset+index;
+            if at==4 {requested=(requested&0xff00)|unsafe{buffer.add(index as usize).read()} as u16;}
+            if at==5 {requested=(requested&0x00ff)|((unsafe{buffer.add(index as usize).read()} as u16)<<8);}
+        }
+        if current&(1<<2)==0 && requested&(1<<2)!=0 {
+            let device=(slot_number&0x1f) as u8;
+            let function=((slot_number>>5)&7) as u8;
+            let Some(handle)=crate::dma::iommu::requester_handle_for_bdf(0,bus_number as u8,device,function) else{return 0};
+            if crate::dma::iommu::common_allocation_count(handle)<4{return 0;}
+        }
+    }
     let vendor = match unsafe { pci_read_dword(bus_number, slot_number, 0) } {
         Some(value) => value & 0xffff,
         None => return 0,
