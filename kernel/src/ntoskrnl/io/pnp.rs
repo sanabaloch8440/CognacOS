@@ -54,6 +54,7 @@ pub const STATE_MMIO_MAPPED:u32=2;
 pub const STATE_DMA_READY:u32=3;
 pub const STATE_INTERRUPT_READY:u32=4;
 pub const STATE_DRIVER_BOUND:u32=5;
+pub const STATE_BAR_ASSIGNED:u32=6;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct XhciPciResources {
@@ -114,7 +115,7 @@ pub fn publish_xhci(
     XHCI_PCI_DEVICE.bar_physical.store(bar_physical,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bar_length.store(bar_length,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bar_virtual.store(bar_virtual,Ordering::Relaxed);
-    XHCI_PCI_DEVICE.state.store(STATE_MMIO_MAPPED,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.state.store(STATE_BAR_ASSIGNED,Ordering::Relaxed);
     // Bind the stable PnP device-object address to its real PCI requester ID
     // before exposing the object to driver/DMA-adapter consumers.
     let requester_status = unsafe {
