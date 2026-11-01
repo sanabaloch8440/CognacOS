@@ -212,6 +212,56 @@ unsafe extern "win64" fn write_config(
     }
 }
 
+unsafe extern "win64" fn query_inventory_counts(
+    context: PVOID, functions: *mut u32, bridges: *mut u32, xhci: *mut u32,
+) -> i32 {
+    if context.is_null() || functions.is_null() || bridges.is_null() || xhci.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    let Ok(function_count) = u32::try_from(STATE.function_count.load(Ordering::Acquire)) else {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    };
+    let Ok(bridge_count) = u32::try_from(STATE.bridge_count.load(Ordering::Acquire)) else {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    };
+    let Ok(xhci_count) = u32::try_from(STATE.xhci_count.load(Ordering::Acquire)) else {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    };
+    unsafe { functions.write(function_count); bridges.write(bridge_count); xhci.write(xhci_count); }
+    STATUS_SUCCESS
+}
+
+unsafe extern "win64" fn query_inventory_function(
+    context: PVOID, index: u32, output: *mut cognacos_nt_abi::bus::PCI_DEVICE_INFORMATION,
+) -> i32 {
+    if context.is_null() || output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    let mut remaining = index as usize;
+    let handoff = unsafe { &*(context as *const PciDriverHandoff) };
+    for window in 0..handoff.window_count as usize {
+        let count = unsafe { (*STATE.function_counts.get())[window] };
+        if remaining >= count { remaining -= count; continue; }
+        let Some(function) = (unsafe { (*STATE.functions.get())[window][remaining] }) else {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        };
+        let h = function.header;
+        unsafe {
+            output.write(cognacos_nt_abi::bus::PCI_DEVICE_INFORMATION {
+                segment: function.segment, bus: function.bus, device: function.device,
+                function: function.function, header_type: h.header_type,
+                revision_id: h.revision_id, programming_interface: h.programming_interface,
+                subclass: h.subclass, class_code: h.class_code, reserved: 0,
+                vendor_id: h.vendor_id, device_id: h.device_id, command: h.command,
+            });
+        }
+        return STATUS_SUCCESS;
+    }
+    STATUS_NOT_FOUND
+}
+
 /// Return PCI.sys' versioned configuration-space interface. The interface
 /// exposes only checked ECAM access; resource assignment remains a PnP duty.
 #[unsafe(no_mangle)]
@@ -233,6 +283,8 @@ pub unsafe extern "win64" fn CognacPciGetBusInterface(
             },
             read_config: Some(read_config),
             write_config: Some(write_config),
+            query_counts: Some(query_inventory_counts),
+            query_function: Some(query_inventory_function),
         });
     }
     STATUS_SUCCESS
