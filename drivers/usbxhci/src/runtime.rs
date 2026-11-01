@@ -26,17 +26,26 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
   if self.tracker.len()!=0{return Err(RuntimeError::Busy)}
   self.pending=[Pending::EMPTY;R];self.generation=generation;self.stopped=false;Ok(())
  }
- pub fn submit<H:TransferHardware>(&mut self,hw:&mut H,trb_dma:u64,buffer_dma:u64,length:u32,slot:u8,endpoint:u8,max_device_address:u64)->Result<TransferToken,RuntimeError>{
-  if self.stopped||R==0||N<4||!N.is_power_of_two()||self.ring_dma==0||self.ring_dma&63!=0||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
+ pub fn submit<H:TransferHardware>(&mut self,hw:&mut H,buffer_dma:u64,length:u32,slot:u8,endpoint:u8,max_device_address:u64)->Result<TransferToken,RuntimeError>{
+  if self.stopped||R==0||N<4||!N.is_power_of_two()||self.ring_dma==0||self.ring_dma&63!=0||self.tracker.len()>=N-1||length==0||length>TRB_TRANSFER_LENGTH_MASK||slot==0||endpoint==0||trb_dma==0||trb_dma&15!=0||buffer_dma==0||buffer_dma&15!=0{return Err(RuntimeError::InvalidRequest)}
   let p=self.pending.iter().position(|p|!p.used).ok_or(RuntimeError::QueueFull)?;
+  let index_expected=self.ring.producer_index();
+  let trb_dma=self.ring_dma.checked_add((index_expected as u64)*16).ok_or(RuntimeError::InvalidRequest)?;
+  crate::validate_dma_span(self.ring_dma,(N as u64)*16,max_device_address).map_err(|_|RuntimeError::InvalidRequest)?;
   let token=TransferToken{request_id:self.next_id,trb_dma,slot_id:slot,endpoint_id:endpoint,generation:self.generation};
   crate::validate_dma_span(buffer_dma,length as u64,max_device_address).map_err(|_|RuntimeError::InvalidRequest)?;
   let req=TransferRequest{trb_dma,buffer_dma,length,endpoint_id:endpoint,slot_id:slot};
   self.tracker.reserve(req).map_err(RuntimeError::Transfer)?;
   let trb=Trb{parameter:buffer_dma,status:length,control:(TRB_TYPE_NORMAL<<TRB_TYPE_SHIFT)|TRB_IOC|((endpoint as u32)<<16)|((slot as u32)<<24)};
   let index=self.ring.push(trb).map_err(RuntimeError::Ring)?;
+  if index!=index_expected{self.stopped=true;return Err(RuntimeError::InvalidRequest)}
   let published=self.ring.get(index).ok_or(RuntimeError::InvalidRequest)?;
   if hw.publish_trb(index,trb_dma,published).is_err(){self.stopped=true;return Err(RuntimeError::PublishFailed)}
+  if index==N-2{
+   let link=self.ring.get(N-1).ok_or(RuntimeError::InvalidRequest)?;
+   let link_dma=self.ring_dma.checked_add(((N-1) as u64)*16).ok_or(RuntimeError::InvalidRequest)?;
+   if hw.publish_trb(N-1,link_dma,link).is_err(){self.stopped=true;return Err(RuntimeError::PublishFailed)}
+  }
   self.pending[p]=Pending{used:true,token};
   fence(Ordering::Release);
   if hw.ring_endpoint_doorbell(slot,endpoint).is_err(){self.stopped=true;return Err(RuntimeError::DoorbellFailed)}
