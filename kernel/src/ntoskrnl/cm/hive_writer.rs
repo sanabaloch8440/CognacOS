@@ -359,7 +359,11 @@ impl RedoJournal{
   let p=Self::H+n;j[p..p+n].copy_from_slice(hive);w32(j,20,checksum(hive));w32(j,8,Self::COMMITTED);Ok(())
  }
  pub fn recover(hive:&mut[u8],j:&[u8])->Result<bool,Error>{
-  if j.iter().all(|b|*b==0){return Ok(false)}
+  let need=Self::capacity(hive.len()).ok_or(Error::Journal)?;
+  let prefix=j.get(..need).ok_or(Error::Journal)?;
+  // A persistent journal may carry Last Known Good slots after this redo
+  // region; their nonzero bytes must not make an empty redo journal look dirty.
+  if prefix.iter().all(|b|*b==0){return Ok(false)}
   if j.get(0..4)!=Some(&b"CGRJ"[..])||r32(j,4)?!=1{return Err(Error::Journal)}let n=r32(j,12)? as usize;
   if n!=hive.len()||j.len()<Self::capacity(n).ok_or(Error::Journal)?{return Err(Error::Journal)}
   let (off,sum)=match r32(j,8)?{Self::PREPARED=>(Self::H,r32(j,16)?),Self::COMMITTED=>(Self::H+n,r32(j,20)?),_=>return Err(Error::Journal)};
@@ -444,6 +448,11 @@ impl LastKnownGoodSnapshot {
         let (generation, image) = Self::read_prepared(slot)?;
         validate_regf_image(image)?;
         Ok((generation, image))
+    }
+
+    /// Return the generation of a committed and validated slot, if present.
+    pub fn committed_generation(slot:&[u8])->Option<u32>{
+        Self::read_committed(slot).ok().map(|(generation,_)|generation)
     }
 
     /// Restore the newest valid committed snapshot. A damaged newer slot is
