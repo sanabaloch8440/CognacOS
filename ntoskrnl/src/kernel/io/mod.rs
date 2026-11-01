@@ -1,16 +1,16 @@
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
 //! Entries describe export names/ordinals only; they are not all implemented APIs.
-#[path = "io/wdm.rs"]
+#[path = "wdm.rs"]
 pub(crate) mod wdm;
-#[path = "io/file_services.rs"]
+#[path = "file_services.rs"]
 pub(crate) mod file_services;
-#[path = "io/ata_disk.rs"]
+#[path = "ata_disk.rs"]
 pub(crate) mod ata_disk;
-#[path = "io/pnp.rs"]
+#[path = "pnp.rs"]
 pub(crate) mod pnp;
 pub use wdm::*;
 pub use wdm::Irp as WdmIrp;
-#[path = "io/dma.rs"]
+#[path = "dma.rs"]
 pub(crate) mod dma;
 pub const EXPORTS: &[(&str, u16)] = &[
     ("CcAddDirtyPagesToExternalCache", 62),

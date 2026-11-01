@@ -15,10 +15,10 @@ pub const EXPORTS: &[(&str, u16)] = &[
     ("CmUnregisterMachineHiveLoadedNotification", 143),
 ];
 
-#[path = "cm/runtime.rs"] pub(crate) mod runtime;
+#[path = "runtime.rs"] pub(crate) mod runtime;
 
-#[path = "cm/hive.rs"] pub(crate) mod hive;
-#[path = "cm/hive_writer.rs"] pub(crate) mod hive_writer;
-#[path = "cm/driver_config.rs"] pub(crate) mod driver_config;
+#[path = "hive.rs"] pub(crate) mod hive;
+#[path = "hive_writer.rs"] pub(crate) mod hive_writer;
+#[path = "driver_config.rs"] pub(crate) mod driver_config;
 
-#[path = "cm/service_config.rs"] pub(crate) mod service_config;
+#[path = "service_config.rs"] pub(crate) mod service_config;

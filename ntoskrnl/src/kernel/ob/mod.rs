@@ -1,6 +1,6 @@
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
 //! Entries describe export names/ordinals only; they are not all implemented APIs.
-#[path = "ob/runtime.rs"] pub(crate) mod runtime;
+#[path = "runtime.rs"] pub(crate) mod runtime;
 pub const EXPORTS: &[(&str, u16)] = &[
     ("ObAssignSecurity", 1780),
     ("ObCheckCreateObjectAccess", 1781),
@@ -54,4 +54,4 @@ pub const EXPORTS: &[(&str, u16)] = &[
 ];
 
 // Internal object and handle-table implementation.
-#[path = "ob/object_table.rs"] pub(crate) mod object_table;
+#[path = "object_table.rs"] pub(crate) mod object_table;
