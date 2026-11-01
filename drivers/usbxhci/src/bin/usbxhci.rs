@@ -35,6 +35,7 @@ pub struct XhciDriverExtension {
     pub hal: *const HalServiceTable,
     pub device: *const DeviceServiceTable,
     pub kernel_io: *const KernelIoServiceTable,
+    pub fdo_out:*mut u64,
     pub ready: AtomicBool,
     pub interrupt_requested: AtomicBool,
     pub event_count: AtomicU64,
@@ -249,7 +250,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         || ext.mmio_base == 0 || ext.mmio_base & 3 != 0
         || ext.mmio_length < 0x1000 || ext.mmio_length > MMIO_LIMIT
         || ext.device_object == 0 || ext.interrupt_vector == 0 || ext.max_slots == 0 || ext.max_slots > 64
-        || ext.hal.is_null() || ext.device.is_null() || ext.kernel_io.is_null() { return DRIVER_INVALID_PARAMETER; }
+        || ext.hal.is_null() || ext.device.is_null() || ext.kernel_io.is_null() || ext.fdo_out.is_null() { return DRIVER_INVALID_PARAMETER; }
     let Some(hal) = (unsafe { ext.hal.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
     let Some(dev) = (unsafe { ext.device.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
     let Some(kernel_io) = (unsafe { ext.kernel_io.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
@@ -301,6 +302,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     )};
     if create_status<0||fdo.is_null(){return create_status};
     XHCI_FDO.store(fdo as u64,Ordering::Release);
+    unsafe{ext.fdo_out.write(fdo as u64);}
     unsafe { (*ext.runtime.get()).write(resources); }
     ext.ready.store(true, Ordering::Release);
     if ext.interrupt_requested.swap(false, Ordering::AcqRel) {
