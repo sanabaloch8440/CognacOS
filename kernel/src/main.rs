@@ -568,29 +568,29 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     use core::mem::MaybeUninit;
     use nt_abi::bus::{PCI_BUS_INTERFACE,PCI_XHCI_INFORMATION,PCI_BRIDGE_INFORMATION,PCI_BUS_INTERFACE_VERSION,GUID_PCI_BUS_INTERFACE};
     let bus=unsafe{PCI_BUS_FDO};
-    if bus.is_null(){serial_write(b"PCI xHCI: pci.sys bus FDO is unavailable.\r\n");return false}
+    if bus.is_null(){return false}
     let mut interface_storage=MaybeUninit::<PCI_BUS_INTERFACE>::uninit();
     let status=unsafe{io::wdm::IoPnPQueryBusInterface(
         bus,&GUID_PCI_BUS_INTERFACE,core::mem::size_of::<PCI_BUS_INTERFACE>() as u16,
         PCI_BUS_INTERFACE_VERSION as u16,interface_storage.as_mut_ptr().cast(),
     )};
     if status!=nt_abi::ntstatus::STATUS_SUCCESS{
-        serial_write(b"PCI xHCI: pci.sys query-interface failed status=");
-        serial_write_hex(status as u32 as u64);serial_write(b"\r\n");return false
+        
+        return false
     }
     let interface=unsafe{interface_storage.assume_init()};
     if (interface.header.size as usize)<core::mem::size_of::<PCI_BUS_INTERFACE>()
         ||interface.header.version as u32!=PCI_BUS_INTERFACE_VERSION {
-        serial_write(b"PCI xHCI: unsupported PCI bus interface version/size.\r\n");return false
+        return false
     }
     let (Some(query_counts),Some(query_bridge),Some(query_xhci),Some(read_config),Some(write_config))=(
         interface.query_counts,interface.query_bridge,interface.query_xhci,
         interface.read_config,interface.write_config,
-    ) else {serial_write(b"PCI xHCI: pci.sys interface lacks required inventory/resource callbacks.\r\n");return false};
+    ) else {return false};
     let mut function_count=0u32;let mut bridge_count=0u32;let mut xhci_count=0u32;
     let status=unsafe{query_counts(interface.header.context,&mut function_count,&mut bridge_count,&mut xhci_count)};
     if status!=nt_abi::ntstatus::STATUS_SUCCESS||function_count==0||xhci_count==0 {
-        serial_write(b"PCI xHCI: pci.sys reports no xHCI endpoint in its completed inventory.\r\n");return false
+        return false
     }
     let mut selected=None;
     for index in 0..xhci_count {
@@ -601,11 +601,11 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
         if candidate.segment==0 {selected=Some(candidate);break}
     }
     let Some(function)=selected else{
-        serial_write(b"PCI xHCI: no supported segment-0 controller was published by pci.sys.\r\n");return false
+        return false
     };
     if function.device>=32||function.function>=8||function.bar_physical==0
         ||function.interrupt_pin==0||function.interrupt_line==0xff {
-        serial_write(b"PCI xHCI: endpoint BAR or legacy interrupt identity is invalid.\r\n");return false
+        return false
     }
     let mut bridges=[pci::PciBridgeRange::default();pci::MAX_PCI_BRIDGES];
     let mut copied=0usize;
@@ -621,7 +621,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     let path=match pci::resolve_requester_path(function.segment,function.root_bus,function.bus,
         function.device,function.function,&bridges[..copied]) {
         Ok(path)=>path,
-        Err(_)=>{serial_write(b"PCI xHCI: pci.sys bridge topology could not resolve a unique requester path.\r\n");return false}
+        Err(_)=>{return false}
     };
     let context=interface.header.context;
     let read=|offset:u16,width:u8|->Option<u32>{
@@ -638,7 +638,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     // original value and decode policy while leaving BME disabled.
     let original_command=read(0x04,2).unwrap_or(function.command as u32) as u16;
     if !write(0x04,2,(original_command&!0x7) as u32) {
-        serial_write(b"PCI xHCI: could not disable endpoint decode before BAR sizing.\r\n");return false
+        return false
     }
     let original_low=read(0x10,4);
     let original_high=if function.bar_is_64bit!=0{read(0x14,4)}else{Some(0)};
@@ -658,7 +658,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     let restore_low=original_low.is_some_and(|v|write(0x10,4,v));
     let restore_command=write(0x04,2,(original_command&!0x4) as u32);
     if !restore_high||!restore_low||!restore_command||mask_low.is_none()||mask_high.is_none(){
-        serial_write(b"PCI xHCI: BAR sizing failed or configuration restoration was incomplete; BME remains disabled.\r\n");return false
+        return false
     }
     let size=if function.bar_is_64bit!=0 {
         let mask=((mask_high.unwrap() as u64)<<32)|(mask_low.unwrap() as u64&!0xf);
@@ -668,21 +668,21 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
         (!mask).wrapping_add(1) as u64
     };
     if size<0x1000||size>0x10000||!size.is_power_of_two()||function.bar_physical&(size-1)!=0 {
-        serial_write(b"PCI xHCI: BAR0 size/alignment is outside the supported MMIO resource window.\r\n");return false
+        return false
     }
     let bar_virtual=match kernel_vm::map_io_space(function.bar_physical,size){
         Ok(address)=>address,
-        Err(_)=>{serial_write(b"PCI xHCI: BAR0 uncached MMIO mapping failed.\r\n");return false}
+        Err(_)=>{return false}
     };
     if ntoskrnl::pnp::publish_xhci(&path,function.vendor_id,function.device_id,
         function.interrupt_line,function.interrupt_pin,function.bar_physical,size,bar_virtual).is_err() {
         let _=kernel_vm::unmap_io_space(bar_virtual,size);
-        serial_write(b"PCI xHCI: kernel PnP refused the validated endpoint/resource record.\r\n");return false
+        return false
     }
     if platform_drivers::mark_ready(platform_drivers::Stage::PciXhciResources).is_err(){return false}
-    serial_write(b"PCI xHCI: pci.sys inventory, bridge path and BAR resource published through PnP.\r\n");
+    
     if !initialize_vtd_from_acpi(&path){
-        serial_write(b"PCI xHCI: VT-d requester initialization failed; bus mastering remains disabled.\r\n");return false
+        return false
     }
     // Resolve the PCI INTx pin through MADT overrides. The route is configured
     // masked; usbxhci.sys registers the actual ISR through the HAL table later.
@@ -696,13 +696,13 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     }
     let Some(io_apic)=madt.io_apics.iter().take(madt.io_apic_count)
         .find(|io|gsi>=io.gsi_base&&gsi.saturating_sub(io.gsi_base)<120) else {
-        serial_write(b"PCI xHCI: MADT has no I/O APIC route for the controller's INTx GSI.\r\n");return false
+        return false
     };
     if ntoskrnl::pnp::prepare_xhci_interrupt_route(io_apic.address as u64,io_apic.gsi_base,gsi,
         bsp_apic_id as u8,active_low,level_triggered).is_err(){
-        serial_write(b"PCI xHCI: masked I/O APIC vector reservation failed.\r\n");return false
+        return false
     }
-    serial_write(b"VT-d: translation enabled; generic DMA backend registered for validated xHCI requester.\r\n");
+    
     bind_xhci_pe_driver()
 }
 
@@ -830,7 +830,6 @@ fn bind_xhci_pe_driver()->bool {
                 serial_write(b" size="); serial_write_hex(image.image_size as u64); serial_write(b"\r\n");
                 if !hal::device_interrupt_handler_registered(resources.interrupt_vector)
                     || platform_drivers::mark_ready(platform_drivers::Stage::XhciInterrupt).is_err() {
-                    serial_write(b"xHCI bind: DriverEntry returned without publishing its registered ISR; controller remains fail-closed.\r\n");
                     if let Some(set)=device_table.set_bus_master { let _=set(resources.device_object,false); }
                     return false;
                 }
