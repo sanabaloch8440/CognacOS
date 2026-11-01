@@ -76,7 +76,7 @@ unsafe extern "win64" fn hub_event_sink(context:u64,event:*const XhciTrb){
 }
 #[unsafe(no_mangle)]pub unsafe extern "win64" fn Usbhub3TakePendingPort(port_out:*mut u8)->u8{
  if port_out.is_null()||!RUNTIME_READY.load(Ordering::Acquire){return 0}
- let rt=unsafe{runtime_mut()};for i in 0..4{let mut v=rt.pending_ports[i].load(Ordering::Acquire);while v!=0{let bit=v.trailing_zeros() as usize;let mask=1u64<<bit;match rt.pending_ports[i].compare_exchange_weak(v,v&!mask,Ordering::AcqRel,Ordering::Acquire){Ok(_)=>{unsafe{port_out.write((i*64+bit+1) as u8);}return 1},Err(n)=>v=n}}}0
+ let rt=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};for i in 0..4{let cell=unsafe{&(*rt).pending_ports[i]};let mut v=cell.load(Ordering::Acquire);while v!=0{let bit=v.trailing_zeros() as usize;let mask=1u64<<bit;match cell.compare_exchange_weak(v,v&!mask,Ordering::AcqRel,Ordering::Acquire){Ok(_)=>{unsafe{port_out.write((i*64+bit+1) as u8);}return 1},Err(n)=>v=n}}}0
 }
 #[unsafe(no_mangle)]pub unsafe extern "win64" fn Usbhub3CreateChildPdo(port:u8,descriptor:*const u8,length:u32,output:*mut *mut c_void)->i32{
  if port==0||port as u64>PORT_COUNT.load(Ordering::Acquire)||descriptor.is_null()||length<18||!RUNTIME_READY.load(Ordering::Acquire){return STATUS_INVALID_PARAMETER}
@@ -121,7 +121,7 @@ unsafe extern "win64" fn hub_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
     0x00|0x01|0x03|0x04|0x05|0x06|0x09|0x0a|0x17=>STATUS_SUCCESS,
     0x13=>{let id=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};let p=unsafe{match id{0=>(*ext).device_id.as_ptr(),1=>(*ext).instance_id.as_ptr(),2=>(*ext).hardware_ids.as_ptr(),3=>(*ext).compatible_ids.as_ptr(),_=>core::ptr::null()}};if p.is_null(){STATUS_INVALID_DEVICE_REQUEST}else{if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,p as usize,0);}}return STATUS_SUCCESS}},
     0x07=>{let relation=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};if relation==1{let p=core::ptr::addr_of!((*ext).relations);if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,p as usize,0);}}return STATUS_SUCCESS}else{STATUS_SUCCESS}},
-    0x02=>STATUS_SUCCESS,_=>STATUS_INVALID_DEVICE_REQUEST,
+    0x02=>{lock();let rt=unsafe{runtime_mut()};if let Some(i)=rt.children.iter().position(|x|x.used&&x.pdo==device as u64){rt.children[i]=ChildRecord::EMPTY;}unlock();STATUS_SUCCESS},_=>STATUS_INVALID_DEVICE_REQUEST,
    };
    if let Some(done)=io.complete_irp_status{unsafe{done(irp,status,0,0);}}return status
   }
@@ -135,7 +135,15 @@ unsafe extern "win64" fn hub_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
  let lower=if ext.is_null()||unsafe{(*ext).magic}!=EXT_MAGIC{core::ptr::null_mut()}else{unsafe{(*ext).lower_device}};
  if lower.is_null(){if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_INVALID_DEVICE_REQUEST,0,0);}}return STATUS_INVALID_DEVICE_REQUEST}
  if let Some(skip)=io.skip_current_stack{unsafe{skip(irp);}}
- if let Some(call)=io.call_driver{unsafe{call(lower,irp)}}else{STATUS_INVALID_DEVICE_REQUEST}
+ if let Some(call)=io.call_driver{
+  let status=unsafe{call(lower,irp)};
+  if major==0x1b&&minor==0x02&&status!=0x103{
+   if let Some(detach)=io.detach_device{unsafe{detach(lower);}}
+   if let Some(delete)=io.delete_device{unsafe{delete(hub);}}
+   HUB_DEVICE.store(0,Ordering::Release);
+  }
+  status
+ }else{STATUS_INVALID_DEVICE_REQUEST}
 }
 unsafe extern "win64" fn hub_unload(_driver:*mut c_void){
  if !RUNTIME_READY.swap(false,Ordering::AcqRel){return}
