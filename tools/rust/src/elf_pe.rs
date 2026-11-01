@@ -301,8 +301,8 @@ mod tests{
   b[0x1000..0x1004].copy_from_slice(&[0x90,0x90,0xeb,0xfe]);
   let mut pe=convert_elf64_to_pe32plus(&b,BASE,false).unwrap();
   let slots=[
-   ImportSlot{dll:"ntoskrnl.exe".into(),name:"MmMapIoSpace".into(),rva:0x2000,section:2},
-   ImportSlot{dll:"ntoskrnl.exe".into(),name:"MmUnmapIoSpace".into(),rva:0x2008,section:2},
+   ImportSlot{dll:"ntoskrnl.exe".into(),name:"IoCreateDevice".into(),rva:0x2000,section:2},
+   ImportSlot{dll:"ntoskrnl.exe".into(),name:"IoDeleteDevice".into(),rva:0x2008,section:2},
   ];
   append_import_section(&mut pe,&slots).unwrap();
   let peoff=u32at(&pe,0x3c).unwrap() as usize;let opt=peoff+24;
@@ -321,7 +321,7 @@ mod tests{
   let first_name_rva=u64::from_le_bytes(pe[ilt_off..ilt_off+8].try_into().unwrap()) as usize;
   let first_name_off=raw+(first_name_rva-rva_base);
   assert_eq!(u16at(&pe,first_name_off).unwrap(),0);
-  assert_eq!(&pe[first_name_off+2..first_name_off+15],b"MmMapIoSpace\0");
+  assert_eq!(&pe[first_name_off+2..first_name_off+15],b"IoCreateDevice\0");
  }
  #[test] fn converts_minimal_static_elf_to_amd64_pe32plus(){
   let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
