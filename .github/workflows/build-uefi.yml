@@ -1002,6 +1002,13 @@ jobs:
             info variables VT_D_REQUESTER_OWNER
             info variables XHCI_INTERRUPT_VECTOR
             info variables XHCI_DRIVER_BINDING_STARTED
+            echo \\n===== PCI / VT-d / xHCI static state =====\\n
+            x/gx &cognacos_kernel::PCI_BUS_FDO
+            x/bx &cognacos_kernel::PCI_DRIVER_BINDING_STARTED
+            x/16gx &cognacos_kernel::ntoskrnl::pnp::XHCI_PCI_DEVICE
+            x/wx &cognacos_kernel::VT_D_REQUESTER_OWNER
+            x/wx &cognacos_kernel::ntoskrnl::pnp::XHCI_INTERRUPT_VECTOR
+            x/bx &cognacos_kernel::XHCI_DRIVER_BINDING_STARTED
             info threads
             thread apply all info registers rip rsp
             thread apply all info line *$rip
