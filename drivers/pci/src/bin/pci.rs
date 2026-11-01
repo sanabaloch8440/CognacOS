@@ -3,28 +3,16 @@
 
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
-use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PPCI_CREATE_PDO, PPCI_DELETE_PDO, PCI_DEVICE_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
+use cognacos_pci::EcamWindowExt;
+use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
 
-const HANDOFF_MAGIC: u64 = 0x434f_474e_4143_5043; // COGNACPC
-const HANDOFF_VERSION: u32 = 2;
+const HANDOFF_MAGIC: u64 = PCI_DRIVER_HANDOFF_MAGIC;
+const HANDOFF_VERSION: u32 = PCI_DRIVER_HANDOFF_VERSION;
 const MAX_PCI_PDOS: usize = 32;
 const BUS_RELATIONS: u32 = 0;
-const MAX_WINDOWS: usize = 16;
+const MAX_WINDOWS: usize = PCI_DRIVER_HANDOFF_MAX_WINDOWS;
 
-#[repr(C)]
-pub struct PciDriverHandoff {
-    pub magic: u64,
-    pub size: u32,
-    pub version: u32,
-    pub window_count: u32,
-    pub reserved: u32,
-    /// Kernel callbacks for creating and deleting bus-enumerated PDOs.
-    pub pdo_context: PVOID,
-    pub create_pdo: PPCI_CREATE_PDO,
-    pub delete_pdo: PPCI_DELETE_PDO,
-    /// MCFG-derived ECAM windows already mapped with uncached device attributes.
-    pub windows: [pci::EcamWindow; MAX_WINDOWS],
-}
+type PciDriverHandoff = PCI_DRIVER_HANDOFF;
 
 struct PciState {
     ready: AtomicBool,
