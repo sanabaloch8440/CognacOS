@@ -2,7 +2,7 @@
 #![no_main]
 
 use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
-use cognacos_hal_contract::{DeviceServiceTable, HalServiceTable, DEVICE_SERVICES_VERSION, HAL_CONTRACT_VERSION};
+use cognacos_hal_contract::{DeviceServiceTable, HalServiceTable, KernelIoServiceTable, DEVICE_SERVICES_VERSION, HAL_CONTRACT_VERSION};
 use cognacos_nt_abi::types::PVOID;
 use cognacos_usbxhci::{self as xhci, Capabilities, DmaAllocation, XhciPlatform, XhciRegisterIo, XhciRuntimeResources};
 
@@ -34,6 +34,7 @@ pub struct XhciDriverExtension {
     pub max_slots: u32,
     pub hal: *const HalServiceTable,
     pub device: *const DeviceServiceTable,
+    pub kernel_io: *const KernelIoServiceTable,
     pub ready: AtomicBool,
     pub interrupt_requested: AtomicBool,
     pub event_count: AtomicU64,
@@ -46,15 +47,18 @@ pub struct XhciDriverExtension {
 unsafe impl Sync for XhciDriverExtension {}
 
 #[repr(C)]
-struct DriverObjectPrefix {
-    object_type: i16,
-    size: i16,
-    device_object: *mut c_void,
-    flags: u32,
-    driver_start: *mut c_void,
-    driver_size: u32,
-    driver_section: *mut c_void,
-    driver_extension: *mut XhciDriverExtension,
+type DriverDispatch = unsafe extern "win64" fn(*mut c_void,*mut c_void)->i32;
+#[repr(C)]
+struct DriverObject {
+    object_type:i16,size:i16,device_object:*mut c_void,flags:u32,
+    driver_start:*mut c_void,driver_size:u32,driver_section:*mut c_void,
+    driver_extension:*mut XhciDriverExtension,
+    driver_name:cognacos_nt_abi::object::UNICODE_STRING,
+    hardware_database:*mut cognacos_nt_abi::object::UNICODE_STRING,
+    fast_io_dispatch:*mut c_void,
+    driver_init:*mut c_void,driver_start_io:*mut c_void,
+    driver_unload:Option<unsafe extern "win64" fn(*mut c_void)>,
+    major_function:[Option<DriverDispatch>;28],
 }
 
 struct Platform<'a> { ext: &'a XhciDriverExtension, hal: &'a HalServiceTable, dev: &'a DeviceServiceTable }
@@ -142,6 +146,31 @@ impl XhciPlatform for Platform<'_> {
 
 }
 
+static XHCI_FDO:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static XHCI_EXTENSION:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+extern "win64" fn xhci_dispatch(_device:*mut c_void,irp:*mut c_void)->i32{
+    const STATUS_SUCCESS:i32=0;
+    const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
+    const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
+    if irp.is_null(){return STATUS_INVALID_PARAMETER}
+    let ext_ptr=XHCI_EXTENSION.load(Ordering::Acquire) as *const XhciDriverExtension;
+    if ext_ptr.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
+    let ext=unsafe{&*ext_ptr};
+    let Some(io)= (unsafe{ext.kernel_io.as_ref()}) else{return STATUS_INVALID_DEVICE_REQUEST};
+    let Some(get_stack)=io.current_stack_location else{return STATUS_INVALID_DEVICE_REQUEST};
+    let stack=unsafe{get_stack(irp)};
+    if stack.is_null(){return STATUS_INVALID_PARAMETER}
+    let major=unsafe{core::ptr::read(stack.cast::<u8>())};
+    let minor=unsafe{core::ptr::read(stack.cast::<u8>().add(1))};
+    let status=match major{
+        0x1b=>match minor{0x00|0x03|0x04|0x05|0x06|0x17|0x02=>STATUS_SUCCESS,_=>STATUS_INVALID_DEVICE_REQUEST},
+        0x16=>STATUS_SUCCESS,
+        _=>STATUS_INVALID_DEVICE_REQUEST,
+    };
+    if let Some(complete)=io.complete_irp_status{unsafe{complete(irp,status,0,0);}}
+    status
+}
+
 extern "C" fn xhci_isr(context: u64) -> bool {
     if context == 0 { return false; }
     let ext = unsafe { &*(context as *const XhciDriverExtension) };
@@ -203,20 +232,23 @@ fn read_capabilities(io: &mut impl XhciRegisterIo, length: u64) -> Option<Capabi
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -> i32 {
     if driver.is_null() { return DRIVER_INVALID_PARAMETER; }
-    let prefix = unsafe { &*(driver as *const DriverObjectPrefix) };
-    let Some(ext) = (unsafe { prefix.driver_extension.as_ref() }) else { return DRIVER_NOT_SUPPORTED; };
+    let driver_object = unsafe { &mut *(driver as *mut DriverObject) };
+    let Some(ext) = (unsafe { driver_object.driver_extension.as_ref() }) else { return DRIVER_NOT_SUPPORTED; };
+    XHCI_EXTENSION.store(ext as *const _ as u64,Ordering::Release);
     if ext.magic != EXTENSION_MAGIC || ext.version != 1
         || (ext.size as usize) < core::mem::size_of::<XhciDriverExtension>()
         || ext.mmio_base == 0 || ext.mmio_base & 3 != 0
         || ext.mmio_length < 0x1000 || ext.mmio_length > MMIO_LIMIT
         || ext.device_object == 0 || ext.interrupt_vector == 0 || ext.max_slots == 0 || ext.max_slots > 64
-        || ext.hal.is_null() || ext.device.is_null() { return DRIVER_INVALID_PARAMETER; }
+        || ext.hal.is_null() || ext.device.is_null() || ext.kernel_io.is_null() { return DRIVER_INVALID_PARAMETER; }
     let Some(hal) = (unsafe { ext.hal.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
     let Some(dev) = (unsafe { ext.device.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
+    let Some(kernel_io) = (unsafe { ext.kernel_io.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
     if !hal.compatible() || hal.version != HAL_CONTRACT_VERSION
         || !dev.compatible() || dev.version != DEVICE_SERVICES_VERSION
         || hal.read_mmio_u32.is_none() || hal.write_mmio_u32.is_none()
-        || !dev.has_dma() || !dev.has_interrupts() || !dev.has_bus_master() { return DRIVER_NOT_SUPPORTED; }
+        || !dev.has_dma() || !dev.has_interrupts() || !dev.has_bus_master()
+        || !kernel_io.compatible() { return DRIVER_NOT_SUPPORTED; }
     let mut platform = Platform { ext, hal, dev };
     let Some(caps) = read_capabilities(&mut platform, ext.mmio_length) else { return DRIVER_NOT_SUPPORTED; };
     let slots = (ext.max_slots as u8).min(caps.max_slots);
@@ -241,6 +273,23 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             | xhci::ControllerInitError::InvalidDmaConfiguration => DRIVER_INVALID_PARAMETER,
         },
     };
+    // Bind a real kernel DEVICE_OBJECT to this DriverObject and publish
+    // the dispatch table consumed by IoCallDriver. The DMA requester remains
+    // the PCI PDO identity supplied separately in ext.device_object.
+    static DEVICE_NAME:[u16;20]=[
+        92,68,101,118,105,99,101,92,67,111,103,110,97,99,88,104,99,105,0
+    ];
+    let mut counted_name=cognacos_nt_abi::object::UNICODE_STRING{
+        length:36,maximum_length:38,buffer:DEVICE_NAME.as_ptr() as *mut u16
+    };
+    let mut fdo=core::ptr::null_mut::<c_void>();
+    for entry in driver_object.major_function.iter_mut(){*entry=Some(xhci_dispatch);}
+    let Some(create_device)=kernel_io.create_device else{return DRIVER_NOT_SUPPORTED};
+    let create_status=unsafe{create_device(
+        driver,0,&mut counted_name,4,0,0,&mut fdo
+    )};
+    if create_status<0||fdo.is_null(){return create_status};
+    XHCI_FDO.store(fdo as u64,Ordering::Release);
     unsafe { (*ext.runtime.get()).write(resources); }
     ext.ready.store(true, Ordering::Release);
     if ext.interrupt_requested.swap(false, Ordering::AcqRel) {
