@@ -23,7 +23,7 @@ struct XhciTrb{parameter:u64,status:u32,control:u32}
 pub struct UcxDriverExtension{
  magic:u64,size:u32,version:u32,parent_bus_device:u64,
  kernel_io:*const KernelIoServiceTable,device_services:*const DeviceServiceTable,dma_device_object:u64,
- hal:*const KernelIoServiceTable,hal:*const HalServiceTable,
+ hal:*const HalServiceTable,
  event_sink:*mut AtomicU64,event_context:*mut AtomicU64,
  mmio_base:u64,operational_offset:u32,port_count:u32,
  hub_event_sink:*mut AtomicU64,hub_event_context:*mut AtomicU64,
