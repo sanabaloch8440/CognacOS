@@ -571,6 +571,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
 
 pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
+        14 => Some(hal_disable_interrupt as usize as u64),
+        18 => Some(hal_enable_interrupt as usize as u64),
         48 => Some(hal_query_real_time_clock as usize as u64),
         1 => Some(hal_acpi_get_table_ex as usize as u64),
         4 => Some(hal_all_processors_started as usize as u64),
@@ -615,6 +617,8 @@ pub fn self_test() -> bool {
         && resolve(b"HalQueryRealTimeClock").is_some()
         && resolve_ordinal(48).is_some()
         && resolve(b"HalAcpiGetTableEx").is_some()
+        && resolve(b"HalEnableInterrupt").is_some()
+        && resolve(b"HalDisableInterrupt").is_some()
         && resolve_ordinal(1).is_some()
         && resolve(b"HalDisplayString").is_some()
         && resolve_ordinal(15).is_some()
