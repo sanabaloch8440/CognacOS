@@ -1154,6 +1154,38 @@ unsafe extern "win64" fn kernel_io_complete_status(
 ) {
     unsafe{crate::io::io_complete_irp_status(irp.cast(),status,information,priority_boost);}
 }
+unsafe extern "win64" fn kernel_io_pin_buffer(
+    buffer:*mut core::ffi::c_void,length:u32,write_access:u8,
+    mdl_out:*mut *mut core::ffi::c_void,system_address_out:*mut *mut core::ffi::c_void
+)->i32 {
+    use cognacos_nt_abi::ntstatus::{STATUS_ACCESS_VIOLATION,STATUS_INSUFFICIENT_RESOURCES,STATUS_INVALID_PARAMETER,STATUS_SUCCESS};
+    if buffer.is_null()||length==0||write_access>1||mdl_out.is_null()||system_address_out.is_null(){return STATUS_INVALID_PARAMETER}
+    unsafe{mdl_out.write(core::ptr::null_mut());system_address_out.write(core::ptr::null_mut());}
+    let mdl=unsafe{crate::io::io_allocate_mdl(buffer,length,0,0,core::ptr::null_mut())};
+    if mdl.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
+    unsafe{crate::ntoskrnl::mm::runtime::mm_probe_and_lock_pages(mdl,0,if write_access!=0{1}else{0});}
+    let flags=unsafe{core::ptr::read_unaligned(mdl.cast::<u8>().add(0x0a).cast::<i16>())};
+    if flags&0x0002==0 {
+        unsafe{crate::io::io_free_mdl(mdl);}
+        return STATUS_ACCESS_VIOLATION
+    }
+    let mapped=unsafe{crate::ntoskrnl::mm::runtime::mm_map_locked_pages_specify_cache(mdl,0,1,core::ptr::null_mut(),0,0)};
+    if mapped.is_null(){
+        unsafe{crate::ntoskrnl::mm::runtime::mm_unlock_pages(mdl);crate::io::io_free_mdl(mdl);}
+        return STATUS_INSUFFICIENT_RESOURCES
+    }
+    unsafe{mdl_out.write(mdl);system_address_out.write(mapped);}
+    STATUS_SUCCESS
+}
+unsafe extern "win64" fn kernel_io_unpin_buffer(mdl:*mut core::ffi::c_void,system_address:*mut core::ffi::c_void){
+    if mdl.is_null(){return}
+    unsafe{
+        if !system_address.is_null(){crate::ntoskrnl::mm::runtime::mm_unmap_locked_pages(system_address,mdl);}
+        crate::ntoskrnl::mm::runtime::mm_unlock_pages(mdl);
+        crate::io::io_free_mdl(mdl);
+    }
+}
+
 /// Live WDM service table for native drivers. Every callback reaches the same
 /// DEVICE_OBJECT/IRP tables used by the kernel's IoCallDriver/PnP manager.
 pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceTable {
@@ -1168,6 +1200,8 @@ pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceT
         current_stack_location:Some(kernel_io_current_stack),
         next_stack_location:Some(kernel_io_next_stack),
         complete_irp_status:Some(kernel_io_complete_status),
+        pin_buffer:Some(kernel_io_pin_buffer),
+        unpin_buffer:Some(kernel_io_unpin_buffer),
     }
 }
 
