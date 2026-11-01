@@ -96,3 +96,100 @@ pub mod ntifs {
     };
     pub use crate::security::{ACCESS_MASK, GENERIC_MAPPING};
 }
+
+
+/// Versioned interfaces exchanged between bus/firmware drivers and ntoskrnl.
+///
+/// These are deliberately narrow, pointer-based WDM-style contracts: the
+/// kernel owns PnP device nodes and resource arbitration, while bus drivers
+/// own access to their firmware or bus configuration mechanisms. A consumer
+/// must validate both `size` and `version` before calling any function.
+pub mod bus {
+    use crate::types::PVOID;
+    use crate::ntstatus::NTSTATUS;
+
+    pub const ACPI_FIRMWARE_INTERFACE_VERSION: u32 = 1;
+    pub const PCI_BUS_INTERFACE_VERSION: u32 = 1;
+
+    /// Common prefix for all published bus interfaces.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct INTERFACE_HEADER {
+        pub size: u16,
+        pub version: u16,
+        pub context: PVOID,
+        pub interface_reference: Option<unsafe extern "win64" fn(PVOID)>,
+        pub interface_dereference: Option<unsafe extern "win64" fn(PVOID)>,
+    }
+
+    /// ACPI.sys firmware-table access. The provider copies the requested
+    /// table into the caller's buffer and reports its required size.
+    pub type PACPI_QUERY_TABLE = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            signature: *const u8,
+            instance: u32,
+            buffer: PVOID,
+            buffer_length: u32,
+            required_length: *mut u32,
+        ) -> NTSTATUS,
+    >;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct ACPI_FIRMWARE_INTERFACE {
+        pub header: INTERFACE_HEADER,
+        pub query_table: PACPI_QUERY_TABLE,
+    }
+
+    /// PCI configuration-space access provided by pci.sys. Device and
+    /// function are conventional PCI coordinates; segment and bus are
+    /// explicit so callers cannot accidentally alias nonzero segments.
+    pub type PPCI_READ_CONFIG = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            segment: u16,
+            bus: u8,
+            device: u8,
+            function: u8,
+            offset: u16,
+            width: u8,
+            value: *mut u32,
+        ) -> NTSTATUS,
+    >;
+    pub type PPCI_WRITE_CONFIG = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            segment: u16,
+            bus: u8,
+            device: u8,
+            function: u8,
+            offset: u16,
+            width: u8,
+            value: u32,
+        ) -> NTSTATUS,
+    >;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct PCI_BUS_INTERFACE {
+        pub header: INTERFACE_HEADER,
+        pub read_config: PPCI_READ_CONFIG,
+        pub write_config: PPCI_WRITE_CONFIG,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn interface_layout_is_stable_on_x64() {
+            if cfg!(target_pointer_width = "64") {
+                assert_eq!(core::mem::size_of::<INTERFACE_HEADER>(), 0x20);
+                assert_eq!(core::mem::offset_of!(INTERFACE_HEADER, context), 0x08);
+                assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
+                assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x30);
+            }
+        }
+    }
+}
