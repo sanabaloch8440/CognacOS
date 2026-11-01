@@ -21,7 +21,6 @@ type ConnectInterrupt = unsafe extern "win64" fn(*mut *mut c_void,Option<Interru
 type DisconnectInterrupt = unsafe extern "win64" fn(*mut c_void);
 type InitializeDpc = unsafe extern "win64" fn(*mut c_void,Option<DpcRoutine>,*mut c_void);
 type InsertQueueDpc = unsafe extern "win64" fn(*mut c_void,*mut c_void,*mut c_void)->u8;
-type GetCurrentIrpStack = unsafe extern "win64" fn(*mut IRP)->*mut cognacos_nt_abi::io::IO_STACK_LOCATION;
 type CompleteRequest = unsafe extern "win64" fn(*mut IRP,i8);
 
 unsafe extern "win64" {
@@ -40,7 +39,6 @@ unsafe extern "win64" {
     fn IoDisconnectInterrupt(interrupt:*mut c_void);
     fn KeInitializeDpc(dpc:*mut c_void,routine:Option<DpcRoutine>,context:*mut c_void);
     fn KeInsertQueueDpc(dpc:*mut c_void,arg1:*mut c_void,arg2:*mut c_void)->u8;
-    fn IoGetCurrentIrpStackLocation(irp:*mut IRP)->*mut cognacos_nt_abi::io::IO_STACK_LOCATION;
     fn IoCompleteRequest(irp:*mut IRP,priority_boost:i8);
 }
 
@@ -63,7 +61,6 @@ thunk IoConnectInterrupt, __imp_ntoskrnl_IoConnectInterrupt
 thunk IoDisconnectInterrupt, __imp_ntoskrnl_IoDisconnectInterrupt
 thunk KeInitializeDpc, __imp_ntoskrnl_KeInitializeDpc
 thunk KeInsertQueueDpc, __imp_ntoskrnl_KeInsertQueueDpc
-thunk IoGetCurrentIrpStackLocation, __imp_ntoskrnl_IoGetCurrentIrpStackLocation
 thunk IoCompleteRequest, __imp_ntoskrnl_IoCompleteRequest
 thunk HalEnableInterrupt, __imp_hal_HalEnableInterrupt
 thunk HalDisableInterrupt, __imp_hal_HalDisableInterrupt
@@ -88,7 +85,6 @@ iat IoConnectInterrupt
 iat IoDisconnectInterrupt
 iat KeInitializeDpc
 iat KeInsertQueueDpc
-iat IoGetCurrentIrpStackLocation
 iat IoCompleteRequest
 .section .data.imports.hal,"aw",@progbits
 .p2align 3
@@ -265,7 +261,9 @@ unsafe extern "win64" fn xhci_dispatch(_device:*mut DEVICE_OBJECT,irp:*mut IRP)-
     const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
     const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
     if irp.is_null(){return STATUS_INVALID_PARAMETER}
-    let stack=unsafe{IoGetCurrentIrpStackLocation(irp)};
+    // WDK IoGetCurrentIrpStackLocation is an inline macro, not an imported export.
+    // Its x64 ABI reads Tail.Overlay.CurrentStackLocation at IRP offset 0xB8.
+    let stack=unsafe{(*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION};
     if stack.is_null(){return STATUS_INVALID_PARAMETER}
     let major=unsafe{(*stack).major_function};
     let minor=unsafe{(*stack).minor_function};
