@@ -103,7 +103,7 @@ struct State {
 }
 impl State {
     const fn new() -> Self {
-        Self { files: [FileRecord::EMPTY; MAX_FILES], handles: [FileObjectRecord::EMPTY; MAX_FILE_OBJECTS], next_generation: 1 }
+        Self { files: [FileRecord::EMPTY; MAX_FILES], file_objects: [FileObjectRecord::EMPTY; MAX_FILE_OBJECTS], next_generation: 1 }
     }
 }
 unsafe impl Send for State {}
