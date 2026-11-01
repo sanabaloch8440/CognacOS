@@ -91,7 +91,7 @@ struct FileObjectRecord {
     section_object_pointers: crate::nt_abi::io::SECTION_OBJECT_POINTERS,
 }
 impl FileObjectRecord {
-    const EMPTY: Self = Self { opened: false, used: false, file_object: ptr::null_mut(), section_object_pointers: crate::nt_abi::io::SECTION_OBJECT_POINTERS::default() };
+    const EMPTY: Self = Self { opened: false, used: false, file_object: ptr::null_mut(), section_object_pointers: crate::nt_abi::io::SECTION_OBJECT_POINTERS { data_section_object: ptr::null_mut(), shared_cache_map: ptr::null_mut(), image_section_object: ptr::null_mut() } };
 }
 
 struct State {
@@ -106,9 +106,6 @@ impl State {
 }
 unsafe impl Send for State {}
 static STATE: IrqSpinLock<State> = IrqSpinLock::new(State::new());
-#[repr(C, align(8))]
-struct FileIoEvent { bytes: [u8; 0x18] }
-const _: () = assert!(core::mem::size_of::<FileIoEvent>() == 0x18);
 static BOOT_INIT: AtomicUsize = AtomicUsize::new(0);
 static DEVICE_INIT: AtomicUsize = AtomicUsize::new(0);
 static FILE_DEVICE: AtomicUsize = AtomicUsize::new(0);
@@ -145,16 +142,35 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
                 };
                 if unsafe { (*file_object).device_object } != device.cast() || file.is_none() {
                     status = STATUS_OBJECT_NAME_NOT_FOUND;
-                } else if let Some(file) = file {
-                    let sizes = crate::ntoskrnl::cc::CcFileSizes {
-                        allocation_size: file.length as i64,
-                        file_size: file.length as i64,
-                        valid_data_length: file.length as i64,
-                    };
-                    unsafe {
-                        crate::ntoskrnl::cc::cc_initialize_cache_map(
-                            file_object, &sizes, 0, ptr::null(), ptr::null_mut(),
-                        );
+                } else if let Some(mut file) = file {
+                    if file.source == 1 {
+                        match crate::ata_disk::ext4_block_device() {
+                            Ok(mut volume) => match extfs::root_file_size(
+                                &mut volume, &file.path[..file.path_len],
+                            ) {
+                                Ok(size) => match usize::try_from(size) {
+                                    Ok(length) => {
+                                        file.length = length;
+                                        STATE.lock().files[index - 1].length = length;
+                                    }
+                                    Err(_) => status = STATUS_INVALID_PARAMETER,
+                                },
+                                Err(_) => status = STATUS_OBJECT_NAME_NOT_FOUND,
+                            },
+                            Err(_) => status = STATUS_UNSUCCESSFUL,
+                        }
+                    }
+                    if status == STATUS_SUCCESS {
+                        let sizes = crate::ntoskrnl::cc::CcFileSizes {
+                            allocation_size: file.length as i64,
+                            file_size: file.length as i64,
+                            valid_data_length: file.length as i64,
+                        };
+                        unsafe {
+                            crate::ntoskrnl::cc::cc_initialize_cache_map(
+                                file_object, &sizes, 0, ptr::null(), ptr::null_mut(),
+                            );
+                        }
                     }
                 }
             }
@@ -423,42 +439,12 @@ fn dispatch_file_irp(file_object: *mut FILE_OBJECT, major: u8, offset: i64, buff
     }
     let device = unsafe { (*file_object).device_object.cast::<DeviceObject>() };
     if device.is_null() { return Err(STATUS_INVALID_HANDLE); }
-    let mut event = FileIoEvent { bytes: [0; 0x18] };
-    let mut io_status = IO_STATUS_BLOCK {
-        status: IO_STATUS_BLOCK_STATUS { status: wdm::STATUS_PENDING },
-        information: 0,
-    };
-    unsafe { crate::ntoskrnl::ke::runtime::ke_initialize_event(event.bytes.as_mut_ptr().cast(), 0, 0); }
-    let irp = unsafe {
-        wdm::io_build_synchronous_irp(
-            major, device, buffer.cast(), length as u32, offset,
-            event.bytes.as_mut_ptr().cast(), &mut io_status,
-        )
-    };
-    if irp.is_null() { return Err(STATUS_INSUFFICIENT_RESOURCES); }
-    let stack = unsafe { wdm::io_get_next_irp_stack_location(irp) };
-    if stack.is_null() {
-        unsafe { wdm::io_free_irp(irp); }
-        return Err(STATUS_INSUFFICIENT_RESOURCES);
+    match wdm::io_submit_synchronous_irp(
+        device, file_object.cast::<c_void>(), major, offset, buffer.cast(), length as u32,
+    ) {
+        Err(status) if major == IRP_MJ_READ && status == STATUS_END_OF_FILE => Ok(0),
+        result => result,
     }
-    unsafe { (*stack).file_object = file_object.cast::<c_void>(); }
-    let dispatch_status = unsafe { wdm::io_call_driver(device, irp) };
-    if unsafe { io_status.status.status } == wdm::STATUS_PENDING {
-        if dispatch_status != wdm::STATUS_PENDING {
-            unsafe { wdm::io_free_irp(irp); }
-            return Err(if dispatch_status < 0 { dispatch_status } else { STATUS_INVALID_DEVICE_REQUEST });
-        }
-        let wait_status = unsafe {
-            crate::ntoskrnl::ke::runtime::ke_wait_for_single_object(
-                event.bytes.as_mut_ptr().cast(), 0, 0, 0, ptr::null_mut(),
-            )
-        };
-        if wait_status < 0 { return Err(wait_status); }
-    }
-    let status = unsafe { io_status.status.status };
-    let information = io_status.information;
-    if major == IRP_MJ_READ && status == STATUS_END_OF_FILE { return Ok(0); }
-    if status < 0 { Err(status) } else { Ok(information) }
 }
 
 fn fold(b: u8) -> u8 { if (b'A'..=b'Z').contains(&b) { b + (b'a' - b'A') } else { b } }
@@ -517,6 +503,7 @@ pub fn mount_boot_system_files() {
 }
 
 const FILE_OBJECT_TYPE_NAME: [u16; 4] = [b'F' as u16, b'i' as u16, b'l' as u16, b'e' as u16];
+const FILE_OBJECT_POOL_TAG: u32 = 0x464F_4C49;
 
 unsafe extern "win64" fn file_object_finalizer(body: *mut c_void) {
     if body.is_null() { return; }
@@ -535,6 +522,8 @@ unsafe extern "win64" fn file_object_finalizer(body: *mut c_void) {
     if let Some(slot) = state.file_objects.iter_mut().find(|slot| slot.file_object == file_object) {
         *slot = FileObjectRecord::EMPTY;
     }
+    drop(state);
+    let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(body.cast(), Some(FILE_OBJECT_POOL_TAG));
 }
 
 /// Resolve and reference a process-owned FILE_OBJECT handle. The Object
@@ -558,15 +547,13 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     mount_boot_system_files();
     let registered={let state=STATE.lock();state.files.iter().position(|f|f.used&&path_equal(&f.path[..f.path_len],path))};
     let file_index=if let Some(index)=registered{index}else{
-     let mut volume=crate::ata_disk::ext4_block_device().map_err(|_|STATUS_OBJECT_NAME_NOT_FOUND)?;
-     let size=extfs::root_file_size(&mut volume,path).map_err(|_|STATUS_OBJECT_NAME_NOT_FOUND)?;
      let mut state=STATE.lock();
      if let Some(index)=state.files.iter().position(|f|f.used&&path_equal(&f.path[..f.path_len],path)){index}
      else{
       let index=state.files.iter().position(|f|!f.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
       let generation=state.next_generation;state.next_generation=state.next_generation.wrapping_add(1).max(1);
       let mut file=FileRecord::EMPTY;file.path[..path.len()].copy_from_slice(path);file.path_len=path.len();
-      file.length=usize::try_from(size).map_err(|_|STATUS_INVALID_PARAMETER)?;file.generation=generation;file.source=1;file.used=true;
+      file.length=0;file.generation=generation;file.source=1;file.used=true;
       state.files[index]=file;index
      }
     };
@@ -578,20 +565,28 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
         state.file_objects[slot] = FileObjectRecord { opened: false, used: true, file_object: ptr::null_mut(), section_object_pointers: crate::nt_abi::io::SECTION_OBJECT_POINTERS::default() };
         slot
     };
-    if FILE_OBJECT_TYPE.load(Ordering::Acquire) == 0 {
-        match ob::ensure_type(&FILE_OBJECT_TYPE_NAME, 1, 2, 4, 7, u32::MAX) {
-            Ok(id) => { FILE_OBJECT_TYPE.store(id as usize, Ordering::Release); }
-            Err(status) => { STATE.lock().file_objects[slot] = FileObjectRecord::EMPTY; return Err(status); }
-        }
+    let body = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(
+        core::mem::size_of::<FILE_OBJECT>(), FILE_OBJECT_POOL_TAG, true,
+    );
+    if body.is_null() {
+        STATE.lock().file_objects[slot] = FileObjectRecord::EMPTY;
+        return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
-    let file_object = match ob::create_body_object(
-        FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16,
-        core::mem::size_of::<FILE_OBJECT>(),
-        Some(file_object_finalizer),
-    ) {
-        Ok(body) => body.cast::<FILE_OBJECT>(),
-        Err(status) => { STATE.lock().file_objects[slot] = FileObjectRecord::EMPTY; return Err(status); }
+    let file_object = body.cast::<FILE_OBJECT>();
+    let type_id = match unsafe {
+        ob::register_external_object_with_finalizer(
+            body.cast(), &FILE_OBJECT_TYPE_NAME, &[], false, ptr::null(), 0,
+            file_object_finalizer,
+        )
+    } {
+        Ok(id) => id,
+        Err(status) => {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(body, Some(FILE_OBJECT_POOL_TAG));
+            STATE.lock().file_objects[slot] = FileObjectRecord::EMPTY;
+            return Err(status);
+        }
     };
+    FILE_OBJECT_TYPE.store(type_id as usize, Ordering::Release);
     let mut initial_file_object = empty_file_object();
     initial_file_object.device_object = device.cast();
     initial_file_object.vpb = unsafe { (*device).vpb.cast() };
