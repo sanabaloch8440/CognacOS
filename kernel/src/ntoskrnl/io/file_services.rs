@@ -15,7 +15,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub const MAX_FILES: usize = 32;
-pub const MAX_HANDLES: usize = 64;
+pub const MAX_FILE_OBJECTS: usize = 64;
 pub const MAX_PATH_BYTES: usize = 260;
 pub const STATUS_SUCCESS: i32 = 0;
 pub const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034u32 as i32;
@@ -83,13 +83,13 @@ const fn empty_file_object() -> FILE_OBJECT {
     }
 }
 
-struct HandleRecord {
+struct FileObjectRecord {
     active_io: u32,
     closing: bool,
     used: bool,
     file_object: *mut FILE_OBJECT,
 }
-impl HandleRecord {
+impl FileObjectRecord {
     const EMPTY: Self = Self {
         active_io: 0, closing: false, used: false,
         file_object: ptr::null_mut(),
@@ -98,12 +98,12 @@ impl HandleRecord {
 
 struct State {
     files: [FileRecord; MAX_FILES],
-    handles: [HandleRecord; MAX_HANDLES],
+    file_objects: [FileObjectRecord; MAX_FILE_OBJECTS],
     next_generation: usize,
 }
 impl State {
     const fn new() -> Self {
-        Self { files: [FileRecord::EMPTY; MAX_FILES], handles: [HandleRecord::EMPTY; MAX_HANDLES], next_generation: 1 }
+        Self { files: [FileRecord::EMPTY; MAX_FILES], handles: [FileObjectRecord::EMPTY; MAX_FILE_OBJECTS], next_generation: 1 }
     }
 }
 unsafe impl Send for State {}
@@ -416,8 +416,8 @@ const FILE_OBJECT_TYPE_NAME: [u16; 4] = [b'F' as u16, b'i' as u16, b'l' as u16, 
 unsafe extern "win64" fn file_object_finalizer(body: *mut c_void) {
     if body.is_null() { return; }
     let mut state = STATE.lock();
-    if let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == body.cast::<FILE_OBJECT>()) {
-        *slot = HandleRecord::EMPTY;
+    if let Some(slot) = state.file_objects.iter_mut().find(|slot| slot.file_object == body.cast::<FILE_OBJECT>()) {
+        *slot = FileObjectRecord::EMPTY;
     }
 }
 
@@ -426,7 +426,7 @@ fn pin_handle(owner: u64, handle: usize) -> Result<*mut FILE_OBJECT, i32> {
     if handle == 0 { return Err(STATUS_INVALID_HANDLE); }
     let body = ob::reference_by_handle(handle as *mut c_void, 1, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false)?;
     let mut state = STATE.lock();
-    let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == body.cast::<FILE_OBJECT>() && slot.used && !slot.closing) else {
+    let Some(slot) = state.file_objects.iter_mut().find(|slot| slot.file_object == body.cast::<FILE_OBJECT>() && slot.used && !slot.closing) else {
         drop(state);
         let _ = ob::dereference_body(body);
         return Err(STATUS_INVALID_HANDLE);
@@ -441,7 +441,7 @@ fn unpin_handle(file_object: *mut FILE_OBJECT) {
     if file_object.is_null() { return; }
     {
         let mut state = STATE.lock();
-        if let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == file_object && slot.used) {
+        if let Some(slot) = state.file_objects.iter_mut().find(|slot| slot.file_object == file_object && slot.used) {
             slot.active_io = slot.active_io.saturating_sub(1);
         }
     }
@@ -470,14 +470,14 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     let device=if file_source==1{let d=VOLUME_DEVICE.load(Ordering::Acquire);if d==0{return Err(STATUS_UNRECOGNIZED_VOLUME)}d as *mut DeviceObject}else{ensure_file_device()?};
     let slot = {
         let mut state = STATE.lock();
-        let slot = state.handles.iter().position(|h| !h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-        state.handles[slot] = HandleRecord { active_io: 0, closing: false, used: true, file_object: ptr::null_mut() };
+        let slot = state.file_objects.iter().position(|h| !h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        state.file_objects[slot] = FileObjectRecord { active_io: 0, closing: false, used: true, file_object: ptr::null_mut() };
         slot
     };
     if FILE_OBJECT_TYPE.load(Ordering::Acquire) == 0 {
         match ob::ensure_type(&FILE_OBJECT_TYPE_NAME, 1, 2, 4, 7, u32::MAX) {
             Ok(id) => { FILE_OBJECT_TYPE.store(id as usize, Ordering::Release); }
-            Err(status) => { STATE.lock().handles[slot] = HandleRecord::EMPTY; return Err(status); }
+            Err(status) => { STATE.lock().file_objects[slot] = FileObjectRecord::EMPTY; return Err(status); }
         }
     }
     let file_object = match ob::create_body_object(
@@ -486,14 +486,14 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
         Some(file_object_finalizer),
     ) {
         Ok(body) => body.cast::<FILE_OBJECT>(),
-        Err(status) => { STATE.lock().handles[slot] = HandleRecord::EMPTY; return Err(status); }
+        Err(status) => { STATE.lock().file_objects[slot] = FileObjectRecord::EMPTY; return Err(status); }
     };
     let mut initial_file_object = empty_file_object();
     initial_file_object.device_object = device.cast();
     initial_file_object.vpb = unsafe { (*device).vpb.cast() };
     initial_file_object.fs_context = (file_index + 1) as *mut c_void;
     unsafe { ptr::write(file_object, initial_file_object); }
-    STATE.lock().handles[slot].file_object = file_object;
+    STATE.lock().file_objects[slot].file_object = file_object;
     let object_handle = match ob::open_by_pointer(file_object.cast(), 1, owner as usize, true, 0) {
         Ok(handle) => handle,
         Err(status) => { ob::unregister_object(file_object.cast()); return Err(status); }
@@ -558,7 +558,7 @@ pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
     let file_object = body.cast::<FILE_OBJECT>();
     {
         let mut state = STATE.lock();
-        let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == file_object && slot.used && !slot.closing) else {
+        let Some(slot) = state.file_objects.iter_mut().find(|slot| slot.file_object == file_object && slot.used && !slot.closing) else {
             drop(state);
             let _ = ob::dereference_body(body);
             return Err(STATUS_INVALID_HANDLE);
@@ -571,12 +571,12 @@ pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
         slot.closing = true;
     }
     if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CLEANUP, 0, ptr::null_mut(), 0) {
-        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| slot.file_object == file_object) { slot.closing = false; }
+        if let Some(slot) = STATE.lock().file_objects.iter_mut().find(|slot| slot.file_object == file_object) { slot.closing = false; }
         let _ = ob::dereference_body(body);
         return Err(status);
     }
     if let Err(status) = dispatch_file_irp(file_object, IRP_MJ_CLOSE, 0, ptr::null_mut(), 0) {
-        if let Some(slot) = STATE.lock().handles.iter_mut().find(|slot| slot.file_object == file_object) { slot.closing = false; }
+        if let Some(slot) = STATE.lock().file_objects.iter_mut().find(|slot| slot.file_object == file_object) { slot.closing = false; }
         let _ = ob::dereference_body(body);
         return Err(status);
     }
