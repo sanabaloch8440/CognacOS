@@ -54,7 +54,7 @@ pub const STATE_MMIO_MAPPED:u32=2;
 pub const STATE_DMA_READY:u32=3;
 pub const STATE_INTERRUPT_READY:u32=4;
 pub const STATE_DRIVER_BOUND:u32=5;
-pub const STATE_BAR_ASSIGNED:u32=6;
+pub const STATE_BAR_ASSIGNED:u32=STATE_DISCOVERED;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct XhciPciResources {
