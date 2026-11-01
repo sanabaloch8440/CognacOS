@@ -87,12 +87,12 @@ struct HandleRecord {
     active_io: u32,
     closing: bool,
     used: bool,
-    file_object: FILE_OBJECT,
+    file_object: *mut FILE_OBJECT,
 }
 impl HandleRecord {
     const EMPTY: Self = Self {
         active_io: 0, closing: false, used: false,
-        file_object: empty_file_object(),
+        file_object: ptr::null_mut(),
     };
 }
 
@@ -416,7 +416,7 @@ const FILE_OBJECT_TYPE_NAME: [u16; 4] = [b'F' as u16, b'i' as u16, b'l' as u16, 
 unsafe extern "win64" fn file_object_finalizer(body: *mut c_void) {
     if body.is_null() { return; }
     let mut state = STATE.lock();
-    if let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, body.cast::<FILE_OBJECT>())) {
+    if let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == body.cast::<FILE_OBJECT>()) {
         *slot = HandleRecord::EMPTY;
     }
 }
@@ -441,7 +441,7 @@ fn unpin_handle(file_object: *mut FILE_OBJECT) {
     if file_object.is_null() { return; }
     {
         let mut state = STATE.lock();
-        if let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object) && slot.used) {
+        if let Some(slot) = state.handles.iter_mut().find(|slot| slot.file_object == file_object && slot.used) {
             slot.active_io = slot.active_io.saturating_sub(1);
         }
     }
@@ -471,16 +471,8 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     let slot = {
         let mut state = STATE.lock();
         let slot = state.handles.iter().position(|h| !h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-        let mut file_object = empty_file_object();
-        file_object.device_object = device.cast();
-        file_object.vpb = unsafe { (*device).vpb.cast() };
-        file_object.fs_context = (file_index + 1) as *mut c_void;
-        state.handles[slot] = HandleRecord { active_io: 0, closing: false, used: true, file_object };
+        state.handles[slot] = HandleRecord { active_io: 0, closing: false, used: true, file_object: ptr::null_mut() };
         slot
-    };
-    let file_object = {
-        let mut state = STATE.lock();
-        ptr::addr_of_mut!(state.handles[slot].file_object)
     };
     if FILE_OBJECT_TYPE.load(Ordering::Acquire) == 0 {
         match ob::ensure_type(&FILE_OBJECT_TYPE_NAME, 1, 2, 4, 7, u32::MAX) {
@@ -488,14 +480,20 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
             Err(status) => { STATE.lock().handles[slot] = HandleRecord::EMPTY; return Err(status); }
         }
     }
-    if let Err(status) = unsafe {
-        ob::register_external_object_with_finalizer(
-            file_object.cast(), &FILE_OBJECT_TYPE_NAME, &[], false, ptr::null(), 0, file_object_finalizer,
-        )
-    } {
-        STATE.lock().handles[slot] = HandleRecord::EMPTY;
-        return Err(status);
-    }
+    let file_object = match ob::create_body_object(
+        FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16,
+        core::mem::size_of::<FILE_OBJECT>(),
+        Some(file_object_finalizer),
+    ) {
+        Ok(body) => body.cast::<FILE_OBJECT>(),
+        Err(status) => { STATE.lock().handles[slot] = HandleRecord::EMPTY; return Err(status); }
+    };
+    let mut initial_file_object = empty_file_object();
+    initial_file_object.device_object = device.cast();
+    initial_file_object.vpb = unsafe { (*device).vpb.cast() };
+    initial_file_object.fs_context = (file_index + 1) as *mut c_void;
+    unsafe { ptr::write(file_object, initial_file_object); }
+    STATE.lock().handles[slot].file_object = file_object;
     let object_handle = match ob::open_by_pointer(file_object.cast(), 1, owner as usize, true, 0) {
         Ok(handle) => handle,
         Err(status) => { ob::unregister_object(file_object.cast()); return Err(status); }
