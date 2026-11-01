@@ -344,11 +344,18 @@ impl RedoJournal{
  const H:usize=32;const PREPARED:u32=1;const COMMITTED:u32=2;
  pub fn capacity(hive_len:usize)->Option<usize>{Self::H.checked_add(hive_len.checked_mul(2)?)}
  pub fn begin(hive:&[u8],j:&mut[u8])->Result<u32,Error>{
-  let need=Self::capacity(hive.len()).ok_or(Error::Journal)?;if j.len()<need||hive.len()<BASE{return Err(Error::Journal)}
+  let need=Self::capacity(hive.len()).ok_or(Error::Journal)?;
+  if j.len()<need||hive.len()<BASE{return Err(Error::Journal)}
+  // Never make a malformed or dirty hive the rollback target. Otherwise a
+  // later recovery could faithfully restore corruption and call it success.
+  validate_regf_image(hive)?;
   j[..need].fill(0);j[..4].copy_from_slice(b"CGRJ");w32(j,4,1);w32(j,8,Self::PREPARED);w32(j,12,hive.len() as u32);w32(j,16,checksum(hive));j[Self::H..Self::H+hive.len()].copy_from_slice(hive);Ok(r32(hive,4)?.wrapping_add(1).max(1))
  }
  pub fn commit(hive:&[u8],j:&mut[u8])->Result<(),Error>{
   let n=r32(j,12)? as usize;if j.get(0..4)!=Some(&b"CGRJ"[..])||r32(j,8)?!=Self::PREPARED||hive.len()!=n||j.len()<Self::capacity(n).ok_or(Error::Journal)?{return Err(Error::Journal)}
+  // The after-image is not committed until the entire REGF structure passes
+  // validation. This prevents the journal from blessing a torn hive write.
+  validate_regf_image(hive)?;
   let p=Self::H+n;j[p..p+n].copy_from_slice(hive);w32(j,20,checksum(hive));w32(j,8,Self::COMMITTED);Ok(())
  }
  pub fn recover(hive:&mut[u8],j:&[u8])->Result<bool,Error>{
@@ -356,7 +363,13 @@ impl RedoJournal{
   if j.get(0..4)!=Some(&b"CGRJ"[..])||r32(j,4)?!=1{return Err(Error::Journal)}let n=r32(j,12)? as usize;
   if n!=hive.len()||j.len()<Self::capacity(n).ok_or(Error::Journal)?{return Err(Error::Journal)}
   let (off,sum)=match r32(j,8)?{Self::PREPARED=>(Self::H,r32(j,16)?),Self::COMMITTED=>(Self::H+n,r32(j,20)?),_=>return Err(Error::Journal)};
-  let image=j.get(off..off+n).ok_or(Error::Truncated)?;if checksum(image)!=sum{return Err(Error::BadChecksum)}hive.copy_from_slice(image);Ok(true)
+  let image=j.get(off..off+n).ok_or(Error::Truncated)?;
+  if checksum(image)!=sum{return Err(Error::BadChecksum)}
+  // Validate the selected snapshot before touching the caller's hive buffer.
+  // A malformed journal image is rejected atomically; the original bytes stay
+  // intact for a higher-level backup/Last-Known-Good policy to inspect.
+  validate_regf_image(image)?;
+  hive.copy_from_slice(image);Ok(true)
  }
 }
 
