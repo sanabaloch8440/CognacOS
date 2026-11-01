@@ -121,8 +121,11 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
         if self.controller_state!=ControllerState::Started { return Err(UcxStatus::InvalidState); }
         self.controller_state=ControllerState::Resetting; Ok(())
     }
-    pub fn reset_complete(&mut self,success:bool)->Result<(),UcxStatus>{
+    pub fn reset_complete(&mut self,success:bool,_q:&EndpointQuiesced)->Result<(),UcxStatus>{
         if self.controller_state!=ControllerState::Resetting { return Err(UcxStatus::InvalidState); }
+        if self.requests.iter().any(|r|r.used){return Err(UcxStatus::Busy)}
+        // Reset completion is published only after controller/DMA/DPC quiescence.
+        self.endpoints=[EndpointRecord::EMPTY;E];
         self.controller.generation=self.controller.generation.wrapping_add(1).max(1);
         self.root_hub.generation=self.root_hub.generation.wrapping_add(1).max(1);
         self.root_hub.controller=self.controller;
@@ -249,12 +252,13 @@ impl<const E:usize,const R:usize> UcxCore<E,R> {
         Ok(())
     }
     pub fn begin_remove_controller(&mut self)->Result<(),UcxStatus>{
-        if self.controller_state==ControllerState::Removed{return Err(UcxStatus::InvalidState)}
+        if self.controller_state==ControllerState::Removed||self.controller_state==ControllerState::Removing{return Err(UcxStatus::InvalidState)}
         self.controller_state=ControllerState::Removing;Ok(())
     }
     pub fn finish_remove_controller(&mut self,_q:&EndpointQuiesced)->Result<(),UcxStatus>{
         if self.controller_state!=ControllerState::Removing{return Err(UcxStatus::InvalidState)}
         if self.requests.iter().any(|r|r.used){return Err(UcxStatus::Busy)}
+        self.endpoints=[EndpointRecord::EMPTY;E];
         self.controller_state=ControllerState::Removed;Ok(())
     }
     pub fn outstanding_requests(&self)->usize { self.requests.iter().filter(|r|r.used).count() }
@@ -288,7 +292,7 @@ mod tests {
   assert_eq!(c.finish_abort_endpoint(e,&q),Ok(()));assert_eq!(c.outstanding_requests(),0);
  }
  #[test]fn stale_controller_generation_rejects_old_device(){
-  let mut c=started();let d=c.create_device(1,1).unwrap();c.begin_reset().unwrap();c.reset_complete(true).unwrap();
+  let mut c=started();let d=c.create_device(1,1).unwrap();c.begin_reset().unwrap();let q=unsafe{EndpointQuiesced::after_hardware_stop_and_dma_fence()};c.reset_complete(true,&q).unwrap();
   assert_eq!(c.validate_device(d),Err(UcxStatus::StaleGeneration));
  }
  #[test]fn root_hub_port_change_generation_invalidates_old_event(){
