@@ -192,6 +192,8 @@ pub unsafe fn configure_pci_msi(segment:u16,bus:u8,device:u8,function:u8,capabil
     if unsafe{pci_config_read(segment,bus,device,function,off,1)?} as u8!=0x05{return Err(HalError::InvalidMmioRange)}
     let mut control=unsafe{pci_config_read(segment,bus,device,function,off+2,2)?} as u16;
     let is64=control&(1<<7)!=0;let masking=control&(1<<8)!=0;
+    let required=if masking{if is64{24}else{20}}else if is64{14}else{10};
+    if off as usize+required>0x100{return Err(HalError::InvalidMmioRange)}
     control&=!1;
     unsafe{pci_config_write(segment,bus,device,function,off+2,2,control as u32)?;}
     let data_offset=off+if is64{12}else{8};
@@ -224,7 +226,7 @@ pub unsafe fn configure_pci_msix(segment:u16,bus:u8,device:u8,function:u8,capabi
     if (control&0x7ff)+1!=table_size{return Err(HalError::InvalidMmioRange)}
     let bytes=(table_size as u64).checked_mul(16).ok_or(HalError::InvalidMmioRange)?;
     let end=(table_offset as u64).checked_add(bytes).ok_or(HalError::InvalidMmioRange)?;
-    if end>mapping_length{return Err(HalError::InvalidMmioRange)}
+    if end>mapping_length||table_virtual.checked_add(end).is_none(){return Err(HalError::InvalidMmioRange)}
     unsafe{pci_config_write(segment,bus,device,function,off+2,2,((control|1<<14)&!(1<<15)) as u32)?;}
     let entry=table_virtual.checked_add(table_offset as u64).ok_or(HalError::InvalidMmioRange)? as *mut u32;
     unsafe{
