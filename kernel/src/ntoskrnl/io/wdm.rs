@@ -3277,7 +3277,7 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut filter2_driver,0,ptr::null_mut(),7,0,0,&mut filter2)},STATUS_SUCCESS);
   assert_eq!(unsafe{io_attach_device_to_device_stack(filter1,base)},base);
   assert_eq!(unsafe{io_attach_device_to_device_stack(filter2,base)},filter1);
-  assert_eq!(unsafe{(*base).reference_count},1);
+  assert_eq!(unsafe{(*base).reference_count},2,"first attachment pins the base device");
   assert_eq!(unsafe{(*filter1).reference_count},2,"second attachment pins the immediate lower filter");
   assert_eq!(unsafe{(*filter1).stack_size},2);
   assert_eq!(unsafe{(*filter2).stack_size},3);
