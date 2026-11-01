@@ -24,13 +24,15 @@ fn optional_dword(key:Key<'_, '_>,name:&[u16])->Result<Option<u32>,Error>{
 }
 fn control_set_path(number:u32,out:&mut[u16])->Result<usize,Error>{
     if number==0||number>999{return Err(Error::InvalidControlSet)}
-    let prefix=if number<10{"ControlSet00"}else if number<100{"ControlSet0"}else{"ControlSet"};
+    let (prefix,digits)=if number<10{("ControlSet00",1)}else if number<100{("ControlSet0",2)}else{("ControlSet",3)};
     let mut n=utf16_ascii(prefix,out)?;
-    if n+3>out.len(){return Err(Error::BufferTooSmall)}
-    out[n]=b'0' as u16+(number/100) as u16;
-    out[n+1]=b'0' as u16+((number/10)%10) as u16;
-    out[n+2]=b'0' as u16+(number%10) as u16;
-    n+=3;Ok(n)
+    if n+digits>out.len(){return Err(Error::BufferTooSmall)}
+    match digits {
+        1=>{out[n]=b'0' as u16+number as u16;n+=1;},
+        2=>{out[n]=b'0' as u16+(number/10) as u16;out[n+1]=b'0' as u16+(number%10) as u16;n+=2;},
+        _=>{out[n]=b'0' as u16+(number/100) as u16;out[n+1]=b'0' as u16+((number/10)%10) as u16;out[n+2]=b'0' as u16+(number%10) as u16;n+=3;},
+    }
+    Ok(n)
 }
 
 /// Parse and validate SYSTEM\\Select. A selector is not accepted merely
