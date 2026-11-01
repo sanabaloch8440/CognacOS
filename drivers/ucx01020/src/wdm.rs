@@ -5,6 +5,7 @@ use cognacos_nt_abi::ntstatus::NTSTATUS;
 pub const STATUS_SUCCESS:NTSTATUS=0;
 pub const STATUS_INVALID_PARAMETER:NTSTATUS=0xC000000D_u32 as i32;
 pub const STATUS_INVALID_DEVICE_REQUEST:NTSTATUS=0xC0000010_u32 as i32;
+pub const IRP_MJ_CREATE:u8=0x00; pub const IRP_MJ_CLOSE:u8=0x02; pub const IRP_MJ_READ:u8=0x03; pub const IRP_MJ_WRITE:u8=0x04; pub const IRP_MJ_FLUSH_BUFFERS:u8=0x09; pub const IRP_MJ_SHUTDOWN:u8=0x10; pub const IRP_MJ_CLEANUP:u8=0x12;
 pub const IRP_MJ_PNP:u8=0x1b; pub const IRP_MJ_POWER:u8=0x16;
 pub const IRP_MJ_INTERNAL_DEVICE_CONTROL:u8=0x0f; pub const IRP_MJ_DEVICE_CONTROL:u8=0x0e;
 pub const IRP_MJ_SYSTEM_CONTROL:u8=0x17;
@@ -60,10 +61,10 @@ pub fn validate_urb_header(h:Option<&UrbHeader>,available:usize,max:usize)->Resu
 }
 pub type DispatchRoutine=unsafe extern "win64" fn(device:u64,irp:u64)->NTSTATUS;
 #[derive(Clone,Copy)]
-pub struct DispatchTable{pub pnp:Option<DispatchRoutine>,pub power:Option<DispatchRoutine>,pub internal_ioctl:Option<DispatchRoutine>,pub device_ioctl:Option<DispatchRoutine>,pub system_control:Option<DispatchRoutine>}
+pub struct DispatchTable{pub create:Option<DispatchRoutine>,pub close:Option<DispatchRoutine>,pub read:Option<DispatchRoutine>,pub write:Option<DispatchRoutine>,pub flush:Option<DispatchRoutine>,pub shutdown:Option<DispatchRoutine>,pub cleanup:Option<DispatchRoutine>,pub pnp:Option<DispatchRoutine>,pub power:Option<DispatchRoutine>,pub internal_ioctl:Option<DispatchRoutine>,pub device_ioctl:Option<DispatchRoutine>,pub system_control:Option<DispatchRoutine>}
 impl DispatchTable{
- pub const fn empty()->Self{Self{pnp:None,power:None,internal_ioctl:None,device_ioctl:None,system_control:None}}
- pub fn route(&self,major:u8)->Option<DispatchRoutine>{match major{IRP_MJ_PNP=>self.pnp,IRP_MJ_POWER=>self.power,IRP_MJ_INTERNAL_DEVICE_CONTROL=>self.internal_ioctl,IRP_MJ_DEVICE_CONTROL=>self.device_ioctl,IRP_MJ_SYSTEM_CONTROL=>self.system_control,_=>None}}
+ pub const fn empty()->Self{Self{create:None,close:None,read:None,write:None,flush:None,shutdown:None,cleanup:None,pnp:None,power:None,internal_ioctl:None,device_ioctl:None,system_control:None}}
+ pub fn route(&self,major:u8)->Option<DispatchRoutine>{match major{IRP_MJ_CREATE=>self.create,IRP_MJ_CLOSE=>self.close,IRP_MJ_READ=>self.read,IRP_MJ_WRITE=>self.write,IRP_MJ_FLUSH_BUFFERS=>self.flush,IRP_MJ_SHUTDOWN=>self.shutdown,IRP_MJ_CLEANUP=>self.cleanup,IRP_MJ_PNP=>self.pnp,IRP_MJ_POWER=>self.power,IRP_MJ_INTERNAL_DEVICE_CONTROL=>self.internal_ioctl,IRP_MJ_DEVICE_CONTROL=>self.device_ioctl,IRP_MJ_SYSTEM_CONTROL=>self.system_control,_=>None}}
 }
 pub unsafe fn dispatch(t:&DispatchTable,major:u8,device:u64,irp:u64)->NTSTATUS{if device==0||irp==0{return STATUS_INVALID_PARAMETER}match t.route(major){Some(f)=>unsafe{f(device,irp)},None=>STATUS_INVALID_DEVICE_REQUEST}}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)] pub enum PowerState{D0,D1,D2,D3}
