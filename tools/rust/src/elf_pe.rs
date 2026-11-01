@@ -312,9 +312,10 @@ mod tests{
   assert_ne!(import_rva,0);assert_eq!(import_size,60);
   let sh=opt+240+40;assert_eq!(&pe[sh..sh+6],b".idata");
   let raw=u32at(&pe,sh+20).unwrap() as usize;
-  let oft=u32at(&pe,raw).unwrap() as usize;
-  let dll_rva=u32at(&pe,raw+12).unwrap() as usize;
-  assert_eq!(u32at(&pe,raw+16).unwrap(),0x2000);
+  let nt_desc=raw+20;
+  let oft=u32at(&pe,nt_desc).unwrap() as usize;
+  let dll_rva=u32at(&pe,nt_desc+12).unwrap() as usize;
+  assert_eq!(u32at(&pe,nt_desc+16).unwrap(),0x2000);
   let rva_base=u32at(&pe,sh+12).unwrap() as usize;
   let dll_off=raw+(dll_rva-rva_base);
   assert_eq!(&pe[dll_off..dll_off+13],b"ntoskrnl.exe\0");
@@ -332,7 +333,7 @@ mod tests{
   let hal_name_rva=u64::from_le_bytes(pe[hal_ilt_off..hal_ilt_off+8].try_into().unwrap()) as usize;
   let hal_name_off=raw+(hal_name_rva-rva_base);
   assert_eq!(u16at(&pe,hal_name_off).unwrap(),0);
-  assert_eq!(&pe[hal_name_off+2..hal_name_off+17],b"HalAcpiGetTableEx");
+  assert_eq!(&pe[hal_name_off+2..hal_name_off+19],b"HalAcpiGetTableEx");
  }
  #[test] fn converts_minimal_static_elf_to_amd64_pe32plus(){
   let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
