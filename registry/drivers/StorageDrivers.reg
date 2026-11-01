@@ -1,0 +1,32 @@
+Windows Registry Editor Version 5.00
+
+; Storage stack metadata is PnP-deferred until the relevant PE driver images and
+; device resources are available. The current build does not claim these drivers
+; are loadable just because their service entries exist.
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\storahci]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="SCSI Miniport"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\storahci.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\stornvme]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="SCSI Miniport"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\stornvme.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\disk]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="SCSI Class"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\disk.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\partmgr]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="System Bus Extender"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\partmgr.sys"
