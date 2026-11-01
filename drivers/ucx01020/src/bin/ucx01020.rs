@@ -166,7 +166,7 @@ fn complete_now(irp:*mut c_void,urb:*mut UrbHeader,mdl:*mut c_void,mapped:*mut c
 fn submit_interrupt_urb(irp:*mut c_void,urb:*mut UrbBulkInterrupt)->(i32,bool){
  if urb.is_null()||urb as usize&7!=0{return (STATUS_INVALID_PARAMETER,false)}
  let u=unsafe{&mut *urb};
- if u.header.length as usize<core::mem::size_of::<UrbBulkInterrupt>()||u.pipe_handle!=ROOT_HUB_INTERRUPT_PIPE
+ if (u.header.length as usize)<core::mem::size_of::<UrbBulkInterrupt>()||u.pipe_handle!=ROOT_HUB_INTERRUPT_PIPE
   ||u.transfer_buffer.is_null()||u.transfer_buffer_length==0||u.transfer_buffer_length>32||!u.transfer_buffer_mdl.is_null(){return (STATUS_INVALID_PARAMETER,false)}
  let Some(io)=io_table() else{return (STATUS_INVALID_DEVICE_REQUEST,false)};
  let (Some(pin),Some(unpin))=(io.pin_buffer,io.unpin_buffer) else{return (STATUS_INVALID_DEVICE_REQUEST,false)};
@@ -190,7 +190,7 @@ fn submit_interrupt_urb(irp:*mut c_void,urb:*mut UrbBulkInterrupt)->(i32,bool){
 fn control_urb(irp:*mut c_void,urb:*mut UrbControlTransfer)->(i32,usize){
  if urb.is_null()||urb as usize&7!=0{return (STATUS_INVALID_PARAMETER,0)}
  let u=unsafe{&mut *urb};
- if u.header.length as usize<core::mem::size_of::<UrbControlTransfer>()||u.transfer_buffer_length>4096{return (STATUS_INVALID_PARAMETER,0)}
+ if (u.header.length as usize)<core::mem::size_of::<UrbControlTransfer>()||u.transfer_buffer_length>4096{return (STATUS_INVALID_PARAMETER,0)}
  let setup=SetupPacket{request_type:u.setup_packet[0],request:u.setup_packet[1],
   value:u16::from_le_bytes([u.setup_packet[2],u.setup_packet[3]]),
   index:u16::from_le_bytes([u.setup_packet[4],u.setup_packet[5]]),
@@ -275,7 +275,7 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
  let object=unsafe{&mut *(driver as *mut DriverObject)};
  let Some(ext)=(unsafe{object.driver_extension.as_ref()}) else{return STATUS_INVALID_PARAMETER};
- if ext.magic!=EXT_MAGIC||ext.version!=1||ext.size as usize<core::mem::size_of::<UcxDriverExtension>()
+ if ext.magic!=EXT_MAGIC||ext.version!=1||(ext.size as usize)<core::mem::size_of::<UcxDriverExtension>()
   ||ext.parent_bus_device==0||ext.kernel_io.is_null()||ext.hal.is_null()||ext.event_sink.is_null()||ext.event_context.is_null()
   ||ext.root_hub_device_out.is_null()||ext.hub_event_sink.is_null()||ext.hub_event_context.is_null()||ext.mmio_base==0||ext.operational_offset<0x20||ext.port_count==0||ext.port_count>255{return STATUS_INVALID_PARAMETER}
  let io=unsafe{&*ext.kernel_io};let hal=unsafe{&*ext.hal};
