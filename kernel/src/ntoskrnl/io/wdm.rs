@@ -950,6 +950,19 @@ pub unsafe extern "win64" fn io_create_device(
 }
 
 
+/// Mark a live device created by a bus driver as a physical device object.
+/// The object remains owned by its creating driver and participates in the
+/// normal PnP relations/rundown path.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn io_mark_bus_enumerated_pdo(device:*mut DeviceObject)->i32{
+ if device.is_null(){return STATUS_INVALID_PARAMETER}
+ let mut state=WDM.lock();
+ let Some(slot)=state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+ if slot.pnp_state!=PNP_STATE_NOT_STARTED{return STATUS_DEVICE_BUSY}
+ slot.object.flags|=0x0000_0200;
+ STATUS_SUCCESS
+}
+
 /// Private extension carried by PCI bus-enumerated physical device objects.
 /// Identity is immutable for the PDO lifetime and sourced from pci.sys'
 /// validated inventory, never from a second kernel configuration-space scan.
