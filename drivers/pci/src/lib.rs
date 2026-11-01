@@ -560,7 +560,7 @@ pub fn parse_interrupt_capabilities(config:&[u8])->Result<InterruptCapabilities,
                 let control=u16::from_le_bytes([config[pointer+2],config[pointer+3]]);
                 let is_64=control&(1<<7)!=0;
                 let masking=control&(1<<8)!=0;
-                let max=(1u8<<((control>>1)&7));
+                let max=1u8<<(((control>>1)&7) as u32);
                 let required=if masking {if is_64{24}else{20}}else if is_64{14}else{10};
                 if pointer+required>256{return Err(CapabilityError::Malformed)}
                 result.msi=Some(MsiCapability{offset:pointer as u8,is_64_bit:is_64,
@@ -568,6 +568,7 @@ pub fn parse_interrupt_capabilities(config:&[u8])->Result<InterruptCapabilities,
             }
             0x11=>{
                 if result.msix.is_some(){return Err(CapabilityError::Duplicate)}
+                if pointer+12>256{return Err(CapabilityError::Malformed)}
                 let control=u16::from_le_bytes([config[pointer+2],config[pointer+3]]);
                 let table=u32::from_le_bytes([config[pointer+4],config[pointer+5],config[pointer+6],config[pointer+7]]);
                 let pba=u32::from_le_bytes([config[pointer+8],config[pointer+9],config[pointer+10],config[pointer+11]]);
@@ -589,7 +590,7 @@ mod interrupt_capability_tests {
     #[test]
     fn parses_msi_64bit_and_msix_capabilities() {
         let mut c=[0u8;256];c[6..8].copy_from_slice(&0x10u16.to_le_bytes());c[0x34]=0x40;
-        c[0x40]=0x05;c[0x41]=0x50;c[0x42..0x44].copy_from_slice(&((1<<7)| (2<<1) | (1<<8) as u16).to_le_bytes());
+        c[0x40]=0x05;c[0x41]=0x50;c[0x42..0x44].copy_from_slice(&((1u16<<7)|(2u16<<1)|(1u16<<8)).to_le_bytes());
         c[0x50]=0x11;c[0x51]=0;c[0x52..0x54].copy_from_slice(&0x0003u16.to_le_bytes());
         c[0x54..0x58].copy_from_slice(&0x0000_1000u32.to_le_bytes());
         c[0x58..0x5c].copy_from_slice(&0x0000_2000u32.to_le_bytes());
