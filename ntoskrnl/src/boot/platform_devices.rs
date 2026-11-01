@@ -13,6 +13,10 @@ const USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhc
 const UCX01020_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ucx01020.sys"));
 const USBHUB3_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbhub3.sys"));
 
+mod staged_driver_images {
+    include!(concat!(env!("OUT_DIR"), "/driver_images.rs"));
+}
+
 
 /// Resolve a registry ImagePath against the native driver images staged by the
 /// kernel build. The PE loader remains independent of the image source; this
@@ -40,12 +44,9 @@ fn resolve_builtin_driver_image(path: &[u16], output: &mut [u8]) -> Option<usize
     if name.iter().any(|unit| *unit == 0 || *unit == b'\\' as u16 || *unit == b'/' as u16) {
         return None;
     }
-    let image: &[u8] = if driver_image_path_eq(name, b"acpi.sys") { ACPI_PE_IMAGE }
-        else if driver_image_path_eq(name, b"pci.sys") { PCI_PE_IMAGE }
-        else if driver_image_path_eq(name, b"usbxhci.sys") { USBXHCI_PE_IMAGE }
-        else if driver_image_path_eq(name, b"ucx01020.sys") { UCX01020_PE_IMAGE }
-        else if driver_image_path_eq(name, b"usbhub3.sys") { USBHUB3_PE_IMAGE }
-        else { return None };
+    let image = staged_driver_images::DRIVER_IMAGES.iter()
+        .find(|(filename, _)| driver_image_path_eq(name, filename.as_bytes()))
+        .map(|(_, bytes)| *bytes)?;
     if image.is_empty() || image.len() > output.len() {
         return None;
     }
