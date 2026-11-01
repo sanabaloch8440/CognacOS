@@ -264,7 +264,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
 
     for i in 0..handoff.window_count as usize {
         let window = &handoff.windows[i];
-        if window.validate().is_err() { return STATUS_INVALID_PARAMETER; }
+        if window.validate().is_err() || window.read_config.is_none() || window.write_config.is_none() { return STATUS_INVALID_PARAMETER; }
         for prior in &handoff.windows[..i] {
             if prior.segment == window.segment
                 && prior.bus_start <= window.bus_end && window.bus_start <= prior.bus_end {
@@ -320,15 +320,10 @@ unsafe extern "win64" fn write_config(
         return STATUS_INVALID_PARAMETER;
     };
     let result = (|| {
-        let address = window.register_address(segment, bus, device, function, offset)?;
-        match width {
-            1 => unsafe { core::ptr::write_volatile(address, value as u8); },
-            2 if offset & 1 == 0 => unsafe { core::ptr::write_volatile(address.cast::<u16>(), value as u16); },
-            4 if offset & 3 == 0 => unsafe { core::ptr::write_volatile(address.cast::<u32>(), value); },
-            _ => return Err(pci::PciError::InvalidOffset),
-        }
-        core::sync::atomic::fence(Ordering::SeqCst);
-        Ok(())
+        let _ = window.register_address(segment, bus, device, function, offset)?;
+        let callback = window.write_config.ok_or(pci::PciError::InvalidWindow)?;
+        let status = unsafe { callback(window.config_context, segment, bus, device, function, offset, width, value) };
+        if status == STATUS_SUCCESS { Ok(()) } else { Err(pci::PciError::InvalidWindow) }
     })();
     match result {
         Ok(()) => STATUS_SUCCESS,
