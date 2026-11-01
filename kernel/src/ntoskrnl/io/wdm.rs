@@ -3277,11 +3277,16 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut filter2_driver,0,ptr::null_mut(),7,0,0,&mut filter2)},STATUS_SUCCESS);
   assert_eq!(unsafe{io_attach_device_to_device_stack(filter1,base)},base);
   assert_eq!(unsafe{io_attach_device_to_device_stack(filter2,base)},filter1);
+  assert_eq!(unsafe{(*base).reference_count},1);
+  assert_eq!(unsafe{(*filter1).reference_count},2,"second attachment pins the immediate lower filter");
   assert_eq!(unsafe{(*filter1).stack_size},2);
   assert_eq!(unsafe{(*filter2).stack_size},3);
   unsafe{io_detach_device(base);}
   assert_eq!(unsafe{(*base).attached_device},filter1,"lower filter must not be detached under an attached upper filter");
-  unsafe{io_detach_device(filter1);io_detach_device(base);}
+  unsafe{io_detach_device(filter1);}
+  assert_eq!(unsafe{(*filter1).reference_count},1,"detaching filter2 releases its lower pin");
+  unsafe{io_detach_device(base);}
+  assert_eq!(unsafe{(*base).reference_count},1,"detaching filter1 releases the base pin");
   assert!(unsafe{(*filter1).attached_device.is_null()});
   assert!(unsafe{(*base).attached_device.is_null()});
   unsafe{io_delete_device(filter2);io_delete_device(filter1);io_delete_device(base);}
