@@ -407,7 +407,7 @@ pub extern "win64" fn io_release_cancel_spin_lock(old_irql: u8) {
 
 #[path = "wdm.rs"] pub(crate) mod wdm;
 pub use wdm::{
-    io_allocate_irp, io_call_driver, io_complete_request, io_create_device,
+    io_allocate_irp, io_call_driver, io_complete_request, io_complete_irp_status, io_create_device,
     io_get_requestor_session_id, io_start_packet, io_start_next_packet, io_set_start_io_attributes,
     io_delete_device, io_unload_driver, io_detach_device, io_attach_device_to_device_stack,
     io_get_attached_device, io_get_device_attachment_base_ref, io_get_lower_device_object,
