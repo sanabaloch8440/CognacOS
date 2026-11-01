@@ -44,13 +44,21 @@ pub fn query_control_set_selection(hive:&Hive<'_>)->Result<ControlSetSelection,E
     let default=optional_dword(select,&[68,101,102,97,117,108,116])?;
     let last_known_good=optional_dword(select,&[76,97,115,116,75,110,111,119,110,71,111,111,100])?;
     let failed=optional_dword(select,&[70,97,105,108,101,100])?;
+    validate_control_set_selector(current,false)?;
+    if let Some(value)=default{validate_control_set_selector(value,false)?;}
+    if let Some(value)=last_known_good{validate_control_set_selector(value,false)?;}
+    if let Some(value)=failed{validate_control_set_selector(value,true)?;}
     for value in [Some(current),default,last_known_good,failed].into_iter().flatten(){
         if value==0 {continue;}
         let mut path=[0u16;16];let n=control_set_path(value,&mut path)?;
         hive.find_path(&path[..n]).map_err(|error|if error==HiveError::NotFound{Error::InvalidControlSet}else{Error::Hive(error)})?;
     }
-    if current==0{return Err(Error::InvalidControlSet)}
     Ok(ControlSetSelection{current,default,last_known_good,failed})
+}
+
+fn validate_control_set_selector(number:u32,allow_zero:bool)->Result<(),Error>{
+    if (number==0&&!allow_zero)||number>999{return Err(Error::InvalidControlSet)}
+    Ok(())
 }
 
 /// Resolve the control set selected for the current boot, never `Default`.
@@ -128,5 +136,13 @@ mod control_set_tests {
     fn rejects_truncated_control_set_name_buffer() {
         let mut output = [0u16; 12];
         assert_eq!(control_set_path(1, &mut output), Err(Error::BufferTooSmall));
+    }
+
+    #[test]
+    fn validates_required_and_optional_selectors_without_treating_failed_zero_as_a_set() {
+        assert_eq!(validate_control_set_selector(1, false), Ok(()));
+        assert_eq!(validate_control_set_selector(0, false), Err(Error::InvalidControlSet));
+        assert_eq!(validate_control_set_selector(0, true), Ok(()));
+        assert_eq!(validate_control_set_selector(1000, true), Err(Error::InvalidControlSet));
     }
 }
