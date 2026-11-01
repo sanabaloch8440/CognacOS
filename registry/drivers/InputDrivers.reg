@@ -1,0 +1,31 @@
+Windows Registry Editor Version 5.00
+
+; PnP-deferred keyboard and HID service metadata. These entries are not loaded
+; at boot until the matching PE images are staged and the PnP manager starts them.
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\i8042prt]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Keyboard Port"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\i8042prt.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\kbdclass]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Keyboard Class"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\kbdclass.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\kbdhid]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Keyboard Port"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\kbdhid.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\hidclass]
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"Group"="Base"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\hidclass.sys"
