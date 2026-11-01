@@ -31,6 +31,16 @@ impl Default for IO_STATUS_BLOCK {
     }
 }
 
+/// Windows x64 SECTION_OBJECT_POINTERS used to connect a stream's file,
+/// image, and shared-cache section state between the Cache Manager and MM.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SECTION_OBJECT_POINTERS {
+    pub data_section_object: PVOID,
+    pub shared_cache_map: PVOID,
+    pub image_section_object: PVOID,
+}
+
 /// Windows WDM volume parameter block. This is the public x64 VPB layout
 /// from wdm.h; the I/O manager owns allocation and the RealDevice/Type/Size
 /// members, while the mounted file system owns its volume object and label.
@@ -221,6 +231,16 @@ mod tests {
             assert_eq!(core::mem::offset_of!(FILE_OBJECT, completion_context), 0xb0);
             assert_eq!(core::mem::offset_of!(FILE_OBJECT, irp_list), 0xc0);
             assert_eq!(core::mem::offset_of!(FILE_OBJECT, file_object_extension), 0xd0);
+        }
+    }
+
+    #[test]
+    fn section_object_pointers_match_windows_x64_layout() {
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(core::mem::size_of::<SECTION_OBJECT_POINTERS>(), 0x18);
+            assert_eq!(core::mem::offset_of!(SECTION_OBJECT_POINTERS, data_section_object), 0x00);
+            assert_eq!(core::mem::offset_of!(SECTION_OBJECT_POINTERS, shared_cache_map), 0x08);
+            assert_eq!(core::mem::offset_of!(SECTION_OBJECT_POINTERS, image_section_object), 0x10);
         }
     }
 
