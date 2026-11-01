@@ -394,3 +394,47 @@ pub fn query_pnp_device(index: u32) -> Option<PnpDeviceSnapshot> {
         start_attempts: node.start_attempts.load(Ordering::Relaxed),
     })
 }
+
+
+#[cfg(test)]
+mod pnp_tree_tests {
+    use super::*;
+
+    fn sample_function() -> cognacos_pci::PciFunction {
+        cognacos_pci::PciFunction {
+            segment: 2, bus: 7, device: 5, function: 0,
+            header: cognacos_pci::PciFunctionHeader {
+                vendor_id: 0x8086, device_id: 0x1234, command: 0,
+                revision_id: 1, programming_interface: 0x30,
+                subclass: 0x03, class_code: 0x0c, header_type: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn pnp_start_failure_is_never_published_as_started() {
+        let index = register_pci_function(&sample_function(), None).unwrap();
+        assert_eq!(query_pnp_device(index).unwrap().state, PNP_DEVICE_ENUMERATED);
+        assert_eq!(transition_pnp_device(index, PNP_DEVICE_STARTED, 0), Err(PnpError::InvalidTransition));
+        transition_pnp_device(index, PNP_DEVICE_RESOURCES_ASSIGNED, 0).unwrap();
+        transition_pnp_device(index, PNP_DEVICE_STARTED, 0xC000_0001u32 as i32).unwrap();
+        let failed = query_pnp_device(index).unwrap();
+        assert_eq!(failed.state, PNP_DEVICE_FAILED);
+        assert_eq!(failed.last_status, 0xC000_0001u32 as i32);
+        assert_eq!(failed.start_attempts, 1);
+        transition_pnp_device(index, PNP_DEVICE_REMOVED, 0).unwrap();
+    }
+
+    #[test]
+    fn pnp_identity_includes_pci_segment_and_duplicate_bdfs_are_rejected() {
+        let first = sample_function();
+        let index = register_pci_function(&first, None).unwrap();
+        assert_eq!(register_pci_function(&first, None), Err(PnpError::DuplicateDevice));
+        let mut other_segment = sample_function();
+        other_segment.segment = 3;
+        let other_index = register_pci_function(&other_segment, None).unwrap();
+        assert_ne!(index, other_index);
+        transition_pnp_device(index, PNP_DEVICE_REMOVED, 0).unwrap();
+        transition_pnp_device(other_index, PNP_DEVICE_REMOVED, 0).unwrap();
+    }
+}
