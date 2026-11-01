@@ -82,7 +82,7 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
    _=>{
     status=STATUS_INVALID_DEVICE_REQUEST;
     unsafe{
-     ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),status);
+     let _ = io_set_irp_status(irp, status);
      (*vpb).device_object=ptr::null_mut();
      (*vpb).flags&=!crate::nt_abi::io::VPB_MOUNTED;
     }
@@ -146,7 +146,7 @@ unsafe extern "win64" fn verify_volume_completion(_device:*mut DeviceObject,irp:
 unsafe extern "win64" fn dismount_volume_completion(_device:*mut DeviceObject,irp:*mut Irp,context:*mut c_void)->i32 {
  if irp.is_null()||context.is_null(){return STATUS_MORE_PROCESSING_REQUIRED}
  let vpb=context.cast::<Vpb>();
- let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ let status=unsafe{io_get_irp_status(irp)};
  let mut retry_device=ptr::null_mut();
  if status>=0 {
   let mut state=WDM.lock();
@@ -203,7 +203,7 @@ fn io_dismount_volume(real_device:*mut DeviceObject)->i32 {
  unsafe{
   (*stack).major_function=IRP_MJ_FILE_SYSTEM_CONTROL;
   (*stack).minor_function=0; // IRP_MN_USER_FS_REQUEST
-  ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u32>(),FSCTL_DISMOUNT_VOLUME);
+  let _ = io_write_stack_u32(stack, 8, FSCTL_DISMOUNT_VOLUME);
   io_set_completion_routine(irp,Some(dismount_volume_completion),vpb.cast(),1,1,1);
  }
  let status=unsafe{io_call_driver(target,irp)};
