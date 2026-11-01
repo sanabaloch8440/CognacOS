@@ -24,7 +24,9 @@ pub(crate) struct SystemRegistryState {
 
 // Boot runs this before secondary processors and the general scheduler are
 // online. The fixed storage therefore remains stable for the next boot phase.
-static mut BOOT_DRIVER_SERVICE_NAMES: [[u16; 128]; 64] = [[0; 128]; 64];
+const MAX_BOOT_DRIVER_SERVICES: usize = 128;
+static mut BOOT_DRIVER_SERVICE_NAMES: [[u16; 128]; MAX_BOOT_DRIVER_SERVICES] =
+    [[0; 128]; MAX_BOOT_DRIVER_SERVICES];
 
 
 /// Validate the mounted SYSTEM hive and its active control-set selection.
@@ -41,7 +43,7 @@ pub(crate) fn initialize_system_registry(
     let names = unsafe {
         core::slice::from_raw_parts_mut(
             core::ptr::addr_of_mut!(BOOT_DRIVER_SERVICE_NAMES).cast::<[u16; 128]>(),
-            64,
+            MAX_BOOT_DRIVER_SERVICES,
         )
     };
     let boot_driver_count =
