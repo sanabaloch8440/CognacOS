@@ -592,7 +592,7 @@ pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceT
 // Windows WDM interrupt connection surface. The opaque KINTERRUPT storage is
 // executive-owned; drivers see only the pointer returned by IoConnectInterrupt.
 const INTERRUPT_SIGNATURE:u64=0x434f_474e_494e_5431;
-type InterruptServiceRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void)->u8;
+pub type InterruptServiceRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void)->u8;
 #[repr(C)]
 pub struct InterruptObject {
     signature:core::sync::atomic::AtomicU64,
@@ -648,6 +648,7 @@ pub unsafe extern "win64" fn io_connect_interrupt(
         ||interrupt_mode>1||processor_enable_mask==0 {
         return STATUS_INVALID_PARAMETER;
     }
+    unsafe{interrupt_object_out.write(core::ptr::null_mut());}
     if share_vector!=0||floating_save!=0{return STATUS_NOT_SUPPORTED;}
     let slot=&INTERRUPT_OBJECTS[vector as usize];
     if slot.active.compare_exchange(false,true,core::sync::atomic::Ordering::AcqRel,core::sync::atomic::Ordering::Acquire).is_err(){
@@ -675,10 +676,8 @@ pub unsafe extern "win64" fn io_connect_interrupt(
 pub unsafe extern "win64" fn io_disconnect_interrupt(interrupt_object:*mut core::ffi::c_void) {
     if interrupt_object.is_null(){return;}
     let object=interrupt_object.cast::<InterruptObject>();
-    let vector=unsafe{(*object).vector.load(core::sync::atomic::Ordering::Acquire)};
-    if vector as usize>=INTERRUPT_OBJECTS.len()
-        ||!core::ptr::eq(object,core::ptr::addr_of!(INTERRUPT_OBJECTS[vector as usize]).cast_mut()){return;}
-    let slot=&INTERRUPT_OBJECTS[vector as usize];
+    let Some((vector,slot))=INTERRUPT_OBJECTS.iter().enumerate().find(|(_,candidate)|
+        core::ptr::eq(*candidate as *const InterruptObject,object as *const InterruptObject)) else{return};
     if slot.signature.load(core::sync::atomic::Ordering::Acquire)!=INTERRUPT_SIGNATURE||!slot.active.swap(false,core::sync::atomic::Ordering::AcqRel){return;}
     let _=unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,false)};
     let _=crate::hal::release_device_interrupt_vector(vector as u8);
