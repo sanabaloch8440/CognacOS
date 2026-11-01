@@ -421,7 +421,7 @@ static mut ACPI_REGISTRY_IMAGE_BUFFER:[u8;ACPI_PE_IMAGE.len()]=[0;ACPI_PE_IMAGE.
 /// Load ACPI.sys as an independent boot-start native driver. Firmware table
 /// discovery is delegated to the Windows-compatible HalAcpiGetTableEx import;
 /// no private physical-address handoff is exposed to the driver.
-fn initialize_acpi_driver(rsdp_address:u64)->bool{
+pub(crate) fn initialize_acpi_driver(rsdp_address:u64)->bool{
  use core::sync::atomic::Ordering;
  if ACPI_PE_IMAGE.is_empty()||rsdp_address==0{return false}
  if ACPI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return false}
