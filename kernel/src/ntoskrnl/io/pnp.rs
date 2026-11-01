@@ -674,9 +674,11 @@ mod pnp_tree_tests {
         let mut compatible = [0u16; 64];
         let lengths = query_pnp_device_ids(root, Some(&mut hardware), Some(&mut compatible)).unwrap();
         assert_eq!(lengths, (15, 14));
-        assert_eq!(&hardware[..13], &"ROOT\\COGNACOS".encode_utf16().collect::<std::vec::Vec<_>>());
+        let expected_root_hw = [82u16, 79, 79, 84, 92, 67, 79, 71, 78, 65, 67, 79, 83];
+        assert_eq!(&hardware[..13], &expected_root_hw);
         assert_eq!(hardware[13..15], [0, 0]);
-        assert_eq!(&compatible[..12], &"ROOT\\PNP0A08".encode_utf16().collect::<std::vec::Vec<_>>());
+        let expected_root_compatible = [82u16, 79, 79, 84, 92, 80, 78, 80, 48, 65, 48, 56];
+        assert_eq!(&compatible[..12], &expected_root_compatible);
         assert_eq!(compatible[12..14], [0, 0]);
 
         let mut function = sample_function();
@@ -687,9 +689,12 @@ mod pnp_tree_tests {
         let (hw_len, compat_len) = query_pnp_device_ids(child, Some(&mut hw), Some(&mut compat)).unwrap();
         assert_eq!(hw_len, 23);
         assert_eq!(compat_len, 28);
-        assert_eq!(&hw[..21], &"PCI\\VEN_8086&DEV_1234".encode_utf16().collect::<std::vec::Vec<_>>());
-        assert_eq!(&compat[..13], &"PCI\\CC_0C0330".encode_utf16().collect::<std::vec::Vec<_>>());
-        assert_eq!(&compat[15..26], &"PCI\\CC_0C03".encode_utf16().collect::<std::vec::Vec<_>>());
+        let expected_hardware = [80u16, 67, 73, 92, 86, 69, 78, 95, 56, 48, 56, 54, 38, 68, 69, 86, 95, 49, 50, 51, 52];
+        assert_eq!(&hw[..21], &expected_hardware);
+        let expected_compatible = [80u16, 67, 73, 92, 67, 67, 95, 48, 67, 48, 51, 51, 48];
+        assert_eq!(&compat[..13], &expected_compatible);
+        let expected_class = [80u16, 67, 73, 92, 67, 67, 95, 48, 67, 48, 51];
+        assert_eq!(&compat[15..26], &expected_class);
     }
 
     #[test]
