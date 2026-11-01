@@ -108,6 +108,7 @@ fn collect_import_slots(elf:&[u8],image_base:u64)->Result<Vec<ImportSlot>,String
    let symbol=std::str::from_utf8(&strings[name_offset..end]).map_err(|_|"non-UTF8 ELF import symbol")?;
    let (dll,name)=if let Some(n)=symbol.strip_prefix("__imp_ntoskrnl_"){("ntoskrnl.exe",n)}
     else if let Some(n)=symbol.strip_prefix("__imp_hal_"){("hal.dll",n)}
+    else if symbol.starts_with("__imp_"){return Err(format!("unsupported PE import thunk symbol {symbol}"))}
     else{continue};
    if name.is_empty()||name.len()>240||!name.is_ascii(){return Err(format!("invalid PE import name {name}"))}
    if symbol_size!=8||value&7!=0||value<image_base||value-image_base>u32::MAX as u64{return Err(format!("invalid IAT slot for {name}"))}
