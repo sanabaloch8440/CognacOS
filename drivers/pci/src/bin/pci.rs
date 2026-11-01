@@ -4,7 +4,7 @@
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_pci::EcamWindowExt;
-use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
+use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
 
 const HANDOFF_MAGIC: u64 = PCI_DRIVER_HANDOFF_MAGIC;
 const HANDOFF_VERSION: u32 = PCI_DRIVER_HANDOFF_VERSION;
@@ -421,6 +421,54 @@ unsafe extern "win64" fn query_inventory_bridge(
     STATUS_NOT_FOUND
 }
 
+
+/// Return the read-only xHCI inventory entry, including the firmware-assigned
+/// BAR and legacy interrupt identity. BAR sizing, decode changes and MMIO
+/// mapping remain the kernel's resource-arbitration responsibilities.
+unsafe extern "win64" fn query_inventory_xhci(
+    context: PVOID, index: u32, output: *mut PCI_XHCI_INFORMATION,
+) -> i32 {
+    if context.is_null() || output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    let handoff = unsafe { &*(context as *const PciDriverHandoff) };
+    let mut remaining = index as usize;
+    for window_index in 0..handoff.window_count as usize {
+        let count = unsafe { (*STATE.xhci_counts.get())[window_index] };
+        if remaining >= count { remaining -= count; continue; }
+        let Some(function) = (unsafe { (*STATE.xhci.get())[window_index][remaining] }) else {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        };
+        let window = &handoff.windows[window_index];
+        let interrupt_line = match unsafe {
+            window.read_u8(function.segment, function.bus, function.device, function.function, 0x3c)
+        } { Ok(v) => v, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR };
+        let interrupt_pin = match unsafe {
+            window.read_u8(function.segment, function.bus, function.device, function.function, 0x3d)
+        } { Ok(v) => v, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR };
+        unsafe {
+            output.write(PCI_XHCI_INFORMATION {
+                segment: function.segment,
+                root_bus: window.bus_start,
+                bus: function.bus,
+                device: function.device,
+                function: function.function,
+                vendor_id: function.vendor_id,
+                device_id: function.device_id,
+                command: function.command,
+                interrupt_line,
+                interrupt_pin,
+                bar_is_64bit: function.bar.is_64_bit as u8,
+                bar_prefetchable: function.bar.prefetchable as u8,
+                reserved: 0,
+                bar_physical: function.bar.base,
+            });
+        }
+        return STATUS_SUCCESS;
+    }
+    STATUS_NOT_FOUND
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacPciGetBusInterface(
     output: *mut PCI_BUS_INTERFACE,
@@ -443,6 +491,7 @@ pub unsafe extern "win64" fn CognacPciGetBusInterface(
             query_counts: Some(query_inventory_counts),
             query_function: Some(query_inventory_function),
             query_bridge: Some(query_inventory_bridge),
+            query_xhci: Some(query_inventory_xhci),
         });
     }
     STATUS_SUCCESS
