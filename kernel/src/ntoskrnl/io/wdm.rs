@@ -3523,7 +3523,7 @@ mod wdm_tests {
     let mut volume=ptr::null_mut();
     let status=unsafe{io_create_device(driver,0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut volume)};
     if status!=STATUS_SUCCESS{return status}
-    unsafe{(*vpb).device_object=volume;}
+    unsafe{(*vpb).device_object=volume.cast();}
     unsafe{io_complete_irp_status(irp,STATUS_SUCCESS,0,0);}
     STATUS_SUCCESS
    }
