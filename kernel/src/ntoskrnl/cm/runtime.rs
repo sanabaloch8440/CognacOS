@@ -39,30 +39,6 @@ pub struct ObjectAttributes {
     pub security_descriptor: *mut core::ffi::c_void,
     pub security_qos: *mut core::ffi::c_void,
 
- #[test] fn last_known_good_snapshot_falls_back_from_a_corrupt_newer_slot() {
-  let mut original=[0u8;8192];
-  hive_backend::create_minimal_hive(&mut original).unwrap();
-  let mut first=[0u8;8224];
-  hive_writer_backend::LastKnownGoodSnapshot::prepare(&original,&mut first,1).unwrap();
-  hive_writer_backend::LastKnownGoodSnapshot::commit(&mut first).unwrap();
-
-  let mut newer=original;
-  hive_writer_backend::HiveWriter::open(&mut newer).unwrap().update_base_block(2).unwrap();
-  let mut second=[0u8;8224];
-  hive_writer_backend::LastKnownGoodSnapshot::prepare(&newer,&mut second,2).unwrap();
-  hive_writer_backend::LastKnownGoodSnapshot::commit(&mut second).unwrap();
-  second[32+0x100]^=0x80; // Corrupt the newer image; its snapshot checksum must reject it.
-
-  let mut recovered=[0xA5u8;8192];
-  let generation=hive_writer_backend::LastKnownGoodSnapshot::restore_best(&mut recovered,&first,&second).unwrap();
-  assert_eq!(generation,1);
-  assert_eq!(recovered,original);
-
-  let mut untouched=[0x5Au8;8192];
-  assert!(hive_writer_backend::LastKnownGoodSnapshot::restore_best(&mut untouched,&second,&second).is_err());
-  assert!(untouched.iter().all(|b|*b==0x5A));
- }
-
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1133,5 +1109,31 @@ mod tests {
   assert!(hive_writer_backend::RedoJournal::recover(&mut recovered,&journal).unwrap());
   assert_eq!(recovered,committed);
  }
+
+ #[test] fn last_known_good_snapshot_falls_back_from_a_corrupt_newer_slot() {
+  let mut original=[0u8;8192];
+  hive_backend::create_minimal_hive(&mut original).unwrap();
+  let mut first=[0u8;8224];
+  hive_writer_backend::LastKnownGoodSnapshot::prepare(&original,&mut first,1).unwrap();
+  hive_writer_backend::LastKnownGoodSnapshot::commit(&mut first).unwrap();
+
+  let mut newer=original;
+  hive_writer_backend::HiveWriter::open(&mut newer).unwrap().update_base_block(2).unwrap();
+  let mut second=[0u8;8224];
+  hive_writer_backend::LastKnownGoodSnapshot::prepare(&newer,&mut second,2).unwrap();
+  hive_writer_backend::LastKnownGoodSnapshot::commit(&mut second).unwrap();
+  second[32+0x100]^=0x80; // Corrupt the newer image; its snapshot checksum must reject it.
+
+  let mut recovered=[0xA5u8;8192];
+  let generation=hive_writer_backend::LastKnownGoodSnapshot::restore_best(&mut recovered,&first,&second).unwrap();
+  assert_eq!(generation,1);
+  assert_eq!(recovered,original);
+
+  let mut untouched=[0x5Au8;8192];
+  assert!(hive_writer_backend::LastKnownGoodSnapshot::restore_best(&mut untouched,&second,&second).is_err());
+  assert!(untouched.iter().all(|b|*b==0x5A));
+ }
+
+
 
 }
