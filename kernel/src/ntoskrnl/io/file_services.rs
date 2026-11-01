@@ -209,11 +209,11 @@ unsafe extern "win64" fn file_system_control_dispatch(_device:*mut DeviceObject,
  if irp.is_null(){return STATUS_INVALID_PARAMETER}
  let stack=unsafe{wdm::io_get_current_irp_stack_location(irp)};
  if stack.is_null(){unsafe{wdm::io_complete_irp_status(irp,STATUS_INVALID_PARAMETER,0,0);}return STATUS_INVALID_PARAMETER}
- let minor=unsafe{(*stack).minor_function};let parameters=unsafe{(*stack).parameters.as_ptr()};
+ let minor=unsafe{(*stack).minor_function};
  let mut status=STATUS_INVALID_DEVICE_REQUEST;
  if minor==IRP_MN_MOUNT_VOLUME{
-  let real=unsafe{ptr::read_unaligned(parameters.add(4).cast::<*mut DeviceObject>())};
-  let vpb=unsafe{ptr::read_unaligned(parameters.add(12).cast::<*mut wdm::Vpb>())};
+  let real=unsafe{wdm::io_read_stack_pointer::<DeviceObject>(stack,4)};
+  let vpb=unsafe{wdm::io_read_stack_pointer::<wdm::Vpb>(stack,12)};
   if real.is_null()||vpb.is_null()||!crate::ata_disk::is_ext4_partition(real){status=STATUS_UNRECOGNIZED_VOLUME;}
   else{
    let existing=VOLUME_DEVICE.load(Ordering::Acquire);
@@ -231,7 +231,7 @@ unsafe extern "win64" fn file_system_control_dispatch(_device:*mut DeviceObject,
    }
   }
  }else if minor==IRP_MN_USER_FS_REQUEST{
-  let control=unsafe{ptr::read_unaligned(parameters.add(8).cast::<u32>())};
+  let control=unsafe{wdm::io_read_stack_u32(stack,8)};
   if control==0x0009_0020{status=STATUS_SUCCESS;}
  }
  unsafe{wdm::io_complete_irp_status(irp,status,0,0);}status
