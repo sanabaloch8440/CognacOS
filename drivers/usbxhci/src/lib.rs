@@ -1385,6 +1385,14 @@ impl<const N:usize> TransferTracker<N>{
   let slot=self.pending.iter_mut().find(|p|p.is_none()).ok_or(TransferError::TableFull)?;
   *slot=Some(r);self.len+=1;Ok(())
  }
+ /// Remove a reservation only while its TRB has not been published to hardware.
+ /// Once publication is attempted, retain the record until a completion or a
+ /// proven controller/slot DMA-quiescence barrier.
+ pub fn cancel_unpublished(&mut self,trb_dma:u64)->bool{
+  if let Some(slot)=self.pending.iter_mut().find(|p|p.map(|r|r.trb_dma==trb_dma).unwrap_or(false)){
+   *slot=None;self.len-=1;true
+  }else{false}
+ }
  pub fn complete(&mut self,event:&Trb)->Result<TransferResult,TransferError>{
   if event.trb_type()!=TRB_TYPE_TRANSFER_EVENT as u8{return Err(TransferError::UnknownCompletion)}
   let index=self.pending.iter().position(|p|p.map(|r|r.trb_dma==event.parameter).unwrap_or(false)).ok_or(TransferError::UnknownCompletion)?;
