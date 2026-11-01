@@ -532,14 +532,14 @@ pub fn read_current(handle: usize, out: &mut [u8]) -> Result<usize, i32> {
 pub fn read_current_for_process(owner: u64, handle: usize, out: &mut [u8]) -> Result<usize, i32> {
     let file_object = pin_handle(owner, handle)?;
     let result = dispatch_file_irp(file_object, IRP_MJ_READ, FILE_USE_FILE_POINTER_POSITION, out.as_mut_ptr(), out.len());
-    unpin_handle(handle);
+    unpin_handle(owner, handle);
     result
 }
 
 pub fn current_offset_for_process(owner: u64, handle: usize) -> Result<usize, i32> {
     let file_object = pin_handle(owner, handle)?;
     let offset = unsafe { (*file_object).current_byte_offset };
-    unpin_handle(handle);
+    unpin_handle(owner, handle);
     usize::try_from(offset).map_err(|_| STATUS_INVALID_PARAMETER)
 }
 pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, amount: usize) -> Result<(), i32> {
@@ -553,7 +553,7 @@ pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, a
             Ok(())
         }
     };
-    unpin_handle(handle);
+    unpin_handle(owner, handle);
     result
 }
 
