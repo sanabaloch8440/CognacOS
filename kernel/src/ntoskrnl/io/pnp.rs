@@ -88,8 +88,8 @@ pub fn publish_xhci(
         ||path.path[count-1].function!=path.endpoint_function
         ||path.path.iter().take(count).any(|p|p.device>=32||p.function>=8)
         ||pdo_device_object.is_null()||vendor_id==0||vendor_id==0xffff||bar_physical==0
-        ||bar_length<0x20||bar_virtual==0||bar_physical.checked_add(bar_length).is_none()
-        ||bar_virtual.checked_add(bar_length).is_none() { return Err(()); }
+        ||bar_length<0x20||bar_physical.checked_add(bar_length).is_none()
+        ||(bar_virtual!=0&&bar_virtual.checked_add(bar_length).is_none()) { return Err(()); }
     if PUBLISH_LOCK.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){return Err(());}
     if XHCI_PCI_DEVICE.ready.load(Ordering::Acquire) {
         PUBLISH_LOCK.store(false,Ordering::Release);
