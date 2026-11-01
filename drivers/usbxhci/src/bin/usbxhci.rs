@@ -146,6 +146,7 @@ pub struct XhciDriverExtension {
 }
 unsafe impl Sync for XhciDriverExtension {}
 
+#[repr(C)]
 struct DmaAdapterPrefix {
     version:u16,
     size:u16,
@@ -347,8 +348,8 @@ fn read_capabilities(io: &mut impl XhciRegisterIo, length: u64) -> Option<Capabi
     Some(caps)
 }
 
-struct MmioMapping{base:*mut c_void,length:u64,keep:bool}
-impl Drop for MmioMapping{fn drop(&mut self){if !self.keep&&!self.base.is_null(){unsafe{MmUnmapIoSpace(self.base,self.length);}}}}
+struct MmioMapping<'a>{ext:&'a XhciDriverExtension,base:*mut c_void,length:u64,keep:bool}
+impl Drop for MmioMapping<'_>{fn drop(&mut self){if !self.keep&&!self.base.is_null(){self.ext.mmio_virtual.store(0,Ordering::Release);unsafe{MmUnmapIoSpace(self.base,self.length);}}}}
 
 /// Windows-native DriverEntry. Hardware access is through NTOSKRNL/HAL PE
 /// imports: MMIO mapping, DMA adapter, common buffers, PCI configuration,
@@ -368,7 +369,7 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
     }
     let mapped=unsafe{MmMapIoSpace(ext.mmio_physical as i64,ext.mmio_length,0)};
     if mapped.is_null(){return DRIVER_INSUFFICIENT_RESOURCES}
-    let mut mapping=MmioMapping{base:mapped,length:ext.mmio_length,keep:false};
+    let mut mapping=MmioMapping{ext,base:mapped,length:ext.mmio_length,keep:false};
     ext.mmio_virtual.store(mapped as u64,Ordering::Release);
 
     // DEVICE_DESCRIPTION v3: master, scatter/gather, 64-bit DMA addressing.
