@@ -237,8 +237,9 @@ impl XhciPlatform for Platform<'_>{
     }
     fn set_interrupt_enabled(&mut self,enabled:bool)->Result<(),()>{
         if enabled{
-            if !self.ext.ready.load(Ordering::Acquire)&&self.ext.interrupt_object.load(Ordering::Acquire)==0{
-                return Err(())
+            if !self.ext.ready.load(Ordering::Acquire){
+                self.ext.interrupt_requested.store(true,Ordering::Release);
+                return Ok(())
             }
             if self.ext.interrupt_object.load(Ordering::Acquire)!=0{return Ok(())}
             let mut object=core::ptr::null_mut();
@@ -258,73 +259,76 @@ impl XhciPlatform for Platform<'_>{
 
 static XHCI_FDO:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static XHCI_EXTENSION:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
-unsafe extern "win64" fn xhci_dispatch(_device:*mut c_void,irp:*mut c_void)->i32{
-    const STATUS_SUCCESS:i32=0;
+unsafe extern "win64" fn xhci_dispatch(_device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
     const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
     const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
     if irp.is_null(){return STATUS_INVALID_PARAMETER}
-    let ext_ptr=XHCI_EXTENSION.load(Ordering::Acquire) as *const XhciDriverExtension;
-    if ext_ptr.is_null(){return STATUS_INVALID_DEVICE_REQUEST}
-    let ext=unsafe{&*ext_ptr};
-    let Some(io)= (unsafe{ext.kernel_io.as_ref()}) else{return STATUS_INVALID_DEVICE_REQUEST};
-    let Some(get_stack)=io.current_stack_location else{return STATUS_INVALID_DEVICE_REQUEST};
-    let stack=unsafe{get_stack(irp)};
+    let stack=unsafe{IoGetCurrentIrpStackLocation(irp)};
     if stack.is_null(){return STATUS_INVALID_PARAMETER}
-    let major=unsafe{core::ptr::read(stack.cast::<u8>())};
-    let minor=unsafe{core::ptr::read(stack.cast::<u8>().add(1))};
+    let major=unsafe{(*stack).major_function};
+    let minor=unsafe{(*stack).minor_function};
     let status=match major{
-        0x1b=>match minor{0x00|0x03|0x04|0x05|0x06|0x17|0x02=>STATUS_SUCCESS,_=>STATUS_INVALID_DEVICE_REQUEST},
-        0x16=>STATUS_SUCCESS,
+        0x1b=>match minor{0x00|0x03|0x04|0x05|0x06|0x17|0x02=>0,_=>STATUS_INVALID_DEVICE_REQUEST},
+        0x16=>0,
         _=>STATUS_INVALID_DEVICE_REQUEST,
     };
-    if let Some(complete)=io.complete_irp_status{unsafe{complete(irp,status,0,0);}}
+    unsafe{
+        (*irp).io_status.status.status=status;
+        (*irp).io_status.information=0;
+        IoCompleteRequest(irp,0);
+    }
     status
 }
 
-extern "C" fn xhci_isr(context: u64) -> bool {
-    if context == 0 { return false; }
-    let ext = unsafe { &*(context as *const XhciDriverExtension) };
-    if !ext.ready.load(Ordering::Acquire) { return false; }
-    let Some(hal) = (unsafe { ext.hal.as_ref() }) else { return false; };
-    let Some(read) = hal.read_mmio_u32 else { return false; };
-    let Some(write) = hal.write_mmio_u32 else { return false; };
-    let status_address = match ext.mmio_base.checked_add(USBSTS as u64) { Some(v) => v, None => return false };
-    let mut status = 0u32;
-    if unsafe { read(status_address, &mut status) }.code != 0 || status == u32::MAX { return false; }
-    if status & USBSTS_INTERRUPT == 0 { return false; }
-    // USBSTS is write-one-to-clear. DPC drains the DMA event ring after the ISR acknowledges it.
-    let _ = unsafe { write(status_address, status & 0x3f) };
-    true
+#[repr(C,align(16))]
+struct DpcStorage([u64;8]);
+static mut XHCI_DPC:DpcStorage=DpcStorage([0;8]);
+
+unsafe extern "win64" fn xhci_isr(_interrupt:*mut c_void,context:*mut c_void)->u8{
+    if context.is_null(){return 0}
+    let ext=unsafe{&*(context as *const XhciDriverExtension)};
+    if !ext.ready.load(Ordering::Acquire){return 0}
+    let base=ext.mmio_virtual.load(Ordering::Acquire);
+    if base==0{return 0}
+    let status_ptr=(base+USBSTS as u64) as *const u32;
+    let status=unsafe{status_ptr.read_volatile()};
+    if status==u32::MAX||status&USBSTS_INTERRUPT==0{return 0}
+    unsafe{(base+USBSTS as u64 as *mut u32 as u64) as *mut u32}.write_volatile(status&0x3f);
+    let dpc=core::ptr::addr_of_mut!(XHCI_DPC).cast::<c_void>();
+    let _=unsafe{KeInsertQueueDpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())};
+    1
 }
-extern "C" fn xhci_dpc(context: u64) {
-    if context == 0 { return; }
-    let ext = unsafe { &*(context as *const XhciDriverExtension) };
-    if !ext.ready.load(Ordering::Acquire) || ext.runtime_lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { return; }
-    let Some(hal) = (unsafe { ext.hal.as_ref() }) else { ext.runtime_lock.store(false, Ordering::Release); return; };
-    let Some(dev) = (unsafe { ext.device.as_ref() }) else { ext.runtime_lock.store(false, Ordering::Release); return; };
-    let runtime = unsafe { &mut *ext.runtime.get() };
-    let resources = unsafe { runtime.assume_init_mut() };
-    let mut platform = Platform { ext, hal, dev };
-    let caps = match read_capabilities(&mut platform, ext.mmio_length) {
-        Some(c) => c,
-        None => { ext.runtime_lock.store(false, Ordering::Release); return; }
+
+unsafe extern "win64" fn xhci_dpc_routine(_dpc:*mut c_void,context:*mut c_void,_arg1:*mut c_void,_arg2:*mut c_void){
+    if !context.is_null(){xhci_dpc(context as u64);}
+}
+
+extern "C" fn xhci_dpc(context:u64){
+    if context==0{return}
+    let ext=unsafe{&*(context as *const XhciDriverExtension)};
+    if !ext.ready.load(Ordering::Acquire)||ext.runtime_lock.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){return}
+    let runtime=unsafe{&mut *ext.runtime.get()};
+    let resources=unsafe{runtime.assume_init_mut()};
+    let mut platform=Platform{ext,maximum_dma_address:u64::MAX};
+    let caps=match read_capabilities(&mut platform,ext.mmio_length){
+        Some(c)=>c,None=>{ext.runtime_lock.store(false,Ordering::Release);return}
     };
-    let _ = xhci::drain_event_ring(&mut platform, &caps, resources, 128, |event| {
-        ext.event_count.fetch_add(1, Ordering::Relaxed);
-        match event.trb_type() as u32 {
-            xhci::TRB_TYPE_PORT_STATUS_CHANGE => { ext.port_change_count.fetch_add(1, Ordering::Relaxed); }
-            xhci::TRB_TYPE_COMMAND_COMPLETION => { ext.command_completion_count.fetch_add(1, Ordering::Relaxed); }
-            xhci::TRB_TYPE_TRANSFER_EVENT => { ext.transfer_completion_count.fetch_add(1, Ordering::Relaxed); }
-            _ => {}
+    let _=xhci::drain_event_ring(&mut platform,&caps,resources,128,|event|{
+        ext.event_count.fetch_add(1,Ordering::Relaxed);
+        match event.trb_type() as u32{
+            xhci::TRB_TYPE_PORT_STATUS_CHANGE=>{ext.port_change_count.fetch_add(1,Ordering::Relaxed);}
+            xhci::TRB_TYPE_COMMAND_COMPLETION=>{ext.command_completion_count.fetch_add(1,Ordering::Relaxed);}
+            xhci::TRB_TYPE_TRANSFER_EVENT=>{ext.transfer_completion_count.fetch_add(1,Ordering::Relaxed);}
+            _=>{}
         }
         let sink=ext.event_sink.load(Ordering::Acquire);
-        if sink!=0 {
+        if sink!=0{
             let context=ext.event_context.load(Ordering::Acquire);
             let callback:unsafe extern "win64" fn(u64,*const xhci::Trb)=unsafe{core::mem::transmute(sink as usize)};
             unsafe{callback(context,&event);}
         }
     });
-    ext.runtime_lock.store(false, Ordering::Release);
+    ext.runtime_lock.store(false,Ordering::Release);
 }
 
 fn read_capabilities(io: &mut impl XhciRegisterIo, length: u64) -> Option<Capabilities> {
