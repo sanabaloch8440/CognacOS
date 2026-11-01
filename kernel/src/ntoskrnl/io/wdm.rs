@@ -974,64 +974,6 @@ pub struct PciPdoExtension {
  pub version:u32,
  pub information:crate::nt_abi::bus::PCI_DEVICE_INFORMATION,
 }
-static PCI_PDO_CONTEXT_COOKIE:u64=0x5043_4950_444f_4358;
-
-/// Context value to place in the PCI driver handoff when installing the
-/// kernel's PDO factory callbacks.
-#[unsafe(no_mangle)]
-pub extern "win64" fn IoPciPdoContext()->*mut c_void {
- core::ptr::addr_of!(PCI_PDO_CONTEXT_COOKIE).cast_mut().cast()
-}
-
-/// Kernel callback supplied to pci.sys. The bus driver decides which PCI
-/// functions exist; this routine only materializes the PDO for one validated
-/// bus-reported function and binds it to the pci.sys DRIVER_OBJECT.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoPciCreatePdo(
- context:*mut c_void,
- driver:*mut DriverObject,
- information:*const crate::nt_abi::bus::PCI_DEVICE_INFORMATION,
- output:*mut *mut DeviceObject,
-)->i32 {
- if context!=IoPciPdoContext()||driver.is_null()||information.is_null()||output.is_null(){
-  return STATUS_INVALID_PARAMETER;
- }
- unsafe{output.write(ptr::null_mut());}
- let info=unsafe{*information};
- if info.device>=32||info.function>=8||info.vendor_id==0||info.vendor_id==0xffff{
-  return STATUS_INVALID_PARAMETER;
- }
- let mut device=ptr::null_mut();
- let status=unsafe{
-  io_create_device(driver,core::mem::size_of::<PciPdoExtension>() as u32,
-   ptr::null_mut(),0x22,0,0,&mut device)
- };
- if status!=STATUS_SUCCESS||device.is_null(){return status;}
- let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
- if extension.is_null(){unsafe{io_delete_device(device)};return STATUS_INSUFFICIENT_RESOURCES;}
- unsafe{
-  extension.write(PciPdoExtension{magic:PCI_PDO_EXTENSION_MAGIC,version:1,information:info});
-  // DO_BUS_ENUMERATED_DEVICE: this object is a physical PDO created by a bus.
-  (*device).flags|=0x0000_0200;
-  output.write(device);
- }
- STATUS_SUCCESS
-}
-
-/// Matching release callback for IoPciCreatePdo. IoDeleteDevice applies the
-/// normal object-reference, remove-lock and dispatch rundown rules.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoPciDeletePdo(context:*mut c_void,device:*mut DeviceObject) {
- if context!=IoPciPdoContext()||device.is_null(){return}
- let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
- if extension.is_null(){return}
- if unsafe{(*extension).magic}!=PCI_PDO_EXTENSION_MAGIC{return}
- unsafe{
-  (*extension).magic=0;
-  io_delete_device(device);
- }
-}
-
 unsafe extern "win64" fn io_object_manager_finalizer(object:*mut c_void){unsafe{io_delete_device(object.cast::<DeviceObject>());}}
 
 /// Begin driver unload only after all owned devices have completed active
