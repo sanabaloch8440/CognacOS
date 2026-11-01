@@ -1389,6 +1389,10 @@ jobs:
             grep -F "Per-CPU TSS/IST setup self-test passed." "$log"
             grep -F "Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP." "$log"
             grep -F "SMP scheduler, cross-CPU wakeup, contended-lock, IRP/object teardown stress passed." "$log"
+            grep -F "SMP WDM IRP cancellation, cancel-spin-lock, callback, and completion test passed." "$log"
+            grep -F "Guest ext4 WDM FILE_OBJECT read/write/cache/MDL/cleanup/close path passed." "$log"
+            grep -F "WDM exactly-once completion and outstanding-IRP unload rundown self-test passed." "$log"
+            grep -F "Guest ATA/GPT/ext4 read/write end-to-end test passed." "$log"
             grep -F "Kernel VM extent stress and SMP TLB shootdown self-test passed." "$log"
           done
       - name: Verify captured QEMU PC speaker tone
