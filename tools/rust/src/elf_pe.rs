@@ -143,7 +143,7 @@ fn append_import_section(pe:&mut Vec<u8>,slots:&[ImportSlot])->Result<(),String>
  let mut groups:Vec<(String,Vec<ImportSlot>)>=Vec::new();
  for slot in slots{
   if let Some((_,items))=groups.iter_mut().find(|(dll,_)|*dll==slot.dll){items.push(slot.clone())}
-  else{groups.push((slot.dll.clone(),vec![slot.clone()])}
+  else{groups.push((slot.dll.clone(),vec![slot.clone()]))}
  }
  groups.sort_by(|a,b|a.0.cmp(&b.0));
  for (dll,items) in &groups{
