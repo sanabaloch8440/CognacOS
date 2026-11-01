@@ -159,6 +159,21 @@ See [keyboard driver stack design](docs/keyboard-driver-stack.md) for the curren
 - [ ] Add relocatable-image support and broaden malformed-image/firmware tests on physical hardware.
 - [ ] Enable AVX/YMM, AVX-512, AMX, supervisor XSS, or PKRU only after their complete architectural state and security paths are implemented and tested.
 
+## P5 — Windows-style boot orchestration
+
+- [x] Add a monotonic boot-stage coordinator so registry, boot-driver, device-tree, system-driver, Session Manager, and SCM milestones cannot be reported out of order.
+- [x] Add a validated PnP devnode hierarchy walk that rejects missing parents and cycles.
+- [x] Add deterministic Current/LastKnownGood selection and a one-shot retry policy for severe/critical boot-driver failures. The policy does not silently substitute Default.
+- [ ] Connect the policy to a transactional SYSTEM-hive writer: persist the failed control set, retry LastKnownGood on the next boot, and promote the successful set only after the complete boot succeeds.
+- [ ] Replace the current hand-written ACPI/PCI/xHCI boot loads with one registry-driven Boot/System-start driver transaction using `driver_init`, group/tag ordering, service/group dependency handling, and ErrorControl semantics. The generic scheduler and PE driver loader exist, but the complete transaction is not yet called by the boot path.
+- [ ] Build the complete device tree from ACPI namespace devices and all bus PDO/BusRelations data, retaining parent/child and device-object lifetime through PnP start/remove. The current tree is limited to the PCI devnode inventory.
+- [ ] Initialize all System-start drivers after the device tree and resource arbitration are ready; keep demand/automatic services out of kernel boot.
+- [ ] Implement a real native Session Manager image and process-creation path, then hand off to CSRSS/CSRSRV through the documented CSR/ALPC connection lifecycle. The existing ring-3 NTDLL smoke path is not a Session Manager.
+- [ ] Implement a user-mode Service Control Manager process, registry service database, service dependency graph, start-type policy, driver/service start RPC, status reporting, and shutdown control. Kernel driver loading is not SCM integration.
+- [ ] Validate boot success/failure, rollback, recovery, service ordering, and session startup in QEMU with Windows-generated SYSTEM hive fixtures. Do not mark Session Manager or SCM complete until actual user-mode processes execute.
+
+The initial P5 implementation lives in `kernel/src/boot_orchestration.rs`. Its policy and hierarchy primitives are integrated into the kernel boot path; the unchecked user-mode handoffs and persistent recovery transaction remain explicit work.
+
 ## Acceptance rules
 
 - [ ] Do not mark a milestone validated until the relevant tests pass on the current commit; older successful runs are historical evidence only.
