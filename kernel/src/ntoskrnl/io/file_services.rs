@@ -546,7 +546,8 @@ pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, a
     result
 }
 
-/// Issue IRP_MJ_CLEANUP followed by IRP_MJ_CLOSE before releasing the FILE_OBJECT.
+/// Close the process handle. Object Manager invokes the FILE_OBJECT finalizer
+/// after the last handle and outstanding object reference have drained.
 pub fn close(handle: usize) -> Result<(), i32> { close_for_process(ob::current_owner() as u64, handle) }
 pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
     if handle == 0 { return Err(STATUS_INVALID_HANDLE); }
