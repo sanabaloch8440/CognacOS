@@ -480,6 +480,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         }
         let _active_control_set = system_registry.control_sets.current;
         let _boot_driver_count = system_registry.boot_driver_count;
+        let _boot_driver_services = system_registry.boot_driver_services;
 
         let mut local_timer_ready = false;
         if info.rsdp_address != 0 {
