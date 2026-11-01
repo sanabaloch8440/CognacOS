@@ -1359,7 +1359,26 @@ impl<const N:usize> TransferTracker<N>{
   let residual=event.status&0x00ff_ffff;if residual>r.length{return Err(TransferError::ResidualTooLarge)}
   Ok(TransferResult{trb_dma:r.trb_dma,slot_id:r.slot_id,endpoint_id:r.endpoint_id,completion_code:code,bytes_transferred:r.length-residual})
  }
- pub fn cancel_slot(&mut self,slot_id:u8)->usize{let mut n=0;for p in self.pending.iter_mut(){if p.map(|r|r.slot_id==slot_id).unwrap_or(false){*p=None;n+=1;}}self.len-=n;n}
+/// Capability proving that a slot has been disabled and its DMA has been
+/// quiesced. Construct only after the Disable Slot command has completed and
+/// the platform has synchronized/revoked every DMA mapping for that slot.
+/// This prevents ordinary disconnect handling from silently forgetting live
+/// requests while the controller may still access their buffers.
+pub struct SlotDmaQuiesced { _private: () }
+impl SlotDmaQuiesced {
+ /// # Safety
+ /// The caller must have observed successful Disable Slot completion and
+ /// completed the platform DMA teardown/fence for every endpoint in the slot.
+ pub unsafe fn after_disable_slot_and_dma_fence() -> Self { Self { _private: () } }
+}
+ /// Forget in-flight requests only after hardware can no longer DMA to them.
+ pub fn cancel_slot(&mut self,slot_id:u8,_quiesced:&SlotDmaQuiesced)->usize{
+  let mut n=0;
+  for p in self.pending.iter_mut(){
+   if p.map(|r|r.slot_id==slot_id).unwrap_or(false){*p=None;n+=1;}
+  }
+  self.len-=n;n
+ }
 }
 impl<const N:usize> Default for TransferTracker<N>{fn default()->Self{Self::new()}}
 #[cfg(test)]mod transfer_runtime_tests{
@@ -1374,6 +1393,6 @@ impl<const N:usize> Default for TransferTracker<N>{fn default()->Self{Self::new(
  #[test]fn completion_is_correlated_and_consumed_once(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=event(0x1000,1,0,3,1);let done=q.complete(&e).unwrap();assert_eq!(done.bytes_transferred,8);assert_eq!(q.len(),0);assert_eq!(q.complete(&e),Err(TransferError::UnknownCompletion));}
  #[test]fn mismatched_slot_or_endpoint_does_not_consume_request(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=event(0x1000,1,0,2,1);assert_eq!(q.complete(&e),Err(TransferError::MismatchedCompletion));assert_eq!(q.len(),1);}
  #[test]fn failures_never_report_success(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=event(0x1000,6,0,3,1);assert_eq!(q.complete(&e),Err(TransferError::FailedCompletion(6)));q.reserve(req(0x2000)).unwrap();let e=event(0x2000,1,9,3,1);assert_eq!(q.complete(&e),Err(TransferError::ResidualTooLarge));}
- #[test]fn slot_rundown_cancels_pending_transfers(){let mut q:TransferTracker<3>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();q.reserve(TransferRequest{slot_id:2,trb_dma:0x2000,..req(0x2000)}).unwrap();assert_eq!(q.cancel_slot(1),1);assert_eq!(q.len(),1);}
+ #[test]fn slot_rundown_cancels_pending_transfers(){let mut q:TransferTracker<3>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();q.reserve(TransferRequest{slot_id:2,trb_dma:0x2000,..req(0x2000)}).unwrap();let quiesced=unsafe{SlotDmaQuiesced::after_disable_slot_and_dma_fence()};assert_eq!(q.cancel_slot(1,&quiesced),1);assert_eq!(q.len(),1);}
 }
 
