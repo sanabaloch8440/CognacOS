@@ -11,23 +11,48 @@ pub const HAL_CONTRACT_VERSION: u32 = 1;
 /// Small NT I/O-manager service surface passed to native WDM drivers. Keeping
 /// completion in a versioned kernel table avoids static imports from a driver
 /// image while preserving the IoCompleteRequest calling convention.
-pub const KERNEL_IO_SERVICES_VERSION: u32 = 1;
+pub const KERNEL_IO_SERVICES_VERSION: u32 = 2;
 pub type CompleteIrp = unsafe extern "win64" fn(
     irp: *mut cognacos_nt_abi::io::IRP,
     priority_boost: i8,
 );
+pub type CreateDevice = unsafe extern "win64" fn(
+    driver: *mut core::ffi::c_void, extension_size: u32,
+    name: *mut cognacos_nt_abi::object::UNICODE_STRING,
+    device_type: u32, characteristics: u32, exclusive: u8,
+    output: *mut *mut core::ffi::c_void,
+) -> i32;
+pub type DeleteDevice = unsafe extern "win64" fn(device: *mut core::ffi::c_void);
+pub type CallDriver = unsafe extern "win64" fn(device: *mut core::ffi::c_void, irp: *mut core::ffi::c_void) -> i32;
+pub type AllocateIrp = unsafe extern "win64" fn(stack_size: i8, charge_quota: u8) -> *mut core::ffi::c_void;
+pub type GetIrpStackLocation = unsafe extern "win64" fn(irp: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+pub type CompleteIrpStatus = unsafe extern "win64" fn(irp: *mut core::ffi::c_void, status: i32, information: usize, priority_boost: i8);
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelIoServiceTable {
     pub size: u32,
     pub version: u32,
     pub complete_irp: Option<CompleteIrp>,
+    pub create_device: Option<CreateDevice>,
+    pub delete_device: Option<DeleteDevice>,
+    pub call_driver: Option<CallDriver>,
+    pub allocate_irp: Option<AllocateIrp>,
+    pub current_stack_location: Option<GetIrpStackLocation>,
+    pub next_stack_location: Option<GetIrpStackLocation>,
+    pub complete_irp_status: Option<CompleteIrpStatus>,
 }
 impl KernelIoServiceTable {
     pub const fn compatible(&self) -> bool {
         self.size as usize >= core::mem::size_of::<Self>()
             && self.version == KERNEL_IO_SERVICES_VERSION
             && self.complete_irp.is_some()
+            && self.create_device.is_some()
+            && self.delete_device.is_some()
+            && self.call_driver.is_some()
+            && self.allocate_irp.is_some()
+            && self.current_stack_location.is_some()
+            && self.next_stack_location.is_some()
+            && self.complete_irp_status.is_some()
     }
 }
 
