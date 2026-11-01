@@ -225,7 +225,7 @@ pub mod bus {
     /// MCFG-derived ECAM mapping passed from the kernel's early firmware
     /// mapper to pci.sys. This is ABI-only; pci.sys validates and accesses it.
     #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    #[derive(Clone, Copy, Default)]
     pub struct PCI_ECAM_WINDOW {
         pub virtual_base: u64,
         pub physical_base: u64,
