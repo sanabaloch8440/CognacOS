@@ -1103,7 +1103,7 @@ mod tests {
   assert_eq!(interrupted,bytes);
   hive_writer_backend::RedoJournal::begin(&bytes,&mut journal).unwrap();
   let mut committed=bytes;
-  committed[0x100]=0xa5;
+  hive_writer_backend::HiveWriter::open(&mut committed).unwrap().update_base_block(4).unwrap();
   hive_writer_backend::RedoJournal::commit(&committed,&mut journal).unwrap();
   let mut recovered=bytes;
   assert!(hive_writer_backend::RedoJournal::recover(&mut recovered,&journal).unwrap());
