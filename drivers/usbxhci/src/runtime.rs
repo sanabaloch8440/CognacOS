@@ -31,10 +31,10 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
   self.tracker.reserve(req).map_err(RuntimeError::Transfer)?;
   let trb=Trb{parameter:buffer_dma,status:length,control:(TRB_TYPE_NORMAL<<TRB_TYPE_SHIFT)|TRB_IOC|((endpoint as u32)<<16)|((slot as u32)<<24)};
   let index=self.ring.push(trb).map_err(RuntimeError::Ring)?;
-  if hw.publish_trb(index,trb_dma,trb).is_err(){return Err(RuntimeError::PublishFailed)}
+  if hw.publish_trb(index,trb_dma,trb).is_err(){self.stopped=true;return Err(RuntimeError::PublishFailed)}
   self.pending[p]=Pending{used:true,token};
   fence(Ordering::Release);
-  if hw.ring_endpoint_doorbell(slot,endpoint).is_err(){return Err(RuntimeError::DoorbellFailed)}
+  if hw.ring_endpoint_doorbell(slot,endpoint).is_err(){self.stopped=true;return Err(RuntimeError::DoorbellFailed)}
   self.next_id=self.next_id.wrapping_add(1).max(1);Ok(token)
  }
  /// ISR acknowledges the interrupt; this method runs later at DPC level.
@@ -48,8 +48,9 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
  }
  /// Called only after Stop Endpoint/Disable Slot, DPC synchronization and the
  /// requester-scoped IOMMU unmap/invalidation have all succeeded.
- pub fn retire_slot_after_quiescence(&mut self,slot:u8,new_generation:u32)->usize{
-  let mut count=0;for p in self.pending.iter_mut(){if p.used&&p.token.slot_id==slot{*p=Pending::EMPTY;count+=1;}}
+ pub fn retire_slot_after_quiescence(&mut self,slot:u8,new_generation:u32,q:&crate::SlotDmaQuiesced)->usize{
+  let count=self.tracker.cancel_slot(slot,q);
+  for p in self.pending.iter_mut(){if p.used&&p.token.slot_id==slot{*p=Pending::EMPTY;}}
   self.generation=new_generation;count
  }
 }
