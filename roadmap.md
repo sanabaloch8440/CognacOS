@@ -23,6 +23,19 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 - **Registry/loader/storage:** read-only REGF mounting plus a bounded writable-hive backend and recovery primitives; bounded VFS-to-PE transaction backend; native Rust ext-family filesystem foundations.
 - **Important limitation:** code presence and host tests do not prove QEMU/SMP correctness or Windows ABI/driver compatibility.
 
+## P0 — SYSTEM hive control-set selection
+
+- [x] Parse and validate the SYSTEM `Select` values: required `Current`, optional `Default`, `LastKnownGood`, and `Failed` (where zero means no failed set).
+- [x] Reject out-of-range selectors and nonzero selectors that reference a missing `ControlSetNNN` key.
+- [x] Route service configuration and extended driver metadata through one active-control-set resolver; do not silently substitute `Default` for `Current`.
+- [x] Add unit coverage for three-digit control-set names, bounds, and the special zero value for `Failed`.
+- [ ] Connect the UEFI loader's control-set selection policy to `Select\\Default` and boot-failure recovery.
+- [ ] Implement transactional LastKnownGood fallback/retry for severe and critical boot-driver failures; parsed LKG metadata alone is not recovery.
+- [ ] Expose a registry namespace alias for `CurrentControlSet` after the Configuration Manager's symbolic-link/object namespace support is ready.
+- [ ] Validate selection and service queries against Windows-generated SYSTEM hive fixtures, including malformed, missing, and recovery-state values.
+
+See [SYSTEM hive and driver configuration](docs/system-hive-driver-configuration.md).
+
 ## P0 — CI and runtime validation
 
 - [x] Investigated [run 40816579264](https://github.com/umarfarooq7869/CognacOS/actions/runs/40816579264): compilation and host-side checks passed; QEMU stopped in the NT MM self-test because NUMA page allocation treated transient allocator-lock contention as allocation failure. Changed the blocking node-aware allocator to acquire the allocator lock normally; the nonblocking API remains fail-closed until its complete allocation path is nonblocking.
