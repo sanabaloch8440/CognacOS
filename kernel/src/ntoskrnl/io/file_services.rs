@@ -83,6 +83,7 @@ const fn empty_file_object() -> FILE_OBJECT {
     }
 }
 
+#[derive(Clone, Copy)]
 struct FileObjectRecord {
     active_io: u32,
     closing: bool,
