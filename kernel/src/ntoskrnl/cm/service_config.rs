@@ -217,7 +217,8 @@ pub fn find_pci_device_service(
             if out[units-1]!=0||out[..units-1].contains(&0){return Err(ExtendedConfigError::InvalidGroup)}
             let name_len=units-1;
             if name_len==0{return Err(ExtendedConfigError::InvalidGroup)}
-            let details=query_service_details(hive,&out[..name_len],&mut [0u16;256])?;
+            let mut service_path_buffer=[0u16;256];
+            let details=query_service_details(hive,&out[..name_len],&mut service_path_buffer)?;
             if details.base.start==SERVICE_DISABLED{return Ok(None)}
             if !matches!(details.base.service_type&SERVICE_TYPE_MASK,SERVICE_KERNEL_DRIVER|SERVICE_FILE_SYSTEM_DRIVER){
                 return Ok(None)
