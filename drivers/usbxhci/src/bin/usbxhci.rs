@@ -189,7 +189,7 @@ impl XhciRegisterIo for Platform<'_>{
         core::sync::atomic::fence(Ordering::SeqCst);
         Ok(())
     }
-    fn set_bus_master(&mut self,enabled:bool)->Result<(),()>{self.set_bus_master(enabled)}
+    fn set_bus_master(&mut self,enabled:bool)->Result<(),()>{Platform::set_bus_master(self,enabled)}
 }
 impl XhciPlatform for Platform<'_>{
     fn dma_mapping_ready(&self,allocation:DmaAllocation)->bool{
@@ -366,7 +366,7 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
     let adapter_prefix=unsafe{&*(adapter as *const DmaAdapterPrefix)};
     if adapter_prefix.operations.is_null(){return DRIVER_NOT_SUPPORTED}
     let operations=unsafe{&*adapter_prefix.operations};
-    if operations.size as usize<core::mem::size_of::<DmaOperationsPrefix>()
+    if (operations.size as usize)<core::mem::size_of::<DmaOperationsPrefix>()
         ||operations.allocate_common_buffer.is_none()||operations.free_common_buffer.is_none(){
         return DRIVER_NOT_SUPPORTED
     }
