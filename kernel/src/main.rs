@@ -26,10 +26,17 @@ mod boot_orchestration;
 static BOOT_COORDINATOR: boot_orchestration::BootCoordinator = boot_orchestration::BootCoordinator::new();
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
-#[path = "ntoskrnl/io/runtime.rs"]
-pub(crate) mod io;
 #[path = "ntoskrnl/io/wdm.rs"]
 pub(crate) mod wdm;
+/// Compatibility namespace for existing kernel call sites. The implementation
+/// is the single WDM manager; no parallel legacy I/O runtime is retained.
+pub(crate) mod io {
+    pub use crate::wdm::*;
+    pub use crate::wdm::Irp as WdmIrp;
+    pub mod wdm {
+        pub use crate::wdm::*;
+    }
+}
 #[path = "ntoskrnl/io/file_services.rs"]
 pub(crate) mod file_services;
 #[path = "ntoskrnl/io/ata_disk.rs"]
@@ -1091,15 +1098,6 @@ fn bind_xhci_pe_driver()->bool {
     }
 }
 
-fn io_smoke_dispatch(irp: &mut io::Irp) -> io::IoStatus {
-    irp.information = irp.length;
-    io::IoStatus::Success
-}
-
-fn io_smoke_pending_dispatch(_irp: &mut io::Irp) -> io::IoStatus {
-    io::IoStatus::Pending
-}
-
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -1958,52 +1956,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Object handles, named lookup, and access checks self-test passed.\r\n");
 
-        // Exercise an IRP through a registered synthetic device dispatch routine.
-        let mut dispatch: [Option<io::DispatchFn>; 16] = [None; 16];
-        dispatch[io::IRP_MJ_READ as usize] = Some(io_smoke_dispatch);
-        let device = match io::register_device(b"\\Device\\Smoke", dispatch) {
-            Ok(id) => id, Err(_) => { serial_write(b"FATAL: I/O device registration failed.\r\n"); halt(); }
-        };
-        let irp = match io::submit(device, io::IRP_MJ_READ, 0, 128) {
-            Ok(id) => id, Err(_) => { serial_write(b"FATAL: IRP allocation failed.\r\n"); halt(); }
-        };
-        if !matches!(io::dispatch_one(irp), Ok(io::IoStatus::Success))
-            || !matches!(io::query_irp(irp), Some(r) if r.completed && r.information == 128)
-            || io::release_irp(irp).is_err()
-        {
-            serial_write(b"FATAL: I/O manager IRP dispatch self-test failed.\r\n");
-            halt();
-        }
-        serial_write(b"I/O manager device dispatch and IRP completion self-test passed.\r\n");
-
-        // Verify pre-dispatch cancellation and asynchronous single-owner completion.
-        let cancelled = match io::submit(device, io::IRP_MJ_READ, 0, 16) {
-            Ok(id) => id, Err(_) => { serial_write(b"FATAL: I/O cancel fixture allocation failed.\r\n"); halt(); }
-        };
-        if io::cancel_irp(cancelled).is_err()
-            || !matches!(io::query_irp(cancelled), Some(r) if r.status == io::IoStatus::Cancelled && r.completed)
-            || io::release_irp(cancelled).is_err()
-        {
-            serial_write(b"FATAL: I/O cancellation self-test failed.\r\n"); halt();
-        }
-        let mut pending_dispatch: [Option<io::DispatchFn>; 16] = [None; 16];
-        pending_dispatch[io::IRP_MJ_READ as usize] = Some(io_smoke_pending_dispatch);
-        let pending_device = match io::register_device(b"\\Device\\AsyncSmoke", pending_dispatch) {
-            Ok(id) => id, Err(_) => { serial_write(b"FATAL: asynchronous I/O device registration failed.\r\n"); halt(); }
-        };
-        let pending_irp = match io::submit(pending_device, io::IRP_MJ_READ, 0, 64) {
-            Ok(id) => id, Err(_) => { serial_write(b"FATAL: pending IRP allocation failed.\r\n"); halt(); }
-        };
-        if io::dispatch_one(pending_irp) != Ok(io::IoStatus::Pending)
-            || io::dispatch_one(pending_irp) != Err(io::IoError::AlreadyInFlight)
-            || io::complete_irp(pending_irp, io::IoStatus::Success, 64).is_err()
-            || !matches!(io::query_irp(pending_irp), Some(r) if r.completed && !r.in_flight && r.information == 64)
-            || io::release_irp(pending_irp).is_err()
-        {
-            serial_write(b"FATAL: asynchronous IRP ownership/completion self-test failed.\r\n"); halt();
-        }
-        serial_write(b"I/O manager cancellation, in-flight ownership, and asynchronous completion tests passed.\r\n");
-        if !io::rundown_self_test() {
+        // Exercise the canonical WDM IRP/device implementation.
+        if !wdm::rundown_self_test() {
             serial_write(b"FATAL: WDM exactly-once completion or outstanding-IRP unload rundown self-test failed.\r\n");
             halt();
         }
