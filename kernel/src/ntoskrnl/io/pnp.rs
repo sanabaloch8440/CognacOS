@@ -246,6 +246,7 @@ pub struct PnpDeviceSnapshot {
     pub last_status: i32,
     pub start_attempts: u32,
     pub is_root: bool,
+    pub device_object: usize,
 }
 
 struct PnpDeviceNode {
@@ -263,6 +264,7 @@ struct PnpDeviceNode {
     last_status: core::sync::atomic::AtomicI32,
     start_attempts: AtomicU32,
     is_root: AtomicBool,
+    device_object: AtomicUsize,
     service_name: UnsafeCell<[u16;128]>,
     service_name_len: AtomicUsize,
 }
@@ -279,6 +281,7 @@ impl PnpDeviceNode {
             last_status: core::sync::atomic::AtomicI32::new(0),
             start_attempts: AtomicU32::new(0),
             is_root: AtomicBool::new(false),
+            device_object: AtomicUsize::new(0),
             service_name: UnsafeCell::new([0;128]),
             service_name_len: AtomicUsize::new(0),
         }
@@ -306,6 +309,31 @@ pub fn match_registry_services(hive:&crate::ntoskrnl::cm::hive::Hive<'_>)->Resul
         matched+=1;
     }
     Ok(matched)
+}
+
+/// Bind a devnode to its live PDO/FDO and retain an Object/I/O-manager
+/// reference until the devnode transitions to REMOVED. The reference is
+/// acquired before taking the devnode lock to preserve WDM lock ordering.
+pub fn bind_pnp_device_object(
+    index: u32,
+    device: *mut crate::io::DeviceObject,
+) -> Result<(), PnpError> {
+    if device.is_null() { return Err(PnpError::InvalidFunction); }
+    let referenced = unsafe { crate::io::io_reference_device_object(device) };
+    if referenced.is_null() { return Err(PnpError::InvalidState); }
+    let result = {
+        let _guard = lock_pnp_table();
+        let Some(node) = PNP_DEVICES.get(index as usize) else { return Err(PnpError::InvalidState); };
+        if matches!(node.state.load(Ordering::Acquire), PNP_DEVICE_EMPTY | PNP_DEVICE_REMOVED) {
+            Err(PnpError::InvalidState)
+        } else if node.device_object.compare_exchange(
+            0, device as usize, Ordering::AcqRel, Ordering::Acquire,
+        ).is_err() {
+            Err(PnpError::DuplicateDevice)
+        } else { Ok(()) }
+    };
+    if result.is_err() { unsafe { crate::io::io_dereference_device_object(referenced); } }
+    result
 }
 
 /// Copy the registry-selected service name for one devnode. A zero-length
@@ -364,6 +392,7 @@ pub fn register_root_device() -> Result<u32, PnpError> {
     node.last_status.store(0, Ordering::Relaxed); node.start_attempts.store(0, Ordering::Relaxed);
     node.service_name_len.store(0, Ordering::Relaxed);
     node.is_root.store(true, Ordering::Relaxed);
+    node.device_object.store(0, Ordering::Relaxed);
     node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
     Ok(index as u32)
 }
@@ -487,6 +516,7 @@ pub fn register_pci_information(
     node.last_status.store(0, Ordering::Relaxed);
     node.start_attempts.store(0, Ordering::Relaxed);
     node.is_root.store(false, Ordering::Relaxed);
+    node.device_object.store(0, Ordering::Relaxed);
     node.service_name_len.store(0, Ordering::Relaxed);
     node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
     Ok(index as u32)
@@ -609,7 +639,14 @@ pub fn transition_pnp_device(index: u32, next: u32, status: i32) -> Result<(), P
         node.start_attempts.fetch_add(1, Ordering::Relaxed);
     }
     node.last_status.store(status, Ordering::Relaxed);
+    let release_device = if next == PNP_DEVICE_REMOVED {
+        node.device_object.swap(0, Ordering::AcqRel)
+    } else { 0 };
     node.state.store(next, Ordering::Release);
+    drop(_guard);
+    if release_device != 0 {
+        unsafe { crate::io::io_dereference_device_object(release_device as *mut crate::io::DeviceObject); }
+    }
     Ok(())
 }
 
@@ -632,6 +669,7 @@ pub fn query_pnp_device(index: u32) -> Option<PnpDeviceSnapshot> {
         last_status: node.last_status.load(Ordering::Relaxed),
         start_attempts: node.start_attempts.load(Ordering::Relaxed),
         is_root: node.is_root.load(Ordering::Relaxed),
+        device_object: node.device_object.load(Ordering::Relaxed),
     })
 }
 
