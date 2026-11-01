@@ -39,8 +39,8 @@ type DriverDispatch=unsafe extern "win64" fn(*mut c_void,*mut c_void)->i32;
 }
 #[derive(Clone,Copy)] struct ChildRecord{used:bool,port:u8,pdo:u64}
 impl ChildRecord{const EMPTY:Self=Self{used:false,port:0,pdo:0};}
-struct HubRuntime{children:[ChildRecord;MAX_CHILDREN],pending_ports:[AtomicU64;4],relations:DeviceRelations,target_relations:[DeviceRelations;MAX_CHILDREN]}
-impl HubRuntime{const fn new()->Self{Self{children:[ChildRecord::EMPTY;MAX_CHILDREN],pending_ports:[const{AtomicU64::new(0)};4],relations:DeviceRelations{count:0,objects:[core::ptr::null_mut();64]},target_relations:[const{DeviceRelations{count:0,objects:[core::ptr::null_mut();64]}};MAX_CHILDREN]}}}
+struct HubRuntime{children:[ChildRecord;MAX_CHILDREN],pending_ports:[AtomicU64;4],relations:DeviceRelations,root_relations:DeviceRelations,target_relations:[DeviceRelations;MAX_CHILDREN]}
+impl HubRuntime{const fn new()->Self{Self{children:[ChildRecord::EMPTY;MAX_CHILDREN],pending_ports:[const{AtomicU64::new(0)};4],relations:DeviceRelations{count:0,objects:[core::ptr::null_mut();64]},root_relations:DeviceRelations{count:1,objects:[core::ptr::null_mut();64]},target_relations:[const{DeviceRelations{count:0,objects:[core::ptr::null_mut();64]}};MAX_CHILDREN]}}}
 struct RuntimeCell(UnsafeCell<MaybeUninit<HubRuntime>>);unsafe impl Sync for RuntimeCell{}
 static RUNTIME:RuntimeCell=RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
 static RUNTIME_READY:AtomicBool=AtomicBool::new(false);static RUNTIME_LOCK:AtomicBool=AtomicBool::new(false);
@@ -198,6 +198,8 @@ unsafe extern "win64" fn hub_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
  if major==0x1b&&minor==0x07{
   let relation=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};
   if relation==0{let p=snapshot_relations();if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,p as usize,0);}}return STATUS_SUCCESS}
+  if relation==1{let rt=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};let p=unsafe{core::ptr::addr_of!((*rt).root_relations)};if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,p as usize,0);}}return STATUS_SUCCESS}
+  if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,0,0);}}return STATUS_SUCCESS
  }
  let ext=unsafe{(*(hub as *mut DeviceObjectPrefix)).device_extension.cast::<HubFdoExtension>()};
  let lower=if ext.is_null()||unsafe{(*ext).magic}!=EXT_MAGIC{core::ptr::null_mut()}else{unsafe{(*ext).lower_device}};
@@ -228,7 +230,7 @@ unsafe extern "win64" fn hub_unload(_driver:*mut c_void){
  if ext.magic!=EXT_MAGIC||ext.version!=1||(ext.size as usize)<core::mem::size_of::<HubDriverExtension>()||ext.kernel_io.is_null()||ext.root_hub_device==0||ext.parent_bus_device==0||ext.port_count==0||ext.port_count>255||ext.event_sink.is_null()||ext.event_context.is_null()||ext.hub_device_out.is_null()||ext.child_factory_out.is_null(){return STATUS_INVALID_PARAMETER}
  let io=unsafe{&*ext.kernel_io};if !io.compatible(){return STATUS_INVALID_DEVICE_REQUEST}
  KERNEL_IO.store(ext.kernel_io as u64,Ordering::Release);ROOT_HUB.store(ext.root_hub_device,Ordering::Release);PORT_COUNT.store(ext.port_count as u64,Ordering::Release);DRIVER_OBJECT.store(driver as u64,Ordering::Release);
- let runtime_ptr=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};unsafe{runtime_ptr.write(HubRuntime::new());}RUNTIME_READY.store(true,Ordering::Release);
+ let runtime_ptr=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};unsafe{runtime_ptr.write(HubRuntime::new());(*runtime_ptr).root_relations.objects[0]=ext.root_hub_device as *mut c_void;}RUNTIME_READY.store(true,Ordering::Release);
  static NAME:[u16;22]=[92,68,101,118,105,99,101,92,67,111,103,110,97,99,85,115,98,72,117,98,51,0];
  let mut name=cognacos_nt_abi::object::UNICODE_STRING{length:42,maximum_length:44,buffer:NAME.as_ptr() as *mut u16};
  for f in object.major_function.iter_mut(){*f=Some(hub_dispatch);}object.driver_unload=Some(hub_unload);
