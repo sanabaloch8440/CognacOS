@@ -173,6 +173,68 @@ pub fn query_service_parameter(
 }
 
 
+/// Resolve an installed PCI device instance through the Windows Enum tree.
+/// The device's VEN/DEV hardware-ID key is matched first; the instance's
+/// REG_SZ Service value then selects the registry-configured driver service.
+/// This deliberately does not invent a private HardwareID value under Services.
+pub fn find_pci_device_service(
+    hive:&Hive<'_>,vendor_id:u16,device_id:u16,out:&mut[u16],
+)->Result<Option<usize>,ExtendedConfigError>{
+    if vendor_id==0||vendor_id==0xffff||out.is_empty(){return Ok(None)}
+    let mut enum_path=[0u16;16];
+    let enum_len=ascii("Enum\\PCI",&mut enum_path)?;
+    let pci_root=match hive.find_path(&enum_path[..enum_len]){
+        Ok(key)=>key,Err(HiveError::NotFound)=>return Ok(None),Err(error)=>return Err(error.into())
+    };
+    let mut wanted=[0u16;13];
+    let prefix=ascii("VEN_",&mut wanted)?;
+    let mut n=prefix;
+    n=append_hex4(vendor_id,&mut wanted,n)?;
+    wanted[n]=b'&' as u16;n+=1;
+    wanted[n]=b'D' as u16; n+=1;
+    wanted[n]=b'E' as u16; n+=1;
+    wanted[n]=b'V' as u16; n+=1;
+    wanted[n]=b'_' as u16; n+=1;
+    n=append_hex4(device_id,&mut wanted,n)?;
+    let child_count=pci_root.subkey_count()?;
+    for child_index in 0..child_count{
+        let hardware_key=pci_root.subkey_at(child_index)?;
+        let mut hardware_name=[0u16;128];
+        let hardware_len=hardware_key.name_utf16(&mut hardware_name)?;
+        if hardware_len<n||!eq(&hardware_name[..n],&wanted[..n]){continue}
+        let instances=hardware_key.subkey_count()?;
+        for instance_index in 0..instances{
+            let instance=hardware_key.subkey_at(instance_index)?;
+            let service=match instance.find_value(&[83,101,114,118,105,99,101]){
+                Ok(value)=>value,Err(HiveError::NotFound)=>continue,Err(error)=>return Err(error.into())
+            };
+            if service.kind!=1&&service.kind!=2{return Err(ExtendedConfigError::InvalidRegistryType)}
+            let bytes=service.data_len as usize;
+            if bytes<2||bytes%2!=0||bytes>512||bytes/2>out.len(){return Err(ExtendedConfigError::BufferTooSmall)}
+            let mut raw=[0u8;512];service.data(&mut raw[..bytes])?;
+            let units=bytes/2;
+            for i in 0..units{out[i]=u16::from_le_bytes([raw[i*2],raw[i*2+1]])}
+            if out[units-1]!=0||out[..units-1].contains(&0){return Err(ExtendedConfigError::InvalidGroup)}
+            let name_len=units-1;
+            if name_len==0{return Err(ExtendedConfigError::InvalidGroup)}
+            let details=query_service_details(hive,&out[..name_len],&mut [0u16;256])?;
+            if details.base.start==SERVICE_DISABLED{return Ok(None)}
+            if !matches!(details.base.service_type&SERVICE_TYPE_MASK,SERVICE_KERNEL_DRIVER|SERVICE_FILE_SYSTEM_DRIVER){
+                return Ok(None)
+            }
+            return Ok(Some(name_len))
+        }
+    }
+    Ok(None)
+}
+
+fn append_hex4(value:u16,out:&mut[u16],mut offset:usize)->Result<usize,ExtendedConfigError>{
+    const HEX:&[u8;16]=b"0123456789ABCDEF";
+    if offset.checked_add(4).is_none_or(|end|end>out.len()){return Err(ExtendedConfigError::BufferTooSmall)}
+    for shift in [12,8,4,0]{out[offset]=HEX[((value>>shift)&0xf) as usize] as u16;offset+=1;}
+    Ok(offset)
+}
+
 /// Read Control\\ServiceGroupOrder\\List from the active ControlSet.
 /// The caller receives the original validated REG_MULTI_SZ UTF-16 sequence.
 pub fn query_service_group_order(hive:&Hive<'_>,out:&mut[u16])->Result<usize,ExtendedConfigError>{
