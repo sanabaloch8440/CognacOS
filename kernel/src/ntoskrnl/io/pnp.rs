@@ -15,6 +15,7 @@ pub struct PciDeviceObject {
     pub size: u32,
     pub version: u32,
     pub ready: AtomicBool,
+    pub pdo_device_object: AtomicUsize,
     pub segment: AtomicU32,
     pub bus: AtomicU32,
     pub device: AtomicU32,
@@ -36,7 +37,7 @@ impl PciDeviceObject {
     const fn new() -> Self {
         Self { magic:XHCI_PNP_MAGIC, size:core::mem::size_of::<Self>() as u32,
             version:XHCI_PNP_VERSION, ready:AtomicBool::new(false),
-            segment:AtomicU32::new(0), bus:AtomicU32::new(0), device:AtomicU32::new(0),
+            pdo_device_object:AtomicUsize::new(0), segment:AtomicU32::new(0), bus:AtomicU32::new(0), device:AtomicU32::new(0),
             function:AtomicU32::new(0), vendor_id:AtomicU32::new(0), device_id:AtomicU32::new(0),
             requester_id:AtomicU32::new(0), interrupt_line:AtomicU32::new(0),
             interrupt_pin:AtomicU32::new(0), bar_physical:AtomicU64::new(0),
@@ -78,14 +79,15 @@ pub struct XhciPciResources {
 /// PCI bus mastering and does not imply DMA/interrupt readiness.
 pub fn publish_xhci(
     path:&cognacos_pci::PciRequesterPath,vendor_id:u16,device_id:u16,
-    interrupt_line:u8,interrupt_pin:u8,bar_physical:u64,bar_length:u64,bar_virtual:u64,
+    interrupt_line:u8,interrupt_pin:u8,pdo_device_object:*mut core::ffi::c_void,
+    bar_physical:u64,bar_length:u64,bar_virtual:u64,
 )->Result<u64,()> {
     let count=path.path_count as usize;
     if count==0||count>8||path.endpoint_device>=32||path.endpoint_function>=8
         ||path.path[count-1].device!=path.endpoint_device
         ||path.path[count-1].function!=path.endpoint_function
         ||path.path.iter().take(count).any(|p|p.device>=32||p.function>=8)
-        ||vendor_id==0||vendor_id==0xffff||bar_physical==0
+        ||pdo_device_object.is_null()||vendor_id==0||vendor_id==0xffff||bar_physical==0
         ||bar_length<0x20||bar_virtual==0||bar_physical.checked_add(bar_length).is_none()
         ||bar_virtual.checked_add(bar_length).is_none() { return Err(()); }
     if PUBLISH_LOCK.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){return Err(());}
@@ -93,6 +95,7 @@ pub fn publish_xhci(
         PUBLISH_LOCK.store(false,Ordering::Release);
         return Err(());
     }
+    XHCI_PCI_DEVICE.pdo_device_object.store(pdo_device_object as usize,Ordering::Relaxed);
     XHCI_PCI_DEVICE.segment.store(path.segment as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bus.store(path.endpoint_bus as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.device.store(path.endpoint_device as u32,Ordering::Relaxed);
@@ -116,7 +119,7 @@ pub fn publish_xhci(
     // before exposing the object to driver/DMA-adapter consumers.
     let requester_status = unsafe {
         crate::dma::iommu::RdotDmaRegisterDeviceRequester(
-            core::ptr::addr_of!(XHCI_PCI_DEVICE) as *mut core::ffi::c_void,
+            pdo_device_object,
             path.segment, path.endpoint_bus, path.endpoint_device, path.endpoint_function,
         )
     };
@@ -127,14 +130,14 @@ pub fn publish_xhci(
     }
     XHCI_PCI_DEVICE.ready.store(true,Ordering::Release);
     PUBLISH_LOCK.store(false,Ordering::Release);
-    Ok(core::ptr::addr_of!(XHCI_PCI_DEVICE) as u64)
+    Ok(pdo_device_object as u64)
 }
 
 pub fn xhci_resources()->Option<XhciPciResources> {
     let d=&XHCI_PCI_DEVICE;
     if !d.ready.load(Ordering::Acquire)||d.magic!=XHCI_PNP_MAGIC||d.version!=XHCI_PNP_VERSION{return None}
     Some(XhciPciResources{
-        device_object:core::ptr::addr_of!(XHCI_PCI_DEVICE) as u64,
+        device_object:d.pdo_device_object.load(Ordering::Relaxed) as u64,
         segment:d.segment.load(Ordering::Relaxed) as u16,
         bus:d.bus.load(Ordering::Relaxed) as u8,device:d.device.load(Ordering::Relaxed) as u8,
         function:d.function.load(Ordering::Relaxed) as u8,vendor_id:d.vendor_id.load(Ordering::Relaxed) as u16,
@@ -806,6 +809,7 @@ pub fn find_pnp_pci_function(segment:u16,bus:u8,device:u8,function:u8)->Option<u
 /// only after a fresh, validated resource-discovery pass.
 pub fn withdraw_xhci() {
     XHCI_PCI_DEVICE.ready.store(false,Ordering::Release);
+    XHCI_PCI_DEVICE.pdo_device_object.store(0,Ordering::Relaxed);
     XHCI_PCI_DEVICE.state.store(0,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bar_virtual.store(0,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bar_length.store(0,Ordering::Relaxed);
