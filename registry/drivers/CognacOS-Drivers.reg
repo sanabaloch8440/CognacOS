@@ -9,6 +9,15 @@ Windows Registry Editor Version 5.00
 "Failed"=dword:00000000
 "LastKnownGood"=dword:00000001
 
+; ACPI.sys validates firmware tables and publishes the ACPI firmware interface.
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\ACPI]
+"Type"=dword:00000001
+"Start"=dword:00000000
+"ErrorControl"=dword:00000001
+"Group"="Boot Bus Extender"
+"Tag"=dword:00000001
+"ImagePath"="\\SystemRoot\\System32\\drivers\\acpi.sys"
+
 ; PCI.sys is the boot-start PCI bus extender. It owns PCI configuration-space
 ; enumeration; the kernel supplies only MCFG mappings and WDM PDO callbacks.
 [HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\PCI]
@@ -16,7 +25,7 @@ Windows Registry Editor Version 5.00
 "Start"=dword:00000000
 "ErrorControl"=dword:00000001
 "Group"="Boot Bus Extender"
-"Tag"=dword:00000001
+"Tag"=dword:00000002
 "ImagePath"="\\SystemRoot\\System32\\drivers\\pci.sys"
 
 ; USBXHCI and Beep are separate service entries, not kernel hard-coded drivers.
