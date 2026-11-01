@@ -1119,11 +1119,6 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
     }
 }
 
-/// WDM driver services are implemented by the I/O manager, not by HAL.
-pub fn driver_kernel_io_service_table()->cognacos_hal_contract::KernelIoServiceTable{
-    crate::io::driver_kernel_io_service_table()
-}
-
 #[cfg(test)]
 mod driver_service_publication_tests {
     use super::*;
