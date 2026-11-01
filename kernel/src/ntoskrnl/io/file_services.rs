@@ -466,7 +466,7 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
      let mut state=STATE.lock();
      let slot=state.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
      let token=state.next_handle.wrapping_add(1).max(1)&(usize::MAX>>8);let token=token.max(1);state.next_handle=token;
-     let mut file_object=empty_file_object();file_object.device_object=device.cast();file_object.vpb=unsafe{(*device).vpb};
+     let mut file_object=empty_file_object();file_object.device_object=device.cast();file_object.vpb=unsafe{(*device).vpb.cast()};
      file_object.fs_context=(file_index+1) as *mut c_void;
      state.handles[slot]=HandleRecord{token,owner,file_index,active_io:0,closing:false,used:true,file_object};
      (slot,token)
