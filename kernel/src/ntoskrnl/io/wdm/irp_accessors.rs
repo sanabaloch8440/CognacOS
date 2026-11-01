@@ -104,3 +104,16 @@ pub unsafe fn io_write_stack_pointer<T>(stack: *mut IoStackLocation, offset: usi
     unsafe { ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(offset).cast::<*mut T>(), value); }
     true
 }
+
+/// Set IRP.IoStatus.Status from a completion or I/O-manager validation path.
+pub unsafe fn io_set_irp_status(irp: *mut Irp, status: i32) -> bool {
+    if irp.is_null() { return false; }
+    unsafe {
+        ptr::write_unaligned(
+            ptr::addr_of_mut!((*irp).bytes).cast::<u8>()
+                .add(IRP_IO_STATUS_STATUS_OFFSET).cast::<i32>(),
+            status
+        );
+    }
+    true
+}
