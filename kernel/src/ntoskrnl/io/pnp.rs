@@ -323,14 +323,16 @@ pub fn bind_pnp_device_object(
     if referenced.is_null() { return Err(PnpError::InvalidState); }
     let result = {
         let _guard = lock_pnp_table();
-        let Some(node) = PNP_DEVICES.get(index as usize) else { return Err(PnpError::InvalidState); };
-        if matches!(node.state.load(Ordering::Acquire), PNP_DEVICE_EMPTY | PNP_DEVICE_REMOVED) {
-            Err(PnpError::InvalidState)
-        } else if node.device_object.compare_exchange(
-            0, device as usize, Ordering::AcqRel, Ordering::Acquire,
-        ).is_err() {
-            Err(PnpError::DuplicateDevice)
-        } else { Ok(()) }
+        match PNP_DEVICES.get(index as usize) {
+            None => Err(PnpError::InvalidState),
+            Some(node) if matches!(node.state.load(Ordering::Acquire), PNP_DEVICE_EMPTY | PNP_DEVICE_REMOVED) => {
+                Err(PnpError::InvalidState)
+            }
+            Some(node) if node.device_object.compare_exchange(
+                0, device as usize, Ordering::AcqRel, Ordering::Acquire,
+            ).is_err() => Err(PnpError::DuplicateDevice),
+            Some(_) => Ok(()),
+        }
     };
     if result.is_err() { unsafe { crate::io::io_dereference_device_object(referenced); } }
     result
