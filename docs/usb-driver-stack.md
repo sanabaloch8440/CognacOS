@@ -10,7 +10,7 @@ CognacOS follows that separation. The selected implementation is `usbhub3.sys`, 
 |---|---|---|
 | drivers/usbxhci | xHCI capabilities, TRBs, command/event rings, DMA resource lifecycle, controller startup/stop, event dispatch primitives | Host-testable controller core; live kernel service wiring and QEMU end-to-end proof remain incomplete |
 | drivers/usbhub3 | USB2/SuperSpeed hub descriptor validation, device/configuration descriptor validation, hub port state and generation tracking, enumeration policy | New separated policy library and native PE32+ DriverEntry contract; not operational until kernel PnP/URB services publish the required extension |
-| UCX-equivalent kernel service | Queues host requests and routes hub requests to the controller | Not yet a complete, stable public driver contract |
+| drivers/ucx01020 | UCX 1.2.0-compatible controller/root-hub handles, endpoint state, bounded asynchronous request tracking, completion correlation, cancellation and generation checks | New no_std core; kernel PnP/IRP/URB/DMA/interrupt adapters and a loadable PE driver are not yet wired |
 | drivers/hidclass, drivers/kbdhid, drivers/kbdclass | HID collection/report processing and keyboard input delivery | Separate foundations exist; USB endpoint/transfer completion is not yet connected end to end |
 
 ## Safety and completion criteria
@@ -34,3 +34,14 @@ Likewise, **usbxhci.sys is not yet end-to-end ready**. It contains controller pr
 - [USB host-side drivers in Windows](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-3-0-driver-stack-architecture)
 - [Architecture of USB Host Controller Extension (UCX)](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/get-started-with-host-controller-driver-development)
 - [USB Device Class Drivers Included in Windows](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/supported-usb-classes)
+
+## UCX implementation boundary
+
+The new `drivers/ucx01020` crate implements the first native UCX-equivalent core: controller and root-hub handles, endpoint objects, asynchronous request records, exactly-once completion correlation, endpoint abort/rundown gating, and stale-generation rejection. It intentionally does not claim to be a Microsoft-compatible WDF/UCX binary. Microsoft's public host-controller documentation identifies the inbox extension as `Ucx01000.sys`; the `ucx01020` name here is CognacOS's requested 1.2.0 interface-version target, not a claim about Microsoft's shipped filename or private implementation.
+
+The remaining adapter work is substantial: create kernel device objects and dispatch PnP/IRPs, parse and validate URBs, create UCX-equivalent controller/root-hub/device/endpoint objects from PnP callbacks, bridge endpoint queues to xHCI transfer rings and DPC completions, publish root-hub port-change notifications, and integrate DMA/IOMMU teardown. Until those pieces exist, the core is host-testable policy/state machinery, not a boot-loadable `ucx01020.sys`.
+
+Public architecture references:
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/developing-windows-drivers-for-usb-host-controllers
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/ucx-objects-and-handles-used-by-host-controller-driver
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/configuring-usb-endpoints-in-a-host-controller-driver
