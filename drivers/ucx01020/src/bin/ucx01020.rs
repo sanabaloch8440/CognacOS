@@ -1,7 +1,8 @@
 #![no_std]
 #![no_main]
 use core::{cell::UnsafeCell,ffi::c_void,mem::MaybeUninit,sync::atomic::{AtomicBool,AtomicU64,Ordering}};
-use cognacos_hal_contract::{HalServiceTable,KernelIoServiceTable};
+use cognacos_hal_contract::{DeviceServiceTable,HalServiceTable,KernelIoServiceTable};
+use cognacos_ucx01020::dma::{DeviceDma,DmaBuffer,UCX_DMA_COMMON_BUFFER_FLAGS};
 use cognacos_ucx01020::root_hub::{self,PortStatus,RootHubNotifications,RootHubPortIo,SetupPacket};
 use cognacos_ucx01020::wdm::{UrbHeader,URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER,URB_FUNCTION_CONTROL_TRANSFER};
 const EXT_MAGIC:u64=0x434f_474e_4143_5543;
@@ -21,7 +22,8 @@ struct XhciTrb{parameter:u64,status:u32,control:u32}
 #[repr(C)]
 pub struct UcxDriverExtension{
  magic:u64,size:u32,version:u32,parent_bus_device:u64,
- kernel_io:*const KernelIoServiceTable,hal:*const HalServiceTable,
+ kernel_io:*const KernelIoServiceTable,device_services:*const DeviceServiceTable,dma_device_object:u64,
+ hal:*const KernelIoServiceTable,hal:*const HalServiceTable,
  event_sink:*mut AtomicU64,event_context:*mut AtomicU64,
  mmio_base:u64,operational_offset:u32,port_count:u32,
  hub_event_sink:*mut AtomicU64,hub_event_context:*mut AtomicU64,
@@ -71,6 +73,8 @@ static HAL_TABLE:AtomicU64=AtomicU64::new(0);
 static MMIO_BASE:AtomicU64=AtomicU64::new(0);
 static OPERATIONAL_OFFSET:AtomicU64=AtomicU64::new(0);
 static PORT_COUNT:AtomicU64=AtomicU64::new(0);
+static DEVICE_SERVICES:AtomicU64=AtomicU64::new(0);
+static DMA_DEVICE_OBJECT:AtomicU64=AtomicU64::new(0);
 static PARENT_BUS_DEVICE:AtomicU64=AtomicU64::new(0);
 fn lock_runtime(){while RUNTIME_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}}
 fn unlock_runtime(){RUNTIME_LOCK.store(false,Ordering::Release);}
@@ -269,6 +273,26 @@ unsafe extern "win64" fn ucx_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
  }
  status
 }
+/// Allocate and validate a common buffer in the xHCI PCI device's DMA domain.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn UcxAllocateDmaBuffer(
+ length:u64,alignment:u64,maximum_address:u64,flags:u32,
+ cpu_out:*mut u64,device_out:*mut u64
+)->i32{
+ if cpu_out.is_null()||device_out.is_null(){return STATUS_INVALID_PARAMETER}
+ let services=DEVICE_SERVICES.load(Ordering::Acquire) as *const DeviceServiceTable;
+ let allocator=DeviceDma::new(services,DMA_DEVICE_OBJECT.load(Ordering::Acquire));
+ match allocator.allocate(length,alignment,maximum_address,flags){
+  Ok(b)=>{unsafe{cpu_out.write(b.cpu_address);device_out.write(b.device_address);}STATUS_SUCCESS},
+  Err(_)=>STATUS_INSUFFICIENT_RESOURCES
+ }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn UcxFreeDmaBuffer(cpu:u64,device:u64,length:u64,flags:u32)->i32{
+ let services=DEVICE_SERVICES.load(Ordering::Acquire) as *const DeviceServiceTable;
+ let allocator=DeviceDma::new(services,DMA_DEVICE_OBJECT.load(Ordering::Acquire));
+ match allocator.free(DmaBuffer{cpu_address:cpu,device_address:device,length,flags}){Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_INVALID_PARAMETER}
+}
 unsafe extern "win64" fn ucx_event_sink(context:u64,event:*const XhciTrb){
  if context==0||event.is_null()||!RUNTIME_READY.load(Ordering::Acquire){return}
  let e=unsafe{*event};let ty=((e.control>>10)&0x3f) as u8;if ty!=TRB_TYPE_PORT_STATUS_CHANGE{return}
@@ -302,11 +326,12 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
  let object=unsafe{&mut *(driver as *mut DriverObject)};
  let Some(ext)=(unsafe{object.driver_extension.as_ref()}) else{return STATUS_INVALID_PARAMETER};
  if ext.magic!=EXT_MAGIC||ext.version!=1||(ext.size as usize)<core::mem::size_of::<UcxDriverExtension>()
-  ||ext.parent_bus_device==0||ext.kernel_io.is_null()||ext.hal.is_null()||ext.event_sink.is_null()||ext.event_context.is_null()
+  ||ext.parent_bus_device==0||ext.kernel_io.is_null()||ext.device_services.is_null()||ext.dma_device_object==0||ext.hal.is_null()||ext.event_sink.is_null()||ext.event_context.is_null()
   ||ext.root_hub_device_out.is_null()||ext.hub_event_sink.is_null()||ext.hub_event_context.is_null()||ext.mmio_base==0||ext.operational_offset<0x20||ext.port_count==0||ext.port_count>255{return STATUS_INVALID_PARAMETER}
- let io=unsafe{&*ext.kernel_io};let hal=unsafe{&*ext.hal};
- if !io.compatible()||!hal.compatible()||hal.read_mmio_u32.is_none()||hal.write_mmio_u32.is_none(){return STATUS_INVALID_DEVICE_REQUEST}
+ let io=unsafe{&*ext.kernel_io};let hal=unsafe{&*ext.hal};let device=unsafe{&*ext.device_services};
+ if !io.compatible()||!hal.compatible()||!device.compatible()||!device.has_dma()||hal.read_mmio_u32.is_none()||hal.write_mmio_u32.is_none(){return STATUS_INVALID_DEVICE_REQUEST}
  KERNEL_IO.store(ext.kernel_io as u64,Ordering::Release);HAL_TABLE.store(ext.hal as u64,Ordering::Release);PARENT_BUS_DEVICE.store(ext.parent_bus_device,Ordering::Release);
+ DEVICE_SERVICES.store(ext.device_services as u64,Ordering::Release);DMA_DEVICE_OBJECT.store(ext.dma_device_object,Ordering::Release);
  EVENT_SINK_SLOT.store(ext.event_sink as u64,Ordering::Release);EVENT_CONTEXT_SLOT.store(ext.event_context as u64,Ordering::Release);
  HUB_EVENT_SINK_SLOT.store(ext.hub_event_sink as u64,Ordering::Release);HUB_EVENT_CONTEXT_SLOT.store(ext.hub_event_context as u64,Ordering::Release);
  MMIO_BASE.store(ext.mmio_base,Ordering::Release);OPERATIONAL_OFFSET.store(ext.operational_offset as u64,Ordering::Release);PORT_COUNT.store(ext.port_count as u64,Ordering::Release);
