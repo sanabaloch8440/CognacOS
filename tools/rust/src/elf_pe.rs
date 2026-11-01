@@ -290,6 +290,39 @@ mod tests{
   assert_eq!(u32at(&pe,raw+eat+4).unwrap(),0);
   assert_eq!(u32at(&pe,raw+eat+8).unwrap(),0x1000);
  }
+ #[test] fn emits_standard_pe_import_directory_for_ntoskrnl_iat(){
+  let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
+  b[16..18].copy_from_slice(&2u16.to_le_bytes());b[18..20].copy_from_slice(&62u16.to_le_bytes());
+  b[24..32].copy_from_slice(&(BASE+0x1000).to_le_bytes());b[32..40].copy_from_slice(&64u64.to_le_bytes());
+  b[52..54].copy_from_slice(&64u16.to_le_bytes());b[54..56].copy_from_slice(&56u16.to_le_bytes());b[56..58].copy_from_slice(&1u16.to_le_bytes());
+  let p=64usize;b[p..p+4].copy_from_slice(&1u32.to_le_bytes());b[p+4..p+8].copy_from_slice(&5u32.to_le_bytes());
+  b[p+8..p+16].copy_from_slice(&0x1000u64.to_le_bytes());b[p+16..p+24].copy_from_slice(&(BASE+0x1000).to_le_bytes());
+  b[p+32..p+40].copy_from_slice(&4u64.to_le_bytes());b[p+40..p+48].copy_from_slice(&0x1000u64.to_le_bytes());
+  b[0x1000..0x1004].copy_from_slice(&[0x90,0x90,0xeb,0xfe]);
+  let mut pe=convert_elf64_to_pe32plus(&b,BASE,false).unwrap();
+  let slots=[
+   ImportSlot{dll:"ntoskrnl.exe".into(),name:"MmMapIoSpace".into(),rva:0x2000,section:2},
+   ImportSlot{dll:"ntoskrnl.exe".into(),name:"MmUnmapIoSpace".into(),rva:0x2008,section:2},
+  ];
+  append_import_section(&mut pe,&slots).unwrap();
+  let peoff=u32at(&pe,0x3c).unwrap() as usize;let opt=peoff+24;
+  assert_eq!(u16at(&pe,peoff+6).unwrap(),2);
+  let import_rva=u32at(&pe,opt+112+8).unwrap();let import_size=u32at(&pe,opt+112+12).unwrap();
+  assert_ne!(import_rva,0);assert_eq!(import_size,40);
+  let sh=opt+240+40;assert_eq!(&pe[sh..sh+6],b".idata");
+  let raw=u32at(&pe,sh+20).unwrap() as usize;
+  let oft=u32at(&pe,raw).unwrap() as usize;
+  let dll_rva=u32at(&pe,raw+12).unwrap() as usize;
+  assert_eq!(u32at(&pe,raw+16).unwrap(),0x2000);
+  let rva_base=u32at(&pe,sh+12).unwrap() as usize;
+  let dll_off=raw+(dll_rva-rva_base);
+  assert_eq!(&pe[dll_off..dll_off+12],b"ntoskrnl.exe\0");
+  let ilt_off=raw+(oft-rva_base);
+  let first_name_rva=u64::from_le_bytes(pe[ilt_off..ilt_off+8].try_into().unwrap()) as usize;
+  let first_name_off=raw+(first_name_rva-rva_base);
+  assert_eq!(u16at(&pe,first_name_off).unwrap(),0);
+  assert_eq!(&pe[first_name_off+2..first_name_off+14],b"MmMapIoSpace\0");
+ }
  #[test] fn converts_minimal_static_elf_to_amd64_pe32plus(){
   let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
   b[16..18].copy_from_slice(&2u16.to_le_bytes());b[18..20].copy_from_slice(&62u16.to_le_bytes());
