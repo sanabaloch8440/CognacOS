@@ -23,7 +23,7 @@ pub(crate) struct SystemRegistryState {
 
 // Boot runs this before secondary processors and the general scheduler are
 // online. The fixed storage therefore remains stable for the next boot phase.
-static mut BOOT_DRIVER_SERVICE_NAMES: [[u16; 128]; 64] = [[0; 128]; 64;]
+static mut BOOT_DRIVER_SERVICE_NAMES: [[u16; 128]; 64] = [[0; 128]; 64];
 
 
 /// Validate the mounted SYSTEM hive and its active control-set selection.
