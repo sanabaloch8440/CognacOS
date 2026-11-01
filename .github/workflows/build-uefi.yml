@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- reg_hive::tests
-          cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- reg-hive registry/drivers/CognacOS-Drivers.reg build/registry/SYSTEM
+          cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- reg-hive registry/drivers/CognacOS-Drivers.reg build/registry/SYSTEM registry/drivers/InputDrivers.reg registry/drivers/StorageDrivers.reg
           test -s build/registry/SYSTEM
           grep -a -q 'regf' build/registry/SYSTEM
       - name: Ensure third-party filesystem sources are absent
