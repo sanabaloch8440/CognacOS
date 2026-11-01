@@ -1,4 +1,6 @@
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
+#[path = "ps/process.rs"]
+pub(crate) mod process;
 //! Entries describe export names/ordinals only; they are not all implemented APIs.
 pub const EXPORTS: &[(&str, u16)] = &[
     ("PsAcquireProcessExitSynchronization", 1935),

@@ -461,7 +461,7 @@ jobs:
               pub fn debug_trace_store_write(_: u64, _: &[u8]) -> bool { false }
           }
           mod debug {
-              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/ntoskrnl/debug.rs"));
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/kernel/debug.rs"));
           }
           RS
           rustc --edition=2024 --test /tmp/cognacos-ntoskrnl-debug-tests.rs -o /tmp/cognacos-ntoskrnl-debug-tests
@@ -485,7 +485,7 @@ jobs:
               }
           }
           mod debug_console {
-              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/ntoskrnl/debug_console.rs"));
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/kernel/debug_console.rs"));
           }
           RS
           rustc --edition=2024 --test /tmp/cognacos-debug-console-tests.rs -o /tmp/cognacos-debug-console-tests
@@ -493,18 +493,18 @@ jobs:
       - name: Test legacy kernel diagnostic trace publication and wraparound
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/ke/diagnostics.rs -o /tmp/cognacos-kernel-diagnostics-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/ke/diagnostics.rs -o /tmp/cognacos-kernel-diagnostics-tests
           /tmp/cognacos-kernel-diagnostics-tests
       - name: Test bounded ALPC transport core
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/alpc.rs -o /tmp/cognacos-alpc-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/alpc.rs -o /tmp/cognacos-alpc-tests
           /tmp/cognacos-alpc-tests
       - name: Test ALPC section/security/completion resource core
         shell: bash
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/alpc_resources.rs -o /tmp/cognacos-alpc-resource-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/alpc_resources.rs -o /tmp/cognacos-alpc-resource-tests
           /tmp/cognacos-alpc-resource-tests
       - name: Test Rust-native build and PE tooling
         run: cargo test --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml
@@ -667,32 +667,32 @@ jobs:
       - name: Run host-side physical allocator map tests
         run: |
           mkdir -p build
-          rustc --edition=2021 --test ntoskrnl/src/ntoskrnl/mm/physical.rs -o build/memory-tests
+          rustc --edition=2021 --test ntoskrnl/src/kernel/mm/physical.rs -o build/memory-tests
           build/memory-tests
       - name: Run host-side ACPI NUMA topology tests
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2021 --test ntoskrnl/src/ntoskrnl/mm/topology.rs -o build/mm-topology-tests
+          rustc --edition=2021 --test ntoskrnl/src/kernel/mm/topology.rs -o build/mm-topology-tests
           build/mm-topology-tests
       - name: Run host-side Ke timer-generation regression tests
         run: |
           mkdir -p build
-          rustc --edition=2021 --test ntoskrnl/src/ntoskrnl/ke/timer_generation.rs -o build/ke-timer-generation-tests
+          rustc --edition=2021 --test ntoskrnl/src/kernel/ke/timer_generation.rs -o build/ke-timer-generation-tests
           build/ke-timer-generation-tests
       - name: Test native NT RTL memory ABI primitives
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/rtl_runtime/memory.rs -o build/rtl-memory-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/rtl_runtime/memory.rs -o build/rtl-memory-tests
           build/rtl-memory-tests
       - name: Run native Windows hive and NLS parser tests
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/cm/hive.rs -o build/registry-hive-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/cm/hive.rs -o build/registry-hive-tests
           build/registry-hive-tests
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/rtl_runtime/nls.rs -o build/nls-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/rtl_runtime/nls.rs -o build/nls-tests
           build/nls-tests
       - name: Run host-side registry driver-configuration tests
         run: |
@@ -704,13 +704,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/cm/runtime.rs -o build/registry-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/cm/runtime.rs -o build/registry-tests
           build/registry-tests
       - name: Run host-side Object Manager lifecycle and security tests
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/ob/runtime.rs -o build/object-manager-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/ob/runtime.rs -o build/object-manager-tests
           build/object-manager-tests --test-threads=1
       - name: Run host-side Security Reference Monitor tests
         run: |
@@ -722,7 +722,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test ntoskrnl/src/ntoskrnl/po/hibernate.rs -o build/hibernation-tests
+          rustc --edition=2024 --test ntoskrnl/src/kernel/po/hibernate.rs -o build/hibernation-tests
           build/hibernation-tests
       - name: Validate Windows x64 WDM source contracts
         run: cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-wdm-source-contracts
@@ -736,11 +736,11 @@ jobs:
         run: cargo build --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none --features diagnostic-vm
       - name: Convert debug and release kernels to PE32+
         run: |
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe --export-manifest ntoskrnl/src/ntoskrnl/manifest_26100.json
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel-release.exe --export-manifest ntoskrnl/src/ntoskrnl/manifest_26100.json
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe --export-manifest ntoskrnl/src/kernel/manifest_26100.json
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel-release.exe --export-manifest ntoskrnl/src/kernel/manifest_26100.json
           file build/cognacos-kernel.exe build/cognacos-kernel-release.exe
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe ntoskrnl/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp IoCreateDevice IoDeleteDevice MmMapIoSpace MmUnmapIoSpace
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe ntoskrnl/src/ntoskrnl/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe ntoskrnl/src/kernel/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp IoCreateDevice IoDeleteDevice MmMapIoSpace MmUnmapIoSpace
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe ntoskrnl/src/kernel/manifest_26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
           python3 - <<'PY'
           import struct
           p = open("build/cognacos-kernel.exe", "rb").read()

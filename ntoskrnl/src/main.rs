@@ -8,8 +8,6 @@ pub(crate) use ntoskrnl::mm::{kernel_space as kernel_vm, pagefile, physical as m
 pub(crate) use ntoskrnl::se::runtime as security;
 mod user;
 mod pe;
-mod process;
-mod syscall;
 mod winabi;
 mod pe_runtime;
 mod pe_modules;
@@ -18,7 +16,6 @@ mod pe_dependencies;
 mod usermode;
 use cognacos_acpi as acpi;
 use cognacos_pci as pci;
-mod dma;
 #[path = "../../Hal/mod.rs"]
 mod hal;
 mod smp;
@@ -27,7 +24,7 @@ mod boot_orchestration;
 static BOOT_COORDINATOR: boot_orchestration::BootCoordinator = boot_orchestration::BootCoordinator::new();
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
-#[path = "ntoskrnl/io/wdm.rs"]
+#[path = "kernel/io/wdm.rs"]
 pub(crate) mod wdm;
 /// Compatibility namespace for existing kernel call sites. The implementation
 /// is the single WDM manager; no parallel legacy I/O runtime is retained.
@@ -38,14 +35,18 @@ pub(crate) mod io {
         pub use crate::wdm::*;
     }
 }
-#[path = "ntoskrnl/io/file_services.rs"]
+#[path = "kernel/io/file_services.rs"]
 pub(crate) mod file_services;
-#[path = "ntoskrnl/io/ata_disk.rs"]
+#[path = "kernel/io/ata_disk.rs"]
 mod ata_disk;
 use cognacos_ext4 as extfs;
 pub(crate) use ntoskrnl::rtl_runtime::nls;
+#[path = "kernel/mod.rs"]
 mod ntoskrnl;
-#[path = "ntoskrnl/debug_console.rs"]
+pub(crate) use ntoskrnl::ps::process;
+pub(crate) use ntoskrnl::ke::syscall;
+pub(crate) use ntoskrnl::io::dma;
+#[path = "kernel/debug_console.rs"]
 mod debug_console;
 
 use core::arch::asm;

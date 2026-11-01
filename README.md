@@ -47,7 +47,7 @@ These are implementation foundations, not declarations of full Windows 11 compat
 
 ## Repository map
 
-- ntoskrnl/src/ntoskrnl/ — NT executive, memory manager, I/O manager, process and object services
+- ntoskrnl/src/kernel/ — NT executive, memory manager, I/O manager, process and object services
 - Hal/ — hardware abstraction layer
 - shared/nt-abi/ — shared NT-style Rust ABI definitions
 - ntdll/src/ — Rust NTDLL exports and native runtime

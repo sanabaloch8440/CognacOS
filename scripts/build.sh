@@ -82,9 +82,9 @@ build_images() {
   mkdir -p build
   cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus \
     target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe \
-    --export-manifest ntoskrnl/src/ntoskrnl/manifest_26100.json
+    --export-manifest ntoskrnl/src/kernel/manifest_26100.json
   cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports \
-    build/cognacos-kernel.exe ntoskrnl/src/ntoskrnl/manifest_26100.json
+    build/cognacos-kernel.exe ntoskrnl/src/kernel/manifest_26100.json
   cargo check --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi
 }
 
