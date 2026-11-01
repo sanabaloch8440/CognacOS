@@ -530,13 +530,20 @@ unsafe extern "win64" fn kernel_io_set_completion(
     routine:Option<cognacos_hal_contract::IoCompletionRoutine>,
     context:*mut core::ffi::c_void,success:u8,error:u8,cancel:u8
 ){
-    unsafe{crate::io::io_set_completion_routine(irp.cast(),routine,context,success,error,cancel);}
+    let callback:Option<crate::io::wdm::IoCompletionRoutine>=routine.map(|f|unsafe{
+        core::mem::transmute::<cognacos_hal_contract::IoCompletionRoutine,crate::io::wdm::IoCompletionRoutine>(f)
+    });
+    unsafe{crate::io::io_set_completion_routine(irp.cast(),callback,context,success,error,cancel);}
 }
 unsafe extern "win64" fn kernel_io_set_cancel(
     irp:*mut core::ffi::c_void,
     routine:Option<cognacos_hal_contract::IoCancelRoutine>
 )->Option<cognacos_hal_contract::IoCancelRoutine>{
-    unsafe{crate::io::io_set_cancel_routine(irp.cast(),routine)}
+    let callback:Option<crate::io::wdm::DriverCancelRoutine>=routine.map(|f|unsafe{
+        core::mem::transmute::<cognacos_hal_contract::IoCancelRoutine,crate::io::wdm::DriverCancelRoutine>(f)
+    });
+    let old=unsafe{crate::io::io_set_cancel_routine(irp.cast(),callback)};
+    old.map(|f|unsafe{core::mem::transmute::<crate::io::wdm::DriverCancelRoutine,cognacos_hal_contract::IoCancelRoutine>(f)})
 }
 unsafe extern "win64" fn kernel_io_cancel_irp(irp:*mut core::ffi::c_void)->u8{
     unsafe{crate::io::io_cancel_irp(irp.cast())}
