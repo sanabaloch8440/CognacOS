@@ -36,7 +36,7 @@ fn path_equal(a: &[u8], b: &[u8]) -> bool { a.len() == b.len() && a.iter().zip(b
 /// Register immutable bytes under an absolute NT-style path. The provider must
 /// keep the byte range mapped and immutable until the kernel shuts down.
 pub fn register_static(path: &[u8], bytes: &'static [u8]) -> Result<(), i32> {
-    if path.is_empty() || path.len() > MAX_PATH_BYTES || !path.starts_with(b"\\") || bytes.is_empty() {
+    if path.is_empty() || path.len() > MAX_PATH_BYTES || !path.starts_with(b"\\") {
         return Err(STATUS_INVALID_PARAMETER);
     }
     let mut state = STATE.lock();
