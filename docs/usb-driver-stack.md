@@ -19,9 +19,9 @@ CognacOS follows that separation. The selected implementation is `usbhub3.sys`, 
 - DMA spans must be aligned and within the device address limit; translation invalidation and teardown must complete before pages can be reused.
 - Interrupt resources must be assigned by PnP/HAL, then route to an ISR and deferred event-ring processing. A host unit test does not prove this path.
 - The hub state machine increments a port generation when removal/failure begins so late completions can be rejected. The kernel must still enforce rundown, cancel pending URBs and wait for hardware/DPC quiescence before freeing resources.
-- Enumeration acceptance requires live port-change events, port reset, Enable Slot/Address Device, EP0 control transfers, device/configuration descriptors, endpoint configuration, and child PDO creation.
+- Enumeration acceptance requires live port-change events, port reset, the initial eight-byte device descriptor at address zero, Enable Slot/Address Device with the discovered EP0 packet size, the full device descriptor, two-stage configuration descriptor retrieval, endpoint/configuration programming, and child PDO publication.
 - Keyboard acceptance requires a real HID interrupt-IN transfer, transfer-event completion, report delivery through HIDClass/KbdHid/KbdClass and an OS-visible key event.
-- Power/removal acceptance requires QEMU tests for D0 exit/entry, disconnect during an outstanding transfer, controller reset, IOMMU unmap/invalidation, interrupt synchronization and no stale DMA/interrupt access.
+- Power/removal acceptance requires QEMU tests for D0 exit/entry, disconnect during an outstanding transfer, controller reset, IOMMU unmap/invalidation, interrupt synchronization and no stale DMA/interrupt access. Endpoint abort uses endpoint-scoped quiescence; controller reset/removal uses a separate controller-wide quiescence proof.
 
 ## Current assessment
 
