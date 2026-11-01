@@ -23,6 +23,7 @@ pub struct UcxDriverExtension{
  kernel_io:*const KernelIoServiceTable,hal:*const HalServiceTable,
  event_sink:*mut AtomicU64,event_context:*mut AtomicU64,
  mmio_base:u64,operational_offset:u32,port_count:u32,
+ hub_event_sink:*mut AtomicU64,hub_event_context:*mut AtomicU64,
  root_hub_device_out:*mut u64,
 }
 type DriverDispatch=unsafe extern "win64" fn(*mut c_void,*mut c_void)->i32;
@@ -63,6 +64,8 @@ static CONTROLLER_DEVICE:AtomicU64=AtomicU64::new(0);
 static KERNEL_IO:AtomicU64=AtomicU64::new(0);
 static EVENT_SINK_SLOT:AtomicU64=AtomicU64::new(0);
 static EVENT_CONTEXT_SLOT:AtomicU64=AtomicU64::new(0);
+static HUB_EVENT_SINK_SLOT:AtomicU64=AtomicU64::new(0);
+static HUB_EVENT_CONTEXT_SLOT:AtomicU64=AtomicU64::new(0);
 static HAL_TABLE:AtomicU64=AtomicU64::new(0);
 static MMIO_BASE:AtomicU64=AtomicU64::new(0);
 static OPERATIONAL_OFFSET:AtomicU64=AtomicU64::new(0);
@@ -108,6 +111,9 @@ unsafe extern "win64" fn xhci_event_sink(context:u64,event:*const XhciTrb){
  let result=unsafe{(*rt_ptr).notifications.notify_port(port)};
  unlock_runtime();
  if result.is_ok(){try_complete_pending();}
+ let hs=HUB_EVENT_SINK_SLOT.load(Ordering::Acquire) as *mut AtomicU64;
+ let hc=HUB_EVENT_CONTEXT_SLOT.load(Ordering::Acquire) as *mut AtomicU64;
+ if !hs.is_null()&&!hc.is_null(){let sink=unsafe{(*hs).load(Ordering::Acquire)};let context=unsafe{(*hc).load(Ordering::Acquire)};if sink!=0{let callback:unsafe extern "win64" fn(u64,*const XhciTrb)=unsafe{core::mem::transmute(sink as usize)};unsafe{callback(context,&e);}}}
 }
 struct PortIo{hal:&'static HalServiceTable,base:u64,op:u32,ports:u8}
 impl PortIo{
@@ -271,11 +277,12 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
  let Some(ext)=(unsafe{object.driver_extension.as_ref()}) else{return STATUS_INVALID_PARAMETER};
  if ext.magic!=EXT_MAGIC||ext.version!=1||ext.size as usize<core::mem::size_of::<UcxDriverExtension>()
   ||ext.kernel_io.is_null()||ext.hal.is_null()||ext.event_sink.is_null()||ext.event_context.is_null()
-  ||ext.root_hub_device_out.is_null()||ext.mmio_base==0||ext.operational_offset<0x20||ext.port_count==0||ext.port_count>255{return STATUS_INVALID_PARAMETER}
+  ||ext.root_hub_device_out.is_null()||ext.hub_event_sink.is_null()||ext.hub_event_context.is_null()||ext.mmio_base==0||ext.operational_offset<0x20||ext.port_count==0||ext.port_count>255{return STATUS_INVALID_PARAMETER}
  let io=unsafe{&*ext.kernel_io};let hal=unsafe{&*ext.hal};
  if !io.compatible()||!hal.compatible()||hal.read_mmio_u32.is_none()||hal.write_mmio_u32.is_none(){return STATUS_INVALID_DEVICE_REQUEST}
  KERNEL_IO.store(ext.kernel_io as u64,Ordering::Release);HAL_TABLE.store(ext.hal as u64,Ordering::Release);
  EVENT_SINK_SLOT.store(ext.event_sink as u64,Ordering::Release);EVENT_CONTEXT_SLOT.store(ext.event_context as u64,Ordering::Release);
+ HUB_EVENT_SINK_SLOT.store(ext.hub_event_sink as u64,Ordering::Release);HUB_EVENT_CONTEXT_SLOT.store(ext.hub_event_context as u64,Ordering::Release);
  MMIO_BASE.store(ext.mmio_base,Ordering::Release);OPERATIONAL_OFFSET.store(ext.operational_offset as u64,Ordering::Release);PORT_COUNT.store(ext.port_count as u64,Ordering::Release);
  let runtime_ptr=unsafe{(*RUNTIME.0.get()).as_mut_ptr()};unsafe{runtime_ptr.write(Runtime::new(ext.port_count as u8));}
  RUNTIME_READY.store(true,Ordering::Release);
