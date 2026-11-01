@@ -39,7 +39,7 @@ pub trait EcamWindowExt {
 impl EcamWindowExt for EcamWindow {
     fn validate(&self) -> Result<(), PciError> {
         if self.virtual_base == 0 || self.physical_base == 0 || self.bus_end < self.bus_start
-            || self.virtual_base & 0xfffff != 0 || self.physical_base & 0xfffff != 0 {
+            || self.virtual_base & 0xfff != 0 || self.physical_base & 0xfffff != 0 {
             return Err(PciError::InvalidWindow);
         }
         let span = ((self.bus_end as u64 - self.bus_start as u64) + 1)
