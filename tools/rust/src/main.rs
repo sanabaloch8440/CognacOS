@@ -129,13 +129,20 @@ mod qemu_trace;
 mod qemu_ps2;
 mod source_contract;
 mod windows_exports;
+mod reg_hive;
 
 fn main() {
     let mut args = env::args_os().skip(1);
-    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports|check-wdm-source-contracts|check-xstate-source-contracts|verify-dll-exports|verify-windows-exports|resolve-qemu-trace|qemu-ps2-smoke> [arguments]"));
+    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports|check-wdm-source-contracts|check-xstate-source-contracts|verify-dll-exports|verify-windows-exports|resolve-qemu-trace|qemu-ps2-smoke|reg-hive> [arguments]"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     match command.to_string_lossy().as_ref() {
         "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
+        "reg-hive" => {
+            let input = args.next().map(PathBuf::from).unwrap_or_else(|| root.join("registry/drivers/CognacOS-Drivers.reg"));
+            let output = args.next().map(PathBuf::from).unwrap_or_else(|| root.join("build/registry/SYSTEM"));
+            if args.next().is_some() { fail!("usage: cognacos-tools reg-hive [input.reg] [output-hive]"); }
+            reg_hive::convert_file(&input, &output).unwrap_or_else(|e| fail!("{e}"));
+        },
         "update-windows11-exports" => { let check = args.any(|x| x == "--check"); update_windows11_exports(check); },
         "check-ntdll-def" => check_ntdll_def(&args.next().map(PathBuf::from).unwrap_or(root.join("ntdll/exports/ntdll-x64.def"))),
         "check-csrsrv-def" => {
