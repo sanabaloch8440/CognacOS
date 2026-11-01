@@ -1040,7 +1040,7 @@ fn bind_xhci_pe_driver()->bool {
                 }
                 if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_DMA_READY,ntoskrnl::pnp::STATE_INTERRUPT_READY).is_err() {
                     serial_write(b"xHCI bind: DriverEntry succeeded but interrupt-ready PnP transition failed; revoking DMA before halting.\\r\\n");
-                    if let Some(set)=device_table.set_interrupt_enabled { let _=set(resources.interrupt_vector as u32,false); }
+                    let _=unsafe{hal::set_device_interrupt_vector_enabled(resources.interrupt_vector,false)};
                     if let Some(set)=device_table.set_bus_master { if set(resources.device_object,false).code!=0 { loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); } } }
                     loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
                 }
