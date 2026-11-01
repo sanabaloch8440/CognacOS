@@ -47,6 +47,7 @@ pub unsafe extern "win64" fn mm_map_io_space(
 ///
 /// This releases only the virtual MMIO mapping. The physical BAR/device
 /// aperture is never returned to the physical-page allocator.
+#[unsafe(export_name = "MmUnmapIoSpace")]
 pub unsafe extern "win64" fn mm_unmap_io_space(
     base_address: *mut c_void,
     number_of_bytes: u64,
