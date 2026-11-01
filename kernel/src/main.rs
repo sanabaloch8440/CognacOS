@@ -39,6 +39,10 @@ mod debug_console;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
+/// PCI.sys is the authoritative PCI bus enumerator. It is staged by the
+/// driver build and embedded separately from ntoskrnl for registry-selected
+/// initialization through the native PE driver loader.
+const PCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pci.sys"));
 const USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhci.sys"));
 
 use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
