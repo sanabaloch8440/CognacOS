@@ -376,7 +376,15 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
             }
             STATUS_SUCCESS
         }
-        Err(_) => STATUS_NOT_FOUND,
+        Err(crate::acpi::AcpiError::MissingRoot)
+        | Err(crate::acpi::AcpiError::BadSignature)
+        | Err(crate::acpi::AcpiError::MissingMadt) => STATUS_NOT_FOUND,
+        Err(crate::acpi::AcpiError::TooManyEntries) => 0xC000_009A_u32 as i32,
+        Err(crate::acpi::AcpiError::Truncated)
+        | Err(crate::acpi::AcpiError::BadLength)
+        | Err(crate::acpi::AcpiError::BadChecksum)
+        | Err(crate::acpi::AcpiError::MalformedEntry)
+        | Err(crate::acpi::AcpiError::AddressOutOfRange) => STATUS_INVALID_PARAMETER,
     }
 }
 
