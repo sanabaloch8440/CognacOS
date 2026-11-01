@@ -595,6 +595,10 @@ pub unsafe extern "win64" fn mm_free_mdl(mdl: *mut c_void) {
     let address = mdl as u64;
     if !is_owned_mdl(address) || address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
     let header = unsafe { &*mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_MAPPED_SYSTEM_VA != 0 && !header.mapped_system_va.is_null() {
+        unsafe { mm_unmap_locked_pages(header.mapped_system_va, mdl); }
+    }
+    let header = unsafe { &*mdl.cast::<MdlHeader>() };
     if header.flags & MDL_LOCKED != 0 && header.flags & MDL_NONPAGED_POOL == 0 {
         unsafe { mm_unlock_pages(mdl); }
     }
@@ -763,6 +767,29 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
     header.flags |= MDL_MAPPED_SYSTEM_VA;
     header.mapped_system_va
 }
+/// Internal equivalent of the WDK MmGetSystemAddressForMdlSafe macro.
+/// The public WDK spelling expands to MmMapLockedPagesSpecifyCache; it is not
+/// a separate ntoskrnl export.
+pub unsafe fn mm_get_system_address_for_mdl_safe(mdl: *mut c_void, priority: u32) -> *mut c_void {
+    if mdl.is_null() { return core::ptr::null_mut(); }
+    let address = mdl as u64;
+    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) {
+        return core::ptr::null_mut();
+    }
+    let header = unsafe { &*mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_MAPPED_SYSTEM_VA != 0 && !header.mapped_system_va.is_null() {
+        return header.mapped_system_va;
+    }
+    if header.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0 {
+        return core::ptr::null_mut();
+    }
+    unsafe {
+        mm_map_locked_pages_specify_cache(
+            mdl, 0, 1, core::ptr::null_mut(), 0, priority,
+        )
+    }
+}
+
 pub unsafe extern "win64" fn mm_map_locked_pages(mdl: *mut c_void, access_mode: i8) -> *mut c_void {
     unsafe { mm_map_locked_pages_specify_cache(mdl, access_mode, 1, core::ptr::null_mut(), 0, 0) }
 }
