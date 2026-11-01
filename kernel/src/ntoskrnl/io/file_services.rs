@@ -437,17 +437,15 @@ fn pin_handle(owner: u64, handle: usize) -> Result<*mut FILE_OBJECT, i32> {
     };
     Ok(body.cast::<FILE_OBJECT>())
 }
-fn unpin_handle(owner: u64, handle: usize) {
-    if handle == 0 { return; }
-    if let Ok(body) = ob::reference_by_handle(handle as *mut c_void, 0, FILE_OBJECT_TYPE.load(Ordering::Acquire) as u16, owner as usize, false) {
-        {
-            let mut state = STATE.lock();
-            if let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, body.cast::<FILE_OBJECT>())) {
-                slot.active_io = slot.active_io.saturating_sub(1);
-            }
+fn unpin_handle(file_object: *mut FILE_OBJECT) {
+    if file_object.is_null() { return; }
+    {
+        let mut state = STATE.lock();
+        if let Some(slot) = state.handles.iter_mut().find(|slot| ptr::eq(&slot.file_object, file_object) && slot.used) {
+            slot.active_io = slot.active_io.saturating_sub(1);
         }
-        let _ = ob::dereference_body(body);
     }
+    let _ = ob::dereference_body(file_object.cast());
 }
 
 /// Open a registered path and issue a real IRP_MJ_CREATE against the provider device.
@@ -521,7 +519,7 @@ pub fn read_at_for_process(owner: u64, handle: usize, offset: usize, out: &mut [
     let byte_offset: i64 = offset.try_into().map_err(|_| STATUS_INVALID_PARAMETER)?;
     let file_object = pin_handle(owner, handle)?;
     let result = dispatch_file_irp(file_object, IRP_MJ_READ, byte_offset, out.as_mut_ptr(), out.len());
-    unpin_handle(owner, handle);
+    unpin_handle(file_object);
     result
 }
 
@@ -532,14 +530,14 @@ pub fn read_current(handle: usize, out: &mut [u8]) -> Result<usize, i32> {
 pub fn read_current_for_process(owner: u64, handle: usize, out: &mut [u8]) -> Result<usize, i32> {
     let file_object = pin_handle(owner, handle)?;
     let result = dispatch_file_irp(file_object, IRP_MJ_READ, FILE_USE_FILE_POINTER_POSITION, out.as_mut_ptr(), out.len());
-    unpin_handle(owner, handle);
+    unpin_handle(file_object);
     result
 }
 
 pub fn current_offset_for_process(owner: u64, handle: usize) -> Result<usize, i32> {
     let file_object = pin_handle(owner, handle)?;
     let offset = unsafe { (*file_object).current_byte_offset };
-    unpin_handle(owner, handle);
+    unpin_handle(file_object);
     usize::try_from(offset).map_err(|_| STATUS_INVALID_PARAMETER)
 }
 pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, amount: usize) -> Result<(), i32> {
@@ -553,7 +551,7 @@ pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, a
             Ok(())
         }
     };
-    unpin_handle(owner, handle);
+    unpin_handle(file_object);
     result
 }
 
