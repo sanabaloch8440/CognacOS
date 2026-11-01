@@ -847,7 +847,7 @@ static mut UCX_REGISTRY_IMAGE_BUFFER:[u8;UCX01020_PE_IMAGE.len()]=[0;UCX01020_PE
 struct Usbhub3DriverExtensionHeader{
  magic:u64,size:u32,version:u32,
  kernel_io:*const cognacos_hal_contract::KernelIoServiceTable,
- root_hub_device:u64,port_count:u32,
+ root_hub_device:u64,parent_bus_device:u64,port_count:u32,
  event_sink:*mut core::sync::atomic::AtomicU64,
  event_context:*mut core::sync::atomic::AtomicU64,
  hub_device_out:*mut u64,child_factory_out:*mut u64,
@@ -870,7 +870,7 @@ fn bind_usbhub3_pe_driver()->bool{
   let ext=core::ptr::addr_of_mut!(USBHUB3_DRIVER_EXTENSION).cast::<Usbhub3DriverExtensionHeader>();
   ext.write(Usbhub3DriverExtensionHeader{
    magic:0x434f_474e_4143_4833,size:core::mem::size_of::<Usbhub3DriverExtensionHeader>() as u32,version:1,
-   kernel_io:io_ptr,root_hub_device:UCX_ROOT_HUB_DEVICE,port_count,
+   kernel_io:io_ptr,root_hub_device:UCX_ROOT_HUB_DEVICE,parent_bus_device:XHCI_FDO_DEVICE,port_count,
    event_sink:core::ptr::addr_of_mut!(UCX_HUB_EVENT_SINK),
    event_context:core::ptr::addr_of_mut!(UCX_HUB_EVENT_CONTEXT),
    hub_device_out:core::ptr::addr_of_mut!(USBHUB3_DEVICE),
