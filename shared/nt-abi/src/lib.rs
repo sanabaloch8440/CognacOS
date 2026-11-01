@@ -301,7 +301,8 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<INTERFACE_HEADER>(), 0x20);
                 assert_eq!(core::mem::offset_of!(INTERFACE_HEADER, context), 0x08);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
-                assert_eq!(core::mem::size_of::<PCI_BRIDGE_INFORMATION>(), 0x08);\n                assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x48);
+                assert_eq!(core::mem::size_of::<PCI_BRIDGE_INFORMATION>(), 0x08);
+                assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x48);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INFORMATION>(), 0x12);
             }
         }
