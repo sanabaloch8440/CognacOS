@@ -1,7 +1,7 @@
+#![allow(dead_code)]
 //! Read-only parser and minimal creator for native Windows REGF registry hives.
 //! Hive bytes are kept in their original on-disk representation; this module never
 //! converts a Windows hive into a private database format.
-#![allow(dead_code)]
 
 pub const BASE_BLOCK_SIZE: usize = 4096;
 pub const REGF_SIGNATURE: &[u8;4] = b"regf";
