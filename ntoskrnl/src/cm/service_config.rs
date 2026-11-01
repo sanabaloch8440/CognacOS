@@ -242,6 +242,14 @@ fn append_hex4(value:u16,out:&mut[u16],mut offset:usize)->Result<usize,ExtendedC
 }
 
 
+fn is_boot_driver_candidate(start_type: u32, service_type: u32) -> bool {
+    matches!(start_type, SERVICE_BOOT_START | SERVICE_SYSTEM_START)
+        && matches!(
+            service_type & SERVICE_TYPE_MASK,
+            SERVICE_KERNEL_DRIVER | SERVICE_FILE_SYSTEM_DRIVER
+        )
+}
+
 /// Enumerate registry-configured Boot/System-start kernel and filesystem
 /// drivers from the active ControlSet\Services key.
 ///
@@ -286,13 +294,7 @@ pub fn enumerate_boot_driver_services(
             )?;
             (base.start, base.service_type)
         };
-        if !matches!(start_type, SERVICE_BOOT_START | SERVICE_SYSTEM_START) {
-            continue;
-        }
-        if !matches!(
-            service_type & SERVICE_TYPE_MASK,
-            SERVICE_KERNEL_DRIVER | SERVICE_FILE_SYSTEM_DRIVER
-        ) {
+        if !is_boot_driver_candidate(start_type, service_type) {
             continue;
         }
 
@@ -405,5 +407,22 @@ mod pci_enum_match_tests {
         let mut output=[0u16;4];
         assert_eq!(append_hex4(0x01af,&mut output,0),Ok(4));
         assert_eq!(output,[b'0' as u16,b'1' as u16,b'A' as u16,b'F' as u16]);
+    }
+}
+
+
+#[cfg(test)]
+mod boot_driver_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn selects_only_boot_and_system_start_kernel_or_filesystem_drivers() {
+        assert!(is_boot_driver_candidate(SERVICE_BOOT_START, SERVICE_KERNEL_DRIVER));
+        assert!(is_boot_driver_candidate(SERVICE_SYSTEM_START, SERVICE_FILE_SYSTEM_DRIVER));
+        assert!(!is_boot_driver_candidate(SERVICE_AUTO_START, SERVICE_KERNEL_DRIVER));
+        assert!(!is_boot_driver_candidate(SERVICE_DEMAND_START, SERVICE_KERNEL_DRIVER));
+        assert!(!is_boot_driver_candidate(SERVICE_DISABLED, SERVICE_KERNEL_DRIVER));
+        assert!(!is_boot_driver_candidate(SERVICE_BOOT_START, 0x10)); // Win32 own-process service
+        assert!(!is_boot_driver_candidate(SERVICE_BOOT_START, 0x20)); // Win32 shared-process service
     }
 }
