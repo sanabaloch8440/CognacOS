@@ -2288,6 +2288,7 @@ pub unsafe extern "win64" fn io_register_file_system(device:*mut DeviceObject) {
   for callback in callbacks.into_iter().flatten(){unsafe{callback(device,1);}}
   unsafe{io_dereference_device_object(event_reference);}
  }
+}
 
 /// Remove a filesystem from new mount discovery. In-flight IRPs and mounted
 /// volume device references independently keep the driver image alive.
