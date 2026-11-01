@@ -10,7 +10,7 @@ const STATUS_INVALID_PARAMETER:i32=0xC000000D_u32 as i32;
 const STATUS_INVALID_DEVICE_REQUEST:i32=0xC0000010_u32 as i32;
 const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000009A_u32 as i32;
 const MAX_CHILDREN:usize=64;
-#[repr(C)] struct DeviceRelations{count:u32,objects:[*mut c_void;64]}
+#[repr(C)] #[derive(Clone,Copy)] struct DeviceRelations{count:u32,objects:[*mut c_void;64]}
 #[repr(C)] pub struct HubDriverExtension{
  magic:u64,size:u32,version:u32,kernel_io:*const KernelIoServiceTable,
  root_hub_device:u64,port_count:u32,event_sink:*mut AtomicU64,event_context:*mut AtomicU64,
@@ -33,12 +33,11 @@ type DriverDispatch=unsafe extern "win64" fn(*mut c_void,*mut c_void)->i32;
 #[repr(C)] struct ChildExtension{
  magic:u64,version:u32,port:u32,vendor_id:u16,product_id:u16,descriptor:[u8;18],
  device_id:[u16;40],instance_id:[u16;24],hardware_ids:[u16;80],compatible_ids:[u16;80],
- relations:DeviceRelations,
 }
 #[derive(Clone,Copy)] struct ChildRecord{used:bool,port:u8,pdo:u64}
 impl ChildRecord{const EMPTY:Self=Self{used:false,port:0,pdo:0};}
-struct HubRuntime{children:[ChildRecord;MAX_CHILDREN],pending_ports:[AtomicU64;4],relations:DeviceRelations}
-impl HubRuntime{const fn new()->Self{Self{children:[ChildRecord::EMPTY;MAX_CHILDREN],pending_ports:[const{AtomicU64::new(0)};4],relations:DeviceRelations{count:0,objects:[core::ptr::null_mut();64]}}}}
+struct HubRuntime{children:[ChildRecord;MAX_CHILDREN],pending_ports:[AtomicU64;4],relations:DeviceRelations,target_relations:[DeviceRelations;MAX_CHILDREN]}
+impl HubRuntime{const fn new()->Self{Self{children:[ChildRecord::EMPTY;MAX_CHILDREN],pending_ports:[const{AtomicU64::new(0)};4],relations:DeviceRelations{count:0,objects:[core::ptr::null_mut();64]},target_relations:[const{DeviceRelations{count:0,objects:[core::ptr::null_mut();64]}};MAX_CHILDREN]}}}
 struct RuntimeCell(UnsafeCell<MaybeUninit<HubRuntime>>);unsafe impl Sync for RuntimeCell{}
 static RUNTIME:RuntimeCell=RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
 static RUNTIME_READY:AtomicBool=AtomicBool::new(false);static RUNTIME_LOCK:AtomicBool=AtomicBool::new(false);
@@ -91,16 +90,16 @@ unsafe extern "win64" fn hub_event_sink(context:u64,event:*const XhciTrb){
  if status<0||pdo.is_null(){return status}
  let ext=unsafe{(*(pdo as *mut DeviceObjectPrefix)).device_extension.cast::<ChildExtension>()};
  if ext.is_null(){if let Some(delete)=io.delete_device{unsafe{delete(pdo);}}return STATUS_INSUFFICIENT_RESOURCES}
- let mut v=ChildExtension{magic:CHILD_MAGIC,version:1,port:port as u32,vendor_id:vid,product_id:pid,descriptor:[0;18],device_id:[0;40],instance_id:[0;24],hardware_ids:[0;80],compatible_ids:[0;80],relations:DeviceRelations{count:1,objects:[core::ptr::null_mut();64]}};
- v.descriptor.copy_from_slice(d);v.relations.objects[0]=pdo;child_ids(&mut v);unsafe{ext.write(v);}
+ let mut v=ChildExtension{magic:CHILD_MAGIC,version:1,port:port as u32,vendor_id:vid,product_id:pid,descriptor:[0;18],device_id:[0;40],instance_id:[0;24],hardware_ids:[0;80],compatible_ids:[0;80]};
+ v.descriptor.copy_from_slice(d);child_ids(&mut v);unsafe{ext.write(v);}
  let st=unsafe{mark(pdo)};if st<0{if let Some(delete)=io.delete_device{unsafe{delete(pdo);}}return st}
- lock();unsafe{runtime_mut().children[index]=ChildRecord{used:true,port,pdo:pdo as u64};}unlock();
- let st=publish_children();if st<0{lock();unsafe{runtime_mut().children[index]=ChildRecord::EMPTY;}unlock();if let Some(delete)=io.delete_device{unsafe{delete(pdo);}}return st}
+ lock();let rt=unsafe{runtime_mut()};rt.children[index]=ChildRecord{used:true,port,pdo:pdo as u64};rt.target_relations[index].count=1;rt.target_relations[index].objects.fill(core::ptr::null_mut());rt.target_relations[index].objects[0]=pdo;unlock();
+ let st=publish_children();if st<0{lock();let rt=unsafe{runtime_mut()};rt.children[index]=ChildRecord::EMPTY;rt.target_relations[index].count=0;rt.target_relations[index].objects.fill(core::ptr::null_mut());unlock();if let Some(delete)=io.delete_device{unsafe{delete(pdo);}}return st}
  if !output.is_null(){unsafe{output.write(pdo);}}STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]pub unsafe extern "win64" fn Usbhub3RemoveChildPdo(port:u8)->i32{
  if port==0{return STATUS_INVALID_PARAMETER}let mut removed=0u64;
- lock();let rt=unsafe{runtime_mut()};if let Some(i)=rt.children.iter().position(|c|c.used&&c.port==port){removed=rt.children[i].pdo;rt.children[i]=ChildRecord::EMPTY;}unlock();
+ lock();let rt=unsafe{runtime_mut()};if let Some(i)=rt.children.iter().position(|c|c.used&&c.port==port){removed=rt.children[i].pdo;rt.children[i]=ChildRecord::EMPTY;rt.target_relations[i].count=0;rt.target_relations[i].objects.fill(core::ptr::null_mut());}unlock();
  if removed==0{return STATUS_INVALID_PARAMETER}publish_children()
 }
 fn snapshot_relations()->*const DeviceRelations{
@@ -120,7 +119,7 @@ unsafe extern "win64" fn hub_dispatch(device:*mut c_void,irp:*mut c_void)->i32{
    let status=match minor{
     0x00|0x01|0x03|0x04|0x05|0x06|0x09|0x0a|0x17=>STATUS_SUCCESS,
     0x13=>{let id=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};let p=unsafe{match id{0=>(*ext).device_id.as_ptr(),1=>(*ext).instance_id.as_ptr(),2=>(*ext).hardware_ids.as_ptr(),3=>(*ext).compatible_ids.as_ptr(),_=>core::ptr::null()}};if p.is_null(){STATUS_INVALID_DEVICE_REQUEST}else{if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,p as usize,0);}}return STATUS_SUCCESS}},
-    0x07=>{let relation=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};if relation==1{let p=core::ptr::addr_of!((*ext).relations);if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,p as usize,0);}}return STATUS_SUCCESS}else{STATUS_SUCCESS}},
+    0x07=>{let relation=unsafe{core::ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())};if relation==1{lock();let rt=unsafe{runtime_mut()};let p=rt.children.iter().position(|c|c.used&&c.pdo==device as u64).map(|i|core::ptr::addr_of!(rt.target_relations[i]));unlock();if let Some(p)=p{if let Some(done)=io.complete_irp_status{unsafe{done(irp,STATUS_SUCCESS,p as usize,0);}}return STATUS_SUCCESS}else{STATUS_INVALID_DEVICE_REQUEST}}else{STATUS_SUCCESS}},
     0x02=>{lock();let rt=unsafe{runtime_mut()};if let Some(i)=rt.children.iter().position(|x|x.used&&x.pdo==device as u64){rt.children[i]=ChildRecord::EMPTY;}unlock();STATUS_SUCCESS},_=>STATUS_INVALID_DEVICE_REQUEST,
    };
    if let Some(done)=io.complete_irp_status{unsafe{done(irp,status,0,0);}}return status
