@@ -1433,3 +1433,5 @@ impl<const N:usize> Default for TransferTracker<N>{fn default()->Self{Self::new(
  #[test]fn slot_rundown_cancels_pending_transfers(){let mut q:TransferTracker<3>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();q.reserve(TransferRequest{slot_id:2,trb_dma:0x2000,..req(0x2000)}).unwrap();let quiesced=unsafe{SlotDmaQuiesced::after_disable_slot_and_dma_fence()};assert_eq!(q.cancel_slot(1,&quiesced),1);assert_eq!(q.len(),1);}
 }
 
+
+pub mod runtime;
