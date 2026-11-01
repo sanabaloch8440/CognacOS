@@ -25,6 +25,7 @@ const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
 /// with uncached, supervisor-only, NX mappings. Only MmNonCached (0) is
 /// implemented here; other cache policies are rejected rather than silently
 /// aliasing device memory with an incompatible PAT/cache type.
+#[unsafe(export_name = "MmMapIoSpace")]
 pub unsafe extern "win64" fn mm_map_io_space(
     physical_address: i64,
     number_of_bytes: u64,
