@@ -55,7 +55,7 @@ pub struct KDeviceQueueEntry {
     pub padding: [u8; 3],
 }
 
-/// x64 WDK KDEVICE_QUEUE. DEVICE_OBJECT embeds this at offset 0x98.
+/// x64 WDK KDEVICE_QUEUE. DEVICE_OBJECT embeds this at offset 0xA0.
 #[repr(C)]
 pub struct KDeviceQueue {
     pub type_: i16,
@@ -75,11 +75,14 @@ pub struct DeviceObject {
     pub vpb: *mut c_void, pub device_extension: *mut c_void,
     pub device_type: u32, pub stack_size: i8, pub queue_padding: [u8; 3],
     pub queue: [u8; 0x48],
+    pub alignment_requirement: u32, pub device_queue_padding: [u8; 4],
     pub device_queue: KDeviceQueue, pub dpc: [u8; 0x40], pub active_thread_count: u32,
     pub security_descriptor: *mut c_void, pub device_lock: [u8; 0x18],
     pub sector_size: u16, pub spare1: u16, pub device_object_extension: *mut c_void,
     pub reserved: *mut c_void,
 }
+const _: () = assert!(core::mem::size_of::<DeviceObject>() == 0x150);
+const _: () = assert!(core::mem::offset_of!(DeviceObject, device_queue) == 0xA0);
 /// Opaque storage for the x64 WDK IRP. Fields used here are accessed by their
 /// documented x64 offsets to avoid pretending that Rust's high-level fields
 /// are the complete SDK definition.
@@ -149,7 +152,7 @@ impl WdmState {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
-    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],
+    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],alignment_requirement:63,device_queue_padding:[0;4],
     device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},dpc:[0;0x40],active_thread_count:0,
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
@@ -932,7 +935,7 @@ pub unsafe extern "win64" fn io_create_device(
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
  slot.object.device_extension=if extension_size==0 {ptr::null_mut()} else {slot.extension.as_mut_ptr().cast()};
- slot.object.stack_size=1;
+ slot.object.stack_size=1;slot.object.alignment_requirement=63;slot.object.device_queue_padding=[0;4];
  slot.object.next_device=unsafe{(*driver).device_object};
  let object=&mut slot.object as *mut DeviceObject;
  unsafe { (*driver).device_object=object; output.write(object); }
