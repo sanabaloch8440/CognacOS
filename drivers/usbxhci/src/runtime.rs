@@ -48,8 +48,18 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
   let req=TransferRequest{trb_dma,buffer_dma,length,endpoint_id:endpoint,slot_id:slot};
   self.tracker.reserve(req).map_err(RuntimeError::Transfer)?;
   let trb=Trb{parameter:buffer_dma,status:length,control:(TRB_TYPE_NORMAL<<TRB_TYPE_SHIFT)|TRB_IOC|((endpoint as u32)<<16)|((slot as u32)<<24)};
-  let index=self.ring.push(trb).map_err(RuntimeError::Ring)?;
-  if index!=index_expected{self.stopped=true;return Err(RuntimeError::InvalidRequest)}
+  let index=match self.ring.push(trb){
+   Ok(i)=>i,
+   Err(e)=>{self.tracker.cancel_unpublished(trb_dma);return Err(RuntimeError::Ring(e))}
+  };
+  if index!=index_expected{
+   let _=self.tracker.cancel_unpublished(trb_dma);
+   self.stopped=true;return Err(RuntimeError::InvalidRequest)
+  }
+  // Publish the ownership record before the first hardware-visible write.
+  // If publication fails, hardware may have observed part of the ring update;
+  // retain the request and require a controller DMA-quiescence proof.
+  self.pending[p]=Pending{used:true,token};
   let published=self.ring.get(index).ok_or(RuntimeError::InvalidRequest)?;
   if hw.publish_trb(index,trb_dma,published).is_err(){self.stopped=true;return Err(RuntimeError::PublishFailed)}
   if index==N-2{
@@ -57,7 +67,6 @@ impl<const R:usize,const N:usize> TransferEngine<R,N>{
    let link_dma=self.ring_dma.checked_add(((N-1) as u64)*16).ok_or(RuntimeError::InvalidRequest)?;
    if hw.publish_trb(N-1,link_dma,link).is_err(){self.stopped=true;return Err(RuntimeError::PublishFailed)}
   }
-  self.pending[p]=Pending{used:true,token};
   fence(Ordering::Release);
   if hw.ring_endpoint_doorbell(slot,endpoint).is_err(){self.stopped=true;return Err(RuntimeError::DoorbellFailed)}
   self.next_id=self.next_id.wrapping_add(1).max(1);Ok(token)
