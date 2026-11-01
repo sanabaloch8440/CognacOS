@@ -428,7 +428,33 @@ where F:FnMut(&[u16],&mut[u8])->Option<usize>{
   &&config.service_type!=crate::ntoskrnl::cm::service_config::SERVICE_FILE_SYSTEM_DRIVER{return Err(RegistryDriverLoadError::NotKernelDriver);}
  let len=resolve_image(config.image_path,image_buffer).ok_or(RegistryDriverLoadError::ImageResolutionFailed)?;
  if len==0||len>image_buffer.len(){return Err(RegistryDriverLoadError::ImageTooLarge);}
- unsafe{load_allocated_with_resolver(&image_buffer[..len],driver_object,context,symbol_resolver)}.map_err(RegistryDriverLoadError::Load)
+
+ // DriverEntry receives the counted service key path, not a null or an
+ // ImagePath value. Keep the UTF-16 buffer and UNICODE_STRING alive for the
+ // complete call into DriverEntry. Drivers that retain it must make their own
+ // copy, as required by the WDK contract.
+ let mut registry_path=[0u16;256];
+ const PREFIX:&[u16]=&[
+  0x005c,0x0052,0x0065,0x0067,0x0069,0x0073,0x0074,0x0072,0x0079,
+  0x005c,0x004d,0x0061,0x0063,0x0068,0x0069,0x006e,0x0065,
+  0x005c,0x0053,0x0079,0x0073,0x0074,0x0065,0x006d,
+  0x005c,0x0043,0x0075,0x0072,0x0072,0x0065,0x006e,0x0074,
+  0x0043,0x006f,0x006e,0x0074,0x0072,0x006f,0x006c,0x0053,0x0065,0x0074,
+  0x005c,0x0053,0x0065,0x0072,0x0076,0x0069,0x0063,0x0065,0x0073,0x005c,
+ ];
+ let path_len=PREFIX.len().checked_add(service_name.len()).ok_or(RegistryDriverLoadError::ImageTooLarge)?;
+ if service_name.is_empty()||path_len>registry_path.len()||path_len.checked_mul(2).is_none_or(|n|n>u16::MAX as usize){
+  return Err(RegistryDriverLoadError::ImageTooLarge);
+ }
+ registry_path[..PREFIX.len()].copy_from_slice(PREFIX);
+ registry_path[PREFIX.len()..path_len].copy_from_slice(service_name);
+ let mut registry_key=crate::nt_abi::object::UNICODE_STRING{
+  length:(path_len*2) as u16,
+  maximum_length:(path_len*2) as u16,
+  buffer:registry_path.as_mut_ptr(),
+ };
+ let entry_context=if context.is_null(){(&mut registry_key as *mut crate::nt_abi::object::UNICODE_STRING).cast()}else{context};
+ unsafe{load_allocated_with_resolver(&image_buffer[..len],driver_object,entry_context,symbol_resolver)}.map_err(RegistryDriverLoadError::Load)
 }
 #[cfg(test)]
 mod pe_signature_tests {
