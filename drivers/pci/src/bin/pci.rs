@@ -42,10 +42,6 @@ __imp_ntoskrnl_IoCreateDevice: .quad 0
 .type __imp_ntoskrnl_IoDeleteDevice,@object
 __imp_ntoskrnl_IoDeleteDevice: .quad 0
 .size __imp_ntoskrnl_IoDeleteDevice,8
-.global __imp_ntoskrnl_MmMapIoSpace
-.type __imp_ntoskrnl_MmMapIoSpace,@object
-__imp_ntoskrnl_MmMapIoSpace: .quad 0
-.size __imp_ntoskrnl_MmMapIoSpace,8
 "#);
 
 const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
@@ -309,7 +305,6 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     STATE.ready.store(false, Ordering::Release);
     let handoff_address = HANDOFF.load(Ordering::Acquire);
     if handoff_address != 0 {
-        let handoff = unsafe { &*(handoff_address as *const PciDriverHandoff) };
         let count = STATE.pdo_count.swap(0, Ordering::AcqRel).min(MAX_PCI_PDOS);
         for index in 0..count {
             let pdo = unsafe { (*STATE.pdos.get())[index] };
