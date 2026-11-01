@@ -11,8 +11,10 @@ pub struct ChildPdo{pub port:u8,pub generation:u64,pub vendor_id:u16,pub product
 pub struct PortWork{pub port:u8,pub generation:u64,pub state:EnumerationState}
 pub trait HubServices{
  fn reset_port(&mut self,port:u8,generation:u64)->Result<(),()>;
- fn get_device_descriptor(&mut self,port:u8,generation:u64,buffer:&mut [u8])->Result<usize,()>;
+ fn get_device_descriptor(&mut self,port:u8,generation:u64,requested_length:u8,buffer:&mut [u8])->Result<usize,()>;
+ fn enable_slot_and_address_device(&mut self,port:u8,generation:u64,ep0_max_packet_size:u8)->Result<(),()>;
  fn get_configuration_descriptor(&mut self,port:u8,generation:u64,index:u8,buffer:&mut [u8])->Result<usize,()>;
+ fn configure_device(&mut self,port:u8,generation:u64,configuration:&[u8])->Result<(),()>;
  fn create_child_pdo(&mut self,child:ChildPdo)->Result<u32,()>;
  fn remove_child_pdo(&mut self,port:u8,generation:u64,pdo_id:u32)->Result<(),()>;
 }
@@ -45,15 +47,29 @@ impl<const P:usize> HubRuntime<P>{
   if s.reset_port(w.port,w.generation).is_err(){self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::TransferFailed)}
   self.hub.port_mut(w.port).map_err(EnumerationError::Hub)?.transition(PortEvent::ResetComplete).map_err(EnumerationError::Hub)?;
   self.ports[i].state=EnumerationState::ReadingDeviceDescriptor;
-  let mut db=[0u8;18];let got=s.get_device_descriptor(w.port,w.generation,&mut db).map_err(|_|EnumerationError::TransferFailed)?;
-  if got<18{self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::Descriptor(DescriptorError::Truncated))}
+  // Read the first eight bytes at address zero before configuring EP0.
+  let mut first=[0u8;8];
+  let first_got=s.get_device_descriptor(w.port,w.generation,8,&mut first).map_err(|_|EnumerationError::TransferFailed)?;
+  if first_got!=8||first[0]<18||first[1]!=crate::USB_DESC_DEVICE||!matches!(first[7],8|16|32|64|9){
+   self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::Descriptor(DescriptorError::InvalidLength))
+  }
+  s.enable_slot_and_address_device(w.port,w.generation,first[7]).map_err(|_|EnumerationError::TransferFailed)?;
+  let mut db=[0u8;18];
+  let got=s.get_device_descriptor(w.port,w.generation,18,&mut db).map_err(|_|EnumerationError::TransferFailed)?;
+  if got!=18{self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::Descriptor(DescriptorError::Truncated))}
   let d:UsbDeviceDescriptor=parse_device_descriptor(&db).map_err(EnumerationError::Descriptor)?;
   self.hub.port_mut(w.port).map_err(EnumerationError::Hub)?.transition(PortEvent::BeginEnumeration).map_err(EnumerationError::Hub)?;
   self.ports[i].state=EnumerationState::ReadingConfiguration;
-  let n=s.get_configuration_descriptor(w.port,w.generation,config_index,config_buffer).map_err(|_|EnumerationError::TransferFailed)?;
-  if n>config_buffer.len(){self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::InvalidTransferLength)}
+  let mut header=[0u8;9];
+  let header_got=s.get_configuration_descriptor(w.port,w.generation,config_index,&mut header).map_err(|_|EnumerationError::TransferFailed)?;
+  if header_got<9||header[0]<9||header[1]!=crate::USB_DESC_CONFIGURATION{self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::Descriptor(DescriptorError::Truncated))}
+  let declared=u16::from_le_bytes([header[2],header[3]]) as usize;
+  if declared<9||declared>config_buffer.len(){self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::Descriptor(DescriptorError::InvalidConfigurationLength))}
+  let n=s.get_configuration_descriptor(w.port,w.generation,config_index,&mut config_buffer[..declared]).map_err(|_|EnumerationError::TransferFailed)?;
+  if n<declared||n>config_buffer.len(){self.ports[i].state=EnumerationState::Failed;return Err(EnumerationError::InvalidTransferLength)}
   let total=validate_configuration_descriptor(&config_buffer[..n]).map_err(EnumerationError::Descriptor)?;
   if total>u16::MAX as usize{return Err(EnumerationError::Descriptor(DescriptorError::InvalidConfigurationLength))}
+  s.configure_device(w.port,w.generation,&config_buffer[..total]).map_err(|_|EnumerationError::TransferFailed)?;
   self.ports[i].state=EnumerationState::CreatingPdo;
   let child=ChildPdo{port:w.port,generation:w.generation,vendor_id:d.vendor_id,product_id:d.product_id,configuration_length:total as u16,active:true,references:1};
   let pdo=s.create_child_pdo(child).map_err(|_|EnumerationError::PdoCreateFailed)?;
@@ -77,8 +93,10 @@ impl<const P:usize> Default for HubRuntime<P>{fn default()->Self{Self::new()}}
  struct Mock{reset:bool,pdo:bool,removed:bool}
  impl HubServices for Mock{
   fn reset_port(&mut self,_:u8,_:u64)->Result<(),()>{self.reset=true;Ok(())}
-  fn get_device_descriptor(&mut self,_:u8,_:u64,b:&mut [u8])->Result<usize,()>{let d=[18,1,0,2,0,0,0,64,0x34,0x12,0x78,0x56,0,1,1,2,3,1];b[..18].copy_from_slice(&d);Ok(18)}
+  fn get_device_descriptor(&mut self,_:u8,_:u64,n:u8,b:&mut [u8])->Result<usize,()>{let d=[18,1,0,2,0,0,0,64,0x34,0x12,0x78,0x56,0,1,1,2,3,1];let n=n as usize;b[..n].copy_from_slice(&d[..n]);Ok(n)}
+  fn enable_slot_and_address_device(&mut self,_:u8,_:u64,_:u8)->Result<(),()>{Ok(())}
   fn get_configuration_descriptor(&mut self,_:u8,_:u64,_:u8,b:&mut [u8])->Result<usize,()>{let d=[9,2,9,0,0,1,0,0x80,50];b[..9].copy_from_slice(&d);Ok(9)}
+  fn configure_device(&mut self,_:u8,_:u64,_:&[u8])->Result<(),()>{Ok(())}
   fn create_child_pdo(&mut self,_:ChildPdo)->Result<u32,()>{self.pdo=true;Ok(77)}
   fn remove_child_pdo(&mut self,_:u8,_:u64,_:u32)->Result<(),()>{self.removed=true;Ok(())}
  }
