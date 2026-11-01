@@ -1,3 +1,6 @@
+/// Build a bounded asynchronous READ/WRITE IRP for a device that uses neither
+/// buffered nor direct I/O. Buffered-I/O system buffers and MDL-backed direct
+/// I/O are rejected until their full lifetime/locking contracts are available.
 #[unsafe(export_name = "IoBuildAsynchronousFsdRequest")]
 pub unsafe extern "win64" fn io_build_asynchronous_fsd_request(
  major:u32, device:*mut DeviceObject, buffer:*mut c_void, length:u32,

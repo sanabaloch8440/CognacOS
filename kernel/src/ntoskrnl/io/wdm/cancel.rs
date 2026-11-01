@@ -302,7 +302,3 @@ pub unsafe fn lookup_device_object(name:*mut UnicodeString)->*mut DeviceObject {
 }
 
 
-/// Build a bounded asynchronous READ/WRITE IRP for a device that uses neither
-/// buffered nor direct I/O. Buffered-I/O system buffers and MDL-backed direct
-/// I/O are rejected until their full lifetime/locking contracts are available.
-#[unsafe(export_name = "IoBuildAsynchronousFsdRequest")]

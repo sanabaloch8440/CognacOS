@@ -430,7 +430,7 @@ fn lookup_root_file_inode<D:ReadOnlyBlockDevice>(
  dev:&mut D,sb:&extfs::Superblock,name:&[u8],
 )->Result<(u32,extfs::Inode,[u8;256]),extfs::Error>{
  if name.is_empty()||name.contains(&b'/')||!sb.has_extents(){return Err(extfs::Error::UnsupportedFormat)}
- let mut root_raw=[0u8;256];let root=extfs::read_inode(dev,sb,2,&mut root_raw)?;
+ let mut root_raw=[0u8;256];let root=read_inode(dev,sb,2,&mut root_raw)?;
  if !root.is_directory||root.size>(sb.block_size as u64)*64{return Err(extfs::Error::UnsupportedFormat)}
  let mut block=[0u8;4096];let mut found=None;
  for logical in 0..root.size.div_ceil(sb.block_size as u64){
@@ -449,7 +449,7 @@ fn lookup_root_file_inode<D:ReadOnlyBlockDevice>(
   if found.is_some(){break}
  }
  let number=found.ok_or(extfs::Error::OutOfRange)?;let mut raw=[0u8;256];
- let inode=extfs::read_inode(dev,sb,number,&mut raw)?;
+ let inode=read_inode(dev,sb,number,&mut raw)?;
  if !inode.is_regular_file{return Err(extfs::Error::UnsupportedFormat)}
  Ok((number,inode,raw))
 }
