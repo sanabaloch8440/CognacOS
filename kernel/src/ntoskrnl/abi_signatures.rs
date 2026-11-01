@@ -13,8 +13,8 @@ pub type SizeT = u64;
 pub type Boolean = u8;
 pub type Kirql = u8;
 pub type LargeInteger = i64;
-pub type IoCreateDeviceFn = unsafe extern "win64" fn(*mut crate::io::wdm::DriverObject, Ulong, *mut crate::io::wdm::UnicodeString, Ulong, Ulong, Boolean, *mut *mut crate::io::wdm::DeviceObject) -> NtStatus;
-pub type IoDeleteDeviceFn = unsafe extern "win64" fn(*mut crate::io::wdm::DeviceObject);
+pub(crate) type IoCreateDeviceFn = unsafe extern "win64" fn(*mut crate::io::wdm::DriverObject, Ulong, *mut crate::io::wdm::UnicodeString, Ulong, Ulong, Boolean, *mut *mut crate::io::wdm::DeviceObject) -> NtStatus;
+pub(crate) type IoDeleteDeviceFn = unsafe extern "win64" fn(*mut crate::io::wdm::DeviceObject);
 pub type MmMapIoSpaceFn = unsafe extern "win64" fn(LargeInteger, SizeT, i32) -> Pvoid;
 pub type MmUnmapIoSpaceFn = unsafe extern "win64" fn(Pvoid, SizeT);
 
