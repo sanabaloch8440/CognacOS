@@ -594,9 +594,9 @@ const INTERRUPT_SIGNATURE:u64=0x434f_474e_494e_5431;
 type InterruptServiceRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void)->u8;
 #[repr(C)]
 pub struct InterruptObject {
-    signature:u64,
-    vector:u32,
-    irql:u8,
+    signature:core::sync::atomic::AtomicU64,
+    vector:core::sync::atomic::AtomicU32,
+    irql:core::sync::atomic::AtomicU8,
     _reserved:[u8;3],
     active:core::sync::atomic::AtomicBool,
     routine:core::sync::atomic::AtomicUsize,
@@ -604,7 +604,7 @@ pub struct InterruptObject {
 }
 unsafe impl Sync for InterruptObject {}
 impl InterruptObject {
-    const EMPTY:Self=Self{signature:0,vector:0,irql:0,_reserved:[0;3],
+    const EMPTY:Self=Self{signature:core::sync::atomic::AtomicU64::new(0),vector:core::sync::atomic::AtomicU32::new(0),irql:core::sync::atomic::AtomicU8::new(0),_reserved:[0;3],
         active:core::sync::atomic::AtomicBool::new(false),
         routine:core::sync::atomic::AtomicUsize::new(0),
         context:core::sync::atomic::AtomicUsize::new(0)};
@@ -614,7 +614,7 @@ static INTERRUPT_OBJECTS:[InterruptObject;256]=[const{InterruptObject::EMPTY};25
 unsafe extern "win64" fn io_interrupt_dispatch(_vector:u8,_frame:*mut core::ffi::c_void,context:*mut core::ffi::c_void)->bool {
     if context.is_null(){return false;}
     let object=unsafe{&*(context.cast::<InterruptObject>())};
-    if object.signature!=INTERRUPT_SIGNATURE||!object.active.load(core::sync::atomic::Ordering::Acquire){return false;}
+    if object.signature.load(core::sync::atomic::Ordering::Acquire)!=INTERRUPT_SIGNATURE||!object.active.load(core::sync::atomic::Ordering::Acquire){return false;}
     let raw=object.routine.load(core::sync::atomic::Ordering::Acquire);
     if raw==0{return false;}
     let routine:InterruptServiceRoutine=unsafe{core::mem::transmute(raw)};
@@ -652,9 +652,9 @@ pub unsafe extern "win64" fn io_connect_interrupt(
     if slot.active.compare_exchange(false,true,core::sync::atomic::Ordering::AcqRel,core::sync::atomic::Ordering::Acquire).is_err(){
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    slot.signature=INTERRUPT_SIGNATURE;
-    slot.vector=vector;
-    slot.irql=irql;
+    slot.signature.store(INTERRUPT_SIGNATURE,core::sync::atomic::Ordering::Release);
+    slot.vector.store(vector,core::sync::atomic::Ordering::Relaxed);
+    slot.irql.store(irql,core::sync::atomic::Ordering::Relaxed);
     slot.context.store(service_context as usize,core::sync::atomic::Ordering::Relaxed);
     slot.routine.store(service_routine.unwrap() as usize,core::sync::atomic::Ordering::Release);
     let object=slot as *const InterruptObject as *mut core::ffi::c_void;
@@ -679,14 +679,14 @@ pub unsafe extern "win64" fn io_connect_interrupt(
 pub unsafe extern "win64" fn io_disconnect_interrupt(interrupt_object:*mut core::ffi::c_void) {
     if interrupt_object.is_null(){return;}
     let object=interrupt_object.cast::<InterruptObject>();
-    let vector=unsafe{(*object).vector};
+    let vector=unsafe{(*object).vector.load(core::sync::atomic::Ordering::Acquire)};
     if vector as usize>=INTERRUPT_OBJECTS.len()
         ||!core::ptr::eq(object,core::ptr::addr_of!(INTERRUPT_OBJECTS[vector as usize]).cast_mut()){return;}
     let slot=&INTERRUPT_OBJECTS[vector as usize];
-    if slot.signature!=INTERRUPT_SIGNATURE||!slot.active.swap(false,core::sync::atomic::Ordering::AcqRel){return;}
+    if slot.signature.load(core::sync::atomic::Ordering::Acquire)!=INTERRUPT_SIGNATURE||!slot.active.swap(false,core::sync::atomic::Ordering::AcqRel){return;}
     let _=unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,false)};
     let _=crate::hal::release_device_interrupt_vector(vector as u8);
     slot.routine.store(0,core::sync::atomic::Ordering::Release);
     slot.context.store(0,core::sync::atomic::Ordering::Release);
-    slot.signature=0;
+    slot.signature.store(0,core::sync::atomic::Ordering::Release);
 }
