@@ -143,6 +143,30 @@ pub struct DeviceTreeEntry {
 /// Copy the current kernel PnP devnode table into a caller-owned immutable
 /// snapshot. Parent references are checked in a second pass so enumeration
 /// order does not affect validation. Removed and empty slots are omitted.
+/// Validate the live devnode hierarchy without allocating or changing it.
+/// The bounded ancestor walk rejects missing parents and cycles.
+pub fn validate_device_tree() -> Result<usize, DeviceTreeError> {
+    let mut count = 0usize;
+    for index in 0..MAX_PNP_DEVICES {
+        let Some(device) = pnp::query_pnp_device(index as u32) else { continue };
+        if device.state == PNP_DEVICE_REMOVED { continue; }
+        count += 1;
+        let mut parent = device.parent;
+        let mut depth = 0usize;
+        while parent != PNP_NO_PARENT {
+            if depth >= MAX_PNP_DEVICES { return Err(DeviceTreeError::ParentCycle); }
+            let Some(ancestor) = pnp::query_pnp_device(parent) else {
+                return Err(DeviceTreeError::MissingParent);
+            };
+            if ancestor.state == PNP_DEVICE_REMOVED { return Err(DeviceTreeError::MissingParent); }
+            if ancestor.index == device.index { return Err(DeviceTreeError::ParentCycle); }
+            parent = ancestor.parent;
+            depth += 1;
+        }
+    }
+    Ok(count)
+}
+
 pub fn build_device_tree(output: &mut [DeviceTreeEntry]) -> Result<usize, DeviceTreeError> {
     let mut count = 0usize;
     for index in 0..MAX_PNP_DEVICES {
