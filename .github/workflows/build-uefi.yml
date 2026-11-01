@@ -1087,7 +1087,7 @@ jobs:
 
           # Verify the IOMMU and xHCI handoff only after the failure-capture
           # branch has had a chance to preserve the live guest's stack and GDB state.
-          grep -F 'VT-d: translation enabled; generic DMA backend registered for validated xHCI requester.' build/serial.log
+          grep -F 'VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.' build/serial.log
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
           grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
 
@@ -1095,8 +1095,8 @@ jobs:
           trap - EXIT
           cat build/serial.log
           grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
-          grep -F 'PCI xHCI resource discovery and uncached MMIO mapping complete.' build/serial.log
-          grep -F 'VT-d: translation enabled; generic DMA backend registered for validated xHCI requester.' build/serial.log
+          grep -F 'xHCI bind: loading PE32+ usbxhci.sys bytes=' build/serial.log
+          grep -F 'VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.' build/serial.log
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
           grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
           grep -E '^xHCI bind: (safe IOMMU DMA or masked interrupt route unavailable|required HAL/device services are incomplete|loading PE32\+ usbxhci.sys|PE image load or DriverEntry failed|DriverEntry succeeded)' build/serial.log || grep -F 'PCI xHCI detected but no safe PnP MMIO resource could be published.' build/serial.log
