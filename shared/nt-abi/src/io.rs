@@ -31,6 +31,48 @@ impl Default for IO_STATUS_BLOCK {
     }
 }
 
+/// Windows WDM volume parameter block. This is the public x64 VPB layout
+/// from wdm.h; the I/O manager owns allocation and the RealDevice/Type/Size
+/// members, while the mounted file system owns its volume object and label.
+pub const IO_TYPE_VPB: i16 = 0x0b;
+pub const VPB_MOUNTED: u16 = 0x0001;
+pub const VPB_LOCKED: u16 = 0x0002;
+pub const VPB_PERSISTENT: u16 = 0x0004;
+pub const VPB_REMOVE_PENDING: u16 = 0x0008;
+pub const VPB_RAW_MOUNT: u16 = 0x0010;
+pub const VPB_DIRECT_WRITES_ALLOWED: u16 = 0x0020;
+pub const MAXIMUM_VOLUME_LABEL_LENGTH: usize = 32 * core::mem::size_of::<u16>();
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VPB {
+    pub type_: i16,
+    pub size: i16,
+    pub flags: u16,
+    pub volume_label_length: u16,
+    pub device_object: *mut DEVICE_OBJECT,
+    pub real_device: *mut DEVICE_OBJECT,
+    pub serial_number: ULONG,
+    pub reference_count: ULONG,
+    pub volume_label: [u16; 32],
+}
+
+impl VPB {
+    pub const fn empty() -> Self {
+        Self {
+            type_: IO_TYPE_VPB,
+            size: core::mem::size_of::<Self>() as i16,
+            flags: 0,
+            volume_label_length: 0,
+            device_object: core::ptr::null_mut(),
+            real_device: core::ptr::null_mut(),
+            serial_number: 0,
+            reference_count: 0,
+            volume_label: [0; 32],
+        }
+    }
+}
+
 pub type PDRIVER_DISPATCH = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP) -> NTSTATUS>;
 pub type PDRIVER_UNLOAD = Option<unsafe extern "win64" fn(*mut DRIVER_OBJECT)>;
 pub type PIO_COMPLETION_ROUTINE = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP, PVOID) -> NTSTATUS>;
@@ -130,6 +172,23 @@ pub struct IO_STACK_LOCATION {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_x64_vpb_layout_matches_wdk() {
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(core::mem::size_of::<VPB>(), 0x60);
+            assert_eq!(core::mem::align_of::<VPB>(), 8);
+            assert_eq!(core::mem::offset_of!(VPB, type_), 0x00);
+            assert_eq!(core::mem::offset_of!(VPB, size), 0x02);
+            assert_eq!(core::mem::offset_of!(VPB, flags), 0x04);
+            assert_eq!(core::mem::offset_of!(VPB, volume_label_length), 0x06);
+            assert_eq!(core::mem::offset_of!(VPB, device_object), 0x08);
+            assert_eq!(core::mem::offset_of!(VPB, real_device), 0x10);
+            assert_eq!(core::mem::offset_of!(VPB, serial_number), 0x18);
+            assert_eq!(core::mem::offset_of!(VPB, reference_count), 0x1c);
+            assert_eq!(core::mem::offset_of!(VPB, volume_label), 0x20);
+        }
+    }
 
     #[test]
     fn io_status_block_matches_x64_size_and_alignment() {
