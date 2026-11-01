@@ -339,10 +339,12 @@ extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
         let Some(id)=dma::iommu::vtd::RequesterId::new_segment(0,r.bus,r.device,r.function) else{return false};
         if !dma::iommu::vtd::requester_domain_usable(id){return false}
     }
-    let command=unsafe{hal::pci_config_read(r.segment,r.bus,r.device,r.function,0x04,2)}.ok()? as u16;
+    let Ok(command_value)= (unsafe{hal::pci_config_read(r.segment,r.bus,r.device,r.function,0x04,2)}) else{return false};
+    let command=command_value as u16;
     let next=if enabled{command|0x4}else{command&!0x4};
     if unsafe{hal::pci_config_write(r.segment,r.bus,r.device,r.function,0x04,2,next as u32)}.is_err(){return false}
-    let verify=unsafe{hal::pci_config_read(r.segment,r.bus,r.device,r.function,0x04,2)}.ok()? as u16;
+    let Ok(verify_value)= (unsafe{hal::pci_config_read(r.segment,r.bus,r.device,r.function,0x04,2)}) else{return false};
+    let verify=verify_value as u16;
     let ok=(verify&0x4!=0)==enabled;
     if ok {
         if enabled { unsafe{serial_write(b"xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.\r\n");} }
