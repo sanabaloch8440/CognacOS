@@ -276,7 +276,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     // Bind a real kernel DEVICE_OBJECT to this DriverObject and publish
     // the dispatch table consumed by IoCallDriver. The DMA requester remains
     // the PCI PDO identity supplied separately in ext.device_object.
-    static DEVICE_NAME:[u16;20]=[
+    static DEVICE_NAME:[u16;19]=[
         92,68,101,118,105,99,101,92,67,111,103,110,97,99,88,104,99,105,0
     ];
     let mut counted_name=cognacos_nt_abi::object::UNICODE_STRING{
