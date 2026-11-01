@@ -452,14 +452,103 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
 }
 
 
-/// Compatibility call site for the staged PCI.sys cutover. PCI enumeration
-/// is no longer performed by the kernel.
-/// Transitional cutover: the kernel no longer walks MCFG buses or creates
-/// a second PCI inventory. PCI.sys is the sole owner of PCI enumeration.
-/// The PCI.sys-to-PnP PDO/BusRelations handoff is being connected in the next
-/// stage; until then no PCI devnodes are published through this legacy path.
-fn enumerate_acpi_pci_devices(_rsdp_address:u64)->usize {
-    0
+static PCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static mut PCI_DRIVER_OBJECT_STORAGE:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
+static mut PCI_HANDOFF_STORAGE:core::mem::MaybeUninit<nt_abi::bus::PCI_DRIVER_HANDOFF>=core::mem::MaybeUninit::uninit();
+static mut PCI_REGISTRY_IMAGE_BUFFER:[u8;PCI_PE_IMAGE.len()]=[0;PCI_PE_IMAGE.len()];
+static mut PCI_BUS_FDO:*mut ntoskrnl::wdm::DeviceObject=core::ptr::null_mut();
+
+unsafe extern "win64" fn pci_create_pdo_callback(
+ context:nt_abi::types::PVOID,
+ driver:*mut nt_abi::io::DRIVER_OBJECT,
+ information:*const nt_abi::bus::PCI_DEVICE_INFORMATION,
+ output:*mut *mut nt_abi::io::DEVICE_OBJECT,
+)->i32 {
+ unsafe{ntoskrnl::wdm::IoPciCreatePdo(context,driver.cast(),information,output.cast())}
+}
+unsafe extern "win64" fn pci_delete_pdo_callback(context:nt_abi::types::PVOID,device:*mut nt_abi::io::DEVICE_OBJECT) {
+ unsafe{ntoskrnl::wdm::IoPciDeletePdo(context,device.cast())}
+}
+
+/// Load PCI.sys from its registry service entry, pass it firmware-derived ECAM
+/// mappings and kernel PDO callbacks, then ask the PnP manager for BusRelations.
+/// Firmware discovery and MMIO mapping remain bootstrap responsibilities;
+/// PCI configuration-space enumeration is exclusively performed by PCI.sys.
+fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
+ use core::sync::atomic::Ordering;
+ use nt_abi::bus::{PCI_DRIVER_HANDOFF,PCI_ECAM_WINDOW,PCI_DRIVER_HANDOFF_MAGIC,PCI_DRIVER_HANDOFF_VERSION,PCI_DRIVER_HANDOFF_MAX_WINDOWS};
+ if PCI_PE_IMAGE.is_empty()||rsdp_address==0{return 0;}
+ if PCI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0;}
+ let table=match unsafe{acpi::find_table(rsdp_address,*b"MCFG",0)}{Ok(t)=>t,Err(_)=>return 0};
+ let mcfg=match acpi::parse_mcfg(table){Ok(v)=>v,Err(_)=>return 0};
+ if mcfg.count==0||mcfg.count>PCI_DRIVER_HANDOFF_MAX_WINDOWS{return 0;}
+ let mut handoff=PCI_DRIVER_HANDOFF{
+  magic:PCI_DRIVER_HANDOFF_MAGIC,size:core::mem::size_of::<PCI_DRIVER_HANDOFF>() as u32,
+  version:PCI_DRIVER_HANDOFF_VERSION,window_count:mcfg.count as u32,reserved:0,
+  pdo_context:ntoskrnl::wdm::IoPciPdoContext(),
+  create_pdo:Some(pci_create_pdo_callback),delete_pdo:Some(pci_delete_pdo_callback),
+  windows:[PCI_ECAM_WINDOW::default();PCI_DRIVER_HANDOFF_MAX_WINDOWS],
+ };
+ let mut mapped=0usize;
+ for allocation in mcfg.allocations.iter().take(mcfg.count){
+  let span=((allocation.end_bus as u64-allocation.start_bus as u64)+1).checked_mul(1<<20);
+  let Some(length)=span else{return 0};
+  let virtual_base=match kernel_vm::map_io_space(allocation.base_address,length){
+   Ok(v)=>v,Err(_)=>{
+    for prior in handoff.windows.iter().take(mapped){let len=((prior.bus_end as u64-prior.bus_start as u64)+1)<<20;let _=kernel_vm::unmap_io_space(prior.virtual_base,len);}
+    return 0
+   }
+  };
+  handoff.windows[mapped]=PCI_ECAM_WINDOW{
+   virtual_base,physical_base:allocation.base_address,segment:allocation.segment,
+   bus_start:allocation.start_bus,bus_end:allocation.end_bus,
+  };
+  mapped+=1;
+ }
+ unsafe{
+  let handoff_ptr=core::ptr::addr_of_mut!(PCI_HANDOFF_STORAGE).cast::<PCI_DRIVER_HANDOFF>();
+  handoff_ptr.write(handoff);
+  let driver=core::ptr::addr_of_mut!(PCI_DRIVER_OBJECT_STORAGE).cast::<ntoskrnl::driver_loader::DriverObject>();
+  driver.write(core::mem::zeroed());
+  (*driver).object_type=4;(*driver).size=core::mem::size_of::<ntoskrnl::driver_loader::DriverObject>() as i16;
+  (*driver).driver_extension=handoff_ptr.cast();
+  let Some(system_bytes)=boot_hive_bytes("SYSTEM") else{return 0};
+  let system_hive=match ntoskrnl::cm::hive::Hive::open(system_bytes){Ok(h)=>h,Err(_)=>return 0};
+  const SERVICE:&[u16]=&[80,67,73];
+  const IMAGE_PATH:&[u16]=&[92,83,121,115,116,101,109,82,111,111,116,92,83,121,115,116,101,109,51,50,92,100,114,105,118,101,114,115,92,112,99,105,46,115,121,115];
+  let mut registry_path=[0u16;1024];
+  let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PCI_REGISTRY_IMAGE_BUFFER).cast::<u8>(),PCI_PE_IMAGE.len());
+  let loaded=ntoskrnl::driver_loader::load_registered_service_with_resolver(
+   &system_hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
+   |path,out|{
+    let equal=path.len()==IMAGE_PATH.len()&&path.iter().zip(IMAGE_PATH).all(|(a,b)|{
+     let a=if (b'A' as u16..=b'Z' as u16).contains(a){*a+32}else{*a};
+     let b=if (b'A' as u16..=b'Z' as u16).contains(b){*b+32}else{*b};a==b
+    });
+    if !equal||out.len()<PCI_PE_IMAGE.len(){return None;}
+    out[..PCI_PE_IMAGE.len()].copy_from_slice(PCI_PE_IMAGE);Some(PCI_PE_IMAGE.len())
+   },ntoskrnl::resolve);
+  if loaded.is_err(){return 0;}
+  let mut bus=core::ptr::null_mut();
+  let status=ntoskrnl::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
+  if status!=nt_abi::ntstatus::STATUS_SUCCESS||bus.is_null(){return 0;}
+  PCI_BUS_FDO=bus;
+  let status=ntoskrnl::wdm::IoPnPEnumerateBus(bus);
+  if status!=nt_abi::ntstatus::STATUS_SUCCESS {
+   let _=ntoskrnl::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return 0;
+  }
+  let mut count=0usize;
+  for index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES {
+   if ntoskrnl::pnp::query_pnp_device(index as u32).is_some(){count+=1;}
+  }
+  count
+ }
+}
+
+/// Compatibility call site retained while resource assignment and xHCI start
+/// are completed by the PnP/resource-arbitration stages.
+fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
+ initialize_pci_bus_driver(rsdp_address)
 }
 
 /// Compatibility call site retained until PCI.sys publishes the xHCI PDO and
