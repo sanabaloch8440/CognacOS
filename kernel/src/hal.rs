@@ -217,7 +217,7 @@ pub unsafe fn configure_pci_msix(segment:u16,bus:u8,device:u8,function:u8,capabi
     table_bir:u8,table_offset:u32,table_size:u16,table_virtual:u64,mapping_length:u64,
     destination_apic_id:u32,vector:u8)->Result<(),HalError>{
     if !device_interrupt_handler_registered(vector)||table_bir>=6||table_size==0
-        ||table_virtual==0||table_offset&7!=0{return Err(HalError::InvalidTransition)}
+        ||table_virtual==0||table_virtual&0xf!=0||table_offset&7!=0{return Err(HalError::InvalidTransition)}
     let (address,data)=pci_msi_message(destination_apic_id,vector)?;
     let off=capability_offset as u16;
     if off<0x40||off>0xf0||off&3!=0{return Err(HalError::InvalidMmioRange)}
@@ -228,8 +228,12 @@ pub unsafe fn configure_pci_msix(segment:u16,bus:u8,device:u8,function:u8,capabi
     let end=(table_offset as u64).checked_add(bytes).ok_or(HalError::InvalidMmioRange)?;
     if end>mapping_length||table_virtual.checked_add(end).is_none(){return Err(HalError::InvalidMmioRange)}
     unsafe{pci_config_write(segment,bus,device,function,off+2,2,((control|1<<14)&!(1<<15)) as u32)?;}
-    let entry=table_virtual.checked_add(table_offset as u64).ok_or(HalError::InvalidMmioRange)? as *mut u32;
+    let table=table_virtual.checked_add(table_offset as u64).ok_or(HalError::InvalidMmioRange)? as *mut u32;
     unsafe{
+        // Mask every vector before enabling the function. Only entry zero is
+        // programmed here; unused entries must never retain stale messages.
+        for index in 0..table_size as usize { core::ptr::write_volatile(table.add(index*4+3),1); }
+        let entry=table;
         core::ptr::write_volatile(entry.add(3),1);
         core::ptr::write_volatile(entry.add(0),address);
         core::ptr::write_volatile(entry.add(1),0);
