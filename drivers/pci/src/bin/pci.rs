@@ -218,8 +218,15 @@ unsafe extern "win64" fn query_inventory_counts(
     if context.is_null() || functions.is_null() || bridges.is_null() || xhci.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
     if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    // The first PnP inventory request is the discovery trigger. DriverEntry
+    // validates the firmware-provided ECAM windows only; PCI enumeration is
+    // deliberately deferred until the PnP manager asks for bus inventory.
+    if !STATE.inventory_ready.load(Ordering::Acquire) {
+        let status = unsafe { CognacPciEnumerateInventory() };
+        if status != STATUS_SUCCESS { return status; }
+    }
     let Ok(function_count) = u32::try_from(STATE.function_count.load(Ordering::Acquire)) else {
         return STATUS_INSUFFICIENT_RESOURCES;
     };
