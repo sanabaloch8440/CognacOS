@@ -872,8 +872,8 @@ fn bind_usbhub3_pe_driver()->bool{
   ext.write(Usbhub3DriverExtensionHeader{
    magic:0x434f_474e_4143_4833,size:core::mem::size_of::<Usbhub3DriverExtensionHeader>() as u32,version:1,
    kernel_io:io_ptr,root_hub_device:UCX_ROOT_HUB_DEVICE,parent_bus_device:XHCI_FDO_DEVICE,port_count,
-   event_sink:core::ptr::addr_of_mut!(UCX_HUB_EVENT_SINK),
-   event_context:core::ptr::addr_of_mut!(UCX_HUB_EVENT_CONTEXT),
+   event_sink:core::ptr::addr_of!(UCX_HUB_EVENT_SINK).cast_mut(),
+   event_context:core::ptr::addr_of!(UCX_HUB_EVENT_CONTEXT).cast_mut(),
    hub_device_out:core::ptr::addr_of_mut!(USBHUB3_DEVICE),
    child_factory_out:core::ptr::addr_of_mut!(USBHUB3_CHILD_FACTORY),
   });
