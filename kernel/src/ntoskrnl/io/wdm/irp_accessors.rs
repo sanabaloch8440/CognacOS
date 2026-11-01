@@ -7,6 +7,7 @@ use core::ptr;
 const IRP_IO_STATUS_STATUS_OFFSET: usize = 0x30;
 const IRP_IO_STATUS_INFORMATION_OFFSET: usize = 0x38;
 const IRP_USER_BUFFER_OFFSET: usize = 0x70;
+const IRP_MDL_ADDRESS_OFFSET: usize = 0x08;
 
 /// Read IRP.IoStatus.Status from the x64 WDM packet.
 pub unsafe fn io_get_irp_status(irp: *const Irp) -> i32 {
@@ -26,6 +27,29 @@ pub unsafe fn io_get_irp_information(irp: *const Irp) -> usize {
         ptr::read_unaligned(
             ptr::addr_of!((*irp).bytes).cast::<u8>()
                 .add(IRP_IO_STATUS_INFORMATION_OFFSET).cast::<usize>()
+        )
+    }
+}
+
+pub unsafe fn io_set_irp_information(irp: *mut Irp, information: usize) -> bool {
+    if irp.is_null() { return false; }
+    unsafe {
+        ptr::write_unaligned(
+            ptr::addr_of_mut!((*irp).bytes).cast::<u8>()
+                .add(IRP_IO_STATUS_INFORMATION_OFFSET).cast::<usize>(),
+            information
+        );
+    }
+    true
+}
+
+/// Return IRP.MdlAddress without exposing the opaque packet layout.
+pub unsafe fn io_get_irp_mdl_address(irp: *const Irp) -> *mut c_void {
+    if irp.is_null() { return ptr::null_mut(); }
+    unsafe {
+        ptr::read_unaligned(
+            ptr::addr_of!((*irp).bytes).cast::<u8>()
+                .add(IRP_MDL_ADDRESS_OFFSET).cast::<*mut c_void>()
         )
     }
 }
