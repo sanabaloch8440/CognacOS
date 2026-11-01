@@ -152,7 +152,7 @@ impl WdmState {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
-    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],alignment_requirement:63,device_queue_padding:[0;4],
+    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],alignment_requirement:0,device_queue_padding:[0;4],
     device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},dpc:[0;0x40],active_thread_count:0,
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
