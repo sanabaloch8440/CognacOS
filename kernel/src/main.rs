@@ -798,6 +798,7 @@ struct XhciDriverExtensionHeader {
  hal:*const cognacos_hal_contract::HalServiceTable,
  device:*const cognacos_hal_contract::DeviceServiceTable,
  kernel_io:*const cognacos_hal_contract::KernelIoServiceTable,
+ fdo_out:*mut u64,
  ready:core::sync::atomic::AtomicBool,
  interrupt_requested:core::sync::atomic::AtomicBool,
  event_count:core::sync::atomic::AtomicU64,
@@ -820,6 +821,7 @@ struct XhciDriverExtensionBacking {
 static mut XHCI_HAL_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::HalServiceTable>=core::mem::MaybeUninit::uninit();
 static mut XHCI_DEVICE_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::DeviceServiceTable>=core::mem::MaybeUninit::uninit();
 static mut XHCI_KERNEL_IO_SERVICES:core::mem::MaybeUninit<cognacos_hal_contract::KernelIoServiceTable>=core::mem::MaybeUninit::uninit();
+static mut XHCI_FDO_DEVICE:u64=0;
 static mut XHCI_DRIVER_EXTENSION:core::mem::MaybeUninit<XhciDriverExtensionBacking>=core::mem::MaybeUninit::uninit();
 static mut XHCI_DRIVER_OBJECT:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
 
@@ -1012,7 +1014,7 @@ fn bind_xhci_pe_driver()->bool {
             magic:0x434f_474e_4143_5848, size:core::mem::size_of::<XhciDriverExtensionBacking>() as u32,
             version:1, mmio_base:resources.bar_virtual, mmio_length:resources.bar_length,
             device_object:resources.device_object, interrupt_vector:resources.interrupt_vector as u32,
-            max_slots:64, hal:hal_ptr, device:device_ptr, kernel_io:kernel_io_ptr,
+            max_slots:64, hal:hal_ptr, device:device_ptr, kernel_io:kernel_io_ptr, fdo_out:core::ptr::addr_of_mut!(XHCI_FDO_DEVICE),
             ready:core::sync::atomic::AtomicBool::new(false),
             interrupt_requested:core::sync::atomic::AtomicBool::new(false),
             event_count:core::sync::atomic::AtomicU64::new(0),
