@@ -1,4 +1,4 @@
-//! Read-only boot-asset filesystem mounted through the WDM VPB/volume stack.
+//! Read-only VFS provider routed through WDM FILE_OBJECT and IRP dispatch.
 //!
 //! Registered immutable boot assets are exposed by an internal read-only device.
 //! Open/read/cleanup/close are represented by IRP_MJ_CREATE, IRP_MJ_READ,
@@ -116,8 +116,6 @@ static STATE: IrqSpinLock<State> = IrqSpinLock::new(State::new());
 static BOOT_INIT: AtomicUsize = AtomicUsize::new(0);
 static DEVICE_INIT: AtomicUsize = AtomicUsize::new(0);
 static FILE_DEVICE: AtomicUsize = AtomicUsize::new(0);
-static FILESYSTEM_DEVICE: AtomicUsize = AtomicUsize::new(0);
-static RAW_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static FILE_SYSTEM_DEVICE:AtomicUsize=AtomicUsize::new(0);
 static FILE_SYSTEM_INIT:AtomicUsize=AtomicUsize::new(0);
 static VOLUME_DEVICE:AtomicUsize=AtomicUsize::new(0);
@@ -137,44 +135,6 @@ unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp)
     let mut information = 0usize;
 
     match major {
-        IRP_MJ_FILE_SYSTEM_CONTROL => {
-            let minor = unsafe { (*stack).minor_function };
-            let parameters = unsafe { (*stack).parameters.as_ptr() };
-            if minor == IRP_MN_MOUNT_VOLUME {
-                let real_device = unsafe { ptr::read_unaligned(parameters.add(4).cast::<*mut DeviceObject>()) };
-                let vpb = unsafe { ptr::read_unaligned(parameters.add(12).cast::<*mut wdm::Vpb>()) };
-                if real_device.is_null() || vpb.is_null() {
-                    status = STATUS_INVALID_PARAMETER;
-                } else {
-                    let mut volume = ptr::null_mut();
-                    status = unsafe {
-                        wdm::io_create_device(
-                            ptr::addr_of_mut!(FILE_DRIVER), 0, ptr::null_mut(),
-                            FILE_DEVICE_DISK_FILE_SYSTEM, 0, 0, &mut volume,
-                        )
-                    };
-                    if status >= 0 && !volume.is_null() {
-                        let mut old_irql = 0u8;
-                        unsafe { wdm::io_acquire_vpb_spin_lock(&mut old_irql); }
-                        unsafe {
-                            (*vpb).real_device = real_device.cast();
-                            (*vpb).device_object = volume.cast();
-                        }
-                        unsafe { wdm::io_release_vpb_spin_lock(old_irql); }
-                        FILE_DEVICE.store(volume as usize, Ordering::Release);
-                    } else if status >= 0 {
-                        status = STATUS_INSUFFICIENT_RESOURCES;
-                    }
-                }
-            } else if minor == IRP_MN_VERIFY_VOLUME {
-                let vpb = unsafe { ptr::read_unaligned(parameters.add(4).cast::<*mut wdm::Vpb>()) };
-                if vpb.is_null() || unsafe { (*vpb).device_object } != device.cast() {
-                    status = STATUS_UNRECOGNIZED_VOLUME;
-                }
-            } else {
-                status = STATUS_INVALID_DEVICE_REQUEST;
-            }
-        },
         IRP_MJ_CREATE => {
             if file_object.is_null() {
                 status = STATUS_INVALID_PARAMETER;
@@ -286,7 +246,6 @@ const fn make_file_driver() -> DriverObject {
     major[IRP_MJ_READ as usize] = Some(file_dispatch);
     major[IRP_MJ_CLEANUP as usize] = Some(file_dispatch);
     major[IRP_MJ_CLOSE as usize] = Some(file_dispatch);
-    major[IRP_MJ_FILE_SYSTEM_CONTROL as usize] = Some(file_dispatch);
     major[wdm::IRP_MJ_FILE_SYSTEM_CONTROL as usize] = Some(file_system_control_dispatch);
     DriverObject {
         object_type: 4,
@@ -308,56 +267,32 @@ const fn make_file_driver() -> DriverObject {
 }
 static mut FILE_DRIVER: DriverObject = make_file_driver();
 
-fn create_file_device(device_type: u32) -> Result<*mut DeviceObject, i32> {
-    let mut device = ptr::null_mut();
-    let status = unsafe {
-        wdm::io_create_device(
-            ptr::addr_of_mut!(FILE_DRIVER), 0, ptr::null_mut(),
-            device_type, 0, 0, &mut device,
-        )
-    };
-    if status >= 0 && !device.is_null() { Ok(device) }
-    else if status < 0 { Err(status) }
-    else { Err(STATUS_INSUFFICIENT_RESOURCES) }
-}
-
-/// Register the boot-asset provider as a read-only filesystem device, then
-/// mount it on its in-memory disk through IoVerifyVolume and the normal WDM
-/// IRP_MN_MOUNT_VOLUME/VPB completion path.
 fn ensure_file_device() -> Result<*mut DeviceObject, i32> {
     let existing = FILE_DEVICE.load(Ordering::Acquire);
-    if existing != 0 { return Ok(existing as *mut DeviceObject); }
+    if existing != 0 {
+        return Ok(existing as *mut DeviceObject);
+    }
     match DEVICE_INIT.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => {
-            let result = (|| {
-                let fs_device = create_file_device(FILE_DEVICE_DISK_FILE_SYSTEM)?;
-                FILESYSTEM_DEVICE.store(fs_device as usize, Ordering::Release);
-                unsafe { wdm::io_register_file_system(fs_device); }
-
-                let raw_device = create_file_device(FILE_DEVICE_DISK)?;
-                RAW_DEVICE.store(raw_device as usize, Ordering::Release);
-                let status = unsafe { wdm::io_verify_volume(raw_device, 0) };
-                let volume = FILE_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
-                if status < 0 || volume.is_null() {
-                    return Err(if status < 0 { status } else { STATUS_INSUFFICIENT_RESOURCES });
-                }
-                Ok(volume)
-            })();
-            match result {
-                Ok(device) => {
-                    DEVICE_INIT.store(2, Ordering::Release);
-                    Ok(device)
-                }
-                Err(status) => {
-                    let raw = RAW_DEVICE.swap(0, Ordering::AcqRel) as *mut DeviceObject;
-                    let fs = FILESYSTEM_DEVICE.swap(0, Ordering::AcqRel) as *mut DeviceObject;
-                    if !fs.is_null() { unsafe { wdm::io_unregister_file_system(fs); } }
-                    if !raw.is_null() { unsafe { wdm::io_delete_device(raw); } }
-                    if !fs.is_null() { unsafe { wdm::io_delete_device(fs); } }
-                    FILE_DEVICE.store(0, Ordering::Release);
-                    DEVICE_INIT.store(0, Ordering::Release);
-                    Err(status)
-                }
+            let mut device = ptr::null_mut();
+            let status = unsafe {
+                wdm::io_create_device(
+                    ptr::addr_of_mut!(FILE_DRIVER),
+                    0,
+                    ptr::null_mut(),
+                    FILE_DEVICE_DISK,
+                    0,
+                    0,
+                    &mut device,
+                )
+            };
+            if status >= 0 && !device.is_null() {
+                FILE_DEVICE.store(device as usize, Ordering::Release);
+                DEVICE_INIT.store(2, Ordering::Release);
+                Ok(device)
+            } else {
+                DEVICE_INIT.store(0, Ordering::Release);
+                Err(status)
             }
         }
         Err(1) => {
@@ -370,6 +305,30 @@ fn ensure_file_device() -> Result<*mut DeviceObject, i32> {
             if device != 0 { Ok(device as *mut DeviceObject) } else { Err(STATUS_INSUFFICIENT_RESOURCES) }
         }
     }
+}
+
+fn ensure_filesystem_device()->Result<*mut DeviceObject,i32>{
+ let existing=FILE_SYSTEM_DEVICE.load(Ordering::Acquire);if existing!=0{return Ok(existing as *mut DeviceObject)}
+ match FILE_SYSTEM_INIT.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire){
+  Ok(_)=>{
+   let mut device=ptr::null_mut();
+   let status=unsafe{wdm::io_create_device(ptr::addr_of_mut!(FILE_DRIVER),0,ptr::null_mut(),FILE_DEVICE_DISK_FILE_SYSTEM,0,0,&mut device)};
+   if status>=0&&!device.is_null(){
+    unsafe{wdm::io_register_file_system(device);}
+    if wdm::is_file_system_registered(device){FILE_SYSTEM_DEVICE.store(device as usize,Ordering::Release);FILE_SYSTEM_INIT.store(2,Ordering::Release);Ok(device)}
+    else{unsafe{wdm::io_delete_device(device);}FILE_SYSTEM_INIT.store(0,Ordering::Release);Err(STATUS_INSUFFICIENT_RESOURCES)}
+   }else{FILE_SYSTEM_INIT.store(0,Ordering::Release);Err(status)}
+  }
+  Err(1)=>{while FILE_SYSTEM_INIT.load(Ordering::Acquire)==1{core::hint::spin_loop();}let d=FILE_SYSTEM_DEVICE.load(Ordering::Acquire);if d!=0{Ok(d as *mut DeviceObject)}else{Err(STATUS_INSUFFICIENT_RESOURCES)}}
+  Err(_)=>{let d=FILE_SYSTEM_DEVICE.load(Ordering::Acquire);if d!=0{Ok(d as *mut DeviceObject)}else{Err(STATUS_INSUFFICIENT_RESOURCES)}}
+ }
+}
+pub fn mount_ext4_volume(real_device:*mut DeviceObject)->i32{
+ if real_device.is_null(){return STATUS_INVALID_PARAMETER}
+ if let Err(status)=ensure_filesystem_device(){return status}
+ let status=unsafe{wdm::io_verify_volume(real_device,0)};
+ if status>=0&&VOLUME_DEVICE.load(Ordering::Acquire)!=0{STATUS_SUCCESS}
+ else if status>=0{STATUS_UNRECOGNIZED_VOLUME}else{status}
 }
 
 fn dispatch_file_irp(file_object: *mut FILE_OBJECT, major: u8, offset: i64, buffer: *mut u8, length: usize) -> Result<usize, i32> {

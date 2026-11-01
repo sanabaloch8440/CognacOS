@@ -1,4 +1,4 @@
-//! WDM KINTERRUPT-compatible connection and teardown exports.
+// WDM KINTERRUPT-compatible connection and teardown exports.
 const INTERRUPT_SIGNATURE:u64=0x434f_474e_494e_5431;
 pub type InterruptServiceRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void)->u8;
 #[repr(C)]
