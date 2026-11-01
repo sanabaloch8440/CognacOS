@@ -1021,7 +1021,7 @@ pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  STATUS_SUCCESS
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoDeleteDevice")]
 pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
  let _ = crate::ntoskrnl::ob::runtime::unregister_object(device.cast());
