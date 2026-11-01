@@ -53,6 +53,14 @@ use core::panic::PanicInfo;
 mod platform_devices;
 pub use platform_devices::{dequeue_keyboard_event, keyboard_event_drop_count, KeyboardEvent};
 
+#[path = "ke/self_test.rs"]
+mod ke_self_test;
+pub(crate) use ke_self_test::{
+    thread_block_smoke_entry, thread_smoke_entry, thread_wake_smoke_entry,
+    THREAD_BLOCK_STAGE, THREAD_BLOCK_STACK, THREAD_SMOKE_RAN, THREAD_SMOKE_STACK,
+    THREAD_WAKE_STACK,
+};
+
 #[path = "boot/handoff.rs"]
 mod boot_handoff;
 pub(crate) use boot_handoff::{
