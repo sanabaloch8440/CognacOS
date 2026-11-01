@@ -346,6 +346,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "MmGetPhysicalMemoryRanges" => mm::runtime::mm_get_physical_memory_ranges as usize,
   "MmProtectMdlSystemAddress" => mm::runtime::mm_protect_mdl_system_address as usize,
   "MmGetPhysicalAddress" => mm::runtime::mm_get_physical_address as usize,
+  "MmMapIoSpace" => mm::runtime::mm_map_io_space as usize,
+  "MmUnmapIoSpace" => mm::runtime::mm_unmap_io_space as usize,
   "MmGetVirtualForPhysical" => mm::runtime::mm_get_virtual_for_physical as usize,
   "MmIsAddressValid" => mm::runtime::mm_is_address_valid as usize,
   "MmIsNonPagedSystemAddressValid" => mm::runtime::mm_is_non_paged_system_address_valid as usize,
@@ -865,6 +867,8 @@ pub fn self_test() -> bool {
  named_export_count()==3352 && ordinal_only_export_count()==37 && exports().all(|e|!e.name.is_empty())
  && resolve(b"ntoskrnl.exe",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"kernel32.dll",ImportSymbol::Ordinal(1)).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmMapIoSpace")) == Some(mm::runtime::mm_map_io_space as usize as u64)
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentProcessorNumber")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryActiveProcessors")).is_some()
