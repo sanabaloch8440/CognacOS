@@ -2016,8 +2016,11 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
   let volume=unsafe{(*vpb).device_object};
   let volume_index=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,volume));
+  let already_mounted_elsewhere=state.devices.iter().any(|s|s.used&&!ptr::eq(&s.vpb,vpb)
+   &&s.vpb.device_object==volume&&s.vpb.flags&crate::nt_abi::io::VPB_MOUNTED!=0);
   match (real_index,volume_index) {
-   (Some(_),Some(vi)) if !volume.is_null()&&state.devices[vi].object.device_type==FILE_DEVICE_DISK_FILE_SYSTEM
+   (Some(_),Some(vi)) if !volume.is_null()&&!already_mounted_elsewhere
+      &&state.devices[vi].object.device_type==FILE_DEVICE_DISK_FILE_SYSTEM
       &&state.devices[vi].object.reference_count<i32::MAX => {
     state.devices[vi].object.reference_count+=1;
     unsafe{(*vpb).flags|=crate::nt_abi::io::VPB_MOUNTED;}
@@ -2026,6 +2029,7 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
     status=STATUS_INVALID_DEVICE_REQUEST;
     unsafe{
      ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),status);
+     (*vpb).device_object=ptr::null_mut();
      (*vpb).flags&=!crate::nt_abi::io::VPB_MOUNTED;
     }
    }
@@ -2035,7 +2039,10 @@ unsafe extern "win64" fn mount_volume_completion(_device:*mut DeviceObject,irp:*
   let _state=WDM.lock();
   let mut vpb_irql=0u8;
   unsafe{io_acquire_vpb_spin_lock(&mut vpb_irql);}
-  unsafe{(*vpb).flags&=!crate::nt_abi::io::VPB_MOUNTED;}
+  unsafe{
+   (*vpb).device_object=ptr::null_mut();
+   (*vpb).flags&=!crate::nt_abi::io::VPB_MOUNTED;
+  }
   unsafe{io_release_vpb_spin_lock(vpb_irql);}
  }
  unsafe{io_free_irp(irp);}
