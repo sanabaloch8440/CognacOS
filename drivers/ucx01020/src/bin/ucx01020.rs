@@ -137,7 +137,7 @@ struct PortIo{hal:&'static HalServiceTable,base:u64,op:u32,ports:u8}
 impl PortIo{
  fn address(&self,port:u8)->Result<u64,()>{if port==0||port>self.ports{return Err(())}self.base.checked_add(self.op as u64+0x400+(port as u64-1)*0x10).ok_or(())}
  fn read(&self,port:u8)->Result<u32,()>{let f=self.hal.read_mmio_u32.ok_or(())?;let mut v=0;let s=unsafe{f(self.address(port)?,&mut v)};if s.code==0{Ok(v)}else{Err(())}}
- fn write(&self,port:u8,set:u32,clear:u32,w1c:u32)->Result<(),()>{let f=self.hal.write_mmio_u32.ok_or(())?;let old=self.read(port)?;let rw=(1<<1)|(1<<4)|(0xf<<5)|(1<<9);let value=((old&rw)&!clear)|set|w1c;let s=unsafe{f(self.address(port)?,value)};if s.code==0{Ok(())}else{Err(())}}
+ fn write(&self,port:u8,set:u32,clear:u32,w1c:u32)->Result<(),()>{let f=self.hal.write_mmio_u32.ok_or(())?;let old=self.read(port)?;let rw=(0xf<<5)|(1<<9);let value=((old&rw)&!clear)|set|w1c;let s=unsafe{f(self.address(port)?,value)};if s.code==0{Ok(())}else{Err(())}}
 }
 impl RootHubPortIo for PortIo{
  fn read_port(&mut self,port:u8)->Result<PortStatus,()>{
