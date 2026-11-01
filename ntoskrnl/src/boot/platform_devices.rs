@@ -57,29 +57,35 @@ fn resolve_builtin_driver_image(path: &[u16], output: &mut [u8]) -> Option<usize
 mod driver_image_source_tests {
     use super::*;
 
-    fn path(name: &str) -> [u16; 96] {
+    fn path(name: &str) -> ([u16; 96], usize) {
         let mut result = [0u16; 96];
         let mut count = 0;
         for unit in "\\SystemRoot\\System32\\drivers\\".encode_utf16().chain(name.encode_utf16()) {
             result[count] = unit;
             count += 1;
         }
-        result[..count].to_vec().try_into().unwrap_or([0; 96])
+        (result, count)
+    }
+
+    fn resolve(name: &str, output: &mut [u8]) -> Option<usize> {
+        let (units, length) = path(name);
+        resolve_builtin_driver_image(&units[..length], output)
     }
 
     #[test]
-    fn image_path_matching_is_case_insensitive_and_rejects_other_directories() {
-        let canonical = path("ACPI.SYS");
-        assert!(driver_image_path_eq(&canonical["\\SystemRoot\\System32\\drivers\\".encode_utf16().count()..canonical.iter().position(|u| *u == 0).unwrap_or(canonical.len())], b"acpi.sys"));
+    fn image_path_matching_is_case_insensitive_and_rejects_unknown_or_nested_paths() {
+        let (canonical, length) = path("ACPI.SYS");
+        let prefix_length = "\\SystemRoot\\System32\\drivers\\".encode_utf16().count();
+        assert!(driver_image_path_eq(&canonical[prefix_length..length], b"acpi.sys"));
         let mut output = [0u8; 16];
-        assert_eq!(resolve_builtin_driver_image(&path("..\\acpi.sys"), &mut output), None);
-        assert_eq!(resolve_builtin_driver_image(&path("unknown.sys"), &mut output), None);
+        assert_eq!(resolve("..\\acpi.sys", &mut output), None);
+        assert_eq!(resolve("unknown.sys", &mut output), None);
     }
 
     #[test]
     fn image_path_resolution_refuses_insufficient_output() {
         let mut output = [];
-        assert_eq!(resolve_builtin_driver_image(&path("acpi.sys"), &mut output), None);
+        assert_eq!(resolve("acpi.sys", &mut output), None);
     }
 }
 
