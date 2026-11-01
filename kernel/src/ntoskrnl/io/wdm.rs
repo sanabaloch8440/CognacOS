@@ -437,7 +437,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  for r in resources[..count].iter() {
   for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=device) {
    let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length};
-   if resources_overlap(r,&existing){return STATUS_DEVICE_BUSY}
+   if claim.owner!=resource_owner && resources_overlap(r,&existing){return STATUS_DEVICE_BUSY}
   }
  }
  let free_count=arbiter.claims.iter().filter(|c|!c.used).count();
@@ -468,7 +468,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner&&c.committed){*c=ResourceClaim::EMPTY;}
    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){c.committed=true;c.irp=ptr::null_mut();}
   } else if has_pending {
-   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed){*c=ResourceClaim::EMPTY;}
+   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){*c=ResourceClaim::EMPTY;}
   }
  } else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL) {
   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner){*c=ResourceClaim::EMPTY;}
@@ -480,7 +480,9 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
 pub(crate) fn io_release_pnp_resources(device:*mut DeviceObject){
  if device.is_null(){return}
  let mut arbiter=RESOURCE_ARBITER.lock();
- for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==device){*c=ResourceClaim::EMPTY;}
+ let owner=unsafe{io_get_device_attachment_base_ref(device)};
+ if owner.is_null(){return}
+ for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner){*c=ResourceClaim::EMPTY;}
 }
 
 /// PnP manager bookkeeping for bus-enumerated device relations. The bus driver
@@ -555,7 +557,7 @@ pub unsafe extern "win64" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,min
  unsafe{io_pnp_dispatch_lifecycle_internal(device,minor,allocated,translated,false)}
 }
 unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void,remove_after_surprise:bool)->i32 {
- if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x07|0x17){return STATUS_INVALID_PARAMETER}
+ if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x07|0x09|0x0a|0x0b|0x17){return STATUS_INVALID_PARAMETER}
  let dispatch_device=unsafe{io_get_attached_device(device)};
  if dispatch_device.is_null(){return STATUS_DELETE_PENDING}
  let referenced=unsafe{io_reference_device_object(dispatch_device)};
@@ -708,6 +710,32 @@ pub unsafe extern "win64" fn IoPnPQueryBusChild(
 pub unsafe extern "win64" fn IoPnPStartDevice(device:*mut DeviceObject,allocated:*const c_void,translated:*const c_void)->i32{
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_START_DEVICE,allocated,translated)}
 }
+/// Send IRP_MN_QUERY_RESOURCES to the device stack. The bus PDO/FDO owns
+/// the returned CM_RESOURCE_LIST; this dispatch does not allocate or mutate it.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoPnPQueryResources(device:*mut DeviceObject)->i32 {
+ unsafe{IoPnPDispatchLifecycle(device,0x0a,ptr::null(),ptr::null())}
+}
+
+/// Send IRP_MN_QUERY_RESOURCE_REQUIREMENTS to the device stack. The bus driver
+/// supplies requirements; the kernel arbiter validates translated claims at START.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoPnPQueryResourceRequirements(device:*mut DeviceObject)->i32 {
+ unsafe{IoPnPDispatchLifecycle(device,0x0b,ptr::null(),ptr::null())}
+}
+
+/// Rebalance a started device using the caller's newly arbitrated resource
+/// lists. The stop must complete before start is issued; STATUS_PENDING is
+/// propagated and callers must resume the transaction from completion.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoPnPRebalanceDevice(
+ device:*mut DeviceObject, allocated:*const c_void, translated:*const c_void
+)->i32 {
+ let stop=unsafe{IoPnPStopDevice(device)};
+ if stop!=STATUS_SUCCESS{return stop}
+ unsafe{IoPnPStartDevice(device,allocated,translated)}
+}
+
 /// Stop a started device through its driver's IRP_MN_STOP_DEVICE dispatch.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPStopDevice(device:*mut DeviceObject)->i32{
