@@ -2003,6 +2003,36 @@ unsafe impl Send for FileSystemRegistry {}
 impl FileSystemRegistry { const fn new()->Self{Self{devices:[ptr::null_mut();MAX_REGISTERED_FILESYSTEMS],count:0}} }
 static FILESYSTEMS:IrqSpinLock<FileSystemRegistry>=IrqSpinLock::new(FileSystemRegistry::new());
 
+/// A stable, referenced snapshot of the registered filesystem devices.
+/// Holding these references closes the unregister/delete race between
+/// filesystem enumeration and dispatch of IRP_MN_MOUNT_VOLUME.
+struct FileSystemSnapshot {
+ devices:[*mut DeviceObject;MAX_REGISTERED_FILESYSTEMS],
+ count:usize,
+}
+impl Drop for FileSystemSnapshot {
+ fn drop(&mut self) {
+  for device in self.devices[..self.count].iter().copied() {
+   if !device.is_null() { unsafe { io_dereference_device_object(device); } }
+  }
+ }
+}
+fn snapshot_registered_filesystems()->FileSystemSnapshot {
+ let mut snapshot=FileSystemSnapshot{devices:[ptr::null_mut();MAX_REGISTERED_FILESYSTEMS],count:0};
+ // Keep the registry lock while taking object references. Unregister removes
+ // under this lock and drops its registry reference only after releasing it.
+ let registry=FILESYSTEMS.lock();
+ for device in registry.devices[..registry.count].iter().copied() {
+  if snapshot.count==MAX_REGISTERED_FILESYSTEMS { break; }
+  let referenced=unsafe{io_reference_device_object(device)};
+  if !referenced.is_null() {
+   snapshot.devices[snapshot.count]=referenced;
+   snapshot.count+=1;
+  }
+ }
+ snapshot
+}
+
 /// Completion owns the mount IRP. A successful FSD mount must publish a live
 /// FILE_DEVICE_DISK_FILE_SYSTEM volume device in VPB.DeviceObject; the I/O
 /// manager then commits VPB_MOUNTED and pins that volume device until dismount.
@@ -2296,13 +2326,8 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
   }
   return status
  }
- let candidates={
-  let registry=FILESYSTEMS.lock();
-  let mut list=[ptr::null_mut::<DeviceObject>();MAX_REGISTERED_FILESYSTEMS];
-  list[..registry.count].copy_from_slice(&registry.devices[..registry.count]);
-  (list,registry.count)
- };
- if candidates.1==0 {
+ let candidates=snapshot_registered_filesystems();
+ if candidates.count==0 {
   release_mount_rundown(device);
   return STATUS_UNRECOGNIZED_VOLUME
  }
@@ -2326,7 +2351,7 @@ pub unsafe extern "win64" fn io_verify_volume(device:*mut DeviceObject,allow_raw
    slot.mount_in_progress=true;
   }
   let mut owns_reservation=true;
-  for fs in candidates.0[..candidates.1].iter().copied() {
+  for fs in candidates.devices[..candidates.count].iter().copied() {
    if !owns_reservation {
     let mut state=WDM.lock();
     let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_DELETE_PENDING};
