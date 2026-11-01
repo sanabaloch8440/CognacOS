@@ -201,108 +201,7 @@ impl BlockDevice for AtaPrimaryMaster {
     fn flush(&mut self) -> Result<(), Self::DeviceError> { self.flush_cache() }
 }
 
-fn u16_at(b: &[u8], o: usize) -> Option<u16> {
-    Some(u16::from_le_bytes([*b.get(o)?, *b.get(o + 1)?]))
-}
-fn u32_at(b: &[u8], o: usize) -> Option<u32> {
-    Some(u32::from_le_bytes([*b.get(o)?, *b.get(o + 1)?, *b.get(o + 2)?, *b.get(o + 3)?]))
-}
-
-/// Read an inode from the validated group descriptor/inode table. This early
-/// smoke supports the 256-byte inode format created by the CI ext4 image.
-fn read_inode<D: ReadOnlyBlockDevice>(
-    dev: &mut D, sb: &extfs::Superblock, ino: u32, out: &mut [u8; 256],
-) -> Result<extfs::Inode, extfs::Error> {
-    if sb.inode_size > 256 { return Err(extfs::Error::UnsupportedFormat); }
-    let (group, within) = sb.inode_location(ino)?;
-    let gdt = (sb.first_data_block as u64 + 1)
-        .checked_mul(sb.block_size as u64).ok_or(extfs::Error::OutOfRange)?;
-    let gd_off = gdt.checked_add((group as u64).checked_mul(sb.descriptor_size as u64).ok_or(extfs::Error::OutOfRange)?)
-        .ok_or(extfs::Error::OutOfRange)?;
-    let mut gd_bytes = [0u8; 64];
-    dev.read_at(gd_off, &mut gd_bytes[..sb.descriptor_size as usize]).map_err(|_| extfs::Error::Io)?;
-    let gd = extfs::GroupDescriptor::parse(&gd_bytes, sb)?;
-    let off = gd.inode_table.checked_mul(sb.block_size as u64)
-        .and_then(|v| v.checked_add(within as u64)).ok_or(extfs::Error::OutOfRange)?;
-    out.fill(0);
-    dev.read_at(off, &mut out[..sb.inode_size as usize]).map_err(|_| extfs::Error::Io)?;
-    extfs::Inode::parse(out, sb.inode_size, sb.revision, sb.feature_ro_compat)
-}
-
-/// Resolve a simple filename in the ext root directory and read its extents.
-/// It rejects unsupported directory formats instead of guessing at entries.
-fn read_root_file<D: ReadOnlyBlockDevice>(
-    dev: &mut D, sb: &extfs::Superblock, name: &[u8], out: &mut [u8],
-    file_inode_out: &mut [u8; 256], file_inode_number_out: &mut u32,
-) -> Result<usize, extfs::Error> {
-    if name.is_empty() || name.contains(&b'/') || !sb.has_extents() {
-        return Err(extfs::Error::UnsupportedFormat);
-    }
-    let mut inode_raw = [0u8; 256];
-    let root = read_inode(dev, sb, 2, &mut inode_raw)?;
-    if !root.is_directory || root.size > (sb.block_size as u64) * 64 { return Err(extfs::Error::UnsupportedFormat); }
-    let mut block = [0u8; 4096];
-    let mut found = None;
-    let count = root.size.div_ceil(sb.block_size as u64);
-    for logical in 0..count {
-        let physical = extfs::map_extent_block(dev, sb, &inode_raw[40..100], logical as u32, &mut block[..sb.block_size as usize])?;
-        if let Some(p) = physical {
-            extfs::read_block(dev, sb, p, &mut block[..sb.block_size as usize])?;
-        } else {
-            block[..sb.block_size as usize].fill(0);
-        }
-        let mut off = 0usize;
-        while off < sb.block_size as usize {
-            if sb.block_size as usize - off < 8 { return Err(extfs::Error::InvalidDirectoryEntry); }
-            let ino = u32_at(&block, off).ok_or(extfs::Error::InvalidDirectoryEntry)?;
-            let rec = u16_at(&block, off + 4).ok_or(extfs::Error::InvalidDirectoryEntry)? as usize;
-            let nlen = block[off + 6] as usize;
-            if rec < 8 || rec & 3 != 0 || rec > sb.block_size as usize - off || nlen > rec - 8 {
-                return Err(extfs::Error::InvalidDirectoryEntry);
-            }
-            if ino != 0 && nlen == name.len() && &block[off + 8..off + 8 + nlen] == name {
-                found = Some(ino);
-                break;
-            }
-            off += rec;
-        }
-        if found.is_some() { break; }
-    }
-    let file_ino = found.ok_or(extfs::Error::OutOfRange)?;
-    let file = read_inode(dev, sb, file_ino, &mut inode_raw)?;
-    if !file.is_regular_file || file.size > out.len() as u64 { return Err(extfs::Error::OutOfRange); }
-    file_inode_out.copy_from_slice(&inode_raw);
-    *file_inode_number_out = file_ino;
-    let length = file.size as usize;
-    let mut done = 0usize;
-    let mut scratch = [0u8; 4096];
-    let count = file.size.div_ceil(sb.block_size as u64);
-    for logical in 0..count {
-        let n = core::cmp::min(sb.block_size as usize, length - done);
-        let physical = extfs::map_extent_block(dev, sb, &inode_raw[40..100], logical as u32, &mut scratch[..sb.block_size as usize])?;
-        if let Some(p) = physical {
-            extfs::read_block(dev, sb, p, &mut scratch[..sb.block_size as usize])?;
-            out[done..done + n].copy_from_slice(&scratch[..n]);
-        } else {
-            out[done..done + n].fill(0);
-        }
-        done += n;
-    }
-    Ok(length)
-}
-
-const IRP_MJ_CREATE:u8=0x00;
-const IRP_MJ_CLOSE:u8=0x02;
-const IRP_MJ_READ:u8=0x03;
-const IRP_MJ_WRITE:u8=0x04;
-const STATUS_INVALID_PARAMETER:i32=0xC000_000D_u32 as i32;
-const STATUS_IO_DEVICE_ERROR:i32=0xC000_0185_u32 as i32;
-const IRP_USER_BUFFER_OFFSET:usize=0x70;
-const IRP_STATUS_OFFSET:usize=0x30;
-const IRP_INFORMATION_OFFSET:usize=0x38;
-
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum StorageError { Offline, InvalidRequest, Io }
+pub enum StorageError { Offline, InvalidRequest, Io }
 
 const fn make_storage_driver()->DriverObject {
  let mut major:[Option<wdm::DriverDispatch>;28]=[None;28];
@@ -406,7 +305,7 @@ fn storage_transfer(device:*mut DeviceObject,major:u8,offset:u64,buffer:*mut u8,
  Ok(information)
 }
 
-struct IoManagerBlockDevice { device:*mut DeviceObject,capacity:u64 }
+pub struct IoManagerBlockDevice { device:*mut DeviceObject,capacity:u64 }
 impl ReadOnlyBlockDevice for IoManagerBlockDevice {
  type DeviceError=StorageError;
  fn capacity_bytes(&self)->u64{self.capacity}
@@ -425,72 +324,18 @@ impl BlockDevice for IoManagerBlockDevice {
  }
 }
 
+/// Create a partition-relative block-device adapter. All filesystem data I/O
+/// performed through this adapter is sent down the registered WDM partition stack.
+pub fn ext4_block_device() -> Result<IoManagerBlockDevice, extfs::Error> {
+    let device = PARTITION_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
+    if device.is_null() { return Err(extfs::Error::Io); }
+    Ok(IoManagerBlockDevice {
+        device,
+        capacity: PARTITION_CAPACITY.load(Ordering::Acquire),
+    })
+}
 
-fn lookup_root_file_inode<D:ReadOnlyBlockDevice>(
- dev:&mut D,sb:&extfs::Superblock,name:&[u8],
-)->Result<(u32,extfs::Inode,[u8;256]),extfs::Error>{
- if name.is_empty()||name.contains(&b'/')||!sb.has_extents(){return Err(extfs::Error::UnsupportedFormat)}
- let mut root_raw=[0u8;256];let root=read_inode(dev,sb,2,&mut root_raw)?;
- if !root.is_directory||root.size>(sb.block_size as u64)*64{return Err(extfs::Error::UnsupportedFormat)}
- let mut block=[0u8;4096];let mut found=None;
- for logical in 0..root.size.div_ceil(sb.block_size as u64){
-  let physical=extfs::map_extent_block(dev,sb,&root_raw[40..100],logical as u32,&mut block[..sb.block_size as usize])?;
-  if let Some(p)=physical{extfs::read_block(dev,sb,p,&mut block[..sb.block_size as usize])?;}else{block[..sb.block_size as usize].fill(0);}
-  let mut off=0usize;
-  while off<sb.block_size as usize{
-   if sb.block_size as usize-off<8{return Err(extfs::Error::InvalidDirectoryEntry)}
-   let ino=u32_at(&block,off).ok_or(extfs::Error::InvalidDirectoryEntry)?;
-   let rec=u16_at(&block,off+4).ok_or(extfs::Error::InvalidDirectoryEntry)? as usize;
-   let nlen=block[off+6] as usize;
-   if rec<8||rec&3!=0||rec>sb.block_size as usize-off||nlen>rec-8{return Err(extfs::Error::InvalidDirectoryEntry)}
-   if ino!=0&&nlen==name.len()&&&block[off+8..off+8+nlen]==name{found=Some(ino);break}
-   off+=rec;
-  }
-  if found.is_some(){break}
- }
- let number=found.ok_or(extfs::Error::OutOfRange)?;let mut raw=[0u8;256];
- let inode=read_inode(dev,sb,number,&mut raw)?;
- if !inode.is_regular_file{return Err(extfs::Error::UnsupportedFormat)}
- Ok((number,inode,raw))
-}
-fn read_root_file_range<D:ReadOnlyBlockDevice>(
- dev:&mut D,sb:&extfs::Superblock,name:&[u8],offset:u64,out:&mut[u8],
-)->Result<(u64,usize),extfs::Error>{
- let (_number,inode,raw)=lookup_root_file_inode(dev,sb,name)?;
- if offset>=inode.size||out.is_empty(){return Ok((inode.size,0))}
- let count=core::cmp::min(out.len() as u64,inode.size-offset) as usize;
- let block_size=sb.block_size as usize;let mut done=0usize;let mut scratch=[0u8;4096];
- while done<count{
-  let absolute=offset.checked_add(done as u64).ok_or(extfs::Error::OutOfRange)?;
-  let logical=(absolute/sb.block_size as u64) as u32;let within=(absolute%sb.block_size as u64) as usize;
-  let amount=core::cmp::min(block_size-within,count-done);
-  let physical=extfs::map_extent_block(dev,sb,&raw[40..100],logical,&mut scratch[..block_size])?;
-  if let Some(block)=physical{extfs::read_block(dev,sb,block,&mut scratch[..block_size])?;out[done..done+amount].copy_from_slice(&scratch[within..within+amount]);}
-  else{out[done..done+amount].fill(0);}
-  done+=amount;
- }
- Ok((inode.size,count))
-}
-fn ext4_root_name(path:&[u8])->Result<&[u8],extfs::Error>{
- if path.len()<2||path[0]!=b'\\'||path[1..].contains(&b'\\'){return Err(extfs::Error::UnsupportedFormat)}
- Ok(&path[1..])
-}
-pub fn ext4_root_file_size(path:&[u8])->Result<u64,extfs::Error>{
- let name=ext4_root_name(path)?;
- let device=PARTITION_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
- if device.is_null(){return Err(extfs::Error::Io)}
- let mut volume=IoManagerBlockDevice{device,capacity:PARTITION_CAPACITY.load(Ordering::Acquire)};
- let sb=extfs::read_superblock(&mut volume)?;
- let (_ino,inode,_raw)=lookup_root_file_inode(&mut volume,&sb,name)?;Ok(inode.size)
-}
-pub fn read_ext4_root_file_range(path:&[u8],offset:u64,out:&mut[u8])->Result<(u64,usize),extfs::Error>{
- let name=ext4_root_name(path)?;
- let device=PARTITION_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
- if device.is_null(){return Err(extfs::Error::Io)}
- let mut volume=IoManagerBlockDevice{device,capacity:PARTITION_CAPACITY.load(Ordering::Acquire)};
- let sb=extfs::read_superblock(&mut volume)?;
- read_root_file_range(&mut volume,&sb,name,offset,out)
-}
+
 pub fn is_ext4_partition(device:*mut DeviceObject)->bool{
  if device.is_null()||device as usize!=PARTITION_DEVICE.load(Ordering::Acquire){return false}
  let mut volume=IoManagerBlockDevice{device,capacity:PARTITION_CAPACITY.load(Ordering::Acquire)};
@@ -603,93 +448,75 @@ pub fn run_ext4_readme_test() -> bool {
     let partition_device=match create_storage_device(&[0x5c,0,0x44,0,0x65,0,0x76,0,0x69,0,0x63,0,0x65,0,0x5c,0,0x48,0,0x61,0,0x72,0,0x64,0,0x64,0,0x69,0,0x73,0,0x6b,0,0x30,0,0x5c,0,0x50,0,0x61,0,0x72,0,0x74,0,0x69,0,0x74,0,0x69,0,0x6f,0,0x6e,0,0x31,0],true){Ok(device)=>device,Err(_)=>return false};
     unsafe { crate::serial_write(b"Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.\r\n"); }
     let mut volume = IoManagerBlockDevice { device: partition_device, capacity };
-    let sb = match extfs::read_superblock(&mut volume) { Ok(s) => s, Err(_) => return false };
-    unsafe { crate::serial_write(b"ext4: partition superblock read through the registered partition READ interface.\r\n"); }
     let mut actual = [0u8; 128];
-    let mut file_inode_raw = [0u8; 256];
-    let mut file_inode_number = 0u32;
-    let length = match read_root_file(&mut volume, &sb, b"README.txt", &mut actual, &mut file_inode_raw, &mut file_inode_number) {
-        Ok(n) => n, Err(_) => return false,
+    let (file_size, length) = match extfs::read_root_file_range(
+        &mut volume, b"\\README.txt", 0, &mut actual,
+    ) {
+        Ok(result) => result, Err(_) => return false,
     };
-    if length != EXPECTED.len() || &actual[..length] != EXPECTED { return false; }
+    if file_size != EXPECTED.len() as u64 || length != EXPECTED.len()
+        || &actual[..length] != EXPECTED {
+        return false;
+    }
+    unsafe { crate::serial_write(b"ext4: partition superblock and README data read through the registered partition READ interface.\r\n"); }
     unsafe { crate::serial_write(b"Guest ext4 README.txt bytes match expected content exactly.\r\n"); }
 
-    // Exercise the actual filesystem writer over the registered partition WRITE
-    // IRP path. Only the existing extent and existing file length are writable:
-    // no inode allocation, directory mutation, or journal replay is claimed.
     let mut changed = [0u8; 128];
     changed[..EXPECTED.len()].copy_from_slice(EXPECTED);
     changed[0] = b'X';
-    let mut writable = match extfs::ExtFilesystem::mount_writable(volume) {
-        Ok(fs) => fs,
-        Err(error) => {
-            #[cfg(debug_assertions)] unsafe {
-                crate::serial_write(b"EXT4 DEBUG: mount_writable rejected volume: ");
-                crate::serial_write(ext4_error_debug_name(error));
-                crate::serial_write(b"\r\n");
-            }
-            return false;
-        },
-    };
-    let mut scratch = [0u8; 4096];
-    match writable.write_file_data(file_inode_number, &file_inode_raw, 0,
-        &changed[..EXPECTED.len()], &mut scratch[..sb.block_size as usize]) {
+    match extfs::write_root_file_range(
+        volume, b"\\README.txt", 0, &changed[..EXPECTED.len()],
+    ) {
         Ok(n) if n == EXPECTED.len() => {},
         Err(error) => {
             #[cfg(debug_assertions)] unsafe {
                 crate::serial_write(b"EXT4 DEBUG: checked data write failed: ");
-                crate::serial_write(ext4_write_error_debug_name(&error));
-                crate::serial_write(b"\r\n");
-            }
-            return false;
-        },
-        _ => return false,
-    }
-    let mut volume = writable.into_device();
-    let mut changed_readback = [0u8; 128];
-    let mut inode_after_write = [0u8; 256];
-    let mut changed_inode_number = 0u32;
-    let changed_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut changed_readback, &mut inode_after_write, &mut changed_inode_number) {
-        Ok(n) => n, Err(_) => return false,
-    };
-    let changed_ok = changed_len == EXPECTED.len() && &changed_readback[..changed_len] == &changed[..EXPECTED.len()];
-    if !changed_ok || changed_inode_number != file_inode_number { return false; }
-    unsafe { crate::serial_write(b"Guest ext4 WRITE IRP modified existing README data and read it back exactly.\r\n"); }
-
-    // Restore the fixture even though the guest performed a real persistent
-    // write, so repeat boots see the same deterministic expected file.
-    let mut writable = match extfs::ExtFilesystem::mount_writable(volume) {
-        Ok(fs) => fs,
-        Err(error) => {
-            #[cfg(debug_assertions)] unsafe {
-                crate::serial_write(b"EXT4 DEBUG: restore mount rejected volume: ");
                 crate::serial_write(ext4_error_debug_name(error));
                 crate::serial_write(b"\r\n");
             }
             return false;
         },
+        _ => return false,
+    }
+    let mut changed_volume = IoManagerBlockDevice { device: partition_device, capacity };
+    let mut changed_readback = [0u8; 128];
+    let (changed_size, changed_len) = match extfs::read_root_file_range(
+        &mut changed_volume, b"\\README.txt", 0, &mut changed_readback,
+    ) {
+        Ok(result) => result, Err(_) => return false,
     };
-    match writable.write_file_data(changed_inode_number, &inode_after_write, 0,
-        EXPECTED, &mut scratch[..sb.block_size as usize]) {
+    if changed_size != EXPECTED.len() as u64 || changed_len != EXPECTED.len()
+        || &changed_readback[..changed_len] != &changed[..EXPECTED.len()] {
+        return false;
+    }
+    unsafe { crate::serial_write(b"Guest ext4 WRITE IRP modified existing README data and read it back exactly.\r\n"); }
+
+    match extfs::write_root_file_range(
+        IoManagerBlockDevice { device: partition_device, capacity },
+        b"\\README.txt", 0, EXPECTED,
+    ) {
         Ok(n) if n == EXPECTED.len() => {},
         Err(error) => {
             #[cfg(debug_assertions)] unsafe {
                 crate::serial_write(b"EXT4 DEBUG: restore data write failed: ");
-                crate::serial_write(ext4_write_error_debug_name(&error));
+                crate::serial_write(ext4_error_debug_name(error));
                 crate::serial_write(b"\r\n");
             }
             return false;
         },
         _ => return false,
     }
-    let mut volume = writable.into_device();
+    let mut restored_volume = IoManagerBlockDevice { device: partition_device, capacity };
     let mut restored = [0u8; 128];
-    let mut restored_inode = [0u8; 256];
-    let mut restored_inode_number = 0u32;
-    let restored_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut restored, &mut restored_inode, &mut restored_inode_number) {
-        Ok(n) => n, Err(_) => return false,
+    let (restored_size, restored_len) = match extfs::read_root_file_range(
+        &mut restored_volume, b"\\README.txt", 0, &mut restored,
+    ) {
+        Ok(result) => result, Err(_) => return false,
     };
-    if restored_len != EXPECTED.len() || &restored[..restored_len] != EXPECTED || restored_inode_number != file_inode_number { return false; }
+    if restored_size != EXPECTED.len() as u64 || restored_len != EXPECTED.len()
+        || &restored[..restored_len] != EXPECTED {
+        return false;
+    }
     unsafe { crate::serial_write(b"Guest ext4 README.txt restored and verified byte-for-byte after write test.\r\n"); }
     if crate::ntoskrnl::debug::restore_from_storage() {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot restored from dedicated GPT partition.\r\n"); }
@@ -713,10 +540,44 @@ pub fn run_ext4_readme_test() -> bool {
     let read_result=crate::file_services::read_at_for_process(
         0,handle,0,&mut service_read[..EXPECTED.len()]
     );
-    let close_result=crate::file_services::close_for_process(0,handle);
     if !matches!(read_result,Ok(n) if n==EXPECTED.len())
-        || &service_read[..EXPECTED.len()]!=EXPECTED
+        || &service_read[..EXPECTED.len()]!=EXPECTED {
+        let _=crate::file_services::close_for_process(0,handle);
+        return false;
+    }
+    let mut changed=[0u8;128];
+    changed[..EXPECTED.len()].copy_from_slice(EXPECTED);
+    changed[0]=b'W';
+    let write_result=crate::file_services::write_at_for_process(
+        0,handle,0,&changed[..EXPECTED.len()]
+    );
+    if !matches!(write_result,Ok(n) if n==EXPECTED.len()) {
+        let _=crate::file_services::close_for_process(0,handle);
+        return false;
+    }
+    let mut changed_read=[0u8;128];
+    let changed_result=crate::file_services::read_at_for_process(
+        0,handle,0,&mut changed_read[..EXPECTED.len()]
+    );
+    if !matches!(changed_result,Ok(n) if n==EXPECTED.len())
+        || &changed_read[..EXPECTED.len()]!=&changed[..EXPECTED.len()] {
+        let _=crate::file_services::write_at_for_process(0,handle,0,EXPECTED);
+        let _=crate::file_services::close_for_process(0,handle);
+        return false;
+    }
+    if !matches!(crate::file_services::write_at_for_process(0,handle,0,EXPECTED),Ok(n) if n==EXPECTED.len()) {
+        let _=crate::file_services::close_for_process(0,handle);
+        return false;
+    }
+    let mut restored=[0u8;128];
+    let restored_result=crate::file_services::read_at_for_process(
+        0,handle,0,&mut restored[..EXPECTED.len()]
+    );
+    let close_result=crate::file_services::close_for_process(0,handle);
+    if !matches!(restored_result,Ok(n) if n==EXPECTED.len())
+        || &restored[..EXPECTED.len()]!=EXPECTED
         || close_result.is_err()
     {return false;}
+    unsafe { crate::serial_write(b"Guest ext4 WDM FILE_OBJECT read/write/cache/MDL/cleanup/close path passed.\r\n"); }
     true
 }
