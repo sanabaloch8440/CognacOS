@@ -87,7 +87,7 @@ impl ResourceArbiter {
         if r.length==0||r.minimum>r.maximum{return Err(ArbiterError::InvalidRange)}
         if r.alignment==0||!r.alignment.is_power_of_two(){return Err(ArbiterError::InvalidAlignment)}
         // Interrupts, DMA channels and bus numbers are discrete resources.
-        let alignment=if matches!(r.kind,ResourceKind::Interrupt|ResourceKind::Dma|ResourceKind::BusNumber){1}else{r.alignment};
+        let alignment=if matches!(r.kind,ResourceKind::Interrupt|ResourceKind::SharedInterrupt|ResourceKind::Dma|ResourceKind::BusNumber){1}else{r.alignment};
         let mut candidate=r.minimum.checked_add(alignment-1).ok_or(ArbiterError::InvalidRange)?&!(alignment-1);
         while candidate<=r.maximum{
             let end=candidate.checked_add(r.length).ok_or(ArbiterError::InvalidRange)?;
