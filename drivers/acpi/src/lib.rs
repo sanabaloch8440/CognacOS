@@ -106,6 +106,7 @@ pub struct LocalApicNmi { pub processor_uid:u8,pub flags:u16,pub lint:u8 }
 pub struct MadtWakeupMailbox { pub address:u64 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct X2ApicNmi { pub processor_uid:u32,pub flags:u16,pub lint:u8 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MadtInfo {
     pub local_apic_address: u64,
     pub flags: u32,
@@ -938,9 +939,9 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
         let end=off.checked_add(3).and_then(|v|v.checked_add(len)).ok_or(AcpiError::BadLength)?;
         let d=bytes.get(off+3..end).ok_or(AcpiError::Truncated)?;
         let parsed=match tag {
-            0x88 if len>=13=>Some((0usize,1usize,3usize,5usize,7usize,9usize)), // Word address
-            0x87 if len>=23=>Some((0usize,1usize,4usize,4usize,8usize,12usize)), // DWord address
-            0x8a if len>=43=>Some((0usize,1usize,8usize,4usize,12usize,20usize)), // QWord address
+            0x88 if len>=13=>Some((0usize,1usize,2usize,3usize,5usize,7usize)), // Word address
+            0x87 if len>=23=>Some((0usize,1usize,4usize,3usize,7usize,11usize)), // DWord address
+            0x8a if len>=43=>Some((0usize,1usize,8usize,3usize,11usize,19usize)), // QWord address
             _=>None,
         };
         if let Some((typ_off,flags_off,width,gran_off,min_off,max_off))=parsed{
@@ -948,8 +949,8 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
             if resource_type<=2 {
                 let minimum=read_width(d,min_off,width)?;
                 let maximum=read_width(d,max_off,width)?;
-                let translation=read_width(d,max_off+2*width,width)?;
-                let length=read_width(d,max_off+3*width,width)?;
+                let translation=read_width(d,max_off+width,width)?;
+                let length=read_width(d,max_off+2*width,width)?;
                 if length==0||maximum<minimum{return Err(AcpiError::MalformedEntry)}
                 let last=minimum.checked_add(length-1).ok_or(AcpiError::AddressOutOfRange)?;
                 if last>maximum{return Err(AcpiError::MalformedEntry)}
@@ -973,6 +974,7 @@ fn push_root_aperture(out:&mut PciRootResources,a:PciRootAperture)->Result<(),Ac
 #[cfg(test)]
 mod pci_root_crs_tests {
     use super::*;
+    use std::vec;
     #[test]
     fn parses_qword_memory_and_io_ranges(){
         // QWord address descriptor: memory, min=0x80000000,
@@ -986,7 +988,7 @@ mod pci_root_crs_tests {
             0,0,0,0,0,0,0,0,
             0x79,0];
         b[1..3].copy_from_slice(&43u16.to_le_bytes());
-        b[39..47].copy_from_slice(&(0x1000_0000u64).to_le_bytes());
+        b[38..46].copy_from_slice(&(0x1000_0000u64).to_le_bytes());
         let parsed=parse_pci_root_resources(&b).unwrap();
         assert_eq!(parsed.count,1);
         assert_eq!(parsed.apertures[0].resource_type,0);
@@ -1004,6 +1006,8 @@ mod pci_root_crs_tests {
 #[cfg(test)]
 mod acpi_5_6_revision_tests {
     use super::*;
+    use std::vec;
+    use std::vec::Vec;
     fn checksum(table:&mut [u8]) {
         table[9]=0;
         let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));
@@ -1078,11 +1082,12 @@ mod acpi_5_6_revision_tests {
 #[cfg(test)]
 mod numa_table_tests {
     use super::*;
+    use std::vec;
     fn finish(b:&mut [u8]){b[9]=0;let s=b.iter().fold(0u8,|a,v|a.wrapping_add(*v));b[9]=0u8.wrapping_sub(s);}
     #[test]
     fn parses_srat_x2apic_and_hotplug_nonvolatile_memory(){
         let mut b=vec![0u8;48+24+40];b[0..4].copy_from_slice(b"SRAT");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());b[8]=3;
+        let table_length=b.len() as u32;b[4..8].copy_from_slice(&table_length.to_le_bytes());b[8]=3;
         b[48..72].copy_from_slice(&[2,24,0,0,3,0,0,0,0x44,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0]);
         b[72]=1;b[73]=40;b[74..78].copy_from_slice(&2u32.to_le_bytes());
         b[80..88].copy_from_slice(&0x1_0000_0000u64.to_le_bytes());

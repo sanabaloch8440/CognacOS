@@ -1065,7 +1065,7 @@ unsafe fn allocate_pages_in_node_range_mode(
     }
     // SRAT ranges constrain ownership; intersect them with UEFI conventional
     // memory extents so this path can safely allocate never-before-freed pages.
-    let mut owned_ranges = [(0u64, 0u64); crate::ntoskrnl::mm::topology::MAX_RANGES];
+    let mut owned_ranges = [(0u64, 0u64); crate::ntoskrnl::mm::topology::MAX_ALLOCATABLE_RANGES];
     let owned_count = crate::ntoskrnl::mm::topology::allocatable_memory_ranges_for_node(node, &mut owned_ranges);
     if owned_count == 0 { return Err(AllocError::OutOfMemory); }
     let mut allocated = 0usize;
@@ -1527,7 +1527,7 @@ pub fn free_pages_for_node(node:u32)->u64 {
             total=total.saturating_add(1);
         }
     }
-    let mut ranges=[(0u64,0u64);crate::ntoskrnl::mm::topology::MAX_RANGES];
+    let mut ranges=[(0u64,0u64);crate::ntoskrnl::mm::topology::MAX_ALLOCATABLE_RANGES];
     let n=crate::ntoskrnl::mm::topology::allocatable_memory_ranges_for_node(node,&mut ranges);
     for (store,count) in [(&REGIONS,&REGION_COUNT),(&HIGH_REGIONS,&HIGH_REGION_COUNT)] {
         let regions=unsafe{&*store.0.get()};
@@ -1667,16 +1667,33 @@ pub unsafe fn offline_hotplug_memory(start:u64,length:u64)->Result<(),AllocError
 pub unsafe fn allocate_pages_with_slit_fallback(
     output:&mut [u64],preferred_node:u32,low:u64,high:u64,require_all:bool,
 )->Result<usize,AllocError> {
+    if output.is_empty(){return Ok(0)}
     let mut order=[u32::MAX;crate::ntoskrnl::mm::topology::MAX_NODES];
     let count=crate::ntoskrnl::mm::topology::allocation_order(preferred_node,&mut order);
     if count==0{return Err(AllocError::InvalidPage)}
+    // Windows-style node preference is a locality preference, not an
+    // all-or-nothing node constraint. Consume the preferred node first, then
+    // fill the remaining MDL PFN array from progressively more distant nodes.
+    // Each strict node allocator remains responsible for PFN registration,
+    // zeroing, and rollback of its own failed partial request.
+    let mut allocated=0usize;
     let mut last=AllocError::OutOfMemory;
     for &node in &order[..count] {
-        match unsafe{allocate_pages_in_node_range_mode(output,node,low,high,require_all,false)} {
-            Ok(n)=>return Ok(n),Err(e)=>last=e,
+        if allocated==output.len(){break}
+        match unsafe{allocate_pages_in_node_range_mode(&mut output[allocated..],node,low,high,false,false)} {
+            Ok(n)=>allocated+=n,
+            Err(e)=>last=e,
         }
     }
-    Err(last)
+    if allocated==output.len()||(!require_all&&allocated!=0){return Ok(allocated)}
+    // A required contiguous output set must never escape partially allocated.
+    // Roll back all pages acquired across the node fallback sequence.
+    for &pfn in output[..allocated].iter().rev() {
+        if let Some(page)=pfn.checked_mul(PAGE_SIZE) {
+            let _=unsafe{free_page(page)};
+        }
+    }
+    Err(if allocated==0{last}else{AllocError::OutOfMemory})
 }
 
 pub fn region_count() -> usize {

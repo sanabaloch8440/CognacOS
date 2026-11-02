@@ -2,6 +2,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 pub const MAX_NODES: usize = 64;
 pub const MAX_RANGES: usize = 256;
+/// Static SRAT ranges plus independently onlined hot-add extents.
+pub const MAX_ALLOCATABLE_RANGES: usize = MAX_RANGES * 2;
 const SRAT_SIG: &[u8;4] = b"SRAT";
 const SLIT_SIG: &[u8;4] = b"SLIT";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +152,7 @@ pub fn memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> usize {
 /// withheld until the memory hot-add lifecycle can safely online and offline them.
 pub fn allocatable_memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> usize {
  if !is_ready() { return 0; }
+ let _online_guard=ONLINE_LOCK.acquire();
  let s=unsafe{&*TOPOLOGY.0.get()};
  let mut count=0usize;
  for range in s.0.iter().take(s.1).filter(|range|range.node==node&&!range.hot_pluggable) {
@@ -170,6 +173,46 @@ pub fn allocatable_memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> 
 
 // Runtime state for SRAT hot-pluggable ranges. A range is not allocator-visible
 // until the memory manager completes the online transaction.
+struct OnlineStateLock {
+ #[cfg(target_os = "none")]
+ lock: crate::hal::IrqSpinLock<()>,
+ #[cfg(not(target_os = "none"))]
+ lock: core::sync::atomic::AtomicBool,
+}
+struct OnlineStateGuard<'a> {
+ #[cfg(target_os = "none")]
+ _irq: crate::hal::IrqSpinLockGuard<'a, ()>,
+ #[cfg(not(target_os = "none"))]
+ lock: &'a core::sync::atomic::AtomicBool,
+}
+impl Drop for OnlineStateGuard<'_> {
+ fn drop(&mut self) {
+  #[cfg(not(target_os = "none"))]
+  self.lock.store(false, Ordering::Release);
+ }
+}
+impl OnlineStateLock {
+ const fn new()->Self {
+  Self {
+   #[cfg(target_os = "none")]
+   lock: crate::hal::IrqSpinLock::new(()),
+   #[cfg(not(target_os = "none"))]
+   lock: core::sync::atomic::AtomicBool::new(false),
+  }
+ }
+ fn acquire(&self)->OnlineStateGuard<'_> {
+  #[cfg(target_os = "none")]
+  { OnlineStateGuard{_irq:self.lock.lock()} }
+  #[cfg(not(target_os = "none"))]
+  {
+   while self.lock.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err() {
+    core::hint::spin_loop();
+   }
+   OnlineStateGuard{lock:&self.lock}
+  }
+ }
+}
+static ONLINE_LOCK:OnlineStateLock=OnlineStateLock::new();
 struct OnlineHotplug(core::cell::UnsafeCell<([(u64,u64,u32);MAX_RANGES],usize)>);
 unsafe impl Sync for OnlineHotplug {}
 static ONLINE_HOTPLUG:OnlineHotplug=OnlineHotplug(core::cell::UnsafeCell::new(([(0,0,u32::MAX);MAX_RANGES],0)));
@@ -204,6 +247,7 @@ pub fn hotplug_range_owner(start:u64,length:u64)->Option<u32> {
 pub fn set_hotplug_range_online(start:u64,length:u64,online:bool)->Result<(),TopologyError> {
  let node=hotplug_range_owner(start,length).ok_or(TopologyError::InvalidTable)?;
  let end=start.checked_add(length).ok_or(TopologyError::InvalidTable)?;
+ let _guard=ONLINE_LOCK.acquire();
  let state=unsafe{&mut *ONLINE_HOTPLUG.0.get()};
  if online {
   if state.1==MAX_RANGES||state.0.iter().take(state.1).any(|r|start<r.1&&r.0<end) {
@@ -235,35 +279,43 @@ pub fn memory_attributes(address:u64)->Option<(u32,bool,bool)> {
 /// Produce a deterministic locality order: preferred node first, then ascending
 /// SLIT distance. Missing SLIT entries sort last and use node-id order as a
 /// stable fallback rather than inventing locality.
+fn sort_allocation_nodes(
+ nodes:&mut [u32],count:usize,preferred:u32,matrix:&[[u8;MAX_NODES];MAX_NODES],matrix_nodes:usize,
+) {
+ let distance_key=|node:u32|->u16 {
+  if node==preferred{return 0}
+  if (preferred as usize)<matrix_nodes&&(node as usize)<matrix_nodes {
+   matrix[preferred as usize][node as usize] as u16+1
+  } else {u16::MAX}
+ };
+ for i in 1..count {
+  let value=nodes[i];let key=distance_key(value);let mut j=i;
+  while j>0 {
+   let previous=nodes[j-1];let previous_key=distance_key(previous);
+   if previous_key<key||(previous_key==key&&previous<value){break}
+   nodes[j]=previous;j-=1;
+  }
+  nodes[j]=value;
+ }
+}
+
+/// Produce a deterministic locality order: preferred node first, then ascending
+/// SLIT distance. Missing SLIT entries sort last with stable node-id ordering.
 pub fn allocation_order(preferred:u32,output:&mut [u32])->usize {
  if !is_ready()||output.is_empty(){return 0}
  let s=unsafe{&*TOPOLOGY.0.get()};
+ let _online_guard=ONLINE_LOCK.acquire();
  let online=unsafe{&*ONLINE_HOTPLUG.0.get()};
  let mut count=0usize;
  for r in s.0.iter().take(s.1) {
   let node=r.node;
   let mut available=!r.hot_pluggable;
-  if !available { available=online.0.iter().take(online.1).any(|x|x.2==node); }
+  if !available {available=online.0.iter().take(online.1).any(|x|x.2==node);}
   if !available||output[..count].contains(&node){continue}
   if count==output.len(){break}
   output[count]=node;count+=1;
  }
- let distance_key=|node:u32|->u16 {
-  if node==preferred {return 0}
-  let matrix=unsafe{&*TOPOLOGY.0.get()};
-  if preferred as usize<matrix.3&&node as usize<matrix.3 {
-   matrix.2[preferred as usize][node as usize] as u16+1
-  } else {u16::MAX}
- };
- for i in 1..count {
-  let value=output[i];let key=distance_key(value);let mut j=i;
-  while j>0 {
-   let previous=output[j-1];let previous_key=distance_key(previous);
-   if previous_key<key||(previous_key==key&&previous<value){break}
-   output[j]=previous;j-=1;
-  }
-  output[j]=value;
- }
+ sort_allocation_nodes(output,count,preferred,&s.2,s.3);
  count
 }
 
@@ -271,6 +323,24 @@ pub fn distance(from:u32,to:u32)->Option<u8>{let s=unsafe{&*TOPOLOGY.0.get()};if
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slit_fallback_orders_preferred_then_nearest_and_unknown_last() {
+        let mut matrix=[[0u8;MAX_NODES];MAX_NODES];
+        matrix[0][0]=10;matrix[1][1]=10;matrix[2][2]=10;
+        matrix[0][1]=30;matrix[0][2]=20;
+        let mut nodes=[2,1,0,3];
+        sort_allocation_nodes(&mut nodes,4,0,&matrix,3);
+        assert_eq!(nodes,[0,2,1,3]);
+    }
+
+    #[test]
+    fn slit_fallback_is_stable_for_equal_and_missing_distances() {
+        let matrix=[[10u8;MAX_NODES];MAX_NODES];
+        let mut nodes=[5,3,4,2];
+        sort_allocation_nodes(&mut nodes,4,9,&matrix,0);
+        assert_eq!(nodes,[2,3,4,5]);
+    }
 
     #[test]
     fn unknown_ranges_have_no_default_node() {
