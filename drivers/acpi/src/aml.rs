@@ -122,7 +122,8 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
     for i in 0..follow{value|=(c.byte()? as usize)<<(4+8*i);}
     Ok(value)
 }
-\nfn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(),AmlError>{
+
+fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(),AmlError>{
     while c.pos<c.end{
         let op=c.byte()?;
         match op{
@@ -144,7 +145,8 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
     }
     Ok(())
 }
-\nfn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Result<(),AmlError>{
+
+fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Result<(),AmlError>{
     if depth>32{return Err(AmlError::BadDefinitionBlock)}
     while c.pos<c.end{
         let op=c.byte()?;
