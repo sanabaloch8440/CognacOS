@@ -251,7 +251,7 @@ mod tests {
                 status: DriverInitStatus::Failed(RegistryDriverLoadError::DependencyFailed) },
             DriverInitRecord::EMPTY,
         ];
-        assert!(!dependencies_initialized(1, &nodes, &records));
+        assert!(!dependencies_initialized(1, &nodes, &records, &[]));
     }
 
     #[test]
