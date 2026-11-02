@@ -30,6 +30,7 @@ The PFN database is now wired into the principal user-page and physical allocati
 - Demand-area and working-set storage is now dynamically allocated per address space from the nonpaged VM pool, with a bounded root-to-metadata registry and explicit teardown release.
 - Single-page, contiguous, constrained-range, and NUMA allocators publish PFN ownership before removing a frame from its free extent. Metadata-capacity failures are checked before extent mutation.
 - NUMA batch rollback converts PFNs back to physical byte addresses before returning frames.
+- The physical allocator now imports the PFN module through a target-aware alias so the same source file can be compiled directly by the standalone host allocator tests.
 - PTE mapping acquisition failure rolls back newly allocated intermediate tables. Unmap and replacement restore their prior PTE if mapping-reference release fails.
 - Working-set pageout releases the mapping reference only after PTE removal and TLB shootdown, and restores the mapping if owner release fails.
 - Address-space teardown clears each user PTE and synchronizes TLBs before releasing the corresponding PFN references.
