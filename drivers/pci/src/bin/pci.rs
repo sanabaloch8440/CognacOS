@@ -373,12 +373,25 @@ unsafe fn start_pci_device(
     // Require translated descriptors to be structurally present before touching
     // hardware. The OS has already performed address translation/arbitration.
     for i in 0..trans_n {
-        let p = unsafe { trans_desc.add(i * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
-        let kind = unsafe { *p };
-        if kind == 1 || kind == 3 {
-            let _start = unsafe { core::ptr::read_unaligned(p.add(4).cast::<u64>()) };
-            let len = unsafe { core::ptr::read_unaligned(p.add(12).cast::<u32>()) };
-            if len == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+        let offset=i*pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE;
+        let raw_p=unsafe{raw_desc.add(offset)};
+        let trans_p=unsafe{trans_desc.add(offset)};
+        let raw_kind=unsafe{*raw_p};
+        let trans_kind=unsafe{*trans_p};
+        // Windows' raw and translated resource lists preserve descriptor order
+        // and type. Reject mismatched pairs rather than pairing a BAR with an
+        // unrelated translated address.
+        if raw_kind!=trans_kind{return STATUS_DEVICE_CONFIGURATION_ERROR;}
+        if raw_kind==1||raw_kind==3 {
+            let raw_start=unsafe{core::ptr::read_unaligned(raw_p.add(4).cast::<u64>())};
+            let trans_start=unsafe{core::ptr::read_unaligned(trans_p.add(4).cast::<u64>())};
+            let raw_len=unsafe{core::ptr::read_unaligned(raw_p.add(12).cast::<u32>())};
+            let trans_len=unsafe{core::ptr::read_unaligned(trans_p.add(12).cast::<u32>())};
+            if raw_len==0||raw_len!=trans_len
+                ||raw_start.checked_add(raw_len as u64).is_none()
+                ||trans_start.checked_add(trans_len as u64).is_none(){
+                return STATUS_DEVICE_CONFIGURATION_ERROR;
+            }
         }
     }
     let list_size = 20usize.checked_add(raw_n.checked_mul(pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).unwrap_or(usize::MAX)).unwrap_or(usize::MAX);
