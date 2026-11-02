@@ -98,7 +98,7 @@ mod tests{
  }
  #[test]fn executes_if_else_and_comparison_predicate(){
   // If (LEqual (Arg0, One)) Return (7); Else Return (9)
-  let aml=[0x14,0x11,b'T',b'E',b'S',b'T',1,0xa0,0x05,0x93,0x68,0x01,0xa4,0x0a,7,0xa1,0x04,0xa4,0x0a,9];
+  let aml=[0x14,0x13,b'T',b'E',b'S',b'T',1,0xa0,0x07,0x93,0x68,0x01,0xa4,0x0a,7,0xa1,0x04,0xa4,0x0a,9];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[1]).unwrap(),AmlValue::Integer(7));
   assert_eq!(execute_method(&aml,&ns,id,&[0]).unwrap(),AmlValue::Integer(9));
