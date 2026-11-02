@@ -284,7 +284,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
             0x5b=>{
                 let ext=c.byte()?;
                 match ext{
-                    0x01=>{let name=parse_name(c)?;let _sync=c.byte()?;resolve_path(ns,parent,&name,true,AmlObjectType::Mutex,0,0,0)?;}
+                    0x01=>{let name=parse_name(c)?;let sync_level=c.byte()?;if sync_level>15{return Err(AmlError::BadDefinitionBlock)}resolve_path(ns,parent,&name,true,AmlObjectType::Mutex,0,0,sync_level)?;}
                     0x02=>{let name=parse_name(c)?;resolve_path(ns,parent,&name,true,AmlObjectType::Event,0,0,0)?;}
                     0x80=>{
                         let name=parse_name(c)?;let space=c.byte()?;let start=c.pos;
