@@ -154,25 +154,31 @@ pub unsafe extern "win64" fn cc_initialize_cache_map(
     // must never occur while the Cache Manager spin lock is held.
     let candidate = unsafe { allocate_map(file, sizes, callbacks, lazy_write_context) };
     if candidate.is_null() { return; }
-    let _guard = Guard::acquire();
-    let existing = unsafe { find_map(file) };
-    if !existing.is_null() {
-        unsafe {
-            (*existing).sizes = sizes;
-            (*existing).callbacks = callbacks;
-            (*existing).lazy_write_context = lazy_write_context;
+    let inserted = {
+        let _guard = Guard::acquire();
+        let existing = unsafe { find_map(file) };
+        if !existing.is_null() {
+            unsafe {
+                (*existing).sizes = sizes;
+                (*existing).callbacks = callbacks;
+                (*existing).lazy_write_context = lazy_write_context;
+            }
+            false
+        } else {
+            unsafe {
+                (*candidate).next = MAPS_HEAD;
+                MAPS_HEAD = candidate;
+                (*file).private_cache_map = candidate.cast::<c_void>();
+                let section = (*file).section_object_pointer.cast::<u8>();
+                if !section.is_null() {
+                    core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), candidate.cast());
+                }
+            }
+            true
         }
+    };
+    if !inserted {
         let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(candidate.cast(), Some(CACHE_MAP_TAG));
-        return;
-    }
-    unsafe {
-        (*candidate).next = MAPS_HEAD;
-        MAPS_HEAD = candidate;
-        (*file).private_cache_map = candidate.cast::<c_void>();
-        let section = (*file).section_object_pointer.cast::<u8>();
-        if !section.is_null() {
-            core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), candidate.cast());
-        }
     }
 }
 
@@ -451,6 +457,17 @@ pub(crate) fn cache_map_count() -> usize {
 }
 
 #[cfg(test)]
+fn cache_page_count(file: *mut FileObject) -> usize {
+    let _guard = Guard::acquire();
+    let map = unsafe { find_map(file) };
+    if map.is_null() { return 0; }
+    let mut count = 0usize;
+    let mut page = unsafe { (*map).pages };
+    while !page.is_null() { count += 1; page = unsafe { (*page).next }; }
+    count
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -473,6 +490,43 @@ mod tests {
         assert_eq!(unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()) }, 1);
         assert!(file.private_cache_map.is_null());
         assert_eq!(section.shared_cache_map, core::ptr::null_mut());
+        assert_eq!(cache_map_count(), baseline);
+    }
+
+    #[test]
+    fn cache_metadata_has_no_128_stream_or_eight_page_ceiling() {
+        const STREAMS: usize = 160;
+        let baseline = cache_map_count();
+        let sizes = CcFileSizes { allocation_size: 1 << 20, file_size: 1 << 20, valid_data_length: 1 << 20 };
+        let mut files: alloc::vec::Vec<FileObject> = alloc::vec::Vec::with_capacity(STREAMS);
+        for _ in 0..STREAMS {
+            files.push(unsafe { core::mem::zeroed() });
+            let file = files.last_mut().unwrap() as *mut FileObject;
+            unsafe { cc_initialize_cache_map(file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
+            assert!(!unsafe { (*file).private_cache_map }.is_null());
+        }
+        assert_eq!(cache_map_count(), baseline + STREAMS);
+
+        let file = files[0].as_mut() as *mut FileObject;
+        let mut head = core::ptr::null_mut::<CachePage>();
+        for index in 0..12usize {
+            let page = unsafe { allocate_page_descriptor((index * CACHE_PAGE_SIZE) as u64, core::ptr::null_mut(), 0, CACHE_PAGE_SIZE) };
+            assert!(!page.is_null());
+            unsafe { (*page).next = head; }
+            head = page;
+        }
+        {
+            let _guard = Guard::acquire();
+            let map = unsafe { find_map(file) };
+            assert!(!map.is_null());
+            unsafe { (*map).pages = head; }
+        }
+        assert_eq!(cache_page_count(file), 12);
+
+        for entry in files.iter_mut() {
+            let file = entry as *mut FileObject;
+            assert_eq!(unsafe { cc_uninitialize_cache_map(file, core::ptr::null(), core::ptr::null_mut()) }, 1);
+        }
         assert_eq!(cache_map_count(), baseline);
     }
 
