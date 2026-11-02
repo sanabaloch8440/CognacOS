@@ -33,6 +33,14 @@ branch:
   artifact had already built.
 - A host stress test exercises 160 simultaneous maps and 12 page descriptors
   on one map.
+- `CcSetFileSizes` clips cached clean-page validity to
+  `min(FileSize, ValidDataLength)`, removes pages beyond VDL, and drops pages
+  whose remaining valid interval is empty. A regression test covers VDL shrink
+  while EOF remains unchanged.
+- `CcCopyRead` regression coverage checks VDL-crossing misses do not modify the
+  caller buffer or IOSB, accepts zero-length reads, and rejects negative offsets.
+- The user-range host-test harness now imports the relocated
+  `ntoskrnl/src/mm/user_range.rs` module instead of the deleted legacy path.
 
 This removes those two Cache Manager-local array ceilings. The underlying
 Executive pool still has bounded allocation-table/slab capacity, and stream
