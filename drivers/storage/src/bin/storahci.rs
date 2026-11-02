@@ -245,7 +245,7 @@ unsafe fn ahci_issue(
         prdt.add(3).write((bytes as u32 - 1) | (1 << 31));
         // Command header: CFL=5 dwords, W for device-bound writes, PRDTL=1.
         let header = runtime.clb_cpu as *mut u32;
-        header.write(5 | if write { 1 << 6 } else { 0 });
+        header.write(5 | (1 << 16) | if write { 1 << 6 } else { 0 });
         header.add(1).write(0);
         header.add(2).write(runtime.table_dma as u32);
         header.add(3).write((runtime.table_dma >> 32) as u32);
@@ -442,9 +442,17 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
             if unsafe { raw_ahci_memory_resource_present(raw, ext.mmio_length)
                 && translated_ahci_bar_matches(translated, ext.mmio_physical, ext.mmio_length) } {
                 START_RESOURCES_VALID.store(true, Ordering::Release);
-                let result = unsafe { CognacStorAhciPrepareController() };
-                if result != STATUS_SUCCESS { START_RESOURCES_VALID.store(false, Ordering::Release); }
-                result
+                let prepared = unsafe { CognacStorAhciPrepareController() };
+                if prepared != STATUS_SUCCESS {
+                    START_RESOURCES_VALID.store(false, Ordering::Release);
+                    prepared
+                } else {
+                    let started = unsafe { CognacStorAhciStartDataPath() };
+                    if started != STATUS_SUCCESS {
+                        START_RESOURCES_VALID.store(false, Ordering::Release);
+                        started
+                    } else { STATUS_SUCCESS }
+                }
             } else { STATUS_INVALID_PARAMETER }
         }
         IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL | IRP_MN_REMOVE_DEVICE => {
