@@ -5,8 +5,8 @@ pub const MAX_RANGES: usize = 256;
 const SRAT_SIG: &[u8;4] = b"SRAT";
 const SLIT_SIG: &[u8;4] = b"SLIT";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MemoryRange { pub start:u64, pub end:u64, pub node:u32 }
-impl MemoryRange { const EMPTY:Self=Self{start:0,end:0,node:u32::MAX}; }
+pub struct MemoryRange { pub start:u64, pub end:u64, pub node:u32, pub hot_pluggable:bool, pub non_volatile:bool }
+impl MemoryRange { const EMPTY:Self=Self{start:0,end:0,node:u32::MAX,hot_pluggable:false,non_volatile:false}; }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProcessorAffinity { apic_id:u32, node:u32, enabled:bool }
 impl ProcessorAffinity { const EMPTY:Self=Self{apic_id:u32::MAX,node:u32::MAX,enabled:false}; }
@@ -61,7 +61,7 @@ pub fn parse_srat(table:&[u8])->Result<usize,TopologyError>{
   }
  } else if ty==1 {if len<40{return Err(TopologyError::InvalidTable)} let flags=u32at(t,pos+28).ok_or(TopologyError::InvalidTable)?;
  if flags&1!=0 {let node=u32at(t,pos+2).ok_or(TopologyError::InvalidTable)?;let start=u64at(t,pos+8).ok_or(TopologyError::InvalidTable)?;let size=u64at(t,pos+16).ok_or(TopologyError::InvalidTable)?;let end=start.checked_add(size).ok_or(TopologyError::InvalidTable)?;
- if size!=0 {if node as usize>=MAX_NODES{return Err(TopologyError::InvalidNode)} if count==MAX_RANGES{return Err(TopologyError::Capacity)} if start&0xfff!=0||end&0xfff!=0{return Err(TopologyError::InvalidTable)} ranges[count]=MemoryRange{start,end,node};count+=1;}}} pos+=len;}
+ if size!=0 {if node as usize>=MAX_NODES{return Err(TopologyError::InvalidNode)} if count==MAX_RANGES{return Err(TopologyError::Capacity)} if start&0xfff!=0||end&0xfff!=0{return Err(TopologyError::InvalidTable)} ranges[count]=MemoryRange{start,end,node,hot_pluggable:flags&2!=0,non_volatile:flags&4!=0};count+=1;}}} pos+=len;}
  for i in 0..count{for j in 0..i{if ranges[i].start<ranges[j].end&&ranges[j].start<ranges[i].end{return Err(TopologyError::Overlap)}}}
  ranges[..count].sort_unstable_by_key(|r|r.start);
  unsafe{let s=&mut *TOPOLOGY.0.get();s.0=ranges;s.1=count;let p=&mut *PROCESSORS.0.get();p.0=processors;p.1=processor_count;}
@@ -90,7 +90,7 @@ fn validate_single_node_ranges(ranges: &[(u64, u64)]) -> Result<([MemoryRange; M
   }
   let end = start.checked_add(length).ok_or(TopologyError::InvalidTable)?;
   if index != 0 && start < staged[index - 1].end { return Err(TopologyError::Overlap); }
-  staged[index] = MemoryRange { start, end, node: 0 };
+  staged[index] = MemoryRange { start, end, node: 0, hot_pluggable: false, non_volatile: false };
  }
  Ok((staged, ranges.len()))
 }
@@ -145,6 +145,33 @@ pub fn memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> usize {
  }
  count
 }
+
+/// Copy only online-capable SRAT ranges. Hot-pluggable ranges are deliberately
+/// withheld until the memory hot-add lifecycle can safely online and offline them.
+pub fn allocatable_memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> usize {
+ if !is_ready() { return 0; }
+ let s=unsafe{&*TOPOLOGY.0.get()};
+ let mut count=0usize;
+ for range in s.0.iter().take(s.1).filter(|range|range.node==node&&!range.hot_pluggable) {
+  if count==output.len() { break; }
+  output[count]=(range.start,range.end-range.start);
+  count+=1;
+ }
+ count
+}
+
+/// Query firmware attributes for a physical address. Returns None when SRAT
+/// does not assign the address to exactly one accepted memory affinity range.
+pub fn memory_attributes(address:u64)->Option<(u32,bool,bool)> {
+ if !is_ready() { return None; }
+ let s=unsafe{&*TOPOLOGY.0.get()};
+ let mut found=None;
+ for range in s.0.iter().take(s.1).filter(|range|address>=range.start&&address<range.end) {
+  if found.is_some() { return None; }
+  found=Some((range.node,range.hot_pluggable,range.non_volatile));
+ }
+ found
+}
 pub fn distance(from:u32,to:u32)->Option<u8>{let s=unsafe{&*TOPOLOGY.0.get()};if from as usize>=s.3||to as usize>=s.3{return None}Some(s.2[from as usize][to as usize])}
 #[cfg(test)]
 mod tests {
@@ -165,8 +192,8 @@ mod tests {
         let ranges = [(0x10_0000, 0x20_0000), (0x40_0000, 0x10_0000)];
         let (staged, count) = validate_single_node_ranges(&ranges).unwrap();
         assert_eq!(count, 2);
-        assert_eq!(staged[0], MemoryRange { start: 0x10_0000, end: 0x30_0000, node: 0 });
-        assert_eq!(staged[1], MemoryRange { start: 0x40_0000, end: 0x50_0000, node: 0 });
+        assert_eq!(staged[0], MemoryRange { start: 0x10_0000, end: 0x30_0000, node: 0, hot_pluggable: false, non_volatile: false });
+        assert_eq!(staged[1], MemoryRange { start: 0x40_0000, end: 0x50_0000, node: 0, hot_pluggable: false, non_volatile: false });
         assert_eq!(validate_single_node_ranges(&[(0x10_0000, 0x20_0000), (0x20_0000, 0x10_0000)]), Err(TopologyError::Overlap));
         assert_eq!(validate_single_node_ranges(&[(0x10_0001, 0x1000)]), Err(TopologyError::InvalidTable));
         assert_eq!(validate_single_node_ranges(&[(u64::MAX - 0xfff, 0x2000)]), Err(TopologyError::InvalidTable));
