@@ -304,3 +304,11 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&[0x8a, 0x2b]), Err(ResourceError::Truncated));
  }
 }
+
+
+#[cfg(test)] mod stability_24_extended_irq_length {
+ use super::*;
+ #[test] fn rejects_extended_irq_count_that_exceeds_payload() {
+  assert_eq!(parse_resource_template(&[0x89, 5, 0, 0, 1, 1, 0, 0, 0x79, 0]), Err(ResourceError::InvalidLength));
+ }
+}
