@@ -11,8 +11,8 @@ fn require(source: &str, needle: &str, errors: &mut Vec<String>) {
     if !source.contains(needle) { errors.push(format!("missing source contract: {needle}")); }
 }
 fn read_wdm_sources() -> Result<String, String> {
-    let mut combined = read("kernel/src/ntoskrnl/io/wdm.rs")?;
-    let dir = root().join("kernel/src/ntoskrnl/io/wdm");
+    let mut combined = read("ntoskrnl/src/io/wdm.rs")?;
+    let dir = root().join("ntoskrnl/src/io/wdm");
     let mut paths = fs::read_dir(&dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(Result::ok)
@@ -41,9 +41,9 @@ fn report(name: &str, errors: Vec<String>) -> Result<(), String> {
 }
 pub fn check_wdm() -> Result<(), String> {
     let wdm = read_wdm_sources()?;
-    let cancel = read("kernel/src/ntoskrnl/io/wdm/cancel.rs")?;
-    let exports = read("kernel/src/ntoskrnl/mod.rs")?;
-    let manifest = read("kernel/src/ntoskrnl/manifest_26100.json")?;
+    let cancel = read("ntoskrnl/src/io/wdm/cancel.rs")?;
+    let exports = read("ntoskrnl/src/main.rs")?;
+    let manifest = read("ntoskrnl/manifest_26100.json")?;
     let nt_io_abi = read("shared/nt-abi/src/io.rs")?;
     let mut errors = Vec::new();
     let lines: Vec<_> = wdm.lines().collect();
