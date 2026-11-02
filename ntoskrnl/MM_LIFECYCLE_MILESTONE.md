@@ -1,6 +1,6 @@
 # Memory Manager lifecycle completion
 
-This work is based on `main` at merge commit `b5d9a758abcf3ac7891806bb1452fa994ae60319`.
+This follow-up is based on `main` after PR #14 merged at `5fb6b63b3d7d4efb33d35317dea96f163bbf787b`.
 
 ## Non-negotiable safety gates
 
@@ -14,8 +14,8 @@ This work is based on `main` at merge commit `b5d9a758abcf3ac7891806bb1452fa994a
 
 - [x] Added `ntoskrnl/src/mm/pfn.rs`: checked PFN ownership records with separate allocation-owner, mapping, and pin references; IRQ-safe serialization; overflow/underflow, duplicate registration, and premature owner release rejection. Unit tests cover mapping/pin lifetime and invalid transitions.
 - [x] Registered the PFN module in the MM subsystem.
-- [~] Integrated PFN registration and final-owner release into single-page, data-page, constrained-range, contiguous-run, and NUMA batch allocation/free paths. Remaining audit: boot-time/external allocators, page-table ownership, partial batch rollback, and every caller-specific contiguous free path must be proven by tests.
-- [~] Integrated mapping references into user PTE install/replace/unmap and address-space teardown. Remaining audit: KUSER_SHARED_DATA, kernel/system mappings, section/prototype transitions, and non-user mapping paths.
+- [~] Integrated PFN registration and final-owner release into single-page, data-page, constrained-range, contiguous-run, and NUMA batch allocation/free paths. Follow-up hardening made registration precede allocator mutation, added atomic arbitrary-batch registration, corrected NUMA rollback PFN/byte units, and made PTE map/unmap/replace and pageout reference failures transactional. Remaining audit: boot-time/external allocators, page-table ownership, section/prototype transitions, and every caller-specific contiguous free path must be proven by tests.
+- [~] Integrated mapping references into user PTE install/replace/unmap and address-space teardown. Teardown now clears each user PTE and completes a global shootdown before dropping mapping/owner references. Remaining audit: KUSER_SHARED_DATA, kernel/system mappings, section/prototype transitions, and non-user mapping paths.
 - [~] MDL pin/unpin now acquires/releases PFN pin references transactionally while retaining the existing locked-PFN lookup table for compatibility. A full registry unification and exhaustive duplicate-PFN/rollback tests remain.
 - [ ] Move demand-area and working-set metadata into dynamically allocated process/address-space-owned structures.
 - [ ] Implement and register a real storage-stack paging provider.
@@ -23,6 +23,17 @@ This work is based on `main` at merge commit `b5d9a758abcf3ac7891806bb1452fa994a
 - [ ] Run host tests, kernel build, and QEMU acceptance tests.
 
 The PFN database is now wired into the principal user-page and physical allocation paths, but it is not yet an end-to-end enforcement mechanism. The remaining audit items above and the required host/QEMU validation must pass before this requirement is complete.
+
+## Follow-up hardening (branch `mm-lifecycle-followup`)
+
+- PFN batch registration is atomic: duplicate PFNs, invalid alignment, and capacity exhaustion leave the database unchanged.
+- Single-page, contiguous, constrained-range, and NUMA allocators publish PFN ownership before removing a frame from its free extent. Metadata-capacity failures are checked before extent mutation.
+- NUMA batch rollback converts PFNs back to physical byte addresses before returning frames.
+- PTE mapping acquisition failure rolls back newly allocated intermediate tables. Unmap and replacement restore their prior PTE if mapping-reference release fails.
+- Working-set pageout releases the mapping reference only after PTE removal and TLB shootdown, and restores the mapping if owner release fails.
+- Address-space teardown clears each user PTE and synchronizes TLBs before releasing the corresponding PFN references.
+
+These changes are source-level hardening only until CI, host tests, kernel build, and QEMU acceptance runs pass.
 
 ## Implementation sequence
 
