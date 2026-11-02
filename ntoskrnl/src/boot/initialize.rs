@@ -644,6 +644,19 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                 serial_write(b"FATAL: PCI boot driver initialization failed; device enumeration is blocked.\\r\\n");
                 halt();
             }
+            // Run the generic registry-selected boot/system driver scheduler
+            // only after platform-owned ACPI/PCI initialization, but before any
+            // bus enumeration. Fatal dependencies and ErrorControl=severe/
+            // critical failures stop here; PCI.sys is never entered twice.
+            let boot_driver_report = match initialize_registry_boot_drivers(&system_registry) {
+                Ok(report) => report,
+                Err(_) => {
+                    serial_write(b"FATAL: boot-driver dependency scheduling or ErrorControl policy failed; device enumeration is blocked.\\r\\n");
+                    halt();
+                }
+            };
+            let _boot_drivers_loaded = boot_driver_report.loaded;
+            let _boot_drivers_failed_nonfatal = boot_driver_report.failed;
             let _pnp_enumerated={
                 if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
                     serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\\r\\n");
