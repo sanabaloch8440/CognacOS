@@ -65,7 +65,7 @@ impl AcpiMethodInvoker for IntegerMethodInvoker {
             if n+3!=body.len(){return Err(ExecError::InvalidMethod)}
             return Ok(AcpiMethodValue::String(AcpiId::from_bytes(&text[..n]).map_err(|_|ExecError::InvalidMethod)?));
         }
-        if body.first()==Some(&0xa4)&&body.get(1).is_some_and(|op|*op==0x12||*op==0x13){
+        if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x12){
             let (ids,count)=decode_package_ids(&body[1..]).map_err(|_|ExecError::InvalidMethod)?;
             return Ok(AcpiMethodValue::CompatibleIds{ids,count});
         }
@@ -89,7 +89,8 @@ fn data_value<'a>(aml:&'a [u8],node:&crate::aml::AmlNode)->Result<DataValue<'a>,
     let op=*bytes.first().ok_or(IdentityError::MalformedObject)?;
     match op{
         0x0d=>{let tail=&bytes[1..];let n=tail.iter().position(|b|*b==0).ok_or(IdentityError::MalformedObject)?;if n+2!=bytes.len(){return Err(IdentityError::MalformedObject)}Ok(DataValue::String(&tail[..n]))}
-        0x12|0x13=>Ok(DataValue::Package(bytes)),
+        0x12=>Ok(DataValue::Package(bytes)),
+        0x13=>Err(IdentityError::UnsupportedObject),
         _=>{let mut pos=0;let value=read_integer(bytes,&mut pos)?;if pos!=bytes.len(){return Err(IdentityError::MalformedObject)}Ok(DataValue::Integer(value))}
     }
 }
@@ -180,7 +181,7 @@ pub fn evaluate_device_identity(ns:&AmlNamespace,aml_tables:&[&[u8]],device:u16,
         match adr{IdentityValue::Integer(v)=>out.adr=Some(v),_=>return Err(IdentityError::UnsupportedObject)}
     }
     if let Some(sta)=eval_optional(ns,aml_tables,device,*b"_STA",invoker)?{
-        match sta{IdentityValue::Integer(v)=>out.sta=v as u32,_=>return Err(IdentityError::UnsupportedObject)}
+        match sta{IdentityValue::Integer(v) if v<=u32::MAX as u64=>out.sta=v as u32,_=>return Err(IdentityError::UnsupportedObject)}
     }
     // PCI-enumerated children commonly expose _ADR without _HID. A device
     // with neither identifier cannot be matched or addressed by its parent.
