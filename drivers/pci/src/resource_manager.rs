@@ -148,14 +148,58 @@ pub fn program_assignments<C:ConfigAccess>(config:&mut C,header_type:u8,plan:&Al
     Ok(())
 }
 
-/// Emit one IO_RESOURCE_REQUIREMENTS_LIST alternative (x64 WDK wire layout).
+/// One alternative set offered to the PnP arbiter.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RequirementAlternative {
+    pub requirements:[Option<BarRequirement>;MAX_ASSIGNMENTS],
+    pub count:usize,
+}
+
+/// Encode all alternatives in one x64 IO_RESOURCE_REQUIREMENTS_LIST. The list
+/// header is followed by one 8-byte IO_RESOURCE_LIST header and its descriptors
+/// for each alternative. Address maxima are constrained by the BAR type.
+pub fn encode_requirements_list(alternatives:&[RequirementAlternative],bus:u32,out:&mut[u8])->Result<usize,ResourceError>{
+    if alternatives.is_empty()||alternatives.len()>16{return Err(ResourceError::Capacity)}
+    let mut size=32usize;
+    for alt in alternatives{
+        if alt.count>MAX_ASSIGNMENTS{return Err(ResourceError::Capacity)}
+        size=size.checked_add(8).and_then(|v|v.checked_add(alt.count.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE)?)).ok_or(ResourceError::AddressOverflow)?;
+    }
+    if out.len()<size{return Err(ResourceError::Capacity)}
+    out[..size].fill(0);
+    out[0..4].copy_from_slice(&(size as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&15i32.to_le_bytes()); // PNPBus
+    out[8..12].copy_from_slice(&bus.to_le_bytes());
+    let mut cursor=32usize;
+    for alt in alternatives{
+        out[cursor..cursor+2].copy_from_slice(&1u16.to_le_bytes());
+        out[cursor+2..cursor+4].copy_from_slice(&1u16.to_le_bytes());
+        out[cursor+4..cursor+8].copy_from_slice(&(alt.count as u32).to_le_bytes());
+        cursor+=8;
+        let mut emitted=0usize;
+        for r in alt.requirements.iter().take(alt.count).flatten(){
+            if r.length==0||r.alignment==0||!r.alignment.is_power_of_two(){return Err(ResourceError::InvalidAlignment)}
+            let p=cursor+emitted*IO_RESOURCE_DESCRIPTOR_SIZE;
+            out[p]=0;
+            out[p+1]=if r.kind==BarKind::Io{1}else{3};
+            out[p+2]=1;
+            out[p+4..p+6].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());
+            out[p+8..p+12].copy_from_slice(&u32::try_from(r.length).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());
+            out[p+12..p+16].copy_from_slice(&u32::try_from(r.alignment).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());
+            let maximum=match r.kind{BarKind::Io=>0xffffu64,BarKind::Memory32=>0xffff_ffffu64,BarKind::Memory64=>u64::MAX};
+            out[p+24..p+32].copy_from_slice(&maximum.to_le_bytes());
+            emitted+=1;
+        }
+        if emitted!=alt.count{return Err(ResourceError::InvalidBar)}
+        cursor+=emitted*IO_RESOURCE_DESCRIPTOR_SIZE;
+    }
+    Ok(size)
+}
+
+/// Convenience wrapper for the common single-alternative case.
 pub fn encode_requirements_alternative(reqs:&[Option<BarRequirement>;MAX_ASSIGNMENTS],count:usize,bus:u32,out:&mut[u8])->Result<usize,ResourceError>{
-    let size=40usize.checked_add(count.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE).ok_or(ResourceError::AddressOverflow)?).ok_or(ResourceError::AddressOverflow)?;
-    if count>MAX_ASSIGNMENTS||out.len()<size{return Err(ResourceError::Capacity)}
-    out[..size].fill(0);out[0..4].copy_from_slice(&(size as u32).to_le_bytes());out[4..8].copy_from_slice(&15i32.to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());
-    out[32..34].copy_from_slice(&1u16.to_le_bytes());out[34..36].copy_from_slice(&1u16.to_le_bytes());out[36..40].copy_from_slice(&(count as u32).to_le_bytes());
-    let mut n=0;for r in reqs.iter().take(count).flatten(){let p=40+n*IO_RESOURCE_DESCRIPTOR_SIZE;out[p]=0;out[p+1]=if r.kind==BarKind::Io{1}else{3};out[p+2]=1;out[p+4..p+6].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());out[p+8..p+12].copy_from_slice(&u32::try_from(r.length).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());out[p+12..p+16].copy_from_slice(&u32::try_from(r.alignment).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());let maximum=match r.kind{BarKind::Io=>0xffffu64,BarKind::Memory32=>0xffff_ffffu64,BarKind::Memory64=>u64::MAX};out[p+24..p+32].copy_from_slice(&maximum.to_le_bytes());n+=1}
-    if n!=count{return Err(ResourceError::InvalidBar)}Ok(size)
+    let alternative=RequirementAlternative{requirements:*reqs,count};
+    encode_requirements_list(core::slice::from_ref(&alternative),bus,out)
 }
 
 /// Emit raw or translated CM_RESOURCE_LIST data for a single full descriptor.
