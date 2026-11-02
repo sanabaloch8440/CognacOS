@@ -939,9 +939,9 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
         let end=off.checked_add(3).and_then(|v|v.checked_add(len)).ok_or(AcpiError::BadLength)?;
         let d=bytes.get(off+3..end).ok_or(AcpiError::Truncated)?;
         let parsed=match tag {
-            0x88 if len>=13=>Some((0usize,1usize,3usize,5usize,7usize,9usize)), // Word address
-            0x87 if len>=23=>Some((0usize,1usize,4usize,4usize,8usize,12usize)), // DWord address
-            0x8a if len>=43=>Some((0usize,1usize,8usize,4usize,12usize,20usize)), // QWord address
+            0x88 if len>=13=>Some((0usize,1usize,2usize,3usize,5usize,7usize)), // Word address
+            0x87 if len>=23=>Some((0usize,1usize,4usize,3usize,7usize,11usize)), // DWord address
+            0x8a if len>=43=>Some((0usize,1usize,8usize,3usize,11usize,19usize)), // QWord address
             _=>None,
         };
         if let Some((typ_off,flags_off,width,gran_off,min_off,max_off))=parsed{
@@ -949,8 +949,8 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
             if resource_type<=2 {
                 let minimum=read_width(d,min_off,width)?;
                 let maximum=read_width(d,max_off,width)?;
-                let translation=read_width(d,max_off+2*width,width)?;
-                let length=read_width(d,max_off+3*width,width)?;
+                let translation=read_width(d,max_off+width,width)?;
+                let length=read_width(d,max_off+2*width,width)?;
                 if length==0||maximum<minimum{return Err(AcpiError::MalformedEntry)}
                 let last=minimum.checked_add(length-1).ok_or(AcpiError::AddressOutOfRange)?;
                 if last>maximum{return Err(AcpiError::MalformedEntry)}
@@ -988,7 +988,7 @@ mod pci_root_crs_tests {
             0,0,0,0,0,0,0,0,
             0x79,0];
         b[1..3].copy_from_slice(&43u16.to_le_bytes());
-        b[39..47].copy_from_slice(&(0x1000_0000u64).to_le_bytes());
+        b[38..46].copy_from_slice(&(0x1000_0000u64).to_le_bytes());
         let parsed=parse_pci_root_resources(&b).unwrap();
         assert_eq!(parsed.count,1);
         assert_eq!(parsed.apertures[0].resource_type,0);
