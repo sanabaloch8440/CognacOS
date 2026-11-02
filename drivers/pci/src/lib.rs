@@ -8,6 +8,8 @@
 pub mod resources;
 pub mod resource_manager;
 pub mod bridge_resources;
+pub mod topology_resources;
+pub mod ide;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
