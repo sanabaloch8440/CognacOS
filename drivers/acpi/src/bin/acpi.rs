@@ -156,7 +156,9 @@ const ACPI_POOL_TAG: u32 = u32::from_le_bytes(*b"ACPI");
 /// Build a WDM-owned UTF-16 ID buffer. PnP owns and frees this paged-pool
 /// allocation after consuming IoStatus.Information.
 unsafe fn allocate_id_string(id:&acpi::acpi_device::AcpiId)->Result<usize,i32>{
-    if id.length==0{return Err(STATUS_INVALID_PARAMETER);}
+    if id.length==0||id.as_bytes().iter().any(|b|*b<=0x20||*b>0x7f||*b==b',') {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
     let units=(id.length as usize+1).checked_mul(2).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let buffer=unsafe{ExAllocatePoolWithTag(PAGED_POOL,units,ACPI_POOL_TAG)};
     if buffer.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES);}
