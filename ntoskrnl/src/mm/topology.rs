@@ -2,6 +2,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 pub const MAX_NODES: usize = 64;
 pub const MAX_RANGES: usize = 256;
+/// Static SRAT ranges plus independently onlined hot-add extents.
+pub const MAX_ALLOCATABLE_RANGES: usize = MAX_RANGES * 2;
 const SRAT_SIG: &[u8;4] = b"SRAT";
 const SLIT_SIG: &[u8;4] = b"SLIT";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
