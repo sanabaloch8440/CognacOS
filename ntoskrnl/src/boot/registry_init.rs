@@ -22,6 +22,8 @@ pub(crate) struct SystemRegistryState {
     pub boot_driver_services: &'static [[u16; 128]],
     pub service_group_count: usize,
     pub service_groups: &'static [[u16; 128]],
+    pub group_tag_counts: &'static [usize],
+    pub group_tag_values: &'static [[u32; 128]],
 }
 
 // Boot runs this before secondary processors and the general scheduler are
@@ -33,6 +35,9 @@ const MAX_SERVICE_GROUPS: usize = 64;
 static mut SERVICE_GROUP_NAMES: [[u16; 128]; MAX_SERVICE_GROUPS] =
     [[0; 128]; MAX_SERVICE_GROUPS];
 static mut SERVICE_GROUP_ORDER_RAW: [u16; 1024] = [0; 1024];
+static mut SERVICE_GROUP_TAG_COUNTS: [usize; MAX_SERVICE_GROUPS] = [0; MAX_SERVICE_GROUPS];
+static mut SERVICE_GROUP_TAG_VALUES: [[u32; 128]; MAX_SERVICE_GROUPS] =
+    [[0; 128]; MAX_SERVICE_GROUPS];
 
 
 /// Validate the mounted SYSTEM hive and its active control-set selection.
@@ -84,6 +89,28 @@ pub(crate) fn initialize_system_registry(
         group_count += 1;
         offset += rel_end + 1;
     }
+    // Parse every applicable GroupOrderList entry into fixed storage. A missing
+    // per-group value is valid and means no explicit tag preference.
+    let tag_counts = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(SERVICE_GROUP_TAG_COUNTS).cast::<usize>(),
+            MAX_SERVICE_GROUPS,
+        )
+    };
+    let tag_values = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(SERVICE_GROUP_TAG_VALUES).cast::<[u32; 128]>(),
+            MAX_SERVICE_GROUPS,
+        )
+    };
+    tag_counts.fill(0);
+    tag_values.fill([0; 128]);
+    for index in 0..group_count {
+        tag_counts[index] = crate::ntoskrnl::cm::service_config::query_group_tag_order(
+            &hive, &groups[index][..groups[index].iter().position(|unit| *unit == 0).unwrap_or(128)],
+            &mut tag_values[index],
+        ).map_err(|_| RegistryInitError::InvalidSystemHive)?;
+    }
     // Publish only the populated prefixes as immutable boot snapshots. These
     // buffers are kernel-owned and are never mutated after registry init.
     let boot_driver_services = unsafe {
@@ -98,11 +125,23 @@ pub(crate) fn initialize_system_registry(
             core::ptr::addr_of!(SERVICE_GROUP_NAMES).cast::<[u16; 128]>(), group_count,
         )
     };
+    let group_tag_counts = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(SERVICE_GROUP_TAG_COUNTS).cast::<usize>(), group_count,
+        )
+    };
+    let group_tag_values = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(SERVICE_GROUP_TAG_VALUES).cast::<[u32; 128]>(), group_count,
+        )
+    };
     Ok(SystemRegistryState {
         control_sets,
         boot_driver_count,
         boot_driver_services,
         service_group_count: group_count,
         service_groups,
+        group_tag_counts,
+        group_tag_values,
     })
 }
