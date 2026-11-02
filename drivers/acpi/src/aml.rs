@@ -427,6 +427,16 @@ mod tests{
         assert_eq!(decode_package_length(&[0x41,0x01,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,17),Ok((17,17)));
         assert_eq!(decode_package_length(&[0x80,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,16),Ok((16,16)));
     }
+    #[test]fn parses_root_parent_dual_and_multi_name_strings(){
+        let (rooted,end)=parse_name_string(&[0x5c,b'_',b'S',b'B',b'_',b'P',b'C',b'I',b'0'],0,9).unwrap();
+        assert!(rooted.rooted);assert_eq!(rooted.count,2);assert_eq!(end,9);
+        let (parent,end)=parse_name_string(&[0x5e,b'P',b'C',b'I',b'0'],0,5).unwrap();
+        assert_eq!(parent.parents,1);assert_eq!(parent.segments[0],*b"PCI0");assert_eq!(end,5);
+        let (dual,end)=parse_name_string(&[0x2e,b'P',b'C',b'I',b'0',b'D',b'E',b'V',b'0'],0,9).unwrap();
+        assert_eq!(dual.count,2);assert_eq!(end,9);
+        let (multi,end)=parse_name_string(&[0x2f,2,b'P',b'C',b'I',b'0',b'D',b'E',b'V',b'0'],0,10).unwrap();
+        assert_eq!(multi.count,2);assert_eq!(end,10);
+    }
     #[test]fn loads_device_and_name_namespace(){
         // Device(PCI0) { Name(_HID, EisaId("PNP0A08")) } -- the name value
         // is deliberately a simple AML string in this initial parser slice.
