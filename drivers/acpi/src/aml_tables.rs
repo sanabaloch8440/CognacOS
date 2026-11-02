@@ -156,7 +156,7 @@ impl AmlTableManager {
         stored.namespace_end=self.namespace.count as u16;
         let slot=self.count;
         let generation=self.next_generation;
-        self.next_generation=self.next_generation.wrapping_add(1).max(1);
+        self.next_generation=self.next_generation.checked_add(1).ok_or(TableError::TableLimit)?;
         self.records[slot]=TableRecord{active:true,generation,info:stored};
         self.count+=1;
         if expected==*b"DSDT"{self.dsdt_loaded=true;}
@@ -271,6 +271,9 @@ mod tests {
         let method=manager.namespace().find_child(0,*b"TEST").unwrap();
         assert_eq!(manager.execute_method(handle,&dsdt,method,&[]),Ok(AmlValue::Integer(7)));
         assert_eq!(manager.execute_method(handle,&dsdt,0,&[]),Err(TableError::InvalidHandle));
+        let mut substituted=dsdt;substituted[45]=8;substituted[9]=0;
+        substituted[9]=0u8.wrapping_sub(substituted.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
+        assert_eq!(manager.execute_method(handle,&substituted,method,&[]),Err(TableError::InvalidHandle));
     }
     #[test]
     fn table_mutation_requires_execution_quiescence(){
