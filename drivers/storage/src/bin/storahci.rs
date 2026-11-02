@@ -220,37 +220,65 @@ impl DmaStartupGuard {
 impl Drop for DmaStartupGuard {
     fn drop(&mut self) {
         if self.committed { return; }
+        let mut safe_to_free = true;
         if let Some(ext) = unsafe { self.ext.as_ref() } {
-            if let (Some(base), Some(hal)) = (self.port_base, unsafe { ext.hal.as_ref() }) {
-                if self.engine_touched {
+            if self.engine_touched {
+                if let (Some(base), Some(hal)) = (self.port_base, unsafe { ext.hal.as_ref() }) {
                     let mut io = Mmio { base: ext.mmio_base, length: ext.mmio_length, hal };
-                    if let Ok(cmd) = io.read32(base + PORT_CMD) {
-                        let _ = io.write32(base + PORT_CMD, cmd & !CMD_ST);
-                        for _ in 0..AHCI_POLL_BUDGET {
-                            if io.read32(base + PORT_CMD).map(|v| v & CMD_CR == 0).unwrap_or(true) { break; }
-                            core::hint::spin_loop();
-                        }
-                        if let Ok(cmd) = io.read32(base + PORT_CMD) {
-                            let _ = io.write32(base + PORT_CMD, cmd & !CMD_FRE);
+                    match io.read32(base + PORT_CMD) {
+                        Ok(cmd) => {
+                            if io.write32(base + PORT_CMD, cmd & !CMD_ST).is_err() { safe_to_free = false; }
+                            let mut stopped = false;
                             for _ in 0..AHCI_POLL_BUDGET {
-                                if io.read32(base + PORT_CMD).map(|v| v & CMD_FR == 0).unwrap_or(true) { break; }
-                                core::hint::spin_loop();
+                                match io.read32(base + PORT_CMD) {
+                                    Ok(value) if value & CMD_CR == 0 => { stopped = true; break; }
+                                    Ok(_) => core::hint::spin_loop(),
+                                    Err(_) => { safe_to_free = false; break; }
+                                }
+                            }
+                            if !stopped { safe_to_free = false; }
+                            if safe_to_free {
+                                match io.read32(base + PORT_CMD) {
+                                    Ok(value) => {
+                                        if io.write32(base + PORT_CMD, value & !CMD_FRE).is_err() { safe_to_free = false; }
+                                        let mut fis_stopped = false;
+                                        for _ in 0..AHCI_POLL_BUDGET {
+                                            match io.read32(base + PORT_CMD) {
+                                                Ok(value) if value & CMD_FR == 0 => { fis_stopped = true; break; }
+                                                Ok(_) => core::hint::spin_loop(),
+                                                Err(_) => { safe_to_free = false; break; }
+                                            }
+                                        }
+                                        if !fis_stopped { safe_to_free = false; }
+                                    }
+                                    Err(_) => safe_to_free = false,
+                                }
                             }
                         }
+                        Err(_) => safe_to_free = false,
                     }
-                }
+                } else { safe_to_free = false; }
             }
             if self.bus_master_enabled {
-                if let Some(device) = unsafe { ext.device.as_ref() } {
-                    if let Some(set) = device.set_bus_master { let _ = unsafe { set(ext.device_object, false) }; }
+                match unsafe { ext.device.as_ref() }.and_then(|device| device.set_bus_master) {
+                    Some(set) if unsafe { set(ext.device_object, false) }.code == 0 => {}
+                    _ => safe_to_free = false,
                 }
             }
-            if let Some(device) = unsafe { ext.device.as_ref() } {
-                if let Some(free) = device.free_dma {
+            // Never free DMA memory if we could not prove both the command/FIS
+            // engines stopped and PCI bus mastering was revoked.
+            if safe_to_free {
+                if let Some(free) = unsafe { ext.device.as_ref() }.and_then(|device| device.free_dma) {
                     while self.count != 0 {
                         self.count -= 1;
                         let (cpu,dma,size) = self.allocations[self.count];
-                        if cpu != 0 && dma != 0 { let _ = unsafe { free(ext.device_object,cpu,dma,size) }; }
+                        if cpu != 0 && dma != 0 {
+                            if unsafe { free(ext.device_object,cpu,dma,size) }.code != 0 {
+                                // Leak the remaining allocation set on a free error;
+                                // never retry a possibly partially released DMA mapping.
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -415,6 +443,38 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
     result.map_or_else(|status| status, |_| STATUS_SUCCESS)
 }
 
+fn stop_data_path() -> i32 {
+    AHCI_ONLINE.store(false, Ordering::Release);
+    for _ in 0..AHCI_POLL_BUDGET {
+        if !AHCI_IO_BUSY.load(Ordering::Acquire) { break; }
+        core::hint::spin_loop();
+    }
+    if AHCI_IO_BUSY.load(Ordering::Acquire) { return STATUS_DEVICE_BUSY; }
+    let ext = match handoff() { Some(value) => value, None => return STATUS_DEVICE_NOT_READY };
+    let runtime = unsafe { (*AHCI_RUNTIME.0.get()).assume_init_read() };
+    if runtime.clb_cpu == 0 || runtime.fb_cpu == 0 || runtime.table_cpu == 0 || runtime.bounce_cpu == 0 {
+        return STATUS_SUCCESS;
+    }
+    let mut guard = DmaStartupGuard::new(ext as *const AhciDriverHandoff);
+    guard.allocations = [
+        (runtime.clb_cpu, runtime.clb_dma, 1024),
+        (runtime.fb_cpu, runtime.fb_dma, 256),
+        (runtime.table_cpu, runtime.table_dma, 256),
+        (runtime.bounce_cpu, runtime.bounce_dma, AHCI_MAX_TRANSFER as u64),
+    ];
+    guard.count = 4;
+    guard.port_base = Some(ahci_port_base(runtime.port));
+    guard.engine_touched = true;
+    guard.bus_master_enabled = true;
+    // Drop performs ordered engine stop, bus-master revoke, and DMA release.
+    drop(guard);
+    unsafe { (*AHCI_RUNTIME.0.get()).write(AhciRuntime {
+        port: runtime.port, sectors: 0, clb_cpu: 0, clb_dma: 0, fb_cpu: 0, fb_dma: 0,
+        table_cpu: 0, table_dma: 0, bounce_cpu: 0, bounce_dma: 0,
+    }); }
+    STATUS_SUCCESS
+}
+
 /// Synchronous DMA block transfer API. Caller supplies a resident kernel buffer;
 /// all device DMA targets the validated nonpaged bounce buffer, never a user VA.
 #[unsafe(no_mangle)]
@@ -568,7 +628,9 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
         }
         IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL | IRP_MN_REMOVE_DEVICE => {
             START_RESOURCES_VALID.store(false, Ordering::Release);
+            let stopped = stop_data_path();
             PREPARED.store(false, Ordering::Release);
+            if stopped != STATUS_SUCCESS { return stopped; }
             if let Some(ext) = handoff() {
                 if let Some(device) = unsafe { ext.device.as_ref() } {
                     if let Some(set) = device.set_bus_master {
@@ -586,6 +648,7 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
 }
 unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     START_RESOURCES_VALID.store(false, Ordering::Release);
+    let _ = stop_data_path();
     PREPARED.store(false, Ordering::Release);
     if let Some(ext) = handoff() {
         if let Some(device) = unsafe { ext.device.as_ref() } {
