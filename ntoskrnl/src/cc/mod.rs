@@ -874,16 +874,19 @@ mod tests {
         unsafe { cc_initialize_cache_map(&mut file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
         let bytes = [0x5Au8; 16];
         cache_insert_clean(&mut file, 0, &bytes);
-        let _guard = Guard::acquire();
-        let map = unsafe { find_map(&mut file) };
-        assert!(!map.is_null());
-        let page = unsafe { (*map).pages };
-        assert!(!page.is_null());
-        assert_eq!(unsafe { (*page).valid_start }, 0);
-        assert_eq!(unsafe { (*page).valid_end }, 4);
-        assert_eq!(unsafe { (*page).data.add(3).read() }, 0x5A);
-        assert_eq!(unsafe { (*page).data.add(4).read() }, 0);
-        assert!(unsafe { (*page).next.is_null() });
+        {
+            let _guard = Guard::acquire();
+            let map = unsafe { find_map(&mut file) };
+            assert!(!map.is_null());
+            let page = unsafe { (*map).pages };
+            assert!(!page.is_null());
+            assert_eq!(unsafe { (*page).valid_start }, 0);
+            assert_eq!(unsafe { (*page).valid_end }, 4);
+            assert_eq!(unsafe { (*page).data.add(3).read() }, 0x5A);
+            assert_eq!(unsafe { (*page).data.add(4).read() }, 0);
+            assert!(unsafe { (*page).next.is_null() });
+        }
+        assert_eq!(unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()) }, 1);
     }
 
     #[test]
