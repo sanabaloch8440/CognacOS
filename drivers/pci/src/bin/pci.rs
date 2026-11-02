@@ -76,6 +76,8 @@ struct PciPdoExtension {
     translated_resources: PVOID,
     translated_resources_size: usize,
     information: PCI_DEVICE_INFORMATION,
+    ide_ports: pci::ide::IdeControllerPorts,
+    ide_ports_valid: u8,
 }
 
 unsafe fn delete_pdo(pdo: *mut DEVICE_OBJECT) {
@@ -247,6 +249,23 @@ pub unsafe extern "win64" fn CognacPciGetAssignedResources(context:PVOID,raw_out
     STATUS_SUCCESS
 }
 
+/// PCI IDE driver handoff: valid only after START_DEVICE committed assigned
+/// BARs. No caller can retrieve guessed native-mode addresses.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciGetIdePorts(
+    context: PVOID,
+    output: *mut pci::ide::IdeControllerPorts,
+) -> i32 {
+    if context.is_null() || output.is_null() { return STATUS_INVALID_PARAMETER; }
+    let ext = context.cast::<PciPdoExtension>();
+    if unsafe { (*ext).magic != PCI_PDO_EXTENSION_MAGIC || (*ext).version != 1 } {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if unsafe { (*ext).started == 0 || (*ext).ide_ports_valid == 0 } { return STATUS_DEVICE_NOT_READY; }
+    unsafe { output.write((*ext).ide_ports); }
+    STATUS_SUCCESS
+}
+
 /// Consume the PnP manager's assigned raw/translated resource lists. BARs are
 /// programmed from the bus-relative (raw) addresses; translated resources are
 /// retained only for consumers above the bus driver. Unsupported resource
@@ -340,6 +359,15 @@ unsafe fn start_pci_device(
         });
         plan.count += 1;
     }
+    // Derive native-mode IDE ports strictly from PnP-assigned BARs.
+    // Compatibility-mode channels retain the architecturally defined legacy
+    // ranges; native channels fail closed if any required BAR is absent.
+    let ide_ports = if function.header.is_ide_controller() {
+        match pci::ide::resolve_ide_ports(function.header.programming_interface, &plan) {
+            Ok(value) => Some(value),
+            Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+        }
+    } else { None };
     // Require translated descriptors to be structurally present before touching
     // hardware. The OS has already performed address translation/arbitration.
     for i in 0..trans_n {
@@ -381,6 +409,7 @@ unsafe fn start_pci_device(
         (*extension).translated_resources = translated_copy;
         (*extension).translated_resources_size = list_size;
         (*extension).started = 1;
+        if let Some(value) = ide_ports { (*extension).ide_ports = value; (*extension).ide_ports_valid = 1; }
     }
     STATUS_SUCCESS
 }
@@ -576,6 +605,8 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
                     translated_resources: core::ptr::null_mut(),
                     translated_resources_size: 0,
                     information,
+                    ide_ports: pci::ide::IdeControllerPorts::default(),
+                    ide_ports_valid: 0,
                 });
                 // DO_BUS_ENUMERATED_DEVICE: this is a PDO created by its bus.
                 (*pdo).flags |= 0x0000_0200;
