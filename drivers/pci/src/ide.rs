@@ -17,6 +17,7 @@ pub struct IdeChannelPorts {
     pub command_base: u16,
     pub control_base: u16,
     pub native: bool,
+    pub switchable: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IdeControllerPorts {
@@ -33,6 +34,7 @@ fn io_bar(plan:&AllocationPlan,index:u8,minimum:u64)->Result<u16,IdeResourceErro
     let bar=find_bar(plan,index).ok_or(IdeResourceError::MissingBar)?;
     if bar.kind!=BarKind::Io{return Err(IdeResourceError::WrongBarType)}
     if bar.length<minimum{return Err(IdeResourceError::TooSmall)}
+    if bar.base%minimum!=0{return Err(IdeResourceError::PortRangeOverflow)}
     let end=bar.base.checked_add(bar.length).ok_or(IdeResourceError::AddressOverflow)?;
     if end>0x1_0000||bar.base>u16::MAX as u64{return Err(IdeResourceError::PortRangeOverflow)}
     u16::try_from(bar.base).map_err(|_|IdeResourceError::PortRangeOverflow)
@@ -46,16 +48,18 @@ pub fn resolve_ide_ports(
     plan:&AllocationPlan,
 )->Result<IdeControllerPorts,IdeResourceError>{
     let primary_native=programming_interface&0x01!=0;
+    let primary_switchable=programming_interface&0x02!=0;
     let secondary_native=programming_interface&0x04!=0;
+    let secondary_switchable=programming_interface&0x08!=0;
     let bus_master_capable=programming_interface&0x80!=0;
-    // Bits 1 and 3 are reserved in the IDE programming interface.
-    if programming_interface&0x0a!=0{return Err(IdeResourceError::InvalidProgrammingInterface)}
+    // Bits 4-6 are reserved. Bits 1 and 3 are valid channel-switchable bits.
+    if programming_interface&0x70!=0{return Err(IdeResourceError::InvalidProgrammingInterface)}
     let primary=if primary_native{
-        IdeChannelPorts{command_base:io_bar(plan,0,8)?,control_base:io_bar(plan,1,4)?.checked_add(2).ok_or(IdeResourceError::AddressOverflow)?,native:true}
-    }else{IdeChannelPorts{command_base:0x1f0,control_base:0x3f6,native:false}};
+        IdeChannelPorts{command_base:io_bar(plan,0,8)?,control_base:io_bar(plan,1,4)?.checked_add(2).ok_or(IdeResourceError::AddressOverflow)?,native:true,switchable:primary_switchable}
+    }else{IdeChannelPorts{command_base:0x1f0,control_base:0x3f6,native:false,switchable:primary_switchable}};
     let secondary=if secondary_native{
-        IdeChannelPorts{command_base:io_bar(plan,2,8)?,control_base:io_bar(plan,3,4)?.checked_add(2).ok_or(IdeResourceError::AddressOverflow)?,native:true}
-    }else{IdeChannelPorts{command_base:0x170,control_base:0x376,native:false}};
+        IdeChannelPorts{command_base:io_bar(plan,2,8)?,control_base:io_bar(plan,3,4)?.checked_add(2).ok_or(IdeResourceError::AddressOverflow)?,native:true,switchable:secondary_switchable}
+    }else{IdeChannelPorts{command_base:0x170,control_base:0x376,native:false,switchable:secondary_switchable}};
     let bus_master_base=if bus_master_capable{
         Some(io_bar(plan,4,16)?)
     }else{None};
@@ -95,6 +99,18 @@ mod tests{
         assert_eq!(resolve_ide_ports(0x01,&AllocationPlan::empty()),Err(IdeResourceError::MissingBar));
         let wrong=AllocationPlan{assignments:[Some(BarAssignment{index:0,kind:BarKind::Memory32,base:0x8000_0000,length:8,prefetchable:false}),None,None,None,None,None],count:1};
         assert_eq!(resolve_ide_ports(0x01,&wrong),Err(IdeResourceError::WrongBarType));
+    }
+    #[test]
+    fn switchable_channels_are_valid_and_keep_their_current_compatibility_mode(){
+        let ports=resolve_ide_ports(0x0a,&AllocationPlan::empty()).unwrap();
+        assert!(!ports.primary.native&&ports.primary.switchable);
+        assert!(!ports.secondary.native&&ports.secondary.switchable);
+        assert_eq!(ports.primary.command_base,0x1f0);
+    }
+    #[test]
+    fn translated_port_ranges_must_preserve_bar_alignment(){
+        let plan=AllocationPlan{assignments:[assignment(0,0x2004,8),assignment(1,0x2100,4),None,None,None,None],count:2};
+        assert_eq!(resolve_ide_ports(0x01,&plan),Err(IdeResourceError::PortRangeOverflow));
     }
     #[test]
     fn busmaster_window_is_not_assumed_when_controller_lacks_capability(){
