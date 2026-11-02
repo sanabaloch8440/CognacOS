@@ -32,6 +32,11 @@ unsafe fn initialize_registry_boot_drivers(
     use crate::ntoskrnl::io::driver_init::{self, DriverInitStatus};
     use crate::ntoskrnl::cm::hive::Hive;
 
+    let service_names_snapshot: &'static [[u16; 128]] = registry.boot_driver_services;
+    let service_metadata_snapshot: &'static [registry_init::BootServiceMetadata] = registry.boot_driver_metadata;
+    let service_groups_snapshot: &'static [[u16; 128]] = registry.service_groups;
+    let group_tag_counts_snapshot: &'static [usize] = registry.group_tag_counts;
+    let group_tag_values_snapshot: &'static [[u32; 128]] = registry.group_tag_values;
     let count = registry.boot_driver_count;
     if count > MAX_BOOT_SERVICES { return Err(driver_init::DriverInitError::BufferTooSmall); }
     let mut nodes = [ServiceNode {
@@ -49,8 +54,8 @@ unsafe fn initialize_registry_boot_drivers(
                 .cast::<[&[u16]; MAX_SERVICE_DEPENDENCIES]>(), MAX_BOOT_SERVICES)
     };
     for index in 0..count {
-        let name_len = registry.boot_driver_services[index].iter().position(|unit| *unit == 0).unwrap_or(128);
-        let metadata = &registry.boot_driver_metadata[index];
+        let name_len = service_names_snapshot[index].iter().position(|unit| *unit == 0).unwrap_or(128);
+        let metadata = &service_metadata_snapshot[index];
         let mut service_count = 0usize;
         for dependency in crate::ntoskrnl::cm::service_config::MultiSzIter::new(
             &metadata.service_dependencies[..metadata.service_dependencies_len]) {
@@ -66,7 +71,7 @@ unsafe fn initialize_registry_boot_drivers(
             group_count += 1;
         }
         nodes[index] = ServiceNode {
-            name: &registry.boot_driver_services[index][..name_len],
+            name: &service_names_snapshot[index][..name_len],
             group: &metadata.group[..metadata.group_len],
             tag: metadata.tag,
             start_type: 0, // the manager revalidates the active registry entry before loading
@@ -78,7 +83,7 @@ unsafe fn initialize_registry_boot_drivers(
     // filesystem drivers. Preserve that filtered candidate set for scheduling.
     let mut group_order: [&[u16]; 64] = [&[]; 64];
     for index in 0..registry.service_group_count.min(group_order.len()) {
-        let group = &registry.service_groups[index];
+        let group = &service_groups_snapshot[index];
         let length = group.iter().position(|unit| *unit == 0).unwrap_or(128);
         group_order[index] = &group[..length];
     }
@@ -88,7 +93,7 @@ unsafe fn initialize_registry_boot_drivers(
         let length = group.iter().position(|unit| *unit == 0).unwrap_or(128);
         tag_orders[index] = GroupTagOrder {
             group: &group[..length],
-            tags: &registry.group_tag_values[index][..registry.group_tag_counts[index]],
+            tags: &group_tag_values_snapshot[index][..group_tag_counts_snapshot[index]],
         };
     }
     const ACPI: &[u16] = &[65, 67, 80, 73];
