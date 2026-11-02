@@ -279,11 +279,10 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
     if BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         return STATUS_DEVICE_BUSY;
     }
-    let result = (|| {
-        let Some(ext) = handoff() else { return STATUS_DEVICE_NOT_READY; };
-        if !PREPARED.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    let result = (|| -> Result<(), i32> {
+        let ext = handoff().ok_or(STATUS_DEVICE_NOT_READY)?;
         let info = unsafe { (*INFO.0.get()).assume_init_ref() };
-        let Some(hal) = (unsafe { ext.hal.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
+        let hal = unsafe { ext.hal.as_ref() }.ok_or(STATUS_INVALID_PARAMETER)?;
         let mut io = Mmio { base: ext.mmio_base, length: ext.mmio_length, hal };
         let maximum = if info.supports_64bit_dma { u64::MAX } else { u32::MAX as u64 };
         let mut selected = None;
@@ -315,28 +314,28 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
         io.write32(base + PORT_FB, fb_dma as u32).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_FB + 4, (fb_dma >> 32) as u32).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_IE, 0).map_err(|_| STATUS_DEVICE_NOT_READY)?;
+        // Every DMA object has been allocated and validated before bus mastering.
+        let device = unsafe { ext.device.as_ref() }.ok_or(STATUS_INVALID_PARAMETER)?;
+        let set_bus_master = device.set_bus_master.ok_or(STATUS_NOT_SUPPORTED)?;
+        if unsafe { set_bus_master(ext.device_object, true) }.code != 0 {
+            return Err(STATUS_DEVICE_NOT_READY);
+        }
         let cmd = io.read32(base + PORT_CMD).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_CMD, cmd | CMD_FRE).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_CMD, cmd | CMD_FRE | CMD_ST).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         ahci_wait_ready(&mut io, base)?;
-        // Bus mastering is enabled only after all DMA regions are allocated,
-        // initialized, and validated for this PCI requester.
-        let Some(device) = (unsafe { ext.device.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
-        let Some(set_bus_master) = device.set_bus_master else { return STATUS_NOT_SUPPORTED; };
-        if unsafe { set_bus_master(ext.device_object, true) }.code != 0 { return STATUS_DEVICE_NOT_READY; }
         unsafe { ahci_issue(&mut io, &runtime, 0xec, 0, 1, 512, false, false)?; }
         let words = unsafe { core::slice::from_raw_parts(bounce_cpu as *const u16, 256) };
         let sectors = if words[83] & (1 << 10) != 0 {
             (words[100] as u64) | ((words[101] as u64) << 16) | ((words[102] as u64) << 32) | ((words[103] as u64) << 48)
         } else { words[60] as u64 | ((words[61] as u64) << 16) };
-        if sectors == 0 { return STATUS_DEVICE_NOT_READY; }
-        let runtime = AhciRuntime { sectors, ..runtime };
-        unsafe { (*AHCI_RUNTIME.0.get()).write(runtime); }
+        if sectors == 0 { return Err(STATUS_DEVICE_NOT_READY); }
+        unsafe { (*AHCI_RUNTIME.0.get()).write(AhciRuntime { sectors, ..runtime }); }
         AHCI_ONLINE.store(true, Ordering::Release);
-        STATUS_SUCCESS
+        Ok(())
     })();
     BUSY.store(false, Ordering::Release);
-    result
+    result.map_or_else(|status| status, |_| STATUS_SUCCESS)
 }
 
 /// Synchronous DMA block transfer API. Caller supplies a resident kernel buffer;
