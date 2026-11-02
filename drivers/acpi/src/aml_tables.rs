@@ -7,7 +7,7 @@
 use crate::{parse_sdt_header,AcpiError};
 use crate::aml::{AmlError,AmlNamespace,load_definition_block,MAX_NAMESPACE_NODES};
 use crate::aml_exec::{self,AmlValue,ExecError};
-use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,IdentityError};
+use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,AcpiMethodValue,IdentityError};
 use core::sync::atomic::{AtomicUsize,Ordering};
 
 pub const MAX_AML_TABLES:usize=32;
@@ -114,10 +114,10 @@ struct TableMethodInvoker<'a,'g,G:AmlExecutionGate>{
     manager:&'a AmlTableManager,handle:TableHandle,bytes:&'a [u8],gate:&'g G,
 }
 impl<G:AmlExecutionGate> AcpiMethodInvoker for TableMethodInvoker<'_,'_,G>{
-    fn evaluate_integer(&mut self,namespace:&AmlNamespace,_aml:&[u8],method:u16)->Result<u64,ExecError>{
+    fn evaluate_value(&mut self,namespace:&AmlNamespace,_aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
         if !core::ptr::eq(namespace,&self.manager.namespace){return Err(ExecError::InvalidMethod)}
         self.manager.execute_method(self.handle,self.bytes,method,&[],self.gate)
-            .map(|value|value.integer()).map_err(|_|ExecError::InvalidMethod)
+            .map(|value|AcpiMethodValue::Integer(value.integer())).map_err(|_|ExecError::InvalidMethod)
     }
 }
 
