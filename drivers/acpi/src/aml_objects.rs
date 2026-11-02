@@ -180,6 +180,16 @@ mod tests {
         let inner=arena.get(outer.elements[1]).unwrap();assert_eq!(inner.kind,AmlValueKind::Package);
         let nine=arena.get(inner.elements[0]).unwrap();assert_eq!(nine.integer,9);
     }
+    #[test] fn evaluates_varpackage_element_count_expression(){
+        // VarPackage(Add(One, One, NullTarget), { One, ByteConst(9) }).
+        let bytes=[0x13,0x0b,0x72,0x01,0x01,0x00,0x01,0x0a,9];
+        let mut arena=AmlObjectArena::new();
+        let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
+        let package=arena.get(id).unwrap();assert_eq!(end,bytes.len());
+        assert_eq!(package.kind,AmlValueKind::Package);assert_eq!(package.element_count,2);
+        assert_eq!(arena.get(package.elements[0]).unwrap().integer,1);
+        assert_eq!(arena.get(package.elements[1]).unwrap().integer,9);
+    }
     #[test] fn leaves_omitted_package_slots_uninitialized(){
         let mut arena=AmlObjectArena::new();
         let (id,end)=decode_data_object(&[0x12,0x02,2],0,3,&mut arena).unwrap();
