@@ -1384,12 +1384,48 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
         return Err(AllocError::InvalidPage);
     }
     let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
-    let end = base.checked_add(bytes).filter(|end| *end <= PHYSICAL_LIMIT).ok_or(AllocError::InvalidPage)?;
+    let high_memory = base >= PHYSICAL_LIMIT;
+    let limit = if high_memory { DIRECT_MAP_PHYSICAL_LIMIT } else { PHYSICAL_LIMIT };
+    let end = base.checked_add(bytes).filter(|end| *end <= limit).ok_or(AllocError::InvalidPage)?;
     let _guard = MemoryGuard::acquire();
     let mut locked_page = base;
     while locked_page < end {
-        if page_is_locked(locked_page) { return Err(AllocError::InvalidPage); }
+        if !is_ram_physical_address(locked_page) || page_is_locked(locked_page) {
+            return Err(AllocError::InvalidPage);
+        }
         locked_page += PAGE_SIZE;
+    }
+    if high_memory {
+        let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
+        if pages <= FREE_CAPACITY - free.1 {
+            release_pfn_range_owner(base, pages)?;
+            let mut page = base;
+            while page < end {
+                free.0[free.1] = page;
+                free.1 += 1;
+                page += PAGE_SIZE;
+            }
+            return Ok(());
+        }
+        let regions = unsafe { &mut *HIGH_REGIONS.0.get() };
+        let count = HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+        for region in regions.iter_mut().take(count) {
+            if end == region.next {
+                release_pfn_range_owner(base, pages)?;
+                region.next = base;
+                return Ok(());
+            }
+            if base == region.end {
+                release_pfn_range_owner(base, pages)?;
+                region.end = end;
+                return Ok(());
+            }
+        }
+        if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+        release_pfn_range_owner(base, pages)?;
+        regions[count] = Region { next: base, end };
+        HIGH_REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
+        return Ok(());
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if pages <= FREE_CAPACITY - free.1 {
