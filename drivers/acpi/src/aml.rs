@@ -116,11 +116,17 @@ fn package_length_bytes(bytes:&[u8],offset:usize,limit:usize)->Result<usize,AmlE
     let lead=*bytes.get(offset).filter(|_|offset<limit).ok_or(AmlError::Truncated)?;Ok(1+(lead>>6) as usize)
 }
 
-fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(),AmlError>{
+fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
+    let lead=c.byte()?;let follow=(lead>>6)as usize;
+    let mut value=if follow==0{(lead&0x3f)as usize}else{(lead&0x0f)as usize};
+    for i in 0..follow{value|=(c.byte()? as usize)<<(4+8*i);}
+    Ok(value)
+}
+\nfn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(),AmlError>{
     while c.pos<c.end{
         let op=c.byte()?;
         match op{
-            0x00=>{let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;c.pos=end;}
+            0x00=>{let _bit_length=read_pkg_value(c)?;}
             0x01=>{c.take(2)?;}
             0x02=>{skip_data_object(c)?;}
             0x03=>{c.take(3)?;}
