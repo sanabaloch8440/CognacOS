@@ -237,6 +237,28 @@ pub fn memory_attributes(address:u64)->Option<(u32,bool,bool)> {
 /// Produce a deterministic locality order: preferred node first, then ascending
 /// SLIT distance. Missing SLIT entries sort last and use node-id order as a
 /// stable fallback rather than inventing locality.
+fn sort_allocation_nodes(
+ nodes:&mut [u32],count:usize,preferred:u32,matrix:&[[u8;MAX_NODES];MAX_NODES],matrix_nodes:usize,
+) {
+ let distance_key=|node:u32|->u16 {
+  if node==preferred{return 0}
+  if preferred as usize<matrix_nodes&&node as usize<matrix_nodes {
+   matrix[preferred as usize][node as usize] as u16+1
+  } else {u16::MAX}
+ };
+ for i in 1..count {
+  let value=nodes[i];let key=distance_key(value);let mut j=i;
+  while j>0 {
+   let previous=nodes[j-1];let previous_key=distance_key(previous);
+   if previous_key<key||(previous_key==key&&previous<value){break}
+   nodes[j]=previous;j-=1;
+  }
+  nodes[j]=value;
+ }
+}
+
+/// Produce a deterministic locality order: preferred node first, then ascending
+/// SLIT distance. Missing SLIT entries sort last with stable node-id ordering.
 pub fn allocation_order(preferred:u32,output:&mut [u32])->usize {
  if !is_ready()||output.is_empty(){return 0}
  let s=unsafe{&*TOPOLOGY.0.get()};
@@ -245,27 +267,12 @@ pub fn allocation_order(preferred:u32,output:&mut [u32])->usize {
  for r in s.0.iter().take(s.1) {
   let node=r.node;
   let mut available=!r.hot_pluggable;
-  if !available { available=online.0.iter().take(online.1).any(|x|x.2==node); }
+  if !available {available=online.0.iter().take(online.1).any(|x|x.2==node);}
   if !available||output[..count].contains(&node){continue}
   if count==output.len(){break}
   output[count]=node;count+=1;
  }
- let distance_key=|node:u32|->u16 {
-  if node==preferred {return 0}
-  let matrix=unsafe{&*TOPOLOGY.0.get()};
-  if preferred as usize<matrix.3&&node as usize<matrix.3 {
-   matrix.2[preferred as usize][node as usize] as u16+1
-  } else {u16::MAX}
- };
- for i in 1..count {
-  let value=output[i];let key=distance_key(value);let mut j=i;
-  while j>0 {
-   let previous=output[j-1];let previous_key=distance_key(previous);
-   if previous_key<key||(previous_key==key&&previous<value){break}
-   output[j]=previous;j-=1;
-  }
-  output[j]=value;
- }
+ sort_allocation_nodes(output,count,preferred,&s.2,s.3);
  count
 }
 
@@ -273,6 +280,24 @@ pub fn distance(from:u32,to:u32)->Option<u8>{let s=unsafe{&*TOPOLOGY.0.get()};if
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slit_fallback_orders_preferred_then_nearest_and_unknown_last() {
+        let mut matrix=[[0u8;MAX_NODES];MAX_NODES];
+        matrix[0][0]=10;matrix[1][1]=10;matrix[2][2]=10;
+        matrix[0][1]=30;matrix[0][2]=20;
+        let mut nodes=[2,1,0,3];
+        sort_allocation_nodes(&mut nodes,4,0,&matrix,3);
+        assert_eq!(nodes,[0,2,1,3]);
+    }
+
+    #[test]
+    fn slit_fallback_is_stable_for_equal_and_missing_distances() {
+        let matrix=[[10u8;MAX_NODES];MAX_NODES];
+        let mut nodes=[5,3,4,2];
+        sort_allocation_nodes(&mut nodes,4,9,&matrix,0);
+        assert_eq!(nodes,[2,3,4,5]);
+    }
 
     #[test]
     fn unknown_ranges_have_no_default_node() {
