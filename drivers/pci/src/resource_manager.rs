@@ -178,7 +178,7 @@ pub fn encode_requirements_list(alternatives:&[RequirementAlternative],bus:u32,o
     if out.len()<size{return Err(ResourceError::Capacity)}
     out[..size].fill(0);
     out[0..4].copy_from_slice(&(size as u32).to_le_bytes());
-    out[4..8].copy_from_slice(&15i32.to_le_bytes()); // PNPBus
+    out[4..8].copy_from_slice(&5i32.to_le_bytes()); // PNPBus
     out[8..12].copy_from_slice(&bus.to_le_bytes());
     let mut cursor=32usize;
     for alt in alternatives{
