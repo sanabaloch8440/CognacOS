@@ -650,6 +650,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
                 unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE as usize); }
+                super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
                 return Ok(page);
             }
             i += 1;
@@ -667,6 +668,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
+                super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
                 return Ok(page);
             }
             i += 1;
@@ -704,6 +706,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                     count_atomic.store(count, core::sync::atomic::Ordering::Release);
                 }
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
+                super::pfn::register_allocation(candidate).map_err(|_| AllocError::OutOfMemory)?;
                 return Ok(candidate);
             }
             i += 1;
