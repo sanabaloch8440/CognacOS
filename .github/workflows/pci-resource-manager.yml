@@ -31,13 +31,14 @@ jobs:
       - name: Install pinned Rust and LLVM linker
         run: |
           rustup show active-toolchain
-          rustup target add x86_64-unknown-linux-gnu
+          rustup target add x86_64-unknown-linux-gnu x86_64-unknown-none
           sudo apt-get update
           sudo apt-get install -y clang lld
           bash scripts/build.sh toolchain
       - name: Check shared Windows x64 ABI
         run: cargo check --manifest-path shared/nt-abi/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
       - name: Check PCI library and WDM driver binary
-        run: cargo check --manifest-path drivers/pci/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
+        run: cargo check --manifest-path drivers/pci/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+          cargo check --manifest-path drivers/pci/Cargo.toml --target x86_64-unknown-none --bin pci
       - name: Test PCI resource allocation, bridge rebalance and IDE mapping
         run: cargo test --manifest-path drivers/pci/Cargo.toml --target x86_64-unknown-linux-gnu --lib
