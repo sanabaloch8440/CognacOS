@@ -136,7 +136,7 @@ fn main() {
     let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports|check-wdm-source-contracts|check-xstate-source-contracts|verify-dll-exports|verify-windows-exports|resolve-qemu-trace|qemu-ps2-smoke|reg-hive> [arguments]"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     match command.to_string_lossy().as_ref() {
-        "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
+        "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("ntoskrnl/src/abi/manifests/19041.json"))),
         "reg-hive" => {
             let input = args.next().map(PathBuf::from).unwrap_or_else(|| root.join("registry/drivers/CognacOS-Drivers.reg"));
             let output = args.next().map(PathBuf::from).unwrap_or_else(|| root.join("build/registry/SYSTEM"));

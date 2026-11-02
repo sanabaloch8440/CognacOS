@@ -108,18 +108,28 @@ pub fn schedule_boot_drivers_with_initialized(
     }
     let target=count-state[..count].iter().filter(|value|**value==1).count();
     if output.len()<target{return Err(ScheduleError::BufferTooSmall)}
-    let mut emitted=0;
-    while emitted<target{
-        let mut best:Option<usize>=None;
-        for i in 0..count{
-            if state[i]!=0{continue}
-            if !dependencies_ready(i,nodes,&state[..count],initialized)?{continue}
-            if best.map(|current|precedes(i,current,nodes,group_order,tag_orders)).unwrap_or(true){best=Some(i)}
+    let mut emitted=0usize;
+
+    // Windows completes the entire SERVICE_BOOT_START pass before beginning
+    // SERVICE_SYSTEM_START. A system-start candidate must never be pulled
+    // forward merely because a boot-start dependency is unresolved.
+    for phase in [0u32,1u32] {
+        let phase_target=nodes.iter().enumerate()
+            .filter(|(index,node)|state[*index]==0 && node.start_type==phase)
+            .count();
+        let phase_end=emitted+phase_target;
+        while emitted<phase_end {
+            let mut best:Option<usize>=None;
+            for i in 0..count{
+                if state[i]!=0 || nodes[i].start_type!=phase{continue}
+                if !dependencies_ready(i,nodes,&state[..count],initialized)?{continue}
+                if best.map(|current|precedes(i,current,nodes,group_order,tag_orders)).unwrap_or(true){best=Some(i)}
+            }
+            let Some(index)=best else{return Err(ScheduleError::Cycle)};
+            state[index]=1;
+            output[emitted]=index;
+            emitted+=1;
         }
-        let Some(index)=best else{return Err(ScheduleError::Cycle)};
-        state[index]=1;
-        output[emitted]=index;
-        emitted+=1;
     }
     Ok(emitted)
 }
@@ -136,6 +146,22 @@ mod tests{
         assert_eq!(schedule_boot_drivers(&nodes,&[],&[],&mut out,&mut state),Ok(2));
         assert_eq!(out,[0,1]);
     }
+    #[test]
+    fn all_boot_start_drivers_precede_system_start_drivers() {
+        let boot=[b'B' as u16]; let system=[b'S' as u16];
+        let early_group=[b'A' as u16]; let late_group=[b'Z' as u16];
+        let nodes=[
+            ServiceNode{name:&system,group:&early_group,tag:None,start_type:1,
+                service_dependencies:&[],group_dependencies:&[]},
+            ServiceNode{name:&boot,group:&late_group,tag:None,start_type:0,
+                service_dependencies:&[],group_dependencies:&[]},
+        ];
+        let groups:[&[u16];2]=[&early_group,&late_group];
+        let mut output=[usize::MAX;2]; let mut state=[0u8;2];
+        assert_eq!(schedule_boot_drivers(&nodes,&groups,&[],&mut output,&mut state),Ok(2));
+        assert_eq!(output,[1,0]);
+    }
+
     #[test]
     fn group_order_and_tag_order_break_ties(){
         let a=[65u16];let b=[66u16];let g1=[71u16];let g2=[72u16];

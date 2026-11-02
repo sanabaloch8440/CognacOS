@@ -124,21 +124,8 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
 
     for &service_index in &schedule[..scheduled] {
         let node = &nodes[service_index];
-        // The order pass establishes a topological sequence, but initialization
-        // can still fail. Never start a dependent after its service/group
-        // prerequisite failed at runtime.
-        if !dependencies_initialized(service_index, nodes, records, preinitialized_services) {
-            let failure = RegistryDriverLoadError::DependencyFailed;
-            records[service_index] = DriverInitRecord {
-                service_index, error_control: 1, status: DriverInitStatus::Failed(failure),
-            };
-            report.failed += 1;
-            // A dependency that was scheduled but did not initialize is a
-            // boot-phase failure. Continuing would allow later drivers to run
-            // against an incomplete kernel/device prerequisite graph.
-            report.fatal_service = Some(service_index);
-            break;
-        }
+        // Resolve ErrorControl before evaluating prerequisites or attempting
+        // DriverEntry. A dependency failure follows this service's own policy.
         let error_control = match crate::ntoskrnl::cm::service_config::query_service_details(
             hive, node.name, path_buffer,
         ) {
@@ -154,6 +141,23 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
                 break;
             }
         };
+
+        // The order pass establishes a topological sequence, but a prerequisite
+        // may still fail at runtime. Honor ErrorControl for the blocked service:
+        // Ignore/Normal continue; Severe/Critical stop before PnP enumeration.
+        if !dependencies_initialized(service_index, nodes, records, preinitialized_services) {
+            let failure = RegistryDriverLoadError::DependencyFailed;
+            records[service_index] = DriverInitRecord {
+                service_index, error_control, status: DriverInitStatus::Failed(failure),
+            };
+            report.failed += 1;
+            report.attempted += 1;
+            if abort_boot(error_control) {
+                report.fatal_service = Some(service_index);
+                break;
+            }
+            continue;
+        }
 
         let name = &mut service_names[service_index];
         name.fill(0);

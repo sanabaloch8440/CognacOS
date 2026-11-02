@@ -17,6 +17,7 @@ pub(crate) enum RegistryInitError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BootServiceMetadata {
+    pub start_type: u32,
     pub tag: Option<u32>,
     pub group: [u16; 128],
     pub group_len: usize,
@@ -45,7 +46,7 @@ static mut BOOT_DRIVER_SERVICE_NAMES: [[u16; 128]; MAX_BOOT_DRIVER_SERVICES] =
     [[0; 128]; MAX_BOOT_DRIVER_SERVICES];
 static mut BOOT_DRIVER_METADATA: [BootServiceMetadata; MAX_BOOT_DRIVER_SERVICES] =
     [BootServiceMetadata {
-        tag: None, group: [0; 128], group_len: 0,
+        start_type: 0, tag: None, group: [0; 128], group_len: 0,
         service_dependencies: [0; 512], service_dependencies_len: 0,
         group_dependencies: [0; 512], group_dependencies_len: 0,
     }; MAX_BOOT_DRIVER_SERVICES];
@@ -87,7 +88,7 @@ pub(crate) fn initialize_system_registry(
         )
     };
     metadata.fill(BootServiceMetadata {
-        tag: None, group: [0; 128], group_len: 0,
+        start_type: 0, tag: None, group: [0; 128], group_len: 0,
         service_dependencies: [0; 512], service_dependencies_len: 0,
         group_dependencies: [0; 512], group_dependencies_len: 0,
     });
@@ -98,6 +99,7 @@ pub(crate) fn initialize_system_registry(
             &hive, &names[index][..name_len], &mut image_path,
         ).map_err(|_| RegistryInitError::InvalidSystemHive)?;
         let target = &mut metadata[index];
+        target.start_type = details.base.start;
         target.tag = details.tag;
         target.group_len = details.group_len;
         target.group[..details.group_len].copy_from_slice(&details.group[..details.group_len]);
