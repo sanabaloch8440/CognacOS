@@ -24,6 +24,7 @@ static mut ACPI_BUS_RELATIONS:AcpiDeviceRelations=AcpiDeviceRelations{count:0,ob
 unsafe extern "win64" {
  fn IoCreateDevice(driver:*mut DRIVER_OBJECT,extension_size:u32,device_name:*mut cognacos_nt_abi::object::UNICODE_STRING,device_type:u32,characteristics:u32,exclusive:u8,output:*mut *mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn IoMarkBusEnumeratedPdo(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
+ fn IoPnPEnumerateBus(bus:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -38,12 +39,19 @@ IoCreateDevice:
 IoMarkBusEnumeratedPdo:
  jmp QWORD PTR [rip + __imp_io_IoMarkBusEnumeratedPdo]
 .size IoMarkBusEnumeratedPdo, .-IoMarkBusEnumeratedPdo
+.global IoPnPEnumerateBus
+.type IoPnPEnumerateBus,@function
+IoPnPEnumerateBus:
+ jmp QWORD PTR [rip + __imp_io_IoPnPEnumerateBus]
+.size IoPnPEnumerateBus, .-IoPnPEnumerateBus
 .section .data.imports.io,"aw",@progbits
 .p2align 3
 .global __imp_io_IoCreateDevice
 __imp_io_IoCreateDevice: .quad 0
 .global __imp_io_IoMarkBusEnumeratedPdo
 __imp_io_IoMarkBusEnumeratedPdo: .quad 0
+.global __imp_io_IoPnPEnumerateBus
+__imp_io_IoPnPEnumerateBus: .quad 0
 "#);
 
 #[derive(Clone,Copy)]
@@ -299,8 +307,10 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     }
     STATE.device_count.store(identity_count,Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
-    STATE.ready.store(true, Ordering::Release);
     object.driver_unload = Some(driver_unload);
+    STATE.ready.store(true, Ordering::Release);
+    let enumerate=unsafe{IoPnPEnumerateBus(bus_device)};
+    if enumerate!=STATUS_SUCCESS && enumerate!=STATUS_PENDING { return enumerate; }
     STATUS_SUCCESS
 }
 
