@@ -201,7 +201,7 @@ fn ahci_poll_clear(io: &mut Mmio<'_>, offset: usize, mask: u32) -> Result<(), i3
 fn ahci_wait_ready(io: &mut Mmio<'_>, base: usize) -> Result<(), i32> {
     for _ in 0..AHCI_POLL_BUDGET {
         let status = io.read32(base + PORT_TFD).map_err(|_| STATUS_DEVICE_NOT_READY)?;
-        if status & TFD_ERR != 0 { return Err(STATUS_IO_DEVICE_ERROR); }
+        if status & TFD_ERR != 0 { return Err(STATUS_UNSUCCESSFUL); }
         if status & (TFD_BSY | TFD_DRQ) == 0 { return Ok(()); }
         core::hint::spin_loop();
     }
@@ -261,7 +261,7 @@ unsafe fn ahci_issue(
         let status = io.read32(base + PORT_TFD).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         let interrupt = io.read32(base + PORT_IS).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         if status & TFD_ERR != 0 || interrupt & IS_TFES != 0 {
-            return Err(STATUS_IO_DEVICE_ERROR);
+            return Err(STATUS_UNSUCCESSFUL);
         }
         let ci = io.read32(base + PORT_CI).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         if ci & 1 == 0 { return Ok(()); }
