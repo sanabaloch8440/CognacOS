@@ -577,6 +577,12 @@ mod tests {
             }
             _=>panic!("method result was not a typed AML Buffer"),
         }
+        let mut resource=[0xa5;8];
+        assert_eq!(manager.read_method_buffer(handle,&dsdt,method,&gate,&mut runtime,&mut resource),Ok(4));
+        assert_eq!(&resource[..4],&[0x79,0x00,0,0]);
+        assert_eq!(resource[4],0xa5);
+        assert_eq!(manager.read_method_buffer(handle,&dsdt,method,&gate,&mut runtime,&mut [0;2]),
+            Err(TableError::BufferRead(crate::aml_buffer::BufferError::BufferTooLarge)));
         let blocked=TestGate{busy:core::sync::atomic::AtomicBool::new(true),entered:core::sync::atomic::AtomicBool::new(false)};
         assert_eq!(manager.evaluate_method_value(handle,&dsdt,method,&blocked,&mut runtime),Err(TableError::ExecutionBusy));
     }
