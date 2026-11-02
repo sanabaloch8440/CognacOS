@@ -58,11 +58,6 @@ impl ParsedAlternative {
     }
 }
 
-fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, RequirementsError> {
-    let s = bytes.get(offset..offset.checked_add(2).ok_or(RequirementsError::InvalidSize)?)
-        .ok_or(RequirementsError::Truncated)?;
-    Ok(u16::from_le_bytes([s[0], s[1]]))
-}
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, RequirementsError> {
     let s = bytes.get(offset..offset.checked_add(4).ok_or(RequirementsError::InvalidSize)?)
         .ok_or(RequirementsError::Truncated)?;
