@@ -785,3 +785,25 @@ mod config_transaction_lock_tests {
         assert!(try_acquire_config_transaction().is_ok());
     }
 }
+
+
+/// Safe resource-operation entry points. These wrappers prevent callers from
+/// accidentally interleaving BAR sizing/programming with another PCI config
+/// transaction on another function.
+pub fn size_bars_exclusive<C: resources::ConfigAccess>(
+    config: &mut C,
+    header_type: u8,
+    output: &mut [Option<resources::BarRequirement>; resources::MAX_BARS],
+) -> Result<usize, resources::ResourceError> {
+    let _guard = try_acquire_config_transaction().map_err(|_| resources::ResourceError::Config)?;
+    resources::size_bars(config, header_type, output)
+}
+
+pub fn program_assignments_exclusive<C: resources::ConfigAccess>(
+    config: &mut C,
+    header_type: u8,
+    plan: &resource_manager::AllocationPlan,
+) -> Result<(), resources::ResourceError> {
+    let _guard = try_acquire_config_transaction().map_err(|_| resources::ResourceError::Config)?;
+    resource_manager::program_assignments(config, header_type, plan)
+}
