@@ -32,7 +32,6 @@ pub fn allocate_all(
 )->Result<(),ResourceError>{
     if count>MAX_ASSIGNMENTS||apertures.is_empty(){return Err(ResourceError::NoWindow)}
     let mut plan=AllocationPlan::empty();
-    let mut staged=[None;MAX_ASSIGNMENTS];
     for requirement in requirements.iter().take(count).flatten(){
         if requirement.length==0||requirement.alignment==0||!requirement.alignment.is_power_of_two(){return Err(ResourceError::InvalidAlignment)}
         let mut selected=None;
@@ -57,10 +56,10 @@ pub fn allocate_all(
             if selected.is_some(){break}
         }
         let base=selected.ok_or(ResourceError::NoSpace)?;
-        staged[plan.count]=Some(BarAssignment{index:requirement.index,kind:requirement.kind,base,length:requirement.length,prefetchable:requirement.prefetchable});
-        plan.assignments[plan.count]=staged[plan.count];
+        plan.assignments[plan.count]=Some(BarAssignment{index:requirement.index,kind:requirement.kind,base,length:requirement.length,prefetchable:requirement.prefetchable});
         plan.count+=1;
     }
+    if plan.count!=count{return Err(ResourceError::InvalidBar)}
     *output=plan;
     Ok(())
 }
@@ -136,9 +135,9 @@ pub fn program_assignments<C:ConfigAccess>(config:&mut C,header_type:u8,plan:&Al
 pub fn encode_requirements_alternative(reqs:&[Option<BarRequirement>;MAX_ASSIGNMENTS],count:usize,bus:u32,out:&mut[u8])->Result<usize,ResourceError>{
     let size=40usize.checked_add(count.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE).ok_or(ResourceError::AddressOverflow)?).ok_or(ResourceError::AddressOverflow)?;
     if count>MAX_ASSIGNMENTS||out.len()<size{return Err(ResourceError::Capacity)}
-    out[..size].fill(0);out[0..4].copy_from_slice(&(size as u32).to_le_bytes());out[4..8].copy_from_slice(&(-1i32).to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());
+    out[..size].fill(0);out[0..4].copy_from_slice(&(size as u32).to_le_bytes());out[4..8].copy_from_slice(&15i32.to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());
     out[32..34].copy_from_slice(&1u16.to_le_bytes());out[34..36].copy_from_slice(&1u16.to_le_bytes());out[36..40].copy_from_slice(&(count as u32).to_le_bytes());
-    let mut n=0;for r in reqs.iter().take(count).flatten(){let p=40+n*IO_RESOURCE_DESCRIPTOR_SIZE;out[p]=0;out[p+1]=if r.kind==BarKind::Io{1}else{3};out[p+2]=1;out[p+4..p+6].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());out[p+8..p+12].copy_from_slice(&(r.length as u32).to_le_bytes());out[p+12..p+16].copy_from_slice(&(r.alignment as u32).to_le_bytes());out[p+24..p+32].copy_from_slice(&u64::MAX.to_le_bytes());n+=1}
+    let mut n=0;for r in reqs.iter().take(count).flatten(){let p=40+n*IO_RESOURCE_DESCRIPTOR_SIZE;out[p]=0;out[p+1]=if r.kind==BarKind::Io{1}else{3};out[p+2]=1;out[p+4..p+6].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());out[p+8..p+12].copy_from_slice(&u32::try_from(r.length).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());out[p+12..p+16].copy_from_slice(&u32::try_from(r.alignment).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());out[p+24..p+32].copy_from_slice(&u64::MAX.to_le_bytes());n+=1}
     if n!=count{return Err(ResourceError::InvalidBar)}Ok(size)
 }
 
@@ -146,7 +145,7 @@ pub fn encode_requirements_alternative(reqs:&[Option<BarRequirement>;MAX_ASSIGNM
 pub fn encode_cm_resource_list(resources:&[Option<PublishedResource>;MAX_ASSIGNMENTS],count:usize,bus:u32,translated:bool,out:&mut[u8])->Result<usize,ResourceError>{
     let size=20usize.checked_add(count.checked_mul(CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).ok_or(ResourceError::AddressOverflow)?).ok_or(ResourceError::AddressOverflow)?;
     if count>MAX_ASSIGNMENTS||out.len()<size{return Err(ResourceError::Capacity)}
-    out[..size].fill(0);out[0..4].copy_from_slice(&1u32.to_le_bytes());out[4..8].copy_from_slice(&(-1i32).to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());out[12..14].copy_from_slice(&1u16.to_le_bytes());out[14..16].copy_from_slice(&1u16.to_le_bytes());out[16..20].copy_from_slice(&(count as u32).to_le_bytes());
+    out[..size].fill(0);out[0..4].copy_from_slice(&1u32.to_le_bytes());out[4..8].copy_from_slice(&15i32.to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());out[12..14].copy_from_slice(&1u16.to_le_bytes());out[14..16].copy_from_slice(&1u16.to_le_bytes());out[16..20].copy_from_slice(&(count as u32).to_le_bytes());
     let mut n=0;for r in resources.iter().take(count).flatten(){let p=20+n*CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE;out[p]=if r.kind==BarKind::Io{1}else{3};out[p+1]=1;out[p+2..p+4].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());let start=if translated{r.translated_start}else{r.raw_start};out[p+4..p+12].copy_from_slice(&start.to_le_bytes());out[p+12..p+16].copy_from_slice(&r.length.to_le_bytes());n+=1}
     if n!=count{return Err(ResourceError::InvalidBar)}Ok(size)
 }
