@@ -81,6 +81,17 @@ impl Machine{
   Ok(None)
  }
 }
+
+/// Evaluate one bounded TermArg without executing a method body. Returns the
+/// value and number of bytes consumed, allowing typed object decoders to
+/// evaluate BufferSize expressions without guessing their encoded length.
+pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
+ let mut machine=Machine{locals:[0;8],args:[0;7],steps:0};
+ let mut reader=Reader{bytes,pos:0,end:bytes.len()};
+ let value=machine.term(&mut reader)?;
+ Ok((value,reader.pos))
+}
+
 /// Execute one loaded method against the exact AML definition-block byte slice.
 /// Only integer arguments and scalar operations are currently supported.
 pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64])->Result<AmlValue,ExecError>{
