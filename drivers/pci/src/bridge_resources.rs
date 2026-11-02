@@ -171,3 +171,84 @@ mod tests {
         assert_eq!(intersect_path(&host,&[bridge],&mut out),Err(BridgeWindowError::NoIntersection));
     }
 }
+
+
+pub const MAX_REBALANCE_BRIDGES:usize=64;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BridgeRebalanceEntry {
+    /// Parent index in this same array. Parents must precede children; roots
+    /// use None. This makes ordering explicit and prevents cyclic topologies.
+    pub parent:Option<u8>,
+    pub update:BridgeWindowUpdate,
+}
+impl BridgeRebalanceEntry {
+    pub const EMPTY:Self=Self{parent:None,update:BridgeWindowUpdate::empty()};
+}
+
+/// Commit a complete bridge hierarchy parent-first. Before the first write,
+/// capture every affected register on every bridge. If any bridge fails,
+/// restore all already-committed bridges child-first. A rollback failure
+/// leaves that bridge's decode and bus mastering disabled via
+/// apply_bridge_update's fail-closed behavior.
+pub fn apply_hierarchy<C:ConfigAccess>(
+    configs:&mut [C],
+    entries:&[BridgeRebalanceEntry],
+)->Result<(),BridgeWindowError>{
+    if entries.len()!=configs.len()||entries.len()>MAX_REBALANCE_BRIDGES{return Err(BridgeWindowError::Capacity)}
+    let mut snapshots=[BridgeWindowUpdate::empty();MAX_REBALANCE_BRIDGES];
+    for (i,e) in entries.iter().enumerate(){
+        if e.update.count>MAX_BRIDGE_WINDOW_REGISTERS{return Err(BridgeWindowError::Capacity)}
+        if let Some(parent)=e.parent {
+            let p=parent as usize;
+            if p>=i{return Err(BridgeWindowError::InvalidEncoding)}
+        }
+        for r in e.update.registers.iter().take(e.update.count).flatten(){
+            if snapshots[i].push(r.offset,configs[i].read_u32(r.offset).map_err(|_|BridgeWindowError::Config)?).is_err(){
+                return Err(BridgeWindowError::InvalidEncoding)
+            }
+        }
+    }
+    let mut committed=0usize;
+    while committed<entries.len(){
+        if let Err(error)=apply_bridge_update(&mut configs[committed],&entries[committed].update){
+            let mut rollback_ok=true;
+            for i in (0..committed).rev(){
+                if apply_bridge_update(&mut configs[i],&snapshots[i]).is_err(){rollback_ok=false}
+            }
+            return Err(if rollback_ok{error}else{BridgeWindowError::InvalidEncoding})
+        }
+        committed+=1;
+    }
+    Ok(())
+}
+
+/// Build a bridge's forwarding window from all descendant BAR assignments.
+/// Ranges are rounded out to the bridge's 1-MiB memory and 4-KiB I/O
+/// granularity. The caller must separately enforce host/root aperture bounds.
+pub fn aggregate_descendant_ranges(
+    assignments:&[crate::resource_manager::BarAssignment],
+    output:&mut BridgeWindows,
+)->Result<(),BridgeWindowError>{
+    let mut io:Option<(u64,u64)>=None;
+    let mut mem:Option<(u64,u64)>=None;
+    let mut pref:Option<(u64,u64)>=None;
+    for a in assignments{
+        let end=a.base.checked_add(a.length).ok_or(BridgeWindowError::Overflow)?;
+        let slot=match a.kind{
+            BarKind::Io=>&mut io,
+            BarKind::Memory32 if !a.prefetchable=>&mut mem,
+            BarKind::Memory32|BarKind::Memory64=>&mut pref,
+        };
+        *slot=Some(match *slot{None=>(a.base,end),Some((lo,hi))=>(lo.min(a.base),hi.max(end))});
+    }
+    let round=|range:Option<(u64,u64)>,gran:u64,kind:BarKind,prefetchable:bool|->Result<Option<Aperture>,BridgeWindowError>{
+        let Some((lo,hi))=range else{return Ok(None)};
+        let start=lo&!(gran-1);
+        let end=hi.checked_add(gran-1).ok_or(BridgeWindowError::Overflow)?&!(gran-1);
+        Ok(Some(Aperture{start,length:end.checked_sub(start).ok_or(BridgeWindowError::Overflow)?,kind,prefetchable}))
+    };
+    output.io=round(io,0x1000,BarKind::Io,false)?;
+    output.memory=round(mem,0x10_0000,BarKind::Memory32,false)?;
+    output.prefetchable=round(pref,0x10_0000,BarKind::Memory64,true)?;
+    Ok(())
+}
