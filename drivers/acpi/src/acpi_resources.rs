@@ -280,3 +280,11 @@ mod dependent_requirement_tests {
         assert_eq!(parse_resource_requirements_template(&[0x31, 1, 0x79, 0]), Err(ResourceError::InvalidDescriptor));
     }
 }
+
+
+#[cfg(test)] mod stability_21_end_tag_checksum {
+ use super::*;
+ #[test] fn rejects_bad_nonzero_end_tag_checksum() {
+  assert_eq!(parse_resource_template(&[0x79, 1]), Err(ResourceError::InvalidDescriptor));
+ }
+}
