@@ -92,7 +92,9 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
             pos=pos.checked_add(consumed).ok_or(ObjectError::Truncated)?;
             let declared=usize::try_from(declared).map_err(|_|ObjectError::ValueTooLarge)?;
             if declared>MAX_AML_BYTES{return Err(ObjectError::ValueTooLarge)}
-            let available=end.saturating_sub(pos);let copy=core::cmp::min(declared,available);
+            let available=end.saturating_sub(pos);
+            if available>declared{return Err(ObjectError::MalformedObject)}
+            let copy=available;
             value.kind=AmlValueKind::Buffer;value.bytes[..copy].copy_from_slice(&bytes[pos..pos+copy]);
             value.byte_length=declared as u16;pos=end;
         }
