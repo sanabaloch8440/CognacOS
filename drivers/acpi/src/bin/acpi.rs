@@ -355,13 +355,30 @@ unsafe fn query_pdo_resources(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->R
   Ok(_)=>Ok(output as usize),Err(_)=>{unsafe{ExFreePoolWithTag(output,ACPI_POOL_TAG)};Err(STATUS_INVALID_PARAMETER)}
  }
 }
+fn read_pdo_resource_alternatives(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->Result<acpi::acpi_resources::ResourceAlternatives,i32>{
+ if device.is_null(){return Err(STATUS_INVALID_PARAMETER)}
+ let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+ if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{return Err(STATUS_INVALID_PARAMETER)}
+ let ext=unsafe{&*ext};let handle=ext.table.ok_or(STATUS_INVALID_PARAMETER)?;
+ if ext.aml_bytes.is_null()||ext.aml_length<36{return Err(STATUS_INVALID_PARAMETER)}
+ let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+ let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};let gate=unsafe{&*STATE.aml_barrier.get()};
+ let resource_node=manager.namespace().find_child(ext.node,*b"_PRS").ok_or(STATUS_NOT_SUPPORTED)?;
+ let scratch=unsafe{ExAllocatePoolWithTag(PAGED_POOL,65536,ACPI_POOL_TAG)};
+ if scratch.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+ let length=match manager.read_named_buffer(handle,aml,resource_node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
+  Ok(n)=>n,Err(_)=>{unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};return Err(STATUS_NOT_SUPPORTED)}
+ };
+ let parsed=acpi::acpi_resources::parse_resource_requirements_template(unsafe{core::slice::from_raw_parts(scratch,length)});
+ unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};
+ parsed.map_err(|_|STATUS_NOT_SUPPORTED)
+}
 unsafe fn query_pdo_resource_requirements(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->Result<usize,i32>{
- let resources=read_pdo_resource_template(device,*b"_PRS")?;
- let size=acpi::acpi_wdm_requirements::required_size(&resources).map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
- if acpi::acpi_wdm_requirements::descriptor_count(&resources).map_err(|_|STATUS_NOT_SUPPORTED)?==0{return Err(STATUS_NOT_SUPPORTED)}
+ let resources=read_pdo_resource_alternatives(device)?;
+ let size=acpi::acpi_wdm_requirements::required_size_alternatives(&resources).map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
  let output=unsafe{ExAllocatePoolWithTag(PAGED_POOL,size,ACPI_POOL_TAG)};
  if output.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
- match unsafe{acpi::acpi_wdm_requirements::serialize(&resources,output,size)}{
+ match unsafe{acpi::acpi_wdm_requirements::serialize_alternatives(&resources,output,size)}{
   Ok(_)=>Ok(output as usize),Err(_)=>{unsafe{ExFreePoolWithTag(output,ACPI_POOL_TAG)};Err(STATUS_INVALID_PARAMETER)}
  }
 }
