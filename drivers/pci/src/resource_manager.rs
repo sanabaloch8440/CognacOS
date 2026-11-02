@@ -43,7 +43,7 @@ pub fn allocate_all(
                 let candidate_end=candidate.checked_add(requirement.length).ok_or(ResourceError::AddressOverflow)?;
                 if candidate_end>end||(requirement.kind==BarKind::Memory32&&candidate_end>(1u64<<32)){break}
                 let mut conflict=None;
-                for range in occupied.iter().copied().chain(staged[..plan.count].iter().flatten().map(|a:&BarAssignment|OccupiedRange{start:a.base,length:a.length,kind:a.kind})){
+                for range in occupied.iter().copied().chain(plan.assignments[..plan.count].iter().flatten().map(|a:&BarAssignment|OccupiedRange{start:a.base,length:a.length,kind:a.kind})){
                     if range.kind!=requirement.kind{continue}
                     let range_end=range.start.checked_add(range.length).ok_or(ResourceError::AddressOverflow)?;
                     if candidate<range_end&&range.start<candidate_end{conflict=Some(conflict.map_or(range_end,|old:u64|old.max(range_end)))}
