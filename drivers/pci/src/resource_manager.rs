@@ -47,8 +47,10 @@ pub fn allocate_all(
         let mut selected=None;
         for aperture in apertures.iter().copied(){
             let kind_compatible = aperture.kind == requirement.kind
-                || (requirement.kind == BarKind::Memory32 && requirement.prefetchable
-                    && aperture.kind == BarKind::Memory64 && aperture.prefetchable);
+                || (requirement.kind == BarKind::Memory32 && aperture.kind == BarKind::Memory64
+                    && aperture.prefetchable == requirement.prefetchable)
+                || (requirement.kind == BarKind::Memory64 && aperture.kind == BarKind::Memory32
+                    && !requirement.prefetchable && !aperture.prefetchable);
             if !kind_compatible || (requirement.kind != BarKind::Io && aperture.prefetchable != requirement.prefetchable) { continue }
             let end=aperture.start.checked_add(aperture.length).ok_or(ResourceError::AddressOverflow)?;
             let mut candidate=aperture.start.checked_add(requirement.alignment-1).ok_or(ResourceError::AddressOverflow)?&!(requirement.alignment-1);
