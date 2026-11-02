@@ -836,7 +836,7 @@ mod tests {
         assert_eq!(unsafe {
             cc_copy_read(&mut file, &zero_offset, 0, 1, core::ptr::null_mut(), &mut iosb)
         }, 1);
-        assert_eq!(unsafe { core::ptr::read_unaligned(iosb.cast::<u8>().cast::<i32>()) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(iosb).cast::<i32>()) }, STATUS_SUCCESS);
         assert_eq!(iosb.information, 0);
 
         let negative_offset = -1i64;
