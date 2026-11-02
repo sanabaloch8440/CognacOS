@@ -26,7 +26,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: cognacos-${{ github.workflow }}-${{ github.ref }}
+  # One queue for this workflow across branches and PR refs: a newer run
+  # cancels any in-progress or pending older run to avoid wasting CI minutes.
+  group: cognacos-build-uefi
   cancel-in-progress: true
 
 defaults:
@@ -54,9 +56,7 @@ jobs:
           set -euo pipefail
           python_files="$(find . -type f -name '*.py' -not -path './.git/*' -print)"
           if [[ -n "$python_files" ]]; then
-            printf 'Python tooling remains in the repository:
-%s
-' "$python_files" >&2
+            printf 'Python tooling remains in the repository:\n%s\n' "$python_files" >&2
             exit 1
           fi
           echo "No Python source files remain; repository tooling is Rust-native."
