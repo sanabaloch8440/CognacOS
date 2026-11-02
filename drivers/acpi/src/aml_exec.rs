@@ -5,7 +5,7 @@
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -31,10 +31,27 @@ impl Machine{
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
    0x60..=0x67=>Ok(self.locals[(op-0x60)as usize]),0x68..=0x6e=>Ok(self.args[(op-0x68)as usize]),
-   0x72|0x74|0x77|0x79|0x7a|0x7b|0x7d|0x7f=>{
+   0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f=>{
     let a=self.term(r)?;let b=self.term(r)?;
-    let v=match op{0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),0x79=>a.wrapping_shl((b&63)as u32),0x7a=>a.wrapping_shr((b&63)as u32),0x7b=>a&b,0x7d=>a|b,_=>a^b};
+    let v=match op{
+     0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),
+     0x79=>if b>=64{0}else{a<<b},0x7a=>if b>=64{0}else{a>>b},
+     0x7b=>a&b,0x7c=>!(a&b),0x7d=>a|b,0x7e=>!(a|b),_=>a^b
+    };
     let t=Self::target(r)?;self.store(t,v);Ok(v)
+   }
+   0x75|0x76=>{
+    let t=Self::target(r)?;
+    let current=match t{Target::Null=>0,Target::Local(i)=>self.locals[i],Target::Arg(i)=>self.args[i]};
+    let value=if op==0x75{current.wrapping_add(1)}else{current.wrapping_sub(1)};
+    self.store(t,value);Ok(value)
+   }
+   0x78=>{
+    let dividend=self.term(r)?;let divisor=self.term(r)?;
+    if divisor==0{return Err(ExecError::DivideByZero)}
+    let quotient=dividend/divisor;let remainder=dividend%divisor;
+    let q=Self::target(r)?;let rem=Self::target(r)?;
+    self.store(q,quotient);self.store(rem,remainder);Ok(quotient)
    }
    0x80=>{let v=!self.term(r)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},
    0x90=>{let a=self.term(r)?;let b=self.term(r)?;Ok((a!=0&&b!=0)as u64)},
@@ -117,6 +134,27 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[1]).unwrap(),AmlValue::Integer(7));
   assert_eq!(execute_method(&aml,&ns,id,&[0]).unwrap(),AmlValue::Integer(9));
+ }
+ #[test]fn executes_divide_and_stores_quotient_and_remainder(){
+  // Return(Divide(ByteConst(23), ByteConst(5), Local0, Local1))
+  let aml=[0x14,0x12,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,23,0x0a,5,0x60,0x61];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(4));
+ }
+ #[test]fn rejects_divide_by_zero(){
+  let aml=[0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,1,0x00,0x60,0x61];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::DivideByZero));
+ }
+ #[test]fn shift_counts_at_or_above_integer_width_yield_zero(){
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x79,0x0a,1,0x0a,64,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
+ }
+ #[test]fn executes_increment_decrement_and_bitwise_complements(){
+  let aml=[0x14,0x12,b'T',b'E',b'S',b'T',0,0x70,0x0a,7,0x60,0x75,0x60,0x76,0x60,0xa4,0x7e,0x60,0x0a,0];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(!7u64));
  }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
