@@ -3,6 +3,7 @@
 //! occurs here. Package elements reference other arena entries by index.
 #![no_std]
 use crate::aml::{decode_package_length,AmlError,AmlNamespace,AmlObjectType};
+use crate::aml_exec::evaluate_term_argument;
 
 pub const MAX_AML_VALUES:usize=128;
 pub const MAX_AML_BYTES:usize=256;
@@ -24,7 +25,7 @@ impl AmlRuntimeValue {
     pub const EMPTY:Self=Self{kind:AmlValueKind::Empty,integer:0,bytes:[0;MAX_AML_BYTES],byte_length:0,elements:[0;MAX_PACKAGE_ELEMENTS],element_count:0};
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ObjectError { Truncated,BadPackageLength,UnsupportedOpcode,ValueArenaFull,ValueTooLarge,TooManyElements,MalformedObject }
+pub enum ObjectError { Truncated,BadPackageLength,UnsupportedOpcode,InvalidTermArgument,ValueArenaFull,ValueTooLarge,TooManyElements,MalformedObject }
 impl From<AmlError> for ObjectError { fn from(e:AmlError)->Self { match e { AmlError::Truncated=>Self::Truncated,_=>Self::BadPackageLength } } }
 
 pub struct AmlObjectArena { pub values:[AmlRuntimeValue;MAX_AML_VALUES],pub count:usize }
@@ -87,7 +88,9 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
         }
         0x11=>{
             let (body,end)=package_end(bytes,pos,limit)?;pos=body;
-            let declared=integer_term(bytes,&mut pos,end)? as usize;
+            let (declared,consumed)=evaluate_term_argument(&bytes[pos..end]).map_err(|_|ObjectError::InvalidTermArgument)?;
+            pos=pos.checked_add(consumed).ok_or(ObjectError::Truncated)?;
+            let declared=usize::try_from(declared).map_err(|_|ObjectError::ValueTooLarge)?;
             if declared>MAX_AML_BYTES{return Err(ObjectError::ValueTooLarge)}
             let available=end.saturating_sub(pos);let copy=core::cmp::min(declared,available);
             value.kind=AmlValueKind::Buffer;value.bytes[..copy].copy_from_slice(&bytes[pos..pos+copy]);
