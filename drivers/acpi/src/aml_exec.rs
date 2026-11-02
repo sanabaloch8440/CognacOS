@@ -2,10 +2,10 @@
 //! This constrained interpreter executes a safe scalar subset and fails closed
 //! on unsupported AML terms and address-space access.
 #![no_std]
-use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
+use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -20,8 +20,8 @@ impl<'a> Reader<'a>{
 enum Target{Null,Local(usize),Arg(usize)}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(u64),Break,ContinueLoop}
-struct Machine{locals:[u64;8],args:[u64;7],steps:usize}
-impl Machine{
+struct Machine<'a>{locals:[u64;8],args:[u64;7],steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
+impl<'a> Machine<'a>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn target(r:&mut Reader<'_>)->Result<Target,ExecError>{let op=r.byte()?;match op{0x00=>Ok(Target::Null),0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),_=>Err(ExecError::BadTarget)}}
  fn store(&mut self,t:Target,v:u64){match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=v,Target::Arg(i)=>self.args[i]=v}}
@@ -68,6 +68,31 @@ impl Machine{
    0x91=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0||b!=0)as u64)},
    0x92=>Ok((self.term_depth(r,depth+1)?==0)as u64),
    0x93|0x94|0x95=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok(match op{0x93=>(a==b)as u64,0x94=>(a>b)as u64,_=>(a<b)as u64})}
+   0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
+    r.pos-=1;
+    let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;
+    r.pos=next;
+    let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
+    let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;
+    let entry=self.namespace.nodes.get(canonical as usize).filter(|_|canonical as usize<self.namespace.count).ok_or(ExecError::NameNotFound)?;
+    match entry.object_type {
+     AmlObjectType::Method=>{
+      let count=(entry.method_flags&7) as usize;
+      let mut call_args=[0u64;7];
+      for slot in call_args.iter_mut().take(count){*slot=self.term(r)?;}
+      execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1)
+     }
+     AmlObjectType::Name=>{
+      let start=entry.body_start as usize;
+      let end=start.checked_add(entry.body_length as usize).ok_or(ExecError::InvalidMethod)?;
+      if end>self.aml.len(){return Err(ExecError::InvalidMethod)}
+      let (value,consumed)=evaluate_term_argument(&self.aml[start..end])?;
+      if consumed!=end-start{return Err(ExecError::NonIntegerName)}
+      Ok(value)
+     }
+     _=>Err(ExecError::NonIntegerName),
+    }
+   }
    _=>Err(ExecError::UnsupportedOpcode)
   }
  }
@@ -116,7 +141,8 @@ impl Machine{
 /// value and number of bytes consumed, allowing typed object decoders to
 /// evaluate BufferSize expressions without guessing their encoded length.
 pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
- let mut machine=Machine{locals:[0;8],args:[0;7],steps:0};
+ let namespace=AmlNamespace::new();
+ let mut machine=Machine{locals:[0;8],args:[0;7],steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
  let mut reader=Reader{bytes,pos:0,end:bytes.len()};
  let value=machine.term(&mut reader)?;
  Ok((value,reader.pos))
@@ -124,7 +150,10 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 
 /// Execute one loaded method against the exact AML definition-block byte slice.
 /// Only integer arguments and scalar operations are currently supported.
-pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64])->Result<AmlValue,ExecError>{
+const MAX_METHOD_CALL_DEPTH:u8=16;
+
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64],call_depth:u8)->Result<u64,ExecError>{
+ if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
  let node=namespace.nodes.get(index).ok_or(ExecError::InvalidMethod)?;
@@ -132,8 +161,14 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
  let expected=(node.method_flags&7)as usize;if args.len()!=expected||args.len()>7{return Err(ExecError::BadArgumentCount)}
  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
  if end>aml.len(){return Err(ExecError::InvalidMethod)}
- let mut m=Machine{locals:[0;8],args:[0;7],steps:0};m.args[..args.len()].copy_from_slice(args);
- let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(AmlValue::Integer(value))
+ let mut m=Machine{locals:[0;8],args:[0;7],steps:0,aml,namespace,scope:node.parent,call_depth};m.args[..args.len()].copy_from_slice(args);
+ let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(value)
+}
+
+/// Execute a loaded method with a fresh AML frame. Nested invocations receive
+/// independent Local/Arg storage and share only the bounded per-frame budget.
+pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64])->Result<AmlValue,ExecError>{
+ execute_method_inner(aml,namespace,method_index,args,0).map(AmlValue::Integer)
 }
 #[cfg(test)]
 mod tests{
