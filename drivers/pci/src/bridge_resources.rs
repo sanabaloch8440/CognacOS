@@ -353,16 +353,16 @@ pub fn apply_hierarchy_atomic<C:ConfigAccess>(
 #[cfg(test)]
 mod atomic_hierarchy_tests {
     use super::*;
-    struct Fake { regs:[u32;64], fail_write:Option<u16> }
+    struct Fake { regs:[u32;64], fail_write:Option<u16>, failed:bool }
     impl ConfigAccess for Fake {
         fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{Ok(self.regs[o as usize/4] as u16)}
         fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{self.regs[o as usize/4]=(self.regs[o as usize/4]&0xffff_0000)|v as u32;Ok(())}
         fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}
-        fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{if self.fail_write==Some(o){return Err(ResourceError::Config)}self.regs[o as usize/4]=v;Ok(())}
+        fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{if self.fail_write==Some(o)&&!self.failed{self.failed=true;return Err(ResourceError::Config)}self.regs[o as usize/4]=v;Ok(())}
     }
     #[test]
     fn hierarchy_failure_rolls_back_all_bridges(){
-        let mut a=Fake{regs:[0;64],fail_write:None};let mut b=Fake{regs:[0;64],fail_write:Some(BRIDGE_MEMORY_BASE_LIMIT)};
+        let mut a=Fake{regs:[0;64],fail_write:None,failed:false};let mut b=Fake{regs:[0;64],fail_write:Some(BRIDGE_MEMORY_BASE_LIMIT),failed:false};
         a.regs[1]=3;b.regs[1]=3;a.regs[BRIDGE_MEMORY_BASE_LIMIT as usize/4]=0x1111;b.regs[BRIDGE_MEMORY_BASE_LIMIT as usize/4]=0x2222;
         let update=|value|{let mut u=BridgeWindowUpdate::empty();u.push(BRIDGE_MEMORY_BASE_LIMIT,value).unwrap();u};
         let entries=[BridgeRebalanceEntry{parent:None,update:update(0xaaaa)},BridgeRebalanceEntry{parent:Some(0),update:update(0xbbbb)}];
