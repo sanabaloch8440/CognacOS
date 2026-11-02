@@ -72,11 +72,15 @@ pub fn intersect_path(host:&[Aperture],ancestors:&[BridgeWindows],out:&mut[Apert
         for current in staged[..count].iter().copied(){
             let candidate=match current.kind{
                 BarKind::Io=>bridge.io,
+                BarKind::Memory32 if current.prefetchable=>bridge.prefetchable,
                 BarKind::Memory32=>bridge.memory,
                 BarKind::Memory64=>bridge.prefetchable,
             };
             let Some(window)=candidate else{continue};
-            if current.kind!=window.kind || (current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
+            let kind_compatible = current.kind == window.kind
+                || (current.kind == BarKind::Memory32 && current.prefetchable
+                    && window.kind == BarKind::Memory64 && window.prefetchable);
+            if !kind_compatible || (current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
             let a_end=current.start.checked_add(current.length).ok_or(BridgeWindowError::Overflow)?;
             let b_end=window.start.checked_add(window.length).ok_or(BridgeWindowError::Overflow)?;
             let start=current.start.max(window.start);let end=a_end.min(b_end);
@@ -251,4 +255,101 @@ pub fn aggregate_descendant_ranges(
     output.memory=round(mem,0x10_0000,BarKind::Memory32,false)?;
     output.prefetchable=round(pref,0x10_0000,BarKind::Memory64,true)?;
     Ok(())
+}
+
+
+/// Commit a whole bridge hierarchy as one decode-disabled transaction.
+/// Unlike applying each bridge independently, this keeps every affected bridge
+///'s I/O and memory decode disabled until all parent and child windows have
+/// been programmed successfully. Any failure restores every saved register
+/// image; rollback failure leaves all bridges disabled and bus mastering off.
+pub fn apply_hierarchy_atomic<C:ConfigAccess>(
+    configs:&mut [C],
+    entries:&[BridgeRebalanceEntry],
+)->Result<(),BridgeWindowError>{
+    if entries.len()!=configs.len()||entries.len()>MAX_REBALANCE_BRIDGES{return Err(BridgeWindowError::Capacity)}
+    let mut snapshots=[BridgeWindowUpdate::empty();MAX_REBALANCE_BRIDGES];
+    let mut commands=[0u16;MAX_REBALANCE_BRIDGES];
+    for (i,e) in entries.iter().enumerate(){
+        if e.update.count>MAX_BRIDGE_WINDOW_REGISTERS{return Err(BridgeWindowError::Capacity)}
+        if let Some(parent)=e.parent {if parent as usize>=i{return Err(BridgeWindowError::InvalidEncoding)}}
+        commands[i]=configs[i].read_u16(PCI_COMMAND).map_err(|_|BridgeWindowError::Config)?;
+        for r in e.update.registers.iter().take(e.update.count).flatten(){
+            if snapshots[i].push(r.offset,configs[i].read_u32(r.offset).map_err(|_|BridgeWindowError::Config)?).is_err(){
+                return Err(BridgeWindowError::InvalidEncoding)
+            }
+        }
+    }
+    let disable_all=|configs:&mut[C]|->bool{
+        for (i,c) in configs.iter_mut().enumerate(){
+            if c.write_u16(PCI_COMMAND,commands[i]&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER)).is_err(){return false}
+        }
+        true
+    };
+    let mut disabled=0usize;
+    for i in 0..configs.len(){
+        if configs[i].write_u16(PCI_COMMAND,commands[i]&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER)).is_err(){
+            let mut ok=true;
+            for j in (0..disabled).rev(){if configs[j].write_u16(PCI_COMMAND,commands[j]&!PCI_COMMAND_BUS_MASTER).is_err(){ok=false}}
+            return Err(if ok{BridgeWindowError::Config}else{BridgeWindowError::InvalidEncoding})
+        }
+        disabled+=1;
+    }
+    let mut failed=false;
+    'commit: for i in 0..entries.len(){
+        for r in entries[i].update.registers.iter().take(entries[i].update.count).flatten(){
+            if configs[i].write_u32(r.offset,r.value).is_err(){failed=true;break 'commit}
+        }
+    }
+    if failed {
+        let mut rollback_ok=true;
+        for i in (0..entries.len()).rev(){
+            for r in snapshots[i].registers.iter().take(snapshots[i].count).flatten(){
+                if configs[i].write_u32(r.offset,r.value).is_err(){rollback_ok=false}
+            }
+        }
+        if rollback_ok {
+            for i in 0..configs.len(){if configs[i].write_u16(PCI_COMMAND,commands[i]&!PCI_COMMAND_BUS_MASTER).is_err(){rollback_ok=false}}
+        }
+        if !rollback_ok {let _=disable_all(configs);return Err(BridgeWindowError::InvalidEncoding)}
+        return Err(BridgeWindowError::Config)
+    }
+    // Enable decode only after the entire hierarchy is consistent. Bus master
+    // remains disabled; the DMA/IOMMU subsystem owns that transition.
+    for i in 0..configs.len(){
+        if configs[i].write_u16(PCI_COMMAND,commands[i]&!PCI_COMMAND_BUS_MASTER).is_err(){
+            let mut rollback_ok=true;
+            for j in (0..configs.len()).rev(){
+                for r in snapshots[j].registers.iter().take(snapshots[j].count).flatten(){
+                    if configs[j].write_u32(r.offset,r.value).is_err(){rollback_ok=false}
+                }
+            }
+            if rollback_ok {
+                for j in 0..configs.len(){if configs[j].write_u16(PCI_COMMAND,commands[j]&!PCI_COMMAND_BUS_MASTER).is_err(){rollback_ok=false}}
+            }
+            if !rollback_ok {let _=disable_all(configs);return Err(BridgeWindowError::InvalidEncoding)}
+            return Err(BridgeWindowError::Config)
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod atomic_hierarchy_tests {
+    use super::*;
+    struct Fake { regs:[u32;64], fail_write:Option<u16> }
+    impl ConfigAccess for Fake {
+        fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{Ok(self.regs[o as usize/4] as u16)}
+        fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{self.regs[o as usize/4]=(self.regs[o as usize/4]&0xffff_0000)|v as u32;Ok(())}
+        fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}
+        fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{if self.fail_write==Some(o){return Err(ResourceError::Config)}self.regs[o as usize/4]=v;Ok(())}
+    }
+    #[test]
+    fn hierarchy_failure_rolls_back_all_bridges(){
+        let mut a=Fake{regs:[0;64],fail_write:None};let mut b=Fake{regs:[0;64],fail_write:Some(BRIDGE_MEMORY_BASE_LIMIT)};
+        a.regs[1]=3;b.regs[1]=3;a.regs[BRIDGE_MEMORY_BASE_LIMIT as usize/4]=0x1111;b.regs[BRIDGE_MEMORY_BASE_LIMIT as usize/4]=0x2222;
+        let update=|value|{let mut u=BridgeWindowUpdate::empty();u.push(BRIDGE_MEMORY_BASE_LIMIT,value).unwrap();u};
+        let entries=[BridgeRebalanceEntry{parent:None,update:update(0xaaaa)},BridgeRebalanceEntry{parent:Some(0),update:update(0xbbbb)}];
+        assert_eq!(apply_hierarchy_atomic(&mut [a,b],&entries),Err(BridgeWindowError::Config));
+    }
 }
