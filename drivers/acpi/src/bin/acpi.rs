@@ -252,6 +252,12 @@ struct AcpiDeviceCapabilities {
     d3_latency:u32,
 }
 const DEVICE_CAPABILITIES_SIZE:usize=core::mem::size_of::<AcpiDeviceCapabilities>();
+const _:()=assert!(DEVICE_CAPABILITIES_SIZE==0x40);
+const _:()=assert!(core::mem::offset_of!(AcpiDeviceCapabilities,address)==0x08);
+const _:()=assert!(core::mem::offset_of!(AcpiDeviceCapabilities,ui_number)==0x0c);
+const _:()=assert!(core::mem::offset_of!(AcpiDeviceCapabilities,device_state)==0x10);
+const _:()=assert!(core::mem::offset_of!(AcpiDeviceCapabilities,system_wake)==0x2c);
+const _:()=assert!(core::mem::offset_of!(AcpiDeviceCapabilities,d3_latency)==0x3c);
 
 unsafe fn query_pdo_capabilities(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,stack:*mut cognacos_nt_abi::io::IO_STACK_LOCATION)->i32{
     if device.is_null()||stack.is_null(){return STATUS_INVALID_PARAMETER;}
