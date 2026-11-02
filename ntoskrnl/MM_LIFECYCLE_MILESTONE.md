@@ -10,6 +10,20 @@ This work is based on `main` at merge commit `b5d9a758abcf3ac7891806bb1452fa994a
 - Process-owned VM metadata is released only after address-space teardown has removed mappings and rundown has excluded concurrent faults/MDL operations.
 - File-backed sections must not be reported as demand-paged until file offset/length validation, prototype-PTE state transitions, page-in I/O, and control-area lifetime are implemented.
 
+## Current implementation status (2026-11-02)
+
+- [x] Added `ntoskrnl/src/mm/pfn.rs`: checked fixed-capacity PFN ownership records with separate allocation-owner, mapping, and pin references; overflow/underflow, duplicate registration, and premature owner release are rejected. Unit tests cover mapping/pin lifetime and invalid transitions.
+- [x] Registered the PFN module in the MM subsystem.
+- [ ] Wire PFN registration into every allocator entry point, including single-page, contiguous, node/range, high-memory, and rollback/deferred-free paths.
+- [ ] Wire mapping references into all PTE install/replace/unmap and address-space teardown paths.
+- [ ] Replace or unify the current MDL locked-PFN registry with PFN pin references and make pin/unpin transactional.
+- [ ] Move demand-area and working-set metadata into dynamically allocated process/address-space-owned structures.
+- [ ] Implement and register a real storage-stack paging provider.
+- [ ] Implement file-backed control areas, prototype PTEs, and file page-in.
+- [ ] Run host tests, kernel build, and QEMU acceptance tests.
+
+The PFN database is currently a foundational component, not yet an end-to-end enforcement mechanism. In particular, do not claim the PFN requirement complete until every allocation/free/mapping/MDL path above is wired and validated.
+
 ## Implementation sequence
 
 ### 1. PFN database and ownership accounting
