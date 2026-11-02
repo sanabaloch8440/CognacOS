@@ -256,6 +256,7 @@ unsafe fn ahci_issue(
     }
     let is = io.read32(base + PORT_IS).map_err(|_| STATUS_DEVICE_NOT_READY)?;
     if is != 0 && is != u32::MAX { io.write32(base + PORT_IS, is).map_err(|_| STATUS_DEVICE_NOT_READY)?; }
+    core::sync::atomic::fence(Ordering::SeqCst);
     io.write32(base + PORT_CI, 1).map_err(|_| STATUS_DEVICE_NOT_READY)?;
     for _ in 0..AHCI_POLL_BUDGET {
         let status = io.read32(base + PORT_TFD).map_err(|_| STATUS_DEVICE_NOT_READY)?;
@@ -264,7 +265,7 @@ unsafe fn ahci_issue(
             return Err(STATUS_UNSUCCESSFUL);
         }
         let ci = io.read32(base + PORT_CI).map_err(|_| STATUS_DEVICE_NOT_READY)?;
-        if ci & 1 == 0 { return Ok(()); }
+        if ci & 1 == 0 { core::sync::atomic::fence(Ordering::SeqCst); return Ok(()); }
         core::hint::spin_loop();
     }
     Err(STATUS_IO_TIMEOUT)
