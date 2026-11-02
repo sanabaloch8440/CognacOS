@@ -94,7 +94,7 @@ This is an implementation status record, not a compatibility claim.
 | DSDT/SSDT namespace | AML table manager and namespace loading | Connected during ACPI DriverEntry |
 | AML execution | Bounded integer-oriented method executor; direct string/package fast paths in identity evaluation | Not a general AML interpreter; buffers, references, synchronization and operation regions are incomplete |
 | Device identity | _HID, _CID, _UID, _STA, _ADR evaluator | Used to create initial ACPI PDO inventory; unsupported methods can suppress records |
-| ACPI PDO/PnP | Bus device, PDO creation, BusRelations response and kernel relation reference ownership | Partial; PDO query-ID, query-resources, query-resource-requirements and full start/remove behavior remain incomplete |
+| ACPI PDO/PnP | Bus device, PDO creation, BusRelations response and kernel relation reference ownership; PDO QueryId returns ACPI-prefixed DeviceID, HardwareIDs, CompatibleIDs and instance IDs from paged pool; QueryCapabilities reports conservative D0/D3 and non-wake defaults | Partial; ContainerID, device text, bus information, TargetDeviceRelation, query-resources, query-resource-requirements and complete start/stop/remove behavior remain incomplete |
 | _CRS / _PRS / _SRS | Resource-template parser and resource-selection primitives | Not connected to live PDO resource IRPs or kernel arbiter |
 | _PRT | Typed route parser and link-device resolver interface | No complete AML-to-link-device-to-HAL route path |
 | Power / wake | State and _PRW data primitives | No complete kernel power-manager dispatch path |
@@ -116,3 +116,26 @@ This is an implementation status record, not a compatibility claim.
    lifetime rules, rollback and QEMU/CI behavior are exercised.
 6. Do not claim Windows 11 x64 compatibility or ACPI 6.x completion until the
    corresponding end-to-end contracts and tests pass.
+
+## ACPI PDO PnP milestone update
+
+The PDO dispatch now handles the first device-identification requests directly
+on the child PDO:
+
+- BusQueryDeviceID returns a single REG_SZ using the ACPI enumerator prefix.
+- BusQueryHardwareIDs returns a REG_MULTI_SZ ordered with the most-specific
+  ACPI hardware ID first, followed by its wildcard form and compatible IDs.
+- BusQueryCompatibleIDs returns the ACPI-prefixed compatible-ID list.
+- BusQueryInstanceID returns the firmware _UID when available, otherwise a
+  stable namespace-node-derived parent-bus-scoped identifier.
+- All returned strings are allocated from the kernel paged pool with the
+  PnP-owned lifetime expected by the WDM contract.
+- Returned IDs are rejected when they contain characters forbidden by the
+  Windows QueryId contract.
+- QueryCapabilities advertises only conservative D0/D3 defaults; it does not
+  claim unsupported wake, D1/D2 or globally unique instance-ID behavior.
+
+This is not resource-start integration. The PDO currently does not implement
+_QueryResources_, _QueryResourceRequirements_, _QueryBusInformation_, or the
+full query/remove/cancel lifecycle. Do not enable hardware drivers that require
+resources based on this milestone alone.
