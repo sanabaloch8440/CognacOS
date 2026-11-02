@@ -52,6 +52,10 @@ pub fn decode_package_length(bytes:&[u8],offset:usize,limit:usize)->Result<(usiz
     let follow=(lead>>6) as usize;
     let encoded=1+follow;
     if offset.checked_add(encoded).filter(|e|*e<=limit).is_none(){return Err(AmlError::Truncated)}
+    // Bits 5:4 are reserved when the package length uses continuation
+    // bytes. Accepting them silently can make malformed AML shift every
+    // enclosing package boundary.
+    if follow!=0 && lead&0x30!=0{return Err(AmlError::BadPackageLength)}
     let value=if follow==0{(lead&0x3f) as usize}else{
         let mut v=(lead&0x0f) as usize;
         for i in 0..follow{v|=(bytes[offset+1+i] as usize)<<(4+8*i);}
@@ -103,28 +107,69 @@ fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:
     }
     Ok(p)
 }
+// Parse AML DataRefObject values rather than merely jumping over package
+// payloads. This validates nested package boundaries and prevents malformed
+// data objects from hiding truncated objects inside otherwise valid tables.
+const MAX_DATA_OBJECT_DEPTH:u8=32;
 fn skip_data_object(c:&mut Cursor<'_>)->Result<(),AmlError>{
+    skip_data_object_depth(c,0)
+}
+fn skip_data_object_depth(c:&mut Cursor<'_>,depth:u8)->Result<(),AmlError>{
+    if depth>MAX_DATA_OBJECT_DEPTH{return Err(AmlError::BadDefinitionBlock)}
     let op=c.byte()?;
     match op{
         0x00|0x01|0xff=>Ok(()),
-        0x0a=>{c.take(1)?;Ok(())},0x0b=>{c.take(2)?;Ok(())},0x0c=>{c.take(4)?;Ok(())},0x0e=>{c.take(8)?;Ok(())},
+        0x0a=>{c.take(1)?;Ok(())},
+        0x0b=>{c.take(2)?;Ok(())},
+        0x0c=>{c.take(4)?;Ok(())},
+        0x0e=>{c.take(8)?;Ok(())},
         0x0d=>{while c.byte()?!=0{}Ok(())},
         0x11|0x12|0x13=>{
             let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
-            let pkg_start=c.pos;c.pos=end;
-            if op==0x11 { let mut sub=Cursor{bytes:c.bytes,pos:pkg_start+package_length_bytes(c.bytes,pkg_start,c.end)?,end};skip_data_object(&mut sub)?; if sub.pos>end{return Err(AmlError::BadPackageLength)} }
+            let length_bytes=package_length_bytes(c.bytes,c.pos,c.end)?;
+            let payload_start=c.pos.checked_add(length_bytes).ok_or(AmlError::BadPackageLength)?;
+            if payload_start>end{return Err(AmlError::BadPackageLength)}
+            let mut payload=Cursor{bytes:c.bytes,pos:payload_start,end};
+            match op{
+                0x11=>{
+                    // BufferSize is a TermArg; its byte-list is opaque AML
+                    // data and occupies the remainder of the package.
+                    skip_data_object_depth(&mut payload,depth+1)?;
+                    payload.pos=end;
+                }
+                0x12=>{
+                    let count=payload.byte()? as usize;
+                    for _ in 0..count{skip_data_object_depth(&mut payload,depth+1)?;}
+                    if payload.pos!=end{return Err(AmlError::BadPackageLength)}
+                }
+                0x13=>{
+                    // VarPackage's element count is a TermArg. The count can
+                    // be dynamic, so validate each encoded element to the
+                    // package boundary rather than trusting a runtime value.
+                    skip_data_object_depth(&mut payload,depth+1)?;
+                    while payload.pos<payload.end{
+                        skip_data_object_depth(&mut payload,depth+1)?;
+                    }
+                }
+                _=>unreachable!(),
+            }
+            c.pos=end;
             Ok(())
         }
-        0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{c.pos-=1;let _=parse_name(c)?;Ok(())}
+        0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
+            c.pos-=1;let _=parse_name(c)?;Ok(())
+        }
         _=>Err(AmlError::UnsupportedOpcode)
     }
 }
+
 fn package_length_bytes(bytes:&[u8],offset:usize,limit:usize)->Result<usize,AmlError>{
     let lead=*bytes.get(offset).filter(|_|offset<limit).ok_or(AmlError::Truncated)?;Ok(1+(lead>>6) as usize)
 }
 
 fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
     let lead=c.byte()?;let follow=(lead>>6)as usize;
+    if follow!=0&&lead&0x30!=0{return Err(AmlError::BadPackageLength)}
     let mut value=if follow==0{(lead&0x3f)as usize}else{(lead&0x0f)as usize};
     for i in 0..follow{value|=(c.byte()? as usize)<<(4+8*i);}
     Ok(value)
@@ -231,8 +276,15 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
 /// Load a validated DSDT/SSDT definition block body into a bounded namespace.
 /// The caller must validate the SDT signature, length and checksum first.
 pub fn load_definition_block(aml:&[u8],namespace:&mut AmlNamespace)->Result<(),AmlError>{
+    // Namespace insertion is append-only. Restoring the original count on
+    // failure makes each definition-block load atomic without copying the
+    // large fixed-capacity namespace onto the kernel stack.
+    let original_count=namespace.count;
     let mut c=Cursor{bytes:aml,pos:0,end:aml.len()};
-    parse_terms(&mut c,namespace,0,0)
+    match parse_terms(&mut c,namespace,0,0){
+        Ok(())=>Ok(()),
+        Err(error)=>{namespace.count=original_count;Err(error)}
+    }
 }
 
 #[cfg(test)]
@@ -282,4 +334,33 @@ mod tests{
         let mut ns=AmlNamespace::new();
         assert_eq!(load_definition_block(&[0x10,0x40,0x5c],&mut ns),Err(AmlError::BadPackageLength));
     }
+    #[test]fn rejects_reserved_package_length_bits(){
+        let mut ns=AmlNamespace::new();
+        assert_eq!(decode_package_length(&[0x51,0x00],0,2),Err(AmlError::BadPackageLength));
+        assert_eq!(load_definition_block(&[0x10,0x51,0x00],&mut ns),Err(AmlError::BadPackageLength));
+    }
+    #[test]fn validates_nested_package_data_objects(){
+        // Name(PKG0, Package(2) { ByteConst(1), Package(1) { Ones } })
+        let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x0a,2,
+                 0x0a,1,0x12,0x04,1,0xff];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&aml,&mut ns).is_ok());
+        assert_eq!(ns.find_child(0,*b"PKG0"),Some(1));
+    }
+    #[test]fn rejects_truncated_nested_package_without_mutating_namespace(){
+        // The outer Package declares one element, whose DWord payload is
+        // truncated at the end of the definition block.
+        let aml=[0x08,b'B',b'A',b'D',b'0',0x12,0x05,1,0x0c,0x11,0x22];
+        let mut ns=AmlNamespace::new();
+        assert_eq!(load_definition_block(&aml,&mut ns),Err(AmlError::Truncated));
+        assert_eq!(ns.count,1);
+        assert_eq!(ns.find_child(0,*b"BAD0"),None);
+    }
+    #[test]fn rejects_unterminated_string_inside_package(){
+        let aml=[0x08,b'B',b'A',b'D',b'1',0x12,0x05,1,0x0d,b'x',b'y'];
+        let mut ns=AmlNamespace::new();
+        assert_eq!(load_definition_block(&aml,&mut ns),Err(AmlError::Truncated));
+        assert_eq!(ns.count,1);
+    }
+
 }
