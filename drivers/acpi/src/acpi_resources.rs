@@ -5,7 +5,7 @@
 pub const MAX_RESOURCES: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResourceError { MissingEndTag, Truncated, InvalidLength, InvalidDescriptor, TooManyResources, IntegerOverflow, UnsupportedDescriptor }
+pub enum ResourceError { MissingEndTag, Truncated, InvalidLength, InvalidDescriptor, TooManyResources, TooManyAlternatives, IntegerOverflow, UnsupportedDescriptor }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resource {
