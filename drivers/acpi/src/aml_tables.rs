@@ -138,6 +138,31 @@ impl AmlTableManager {
     /// readable for the duration of this call; the bootstrap implementation
     /// currently supports only addresses below 4 GiB.
     ///
+    /// Safe, mapper-backed firmware discovery for ACPI 2.0+ systems. This
+    /// path supports XSDT entries and firmware tables above 4 GiB when the
+    /// platform mapper can map them; it never casts a physical address.
+    pub fn load_from_mapper<M:crate::AcpiPhysicalMapper,G:AmlExecutionGate>(&mut self,mapper:&M,rsdp_address:u64,gate:&mut G)->Result<LoadedTableSet,TableError>{
+        let fadt=crate::find_table_with_mapper(mapper,rsdp_address,*b"FACP",0)?;
+        let fadt_info=crate::parse_fadt(fadt)?;
+        let dsdt_address=fadt_info.effective_dsdt();
+        if dsdt_address==0{return Err(TableError::InvalidSdt(AcpiError::AddressOutOfRange))}
+        let dsdt_header=mapper.map_physical(dsdt_address,SDT_HEADER_SIZE)?;
+        let dsdt_length=u32::from_le_bytes(dsdt_header.get(4..8).ok_or(AcpiError::Truncated)?.try_into().map_err(|_|AcpiError::Truncated)?) as usize;
+        if !(SDT_HEADER_SIZE..=1024*1024).contains(&dsdt_length){return Err(TableError::InvalidSdt(AcpiError::BadLength))}
+        let dsdt=mapper.map_physical(dsdt_address,dsdt_length)?;
+        crate::validate_sdt(dsdt,Some(*b"DSDT"))?;
+        let mut ssdts:[&[u8];MAX_AML_TABLES-1]=[&[];MAX_AML_TABLES-1];
+        let mut count=0usize;
+        for instance in 0..MAX_AML_TABLES{
+            match crate::find_table_with_mapper(mapper,rsdp_address,*b"SSDT",instance){
+                Ok(table)=>{if count==MAX_AML_TABLES-1{return Err(TableError::TableLimit)}ssdts[count]=table;count+=1;}
+                Err(AcpiError::MissingRoot)=>break,
+                Err(error)=>return Err(TableError::InvalidSdt(error)),
+            }
+        }
+        self.load_firmware_tables(dsdt,&ssdts[..count],gate)
+    }
+
     /// Discover the DSDT through FADT.X_DSDT/DSDT and SSDTs through the
     /// RSDT/XSDT, then install the complete set transactionally. This uses the
     /// current bootstrap identity-map contract and therefore rejects firmware
