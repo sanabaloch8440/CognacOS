@@ -447,6 +447,14 @@ mod tests{
         assert_eq!(ns.find_child(0,*b"PCI0"),Some(1));
         assert_eq!(ns.find_child(1,*b"_HID"),Some(2));
     }
+    #[test]fn resolves_unprefixed_names_through_ancestor_scopes(){
+        let aml=[0x10,0x08,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
+                 0x10,0x08,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let parent=ns.find_child(0,*b"PAR0").unwrap();let child=ns.find_child(parent,*b"CHD0").unwrap();
+        let name=AmlName{segments:[*b"VAL0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:0};
+        assert_eq!(resolve_name_string(&ns,child,&name),Ok(ns.find_child(parent,*b"VAL0").unwrap()));
+    }
     #[test]fn loads_operation_region_and_named_field(){
         let aml=[
             0x5b,0x80,b'R',b'E',b'G',b'N',0x00,0x0a,0x00,0x0a,0x10,
