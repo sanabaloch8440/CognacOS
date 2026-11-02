@@ -2,6 +2,149 @@
 use crate::*;
 use core::arch::asm;
 
+const MAX_BOOT_SERVICES: usize = 128;
+const MAX_SERVICE_DEPENDENCIES: usize = 256;
+static mut BOOT_SERVICE_DEPENDENCY_REFS: [[&[u16]; MAX_SERVICE_DEPENDENCIES]; MAX_BOOT_SERVICES] =
+    [[&[]; MAX_SERVICE_DEPENDENCIES]; MAX_BOOT_SERVICES];
+static mut BOOT_GROUP_DEPENDENCY_REFS: [[&[u16]; MAX_SERVICE_DEPENDENCIES]; MAX_BOOT_SERVICES] =
+    [[&[]; MAX_SERVICE_DEPENDENCIES]; MAX_BOOT_SERVICES];
+static mut BOOT_DRIVER_OBJECTS: [core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>; MAX_BOOT_SERVICES] =
+    [const { core::mem::MaybeUninit::uninit() }; MAX_BOOT_SERVICES];
+static mut BOOT_DRIVER_NAMES: [[u16; 128]; MAX_BOOT_SERVICES] = [[0; 128]; MAX_BOOT_SERVICES];
+static mut BOOT_DRIVER_RECORDS: [crate::ntoskrnl::io::driver_init::DriverInitRecord; MAX_BOOT_SERVICES] =
+    [crate::ntoskrnl::io::driver_init::DriverInitRecord {
+        service_index: usize::MAX, error_control: 0,
+        status: crate::ntoskrnl::io::driver_init::DriverInitStatus::NotRun,
+    }; MAX_BOOT_SERVICES];
+static mut BOOT_DRIVER_SCHEDULE: [usize; MAX_BOOT_SERVICES] = [0; MAX_BOOT_SERVICES];
+static mut BOOT_DRIVER_SCHEDULER_STATE: [u8; MAX_BOOT_SERVICES] = [0; MAX_BOOT_SERVICES];
+// The loader rejects any embedded image larger than this bounded staging buffer.
+static mut BOOT_DRIVER_IMAGE_BUFFER: [u8; 8 * 1024 * 1024] = [0; 8 * 1024 * 1024];
+
+/// Run the registry-selected boot/system-start driver graph before PCI
+/// enumeration. ACPI.sys and PCI.sys are explicit preinitialized nodes: their
+/// registry metadata remains part of dependency resolution, but DriverEntry is
+/// never invoked a second time.
+unsafe fn initialize_registry_boot_drivers(
+    registry: &registry_init::SystemRegistryState,
+) -> Result<crate::ntoskrnl::io::driver_init::BootInitReport, crate::ntoskrnl::io::driver_init::DriverInitError> {
+    use crate::ntoskrnl::driver_order::{GroupTagOrder, ServiceNode};
+    use crate::ntoskrnl::io::driver_init::{self, DriverInitStatus};
+    use crate::ntoskrnl::cm::hive::Hive;
+
+    let count = registry.boot_driver_count;
+    if count > MAX_BOOT_SERVICES { return Err(driver_init::DriverInitError::BufferTooSmall); }
+    let mut nodes = [ServiceNode {
+        name: &[], group: &[], tag: None, start_type: 0,
+        service_dependencies: &[], group_dependencies: &[],
+    }; MAX_BOOT_SERVICES];
+    let service_refs = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_SERVICE_DEPENDENCY_REFS)
+                .cast::<[&[u16]; MAX_SERVICE_DEPENDENCIES]>(), MAX_BOOT_SERVICES)
+    };
+    let group_refs = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_GROUP_DEPENDENCY_REFS)
+                .cast::<[&[u16]; MAX_SERVICE_DEPENDENCIES]>(), MAX_BOOT_SERVICES)
+    };
+    for index in 0..count {
+        let name_len = registry.boot_driver_services[index].iter().position(|unit| *unit == 0).unwrap_or(128);
+        let metadata = &registry.boot_driver_metadata[index];
+        let mut service_count = 0usize;
+        for dependency in crate::ntoskrnl::cm::service_config::MultiSzIter::new(
+            &metadata.service_dependencies[..metadata.service_dependencies_len]) {
+            if service_count == MAX_SERVICE_DEPENDENCIES { return Err(driver_init::DriverInitError::BufferTooSmall); }
+            service_refs[index][service_count] = dependency;
+            service_count += 1;
+        }
+        let mut group_count = 0usize;
+        for dependency in crate::ntoskrnl::cm::service_config::MultiSzIter::new(
+            &metadata.group_dependencies[..metadata.group_dependencies_len]) {
+            if group_count == MAX_SERVICE_DEPENDENCIES { return Err(driver_init::DriverInitError::BufferTooSmall); }
+            group_refs[index][group_count] = dependency;
+            group_count += 1;
+        }
+        nodes[index] = ServiceNode {
+            name: &registry.boot_driver_services[index][..name_len],
+            group: &metadata.group[..metadata.group_len],
+            tag: metadata.tag,
+            start_type: 0, // the manager revalidates the active registry entry before loading
+            service_dependencies: &service_refs[index][..service_count],
+            group_dependencies: &group_refs[index][..group_count],
+        };
+    }
+    // The registry enumerator already selected only Start=0/1 kernel and
+    // filesystem drivers. Preserve that filtered candidate set for scheduling.
+    let mut group_order: [&[u16]; 64] = [&[]; 64];
+    for index in 0..registry.service_group_count.min(group_order.len()) {
+        let group = &registry.service_groups[index];
+        let length = group.iter().position(|unit| *unit == 0).unwrap_or(128);
+        group_order[index] = &group[..length];
+    }
+    let mut tag_orders = [GroupTagOrder { group: &[], tags: &[] }; 64];
+    for index in 0..registry.service_group_count.min(tag_orders.len()) {
+        let group = &registry.service_groups[index];
+        let length = group.iter().position(|unit| *unit == 0).unwrap_or(128);
+        tag_orders[index] = GroupTagOrder {
+            group: &group[..length],
+            tags: &registry.group_tag_values[index][..registry.group_tag_counts[index]],
+        };
+    }
+    const ACPI: &[u16] = &[65, 67, 80, 73];
+    const PCI: &[u16] = &[80, 67, 73];
+    let preinitialized: [&[u16]; 2] = [ACPI, PCI];
+    let bytes = crate::boot_handoff::boot_hive_bytes("SYSTEM")
+        .ok_or(driver_init::DriverInitError::BufferTooSmall)?;
+    let hive = Hive::open(bytes).map_err(|_| driver_init::DriverInitError::BufferTooSmall)?;
+    let objects = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_DRIVER_OBJECTS).cast::<ntoskrnl::driver_loader::DriverObject>(),
+            MAX_BOOT_SERVICES)
+    };
+    for object in objects.iter_mut() { *object = unsafe { core::mem::zeroed() }; }
+    let names = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_DRIVER_NAMES).cast::<[u16; 128]>(), MAX_BOOT_SERVICES)
+    };
+    let records = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_DRIVER_RECORDS).cast::<driver_init::DriverInitRecord>(),
+            MAX_BOOT_SERVICES)
+    };
+    let schedule = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_DRIVER_SCHEDULE).cast::<usize>(), MAX_BOOT_SERVICES)
+    };
+    let scheduler_state = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_DRIVER_SCHEDULER_STATE).cast::<u8>(), MAX_BOOT_SERVICES)
+    };
+    let image_buffer = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BOOT_DRIVER_IMAGE_BUFFER).cast::<u8>(), 8 * 1024 * 1024)
+    };
+    let report = unsafe {
+        driver_init::initialize_boot_drivers(
+            &hive, &nodes[..count], &group_order[..registry.service_group_count.min(64)],
+            &tag_orders[..registry.service_group_count.min(64)], &preinitialized,
+            schedule, scheduler_state, objects, names, records,
+            &mut [0u16; 1024], image_buffer,
+            |path, output| platform_devices::resolve_builtin_driver_image(path, output),
+        )?
+    };
+    // An unresolved dependency/cycle or severe/critical load failure is not a
+    // recoverable "continue boot" signal. LastKnownGood rollback is not yet
+    // implemented, so the only honest policy is to stop before enumeration.
+    if report.fatal_service.is_some() {
+        return Err(driver_init::DriverInitError::Schedule(
+            crate::ntoskrnl::driver_order::ScheduleError::Cycle));
+    }
+    let _already_initialized = records[..count].iter()
+        .filter(|record| matches!(record.status, DriverInitStatus::AlreadyInitialized)).count();
+    Ok(report)
+}
+
 pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
     unsafe {
         serial_init();
