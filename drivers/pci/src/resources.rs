@@ -173,6 +173,17 @@ mod tests {
             self.regs[o as usize/4]=if v==u32::MAX { if o==PCI_BAR0 {0xffff_fff0} else {0xffff_ffff} } else {v}; Ok(())
         }
     }
+    #[test] fn bar_probe_restores_registers_and_never_restores_bus_master() {
+        let mut config=Fake{regs:[0;64],fail_restore:false};
+        config.regs[1]=7;
+        config.regs[4]=0x1000;
+        let mut output=[None;MAX_BARS];
+        let count=size_bars(&mut config,0,&mut output).unwrap();
+        assert_eq!(count,1);
+        assert_eq!(output[0].unwrap().length,0x10);
+        assert_eq!(config.regs[4],0x1000);
+        assert_eq!(config.regs[1] as u16,3);
+    }
     #[test] fn placement_respects_alignment_and_existing_ranges() {
         let r=BarRequirement{index:0,kind:BarKind::Memory32,length:0x1000,alignment:0x1000,prefetchable:false,assigned:0};
         assert_eq!(place_requirement(&r,ResourceWindow{start:0x8000_0000,length:0x4000,kind:BarKind::Memory32},&[(0x8000_0000,0x1000)]),Ok(0x8000_1000));
