@@ -406,11 +406,13 @@ unsafe fn paging_file_read(context: usize, slot: u32, destination: *mut u8) -> i
         .and_then(|delta| (context as u64).checked_add(delta)) else {
         return STATUS_IO_DEVICE_ERROR;
     };
-    let output = unsafe { core::slice::from_raw_parts_mut(destination, 4096) };
-    let Some(mut guard) = STORAGE_DISK.try_lock() else { return STATUS_IO_DEVICE_ERROR; };
-    match guard.as_mut().and_then(|disk| disk.read_at(offset, output).ok().map(|_| ())) {
-        Some(()) => 0,
-        None => STATUS_IO_DEVICE_ERROR,
+    // Use the registered raw-disk device's read dispatch, not ext4 or Cache
+    // Manager. This keeps the paging callback on the normal disk I/O boundary.
+    let device = DISK_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
+    if device.is_null() { return STATUS_IO_DEVICE_ERROR; }
+    match storage_transfer(device, wdm::IRP_MJ_READ, offset, destination, 4096) {
+        Ok(4096) => 0,
+        _ => STATUS_IO_DEVICE_ERROR,
     }
 }
 
@@ -424,14 +426,16 @@ unsafe fn paging_file_write(context: usize, slot: u32, source: *const u8) -> i32
         .and_then(|delta| (context as u64).checked_add(delta)) else {
         return STATUS_IO_DEVICE_ERROR;
     };
-    let input = unsafe { core::slice::from_raw_parts(source, 4096) };
+    let device = DISK_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
+    if device.is_null() { return STATUS_IO_DEVICE_ERROR; }
+    if !matches!(storage_transfer(device, wdm::IRP_MJ_WRITE, offset, source as *mut u8, 4096), Ok(4096)) {
+        return STATUS_IO_DEVICE_ERROR;
+    }
+    // Flush through the resident controller transport. Do not hold this lock
+    // across storage_transfer: the disk dispatch itself takes STORAGE_DISK.
     let Some(mut guard) = STORAGE_DISK.try_lock() else { return STATUS_IO_DEVICE_ERROR; };
-    match guard.as_mut() {
-        Some(disk) => {
-            if disk.write_at(offset, input).is_err() || disk.flush().is_err() {
-                STATUS_IO_DEVICE_ERROR
-            } else { 0 }
-        }
+    match guard.as_mut().and_then(|disk| disk.flush().ok()) {
+        Some(()) => 0,
         None => STATUS_IO_DEVICE_ERROR,
     }
 }
