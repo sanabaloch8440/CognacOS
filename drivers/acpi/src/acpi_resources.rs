@@ -116,7 +116,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
  #[test]fn rejects_truncated_descriptor(){assert_eq!(parse_resource_template(&[0x47,1]),Err(ResourceError::Truncated));}
  #[test]fn rejects_zero_length_range(){assert_eq!(parse_resource_template(&[0x47,1,0,1,1,0,0x79,0]),Err(ResourceError::InvalidDescriptor));}
  #[test]fn parses_qword_memory_range(){
-  let mut d=[0u8;49];d[0]=0x8a;d[1]=43;d[2]=0;d[3]=0; // large QWord address-space descriptor, memory
+  let mut d=[0u8;48];d[0]=0x8a;d[1]=43;d[2]=0;d[3]=0; // large QWord address-space descriptor, memory
   d[14..22].copy_from_slice(&0x100000u64.to_le_bytes());
   d[22..30].copy_from_slice(&0x10ffffu64.to_le_bytes());
   d[30..38].copy_from_slice(&1u64.to_le_bytes());
