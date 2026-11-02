@@ -22,7 +22,7 @@ pub struct AmlNode {
     pub method_flags:u8, pub body_start:u32, pub body_length:u32,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"\\\\\\\\",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize }
 impl AmlNamespace {
