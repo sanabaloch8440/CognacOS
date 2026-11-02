@@ -10,7 +10,7 @@ pub const MAX_PACKAGE_ELEMENTS:usize=16;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
-pub enum AmlValueKind { Empty=0,Integer=1,String=2,Buffer=3,Package=4 }
+pub enum AmlValueKind { Empty=0,Uninitialized=1,Integer=2,String=3,Buffer=4,Package=5 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlRuntimeValue {
     pub kind:AmlValueKind,
