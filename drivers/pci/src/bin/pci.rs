@@ -114,6 +114,7 @@ struct PciState {
     function_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
     bridges: UnsafeCell<[[Option<pci::PciBridgeRange>; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]>,
     bridge_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
+    bridge_resource_windows: UnsafeCell<[[Option<pci::bridge_resources::BridgeWindows>; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]>,
     xhci: UnsafeCell<[[Option<pci::XhciPciFunction>; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS]>,
     xhci_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
     pdos: UnsafeCell<[*mut DEVICE_OBJECT; MAX_PCI_PDOS]>,
@@ -132,6 +133,7 @@ static STATE: PciState = PciState {
     function_counts: UnsafeCell::new([0; MAX_WINDOWS]),
     bridges: UnsafeCell::new([[None; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]),
     bridge_counts: UnsafeCell::new([0; MAX_WINDOWS]),
+    bridge_resource_windows: UnsafeCell::new([[None; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]),
     xhci: UnsafeCell::new([[None; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS]),
     xhci_counts: UnsafeCell::new([0; MAX_WINDOWS]),
     pdos: UnsafeCell::new([core::ptr::null_mut(); MAX_PCI_PDOS]),
@@ -180,6 +182,17 @@ pub unsafe extern "win64" fn CognacPciEnumerateInventory() -> i32 {
             let (bridges, bridge_count) = match unsafe { pci::scan_bridge_ranges(window) } {
                 Ok(v) => v, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
             };
+            let mut bridge_resources = [None; pci::MAX_PCI_BRIDGES];
+            for (bi, bridge) in bridges.iter().take(bridge_count).flatten().enumerate() {
+                let mut config = pci::EcamFunctionConfig {
+                    window, segment: bridge.segment, bus: bridge.primary_bus,
+                    device: bridge.device, function: bridge.function,
+                };
+                bridge_resources[bi] = match pci::bridge_resources::decode_bridge_windows(&mut config) {
+                    Ok(windows) => Some(windows),
+                    Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+                };
+            }
             let (xhci, xhci_count) = match unsafe { pci::scan_xhci(window) } {
                 Ok(v) => v, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
             };
@@ -190,6 +203,7 @@ pub unsafe extern "win64" fn CognacPciEnumerateInventory() -> i32 {
                 (*STATE.function_counts.get())[i] = function_count;
                 (*STATE.bridges.get())[i] = bridges;
                 (*STATE.bridge_counts.get())[i] = bridge_count;
+                (*STATE.bridge_resource_windows.get())[i] = bridge_resources;
                 (*STATE.xhci.get())[i] = xhci;
                 (*STATE.xhci_counts.get())[i] = xhci_count;
             }
@@ -809,6 +823,24 @@ unsafe extern "win64" fn query_inventory_function(
 
 /// Return PCI.sys' versioned configuration-space interface. The interface
 /// exposes only checked ECAM access; resource assignment remains a PnP duty.
+/// Return the firmware-programmed I/O, non-prefetchable and prefetchable
+/// windows for an enumerated bridge. No window is synthesized from ECAM.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciQueryBridgeWindows(index:u32,output:*mut pci::bridge_resources::BridgeWindows)->i32{
+    if output.is_null(){return STATUS_INVALID_PARAMETER}
+    if !STATE.inventory_ready.load(Ordering::Acquire){return STATUS_DEVICE_NOT_READY}
+    let handoff=unsafe{&*(HANDOFF.load(Ordering::Acquire) as *const PciDriverHandoff)};
+    let mut remaining=index as usize;
+    for wi in 0..handoff.window_count as usize{
+        let n=unsafe{(*STATE.bridge_counts.get())[wi]};
+        if remaining>=n{remaining-=n;continue}
+        let Some(w)= (unsafe{(*STATE.bridge_resource_windows.get())[wi][remaining]}) else{return STATUS_DEVICE_CONFIGURATION_ERROR};
+        unsafe{output.write(w)}
+        return STATUS_SUCCESS
+    }
+    STATUS_NOT_FOUND
+}
+
 unsafe extern "win64" fn query_inventory_bridge(
     context: PVOID, index: u32, output: *mut cognacos_nt_abi::bus::PCI_BRIDGE_INFORMATION,
 ) -> i32 {
