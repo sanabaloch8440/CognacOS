@@ -223,6 +223,17 @@ mod tests{
         assert_eq!(m.acquire(12,&mut 4,1),Err(SyncError::SyncLevelViolation));
     }
     #[test]
+    fn sync_objects_are_created_from_namespace_definitions(){
+        let aml=[0x5b,0x01,b'M',b'T',b'X',b'0',5,
+                 0x5b,0x02,b'E',b'V',b'T',b'0'];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let mutex_id=ns.find_child(0,*b"MTX0").unwrap();
+        let event_id=ns.find_child(0,*b"EVT0").unwrap();
+        assert_eq!(AmlMutex::from_namespace(&ns,mutex_id).unwrap().sync_level(),5);
+        assert!(AmlEvent::from_namespace(&ns,event_id).is_ok());
+    }
+
+    #[test]
     fn event_is_binary_and_wait_consumes_signal(){
         let e=AmlEvent::new();assert_eq!(e.wait(1),Err(SyncError::Timeout));
         e.signal();e.signal();assert_eq!(e.wait(1),Ok(()));assert_eq!(e.wait(1),Err(SyncError::Timeout));
