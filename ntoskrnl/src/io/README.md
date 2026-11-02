@@ -31,14 +31,20 @@ the kernel selection arbiter before moving the devnode to
 `PNP_DEVICE_RESOURCES_ASSIGNED`. A failed parse, selection, or state
 transition leaves no partial reservation.
 
-The initial WDM decoder is deliberately strict: it accepts exclusive port,
-memory, interrupt, DMA, and bus-number descriptors with one descriptor per
-requirement. It rejects `IO_RESOURCE_ALTERNATIVE` choice groups, shared
-resources, unsupported descriptor types, malformed lengths, and oversized
-lists. In particular, ACPI-generated lists containing IRQ/DMA choice groups
-are not yet consumable by this path. The indexed devnode table remains
-PCI-oriented; the ACPI PDO relation database is not mapped to those devnodes.
-This is a kernel API milestone, not a complete ACPI WDM start-device path.
+The WDM decoder expands bounded `IO_RESOURCE_ALTERNATIVE` choice groups
+into complete candidate resource sets, including the Cartesian product of
+independent choices. It honors `IO_RESOURCE_PREFERRED` ordering and accepts
+exclusive port, memory, interrupt, DMA, and bus-number descriptors. Shared
+interrupt reservations are supported only for level-sensitive line interrupts;
+they may coexist with another shared claim on the same vector, but conflict
+with exclusive claims. Edge-triggered, MSI, policy-bearing and other shared
+interrupt variants fail closed. Expansion is capped at eight complete
+candidates and sixteen resource groups per list. Unsupported descriptor types,
+malformed lengths and oversized lists are rejected.
+
+The indexed devnode table remains PCI-oriented; the ACPI PDO relation database
+is not mapped to those devnodes. This is a kernel API milestone, not a complete
+ACPI WDM start-device path.
 
 There is also a distinct WDM start-IRP resource-claim table in
 `wdm/pnp.rs`. It validates and tentatively reserves the translated
