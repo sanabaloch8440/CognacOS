@@ -178,7 +178,7 @@ pub fn encode_requirements_list(alternatives:&[RequirementAlternative],bus:u32,o
     if out.len()<size{return Err(ResourceError::Capacity)}
     out[..size].fill(0);
     out[0..4].copy_from_slice(&(size as u32).to_le_bytes());
-    out[4..8].copy_from_slice(&5i32.to_le_bytes()); // PNPBus
+    out[4..8].copy_from_slice(&5i32.to_le_bytes()); // PCIBus
     out[8..12].copy_from_slice(&bus.to_le_bytes());
     let mut cursor=32usize;
     for alt in alternatives{
@@ -216,7 +216,7 @@ pub fn encode_requirements_alternative(reqs:&[Option<BarRequirement>;MAX_ASSIGNM
 pub fn encode_cm_resource_list(resources:&[Option<PublishedResource>;MAX_ASSIGNMENTS],count:usize,bus:u32,translated:bool,out:&mut[u8])->Result<usize,ResourceError>{
     let size=20usize.checked_add(count.checked_mul(CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).ok_or(ResourceError::AddressOverflow)?).ok_or(ResourceError::AddressOverflow)?;
     if count>MAX_ASSIGNMENTS||out.len()<size{return Err(ResourceError::Capacity)}
-    out[..size].fill(0);out[0..4].copy_from_slice(&1u32.to_le_bytes());out[4..8].copy_from_slice(&15i32.to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());out[12..14].copy_from_slice(&1u16.to_le_bytes());out[14..16].copy_from_slice(&1u16.to_le_bytes());out[16..20].copy_from_slice(&(count as u32).to_le_bytes());
+    out[..size].fill(0);out[0..4].copy_from_slice(&1u32.to_le_bytes());out[4..8].copy_from_slice(&5i32.to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());out[12..14].copy_from_slice(&1u16.to_le_bytes());out[14..16].copy_from_slice(&1u16.to_le_bytes());out[16..20].copy_from_slice(&(count as u32).to_le_bytes());
     let mut n=0;for r in resources.iter().take(count).flatten(){let p=20+n*CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE;out[p]=if r.kind==BarKind::Io{1}else{3};out[p+1]=1;out[p+2..p+4].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());let start=if translated{r.translated_start}else{r.raw_start};out[p+4..p+12].copy_from_slice(&start.to_le_bytes());out[p+12..p+16].copy_from_slice(&r.length.to_le_bytes());n+=1}
     if n!=count{return Err(ResourceError::InvalidBar)}Ok(size)
 }
