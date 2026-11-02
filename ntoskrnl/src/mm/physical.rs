@@ -789,6 +789,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 }
             }
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
+            super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(base);
         }
     }
@@ -826,6 +827,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 count_atomic.store(count, core::sync::atomic::Ordering::Release);
             }
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
+            super::pfn::register_allocation_range(candidate, pages).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(candidate);
         }
     }
@@ -1144,7 +1146,8 @@ pub unsafe fn allocate_contiguous_pages_below(
                 free.0.copy_within(i + pages..old_len, i);
                 free.1 = old_len - pages;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
             i += 1;
         }
@@ -1158,7 +1161,8 @@ pub unsafe fn allocate_contiguous_pages_below(
                 let base = region.next;
                 region.next = end;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
         }
     }
@@ -1190,7 +1194,8 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
                 free.0.copy_within(i + pages..old_len, i);
                 free.1 = old_len - pages;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
             i += 1;
         }
@@ -1204,7 +1209,8 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
                 let base = region.next;
                 region.next = end;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
         }
     }
