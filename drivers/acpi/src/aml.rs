@@ -70,12 +70,19 @@ fn parse_name(c:&mut Cursor<'_>)->Result<AmlName,AmlError>{
     let mut b=c.byte()?;
     if b==0x5c{n.rooted=true;b=c.byte()?;}
     while b==0x5e{n.parents=n.parents.checked_add(1).ok_or(AmlError::BadName)?;b=c.byte()?;}
+    let prefixed=b==0x2e||b==0x2f;
     let count=match b{0x00=>0,0x2e=>2,0x2f=>c.byte()? as usize,_=>1};
     if count>MAX_NAME_SEGMENTS{return Err(AmlError::BadName)}
     for i in 0..count{
-        let seg=c.take(4)?;
-        if !valid_name_seg(seg){return Err(AmlError::BadName)}
-        n.segments[i].copy_from_slice(seg);
+        let mut segment=[0u8;4];
+        if i==0&&!prefixed {
+            segment[0]=b;
+            segment[1..].copy_from_slice(c.take(3)?);
+        }else{
+            segment.copy_from_slice(c.take(4)?);
+        }
+        if !valid_name_seg(&segment){return Err(AmlError::BadName)}
+        n.segments[i]=segment;
     }
     n.count=count as u8;Ok(n)
 }
