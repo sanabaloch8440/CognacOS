@@ -485,6 +485,21 @@ fn cache_page_count(file: *mut FileObject) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static TEST_LOCK: AtomicBool = AtomicBool::new(false);
+    struct TestGuard;
+    impl TestGuard {
+        fn acquire() -> Self {
+            while TEST_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                core::hint::spin_loop();
+            }
+            Self
+        }
+    }
+    impl Drop for TestGuard {
+        fn drop(&mut self) { TEST_LOCK.store(false, Ordering::Release); }
+    }
 
     #[repr(align(4096))]
     struct TestCachePage([u8; CACHE_PAGE_SIZE]);
@@ -492,6 +507,7 @@ mod tests {
 
     #[test]
     fn copy_read_hits_a_dynamically_described_cache_page() {
+        let _test_guard = TestGuard::acquire();
         let mut file: FileObject = unsafe { core::mem::zeroed() };
         let sizes = CcFileSizes { allocation_size: 4096, file_size: 4096, valid_data_length: 4096 };
         unsafe { cc_initialize_cache_map(&mut file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
@@ -537,6 +553,7 @@ mod tests {
 
     #[test]
     fn cache_map_lifecycle_uses_dynamically_owned_metadata() {
+        let _test_guard = TestGuard::acquire();
         let baseline = cache_map_count();
         let mut file: FileObject = unsafe { core::mem::zeroed() };
         let mut section = crate::nt_abi::io::SECTION_OBJECT_POINTERS::default();
@@ -559,6 +576,7 @@ mod tests {
 
     #[test]
     fn cache_metadata_has_no_128_stream_or_eight_page_ceiling() {
+        let _test_guard = TestGuard::acquire();
         const STREAMS: usize = 160;
         let baseline = cache_map_count();
         let sizes = CcFileSizes { allocation_size: 1 << 20, file_size: 1 << 20, valid_data_length: 1 << 20 };
@@ -596,6 +614,7 @@ mod tests {
 
     #[test]
     fn cache_file_sizes_reject_inconsistent_ranges() {
+        let _test_guard = TestGuard::acquire();
         assert!(valid_sizes(CcFileSizes { allocation_size: 4096, file_size: 2048, valid_data_length: 1024 }));
         assert!(!valid_sizes(CcFileSizes { allocation_size: 1024, file_size: 2048, valid_data_length: 1024 }));
         assert!(!valid_sizes(CcFileSizes { allocation_size: 4096, file_size: 1024, valid_data_length: 2048 }));
