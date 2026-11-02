@@ -339,6 +339,24 @@ impl AmlTableManager {
         aml_exec::execute_method(&bytes[SDT_HEADER_SIZE..info.length as usize],&self.namespace,method_index,args)
             .map_err(TableError::MethodExecution)
     }
+    /// Read an immutable Name(Buffer(...)) object while holding the AML execution gate.
+    /// This is the safe bridge used by resource-query IRPs for static _CRS/_PRS
+    /// templates; method-returned buffers remain unsupported until AML execution
+    /// returns typed values rather than coercing every result to an integer.
+    pub fn read_named_buffer<G:AmlExecutionGate>(&self,handle:TableHandle,bytes:&[u8],node_index:u16,gate:&G,output:&mut [u8])->Result<usize,TableError>{
+        gate.enter_method().map_err(|_|TableError::ExecutionBusy)?;
+        let result=(||{
+            let info=self.table_info(handle)?;
+            let header=parse_sdt_header(bytes)?;
+            if header.length!=info.length||header.signature!=info.signature||header.checksum!=info.checksum
+                ||fingerprint(&bytes[..header.length as usize])!=info.content_fingerprint{return Err(TableError::InvalidHandle)}
+            if node_index<info.namespace_start||node_index>=info.namespace_end{return Err(TableError::InvalidHandle)}
+            crate::aml_buffer::decode_named_buffer(&bytes[SDT_HEADER_SIZE..info.length as usize],&self.namespace,node_index,output)
+                .map_err(|_|TableError::MethodExecution(ExecError::UnsupportedOpcode))
+        })();
+        gate.leave_method();
+        result
+    }
     /// Only the most recently installed table may be removed. This preserves
     /// namespace indices and prevents unloading definitions underneath later
     /// SSDTs. The execution gate must stop new method entry and drain active calls.
