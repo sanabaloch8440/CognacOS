@@ -340,10 +340,35 @@ impl AmlTableManager {
         aml_exec::execute_method(&bytes[SDT_HEADER_SIZE..info.length as usize],&self.namespace,method_index,args)
             .map_err(TableError::MethodExecution)
     }
+
+    /// Evaluate a method through the typed runtime while holding the execution
+    /// gate and validating the exact owning table. This is the method-result
+    /// path for values such as firmware-generated _CRS/_PRS/_SRS Buffers.
+    pub fn evaluate_method_value<G:AmlExecutionGate,I:AcpiMethodInvoker>(
+        &self,handle:TableHandle,bytes:&[u8],method_index:u16,gate:&G,
+        method_runtime:&mut I
+    )->Result<AcpiMethodValue,TableError>{
+        gate.enter_method().map_err(|_|TableError::ExecutionBusy)?;
+        let result=(||{
+            let info=self.table_info(handle)?;
+            let header=parse_sdt_header(bytes)?;
+            if header.length!=info.length||header.signature!=info.signature||header.checksum!=info.checksum
+                ||fingerprint(&bytes[..header.length as usize])!=info.content_fingerprint{
+                return Err(TableError::InvalidHandle)
+            }
+            if method_index<info.namespace_start||method_index>=info.namespace_end{
+                return Err(TableError::InvalidHandle)
+            }
+            method_runtime.evaluate_value(&self.namespace,&bytes[SDT_HEADER_SIZE..info.length as usize],method_index)
+                .map_err(TableError::MethodExecution)
+        })();
+        gate.leave_method();
+        result
+    }
     /// Read an immutable Name(Buffer(...)) object while holding the AML execution gate.
     /// This is the safe bridge used by resource-query IRPs for static _CRS/_PRS
-    /// templates; method-returned buffers remain unsupported until AML execution
-    /// returns typed values rather than coercing every result to an integer.
+    /// templates. Dynamic resource methods use evaluate_method_value and must
+    /// still pass their returned Buffer through the resource-template validator.
     pub fn read_named_buffer<G:AmlExecutionGate>(&self,handle:TableHandle,bytes:&[u8],node_index:u16,gate:&G,output:&mut [u8])->Result<usize,TableError>{
         gate.enter_method().map_err(|_|TableError::ExecutionBusy)?;
         let result=(||{
