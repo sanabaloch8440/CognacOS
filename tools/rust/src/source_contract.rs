@@ -43,7 +43,7 @@ pub fn check_wdm() -> Result<(), String> {
     let wdm = read_wdm_sources()?;
     let cancel = read("ntoskrnl/src/io/wdm/cancel.rs")?;
     let exports = read("ntoskrnl/src/main.rs")?;
-    let manifest = read("ntoskrnl/manifest_26100.json")?;
+    let manifest = read("ntoskrnl/src/abi/manifests/26100.json")?;
     let nt_io_abi = read("shared/nt-abi/src/io.rs")?;
     let mut errors = Vec::new();
     let lines: Vec<_> = wdm.lines().collect();
