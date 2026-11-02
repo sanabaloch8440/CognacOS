@@ -346,11 +346,14 @@ unsafe fn start_pci_device(
     let trans_desc = unsafe { translated.add(20) };
 
     let mut plan = pci::resource_manager::AllocationPlan::empty();
+    let mut translated_plan = pci::resource_manager::AllocationPlan::empty();
     let mut resource_index = 0usize;
     for req in requirements.iter().take(count).flatten() {
         let mut found = None;
+        let mut translated_base = None;
         while resource_index < raw_n {
-            let p = unsafe { raw_desc.add(resource_index * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
+            let descriptor_index = resource_index;
+            let p = unsafe { raw_desc.add(descriptor_index * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
             let kind = unsafe { *p };
             let start = unsafe { core::ptr::read_unaligned(p.add(4).cast::<u64>()) };
             let length = unsafe { core::ptr::read_unaligned(p.add(12).cast::<u32>()) } as u64;
@@ -366,7 +369,17 @@ unsafe fn start_pci_device(
                     || (req.kind == pci::resources::BarKind::Memory32 && end > (1u64 << 32)) {
                     return STATUS_DEVICE_CONFIGURATION_ERROR;
                 }
+                let translated_p = unsafe { trans_desc.add(descriptor_index * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
+                let translated_start = unsafe { core::ptr::read_unaligned(translated_p.add(4).cast::<u64>()) };
+                let translated_length = unsafe { core::ptr::read_unaligned(translated_p.add(12).cast::<u32>()) } as u64;
+                let translated_end = match translated_start.checked_add(translated_length) { Some(v) => v, None => return STATUS_DEVICE_CONFIGURATION_ERROR };
+                if translated_length < req.length || translated_start % req.alignment != 0
+                    || (is_io && translated_end > 0x1_0000)
+                    || (req.kind == pci::resources::BarKind::Memory32 && translated_end > (1u64 << 32)) {
+                    return STATUS_DEVICE_CONFIGURATION_ERROR;
+                }
                 found = Some(start);
+                translated_base = Some(translated_start);
                 break;
             }
         }
@@ -374,12 +387,17 @@ unsafe fn start_pci_device(
         plan.assignments[plan.count] = Some(pci::resource_manager::BarAssignment {
             index: req.index, kind: req.kind, base, length: req.length, prefetchable: req.prefetchable,
         });
+        translated_plan.assignments[translated_plan.count] = Some(pci::resource_manager::BarAssignment {
+            index: req.index, kind: req.kind, base: translated_base.ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?,
+            length: req.length, prefetchable: req.prefetchable,
+        });
         plan.count += 1;
+        translated_plan.count += 1;
     }
     // Decode IDE command/control and bus-master BARs from the exact resources
     // accepted by PnP. Native-mode channels never fall back to legacy ports.
     let ide_ports = if function.header.is_ide_controller() {
-        match pci::ide::resolve_ide_ports(function.header.programming_interface, &plan) {
+        match pci::ide::resolve_ide_ports(function.header.programming_interface, &translated_plan) {
             Ok(ports) => Some(ports),
             Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
         }
