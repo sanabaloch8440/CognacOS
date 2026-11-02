@@ -139,8 +139,9 @@ fn find_object(ns:&AmlNamespace,device:u16,name:[u8;4])->Result<Option<u16>,Iden
     let Some(found)=ns.find_child(device,name) else{return Ok(None)};
     Ok(Some(ns.resolve_alias(found).map_err(|_|IdentityError::MalformedObject)?))
 }
-fn evaluate_object<'a>(ns:&AmlNamespace,aml:&'a [u8],node:u16,invoker:&mut impl AcpiMethodInvoker)->Result<IdentityValue,IdentityError>{
+fn evaluate_object(ns:&AmlNamespace,aml_tables:&[&[u8]],node:u16,invoker:&mut impl AcpiMethodInvoker)->Result<IdentityValue,IdentityError>{
     let object=ns.nodes.get(node as usize).filter(|_|(node as usize)<ns.count).ok_or(IdentityError::MalformedObject)?;
+    let aml=aml_tables.get(object.source_table as usize).copied().ok_or(IdentityError::MalformedObject)?;
     match object.object_type{
         AmlObjectType::Name=>convert_data(data_value(aml,object)?),
         AmlObjectType::Method=>{match invoker.evaluate_value(ns,aml,node).map_err(IdentityError::Method)?{
@@ -151,8 +152,8 @@ fn evaluate_object<'a>(ns:&AmlNamespace,aml:&'a [u8],node:u16,invoker:&mut impl 
         _=>Err(IdentityError::UnsupportedObject),
     }
 }
-fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<IdentityValue>,IdentityError>{
-    match find_object(ns,device,name)?{Some(id)=>Ok(Some(evaluate_object(ns,aml,id,invoker)?)),None=>Ok(None)}
+fn eval_optional(ns:&AmlNamespace,aml_tables:&[&[u8]],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<IdentityValue>,IdentityError>{
+    match find_object(ns,device,name)?{Some(id)=>Ok(Some(evaluate_object(ns,aml_tables,id,invoker)?)),None=>Ok(None)}
 }
 /// Evaluate _HID, _CID, _UID, _STA and _ADR for one namespace device.
 ///
@@ -161,9 +162,9 @@ fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoke
 /// integer zero; _ADR remains absent when not defined. _CID accepts a single
 /// ID or a Package of IDs. String IDs are returned verbatim; integer IDs are
 /// decoded from ACPI EISAID encoding.
-pub fn evaluate_device_identity(ns:&AmlNamespace,aml:&[u8],device:u16,invoker:&mut impl AcpiMethodInvoker)->Result<AcpiDeviceIdentity,IdentityError>{
+pub fn evaluate_device_identity(ns:&AmlNamespace,aml_tables:&[&[u8]],device:u16,invoker:&mut impl AcpiMethodInvoker)->Result<AcpiDeviceIdentity,IdentityError>{
     let mut out=AcpiDeviceIdentity::EMPTY;
-    if let Some(hid)=eval_optional(ns,aml,device,*b"_HID",invoker)?{
+    if let Some(hid)=eval_optional(ns,aml_tables,device,*b"_HID",invoker)?{
         out.hid=id_from_value(hid)?;out.has_hid=true;
     }
     if let Some(cid)=eval_optional(ns,aml,device,*b"_CID",invoker)?{
@@ -191,6 +192,7 @@ pub fn evaluate_device_identity(ns:&AmlNamespace,aml:&[u8],device:u16,invoker:&m
 mod tests{
     use super::*;
     use crate::aml::load_definition_block;
+    fn one_table<'a>(aml:&'a [u8])->[&'a [u8];1]{[aml]}
     fn add_string(aml:&mut std::vec::Vec<u8>,name:[u8;4],value:&[u8]){
         aml.push(0x08);aml.extend_from_slice(&name);aml.push(0x0d);aml.extend_from_slice(value);aml.push(0);
     }
@@ -205,7 +207,7 @@ mod tests{
         aml[2]=package_length;
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
-        let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
+        let result=evaluate_device_identity(&ns,&one_table(&aml),dev,&mut IntegerMethodInvoker).unwrap();
         assert_eq!(result.hid.as_bytes(),b"ACME0001");
         assert_eq!(result.compatible_ids[0].as_bytes(),b"ACME0002");
         assert_eq!(result.uid,Some(3));assert_eq!(result.adr,Some(0x1234));
