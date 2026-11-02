@@ -211,7 +211,7 @@ mod tests {
         table[50..54].copy_from_slice(&2u32.to_le_bytes()); // proximity domain
         table[56..64].copy_from_slice(&0x10_0000u64.to_le_bytes());
         table[64..72].copy_from_slice(&0x20_0000u64.to_le_bytes());
-        table[76..80].copy_from_slice(&1u32.to_le_bytes()); // enabled
+        table[76..80].copy_from_slice(&7u32.to_le_bytes()); // enabled, hot-pluggable, non-volatile
         table[88] = 0; // Processor Local APIC Affinity
         table[89] = 16;
         table[90] = 2; // proximity domain 2
@@ -228,6 +228,12 @@ mod tests {
         assert_eq!(parse_srat(&table), Ok(1));
         assert_eq!(memory_node_count(), 3);
         assert_eq!(node_for_range(0x10_1000, 0x1000), Some(2));
+        assert_eq!(memory_attributes(0x10_1000), Some((2, true, true)));
+        assert_eq!(memory_attributes(0x40_0000), None);
+        let mut all_ranges = [(0u64, 0u64); MAX_RANGES];
+        assert_eq!(memory_ranges_for_node(2, &mut all_ranges), 1);
+        let mut allocatable = [(0u64, 0u64); MAX_RANGES];
+        assert_eq!(allocatable_memory_ranges_for_node(2, &mut allocatable), 0);
         assert_eq!(node_for_range(0x2f_f000, 0x2000), None);
         assert_eq!(node_for_apic_id(7), Some(2));
         assert_eq!(node_for_apic_id(8), None);
