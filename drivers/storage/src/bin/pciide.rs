@@ -15,8 +15,8 @@ use cognacos_nt_abi::{
     types::PVOID,
 };
 use cognacos_storage::pciidex::{
-    parse_translated_resources, AssignedResource, ControllerState, IdeResourceSet,
-    PciIdeController, PciIdeIdentity, ResourceKind,
+    parse_translated_resources, ControllerState, IdeResourceSet,
+    PciIdeController, PciIdeIdentity,
 };
 
 const IRP_MJ_MAXIMUM_FUNCTION: usize = 27;
