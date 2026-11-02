@@ -115,7 +115,30 @@ fn skip_data_object(c:&mut Cursor<'_>)->Result<(),AmlError>{
 fn package_length_bytes(bytes:&[u8],offset:usize,limit:usize)->Result<usize,AmlError>{
     let lead=*bytes.get(offset).filter(|_|offset<limit).ok_or(AmlError::Truncated)?;Ok(1+(lead>>6) as usize)
 }
-fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Result<(),AmlError>{
+
+fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(),AmlError>{
+    while c.pos<c.end{
+        let op=c.byte()?;
+        match op{
+            0x00=>{let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;c.pos=end;}
+            0x01=>{c.take(2)?;}
+            0x02=>{skip_data_object(c)?;}
+            0x03=>{c.take(3)?;}
+            _=>{
+                c.pos-=1;
+                let seg=c.take(4)?;
+                if !valid_name_seg(seg){return Err(AmlError::BadName)}
+                let mut name=[0;4];name.copy_from_slice(seg);
+                let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
+                let len=end-c.pos;
+                ns.insert(parent,name,AmlObjectType::Field,0,c.pos,len)?;
+                c.pos=end;
+            }
+        }
+    }
+    Ok(())
+}
+\nfn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Result<(),AmlError>{
     if depth>32{return Err(AmlError::BadDefinitionBlock)}
     while c.pos<c.end{
         let op=c.byte()?;
@@ -149,26 +172,40 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
             0x5b=>{
                 let ext=c.byte()?;
                 match ext{
-                    0x82|0x83|0x84|0x85|0x86|0x87=>{
+                    0x01=>{let name=parse_name(c)?;let _sync=c.byte()?;resolve_path(ns,parent,&name,true,AmlObjectType::Mutex,0,0,0)?;}
+                    0x02=>{let name=parse_name(c)?;resolve_path(ns,parent,&name,true,AmlObjectType::Event,0,0,0)?;}
+                    0x80=>{
+                        let name=parse_name(c)?;let space=c.byte()?;let start=c.pos;
+                        skip_data_object(c)?;skip_data_object(c)?;
+                        resolve_path(ns,parent,&name,true,AmlObjectType::OperationRegion,start,c.pos-start,space)?;
+                    }
+                    0x81|0x86|0x87=>{
                         let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
-                        let pkg_len_bytes=package_length_bytes(c.bytes,c.pos,c.end)?;
-                        let mut sub=Cursor{bytes:c.bytes,pos:c.pos+pkg_len_bytes,end};
+                        let plen=package_length_bytes(c.bytes,c.pos,c.end)?;
+                        let mut sub=Cursor{bytes:c.bytes,pos:c.pos+plen,end};
+                        let region=parse_name(&mut sub)?;
+                        if ext==0x86{let _=parse_name(&mut sub)?;}
+                        if ext==0x87{let _=parse_name(&mut sub)?;skip_data_object(&mut sub)?;}
+                        let _flags=sub.byte()?;
+                        let node=resolve_path(ns,parent,&region,true,if ext==0x81{AmlObjectType::Field}else if ext==0x86{AmlObjectType::IndexField}else{AmlObjectType::BankField},0,0,0)?;
+                        parse_field_list(&mut sub,ns,node)?;
+                        c.pos=end;
+                    }
+                    0x82|0x83|0x84|0x85=>{
+                        let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
+                        let plen=package_length_bytes(c.bytes,c.pos,c.end)?;
+                        let mut sub=Cursor{bytes:c.bytes,pos:c.pos+plen,end};
                         let name=parse_name(&mut sub)?;
-                        let kind=match ext{0x82=>AmlObjectType::Device,0x83=>AmlObjectType::Processor,0x85=>AmlObjectType::ThermalZone,0x84=>AmlObjectType::PowerResource,0x86=>AmlObjectType::Field,_=>AmlObjectType::IndexField};
+                        let kind=match ext{0x82=>AmlObjectType::Device,0x83=>AmlObjectType::Processor,0x84=>AmlObjectType::PowerResource,_=>AmlObjectType::ThermalZone};
                         let node=resolve_path(ns,parent,&name,true,kind,0,0,0)?;
-                        if ext==0x83{sub.take(6)?;}
+                        match ext{0x83=>{sub.take(6)?;},0x84=>{sub.take(3)?;},_=>{}}
                         parse_terms(&mut sub,ns,node,depth+1)?;
                         c.pos=end;
                     }
-                    0x84=>{
-                        let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
-                        let pkg_len_bytes=package_length_bytes(c.bytes,c.pos,c.end)?;
-                        let mut sub=Cursor{bytes:c.bytes,pos:c.pos+pkg_len_bytes,end};
-                        let name=parse_name(&mut sub)?;sub.take(3)?;
-                        let node=resolve_path(ns,parent,&name,true,AmlObjectType::PowerResource,0,0,0)?;
-                        parse_terms(&mut sub,ns,node,depth+1)?;c.pos=end;
-                    }
                     _=>return Err(AmlError::UnsupportedOpcode)
+                }
+            }
+            _=>return Err(AmlError::UnsupportedOpcode)
                 }
             }
             _=>return Err(AmlError::UnsupportedOpcode)
