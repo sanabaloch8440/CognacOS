@@ -141,7 +141,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
 
 
 /// Maximum number of complete configurations represented by one _PRS template.
-pub const MAX_RESOURCE_ALTERNATIVES: usize = 16;
+pub const MAX_RESOURCE_ALTERNATIVES: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceAlternatives {
