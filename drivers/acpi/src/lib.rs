@@ -245,7 +245,10 @@ pub fn parse_rsdp(bytes: &[u8]) -> Result<RsdpRoots, AcpiError> {
 }
 
 const MAX_ACPI_TABLE_LENGTH: usize = 1024 * 1024;
-const LOW_IDENTITY_LIMIT: u64 = 0x1_0000_0000;
+// CognacOS x64 bootstrap paging identity-maps the first 64 GiB. Firmware
+// discovery uses this early mapping only; runtime users should prefer the
+// AcpiPhysicalMapper interface for platform-managed mappings.
+const LOW_IDENTITY_LIMIT: u64 = 0x10_0000_0000;
 
 /// Follow the firmware-provided RSDP to an RSDT/XSDT and locate the MADT.
 /// The bootstrap identity-maps only 0..4 GiB, so physical ranges are checked
