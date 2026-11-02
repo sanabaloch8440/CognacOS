@@ -19,7 +19,7 @@ unsafe fn w16(p:*mut u8,o:usize,v:u16){unsafe{p.add(o).cast::<u16>().write_unali
 unsafe fn w32(p:*mut u8,o:usize,v:u32){unsafe{p.add(o).cast::<u32>().write_unaligned(v)}}
 unsafe fn w64(p:*mut u8,o:usize,v:u64){unsafe{p.add(o).cast::<u64>().write_unaligned(v)}}
 unsafe fn desc(out:*mut u8,i:usize,t:u8,s:u8,f:u16,a:u64,b:u64,c:u64){let p=unsafe{out.add(i*16)};unsafe{p.write(t);p.add(1).write(s);w16(p,2,f);}
- match t{TYPE_INTERRUPT=>unsafe{w32(p,4,a as u32);w32(p,8,b as u32);w64(p,12,c);},TYPE_DMA=>unsafe{w32(p,4,a as u32);w32(p,8,b as u32);w32(p,12,c as u32);},_=>unsafe{w64(p,4,a);w32(p,12,b as u32);}}
+ match t{TYPE_INTERRUPT=>unsafe{w32(p,4,a as u32);w32(p,8,b as u32);w64(p,12,c);},TYPE_DMA|TYPE_BUS_NUMBER=>unsafe{w32(p,4,a as u32);w32(p,8,b as u32);w32(p,12,c as u32);},_=>unsafe{w64(p,4,a);w32(p,12,b as u32);}}
 }
 /// Write a one-FULL_DESCRIPTOR CM_RESOURCE_LIST into caller-owned kernel storage.
 pub unsafe fn serialize(r:&ResourceList,out:*mut u8,capacity:usize)->Result<usize,SerializeError>{
