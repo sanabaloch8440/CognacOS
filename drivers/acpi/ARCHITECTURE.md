@@ -155,8 +155,10 @@ resources based on this milestone alone.
 
 The ACPI PDO creation path now registers each child with the kernel's generic
 PnP devnode table through `IoPnPRegisterBusDevice`, using the AML namespace-node
-identity as its stable enumerator-scoped key. The WDM BusRelations database and
-the generic devnode table each retain their own PDO reference. This establishes
+identity as its stable enumerator-scoped key. The resulting devnode index is
+retained in the ACPI PDO extension for later resource-assignment handoff. The
+WDM BusRelations database and the generic devnode table each retain their own
+PDO reference. This establishes
 the identity/lifetime bridge only: it does not yet select `_PRS` resources,
 translate assignments into raw/translated `CM_RESOURCE_LIST` objects, invoke
 `_SRS`, or authorize child START_DEVICE success.
