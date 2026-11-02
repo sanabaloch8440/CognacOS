@@ -405,7 +405,7 @@ mod tests {
             0x08,b'_',b'H',b'I',b'D',0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0,
             0x08,b'_',b'S',b'T',b'A',0x0a,0x0f]);
         aml[2]=(aml.len()-2) as u8;
-        let length=36+aml.len();let mut table=std::vec::vec![0u8;length];
+        let length=36+aml.len();let mut table=std::vec![0u8;length];
         table[0..4].copy_from_slice(b"DSDT");table[4..8].copy_from_slice(&(length as u32).to_le_bytes());
         table[8]=2;table[10..16].copy_from_slice(b"COGNAC");table[16..24].copy_from_slice(b"AMLTEST ");
         table[24..28].copy_from_slice(&1u32.to_le_bytes());table[28..32].copy_from_slice(b"COGN");
