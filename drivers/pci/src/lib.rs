@@ -725,3 +725,63 @@ impl resources::ConfigAccess for EcamFunctionConfig<'_> {
             .map_err(|_|resources::ResourceError::Config)
     }
 }
+
+
+/// Global PCI configuration transaction lock.
+///
+/// PCI BAR sizing and assignment temporarily rewrite multiple configuration
+/// registers; serializing individual ECAM reads/writes is insufficient. Hold
+/// this guard across the complete read/modify/write/rollback sequence. The
+/// lock is intentionally non-recursive and does not spin forever: callers in
+/// interrupt context must not acquire it.
+static PCI_CONFIG_BUSY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigLockError { Busy }
+
+pub struct PciConfigTransactionGuard {
+    _private: (),
+}
+impl Drop for PciConfigTransactionGuard {
+    fn drop(&mut self) {
+        PCI_CONFIG_BUSY.store(false, Ordering::Release);
+    }
+}
+
+/// Acquire exclusive ownership for a complete multi-register PCI config
+/// transaction. A busy result is returned instead of spinning indefinitely.
+pub fn try_acquire_config_transaction() -> Result<PciConfigTransactionGuard, ConfigLockError> {
+    PCI_CONFIG_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map(|_| PciConfigTransactionGuard { _private: () })
+        .map_err(|_| ConfigLockError::Busy)
+}
+
+/// Run BAR sizing/assignment under exclusive configuration-space ownership.
+/// This is the preferred entry point for resource operations in passive PnP
+/// context; it guarantees release on every normal return path.
+pub fn with_config_transaction<T>(
+    operation: impl FnOnce() -> T,
+) -> Result<T, ConfigLockError> {
+    let _guard = try_acquire_config_transaction()?;
+    Ok(operation())
+}
+
+#[cfg(test)]
+mod config_transaction_lock_tests {
+    use super::*;
+    #[test]
+    fn transaction_lock_is_exclusive_and_released_on_drop() {
+        let guard = try_acquire_config_transaction().unwrap();
+        assert_eq!(try_acquire_config_transaction().err(), Some(ConfigLockError::Busy));
+        drop(guard);
+        assert!(try_acquire_config_transaction().is_ok());
+    }
+
+    #[test]
+    fn transaction_wrapper_releases_lock_after_operation() {
+        let result = with_config_transaction(|| 41usize + 1).unwrap();
+        assert_eq!(result, 42);
+        assert!(try_acquire_config_transaction().is_ok());
+    }
+}
