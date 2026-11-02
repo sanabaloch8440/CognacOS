@@ -96,6 +96,7 @@ pub fn size_bars<C: ConfigAccess>(
                 BarKind::Memory32 => (mask_low & !0xf) as u64,
                 BarKind::Memory64 => ((mask_high as u64) << 32) | (mask_low as u64 & !0xf),
             };
+            if mask == 0 { index += if kind == BarKind::Memory64 { 2 } else { 1 }; continue; }
             let length = match kind {
                 BarKind::Memory64 => (!mask).wrapping_add(1),
                 _ => ((!mask) & 0xffff_ffff).wrapping_add(1),
