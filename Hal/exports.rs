@@ -410,7 +410,8 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
             Ok(value)=>value,Err(_)=>return STATUS_INVALID_PARAMETER,
         };
         let address=info.effective_dsdt();
-        const LOW_LIMIT:u64=0x1_0000_0000;
+        // The x64 bootstrap page tables identity-map the first 64 GiB.
+        const LOW_LIMIT:u64=0x10_0000_0000;
         if address==0||address.checked_add(36).is_none_or(|end|end>LOW_LIMIT){
             return STATUS_INVALID_PARAMETER;
         }
