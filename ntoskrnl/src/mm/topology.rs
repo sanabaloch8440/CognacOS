@@ -30,6 +30,9 @@ fn table_body<'a>(table:&'a [u8],sig:&[u8;4])->Result<&'a [u8],TopologyError>{
 }
 /// Parse a mapped ACPI SRAT table. Publishes only after full validation.
 pub fn parse_srat(table:&[u8])->Result<usize,TopologyError>{
+ // Share the ACPI driver's revision-aware SDT and SRAT record validation;
+ // retain kernel-specific overlap, page-alignment and publication checks below.
+ cognacos_acpi::parse_srat(table).map_err(|e|match e{cognacos_acpi::AcpiError::TooManyEntries=>TopologyError::Capacity,_=>TopologyError::InvalidTable})?;
  let t=table_body(table,SRAT_SIG)?; if t.len()<48{return Err(TopologyError::InvalidTable)}
  let mut ranges=[MemoryRange::EMPTY;MAX_RANGES]; let mut count=0usize;
  let mut processors=[ProcessorAffinity::EMPTY;MAX_PROCESSOR_AFFINITIES]; let mut processor_count=0usize;
@@ -66,6 +69,9 @@ pub fn parse_srat(table:&[u8])->Result<usize,TopologyError>{
 }
 /// Parse ACPI SLIT; SRAT and SLIT are independently validated.
 pub fn parse_slit(table:&[u8])->Result<usize,TopologyError>{
+ // The ACPI parser enforces exact matrix extent and architectural distance
+ // constraints before this kernel-owned matrix is atomically published.
+ cognacos_acpi::parse_slit(table).map_err(|e|match e{cognacos_acpi::AcpiError::TooManyEntries=>TopologyError::Capacity,_=>TopologyError::InvalidTable})?;
  let t=table_body(table,SLIT_SIG)?;let n=u64at(t,36).ok_or(TopologyError::InvalidTable)? as usize;
  let bytes=n.checked_mul(n).ok_or(TopologyError::Capacity)?;
  if n==0||n>MAX_NODES||44usize.checked_add(bytes).filter(|e|*e<=t.len()).is_none(){return Err(TopologyError::InvalidTable)}
