@@ -427,7 +427,7 @@ mod tests {
         let handle=manager.load_dsdt(&dsdt,&gate).unwrap();
         let device=manager.namespace().find_child(0,*b"DEV0").unwrap();
         let mut methods=crate::acpi_device::IntegerMethodInvoker;
-        let identity=manager.evaluate_device_identity(handle,&dsdt,device,&gate,&mut methods).unwrap();
+        let identity=manager.evaluate_device_identity(handle,&[dsdt.as_slice()],device,&gate,&mut methods).unwrap();
         assert!(identity.has_hid);assert_eq!(identity.hid.as_bytes(),b"ACME0001");
         assert_eq!(identity.sta,crate::acpi_device::DEVICE_STATUS_DEFAULT);
     }
