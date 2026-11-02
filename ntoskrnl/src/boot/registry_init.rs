@@ -88,7 +88,7 @@ pub(crate) fn initialize_system_registry(
         )
     };
     metadata.fill(BootServiceMetadata {
-        tag: None, group: [0; 128], group_len: 0,
+        start_type: 0, tag: None, group: [0; 128], group_len: 0,
         service_dependencies: [0; 512], service_dependencies_len: 0,
         group_dependencies: [0; 512], group_dependencies_len: 0,
     });
