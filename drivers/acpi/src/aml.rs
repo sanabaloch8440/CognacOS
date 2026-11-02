@@ -448,8 +448,8 @@ mod tests{
         assert_eq!(ns.find_child(1,*b"_HID"),Some(2));
     }
     #[test]fn resolves_unprefixed_names_through_ancestor_scopes(){
-        let aml=[0x10,0x08,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
-                 0x10,0x08,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
+        let aml=[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
+                 0x10,0x0b,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let parent=ns.find_child(0,*b"PAR0").unwrap();let child=ns.find_child(parent,*b"CHD0").unwrap();
         let name=AmlName{segments:[*b"VAL0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:0};
@@ -556,8 +556,8 @@ mod tests{
                  0x10,0x08,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let child=ns.find_child(ns.find_child(0,*b"PAR0").unwrap(),*b"CHD0").unwrap();
-        let rooted=AmlName{segments:[*b"VAL0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:true,parents:0};
-        assert_eq!(resolve_name_string(&ns,child,&rooted),Ok(ns.find_child(1,*b"VAL0").unwrap()));
+        let rooted=AmlName{segments:[*b"PAR0",*b"VAL0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:2,rooted:true,parents:0};
+        assert_eq!(resolve_name_string(&ns,child,&rooted),Ok(ns.find_child(ns.find_child(0,*b"PAR0").unwrap(),*b"VAL0").unwrap()));
         let missing=AmlName{segments:[*b"MISS",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:1};
         assert_eq!(resolve_name_string(&ns,child,&missing),Err(AmlError::InvalidParent));
     }
