@@ -4,6 +4,7 @@
 
 pub mod aml;
 pub mod aml_exec;
+pub mod aml_objects;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
