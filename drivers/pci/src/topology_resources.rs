@@ -240,9 +240,25 @@ pub fn plan_hierarchy_rebalance(
             parents[index]=parent;seen[index]=true;
             if let Some(p)=parent { if p as usize>=index{return Err(HierarchyError::InvalidPath)} }
         }
+        let mut allowed=[Aperture{start:0,length:0,kind:BarKind::Io,prefetchable:false};64];
+        let mut allowed_count=0usize;
+        for aperture in host_apertures.iter().copied(){
+            if depth>0 && aperture.kind==BarKind::Memory64 && !aperture.prefetchable {
+                // Type-1 bridges have a 32-bit non-prefetchable memory window.
+                // A 64-bit BAR may still be placed below 4 GiB and forwarded.
+                if aperture.start>=1u64<<32 { continue; }
+                let end=aperture.start.checked_add(aperture.length).ok_or(HierarchyError::InvalidRequirement)?.min(1u64<<32);
+                if end>aperture.start {
+                    allowed[allowed_count]=Aperture{start:aperture.start,length:end-aperture.start,kind:BarKind::Memory32,prefetchable:false};
+                    allowed_count+=1;
+                }
+            }else{
+                allowed[allowed_count]=aperture;allowed_count+=1;
+            }
+        }
         let mut plan=AllocationPlan::empty();
         resource_manager::allocate_all(
-            &request.requirements,request.requirement_count,host_apertures,
+            &request.requirements,request.requirement_count,&allowed[..allowed_count],
             &occupied[..occupied_count],&mut plan,
         )?;
         for assignment in plan.assignments[..plan.count].iter().flatten(){
