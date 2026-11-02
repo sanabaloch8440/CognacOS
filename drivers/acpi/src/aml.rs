@@ -192,10 +192,44 @@ fn skip_data_object_depth(c:&mut Cursor<'_>,depth:u8)->Result<(),AmlError>{
             c.pos=end;
             Ok(())
         }
+        0x60..=0x6e=>Ok(()), // Local0..Local7 and Arg0..Arg6
+        // Integer and logical TermArgs used by BufferSize and package
+        // expressions. Parsing validates operand and target boundaries; the
+        // executor independently decides which operations it can evaluate.
+        0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f
+        |0x85|0x90|0x91|0x93|0x94|0x95=>{
+            skip_data_object_depth(c,depth+1)?;
+            skip_data_object_depth(c,depth+1)?;
+            if matches!(op,0x90|0x91|0x93|0x94|0x95){Ok(())}
+            else{skip_target(c)}
+        }
+        0x78=>{ // Divide has quotient and remainder targets.
+            skip_data_object_depth(c,depth+1)?;
+            skip_data_object_depth(c,depth+1)?;
+            skip_target(c)?;skip_target(c)
+        }
+        0x80=>{skip_data_object_depth(c,depth+1)?;skip_target(c)}
+        0x83|0x92=>skip_data_object_depth(c,depth+1),
+        0x88=>{ // Index(Source, Index, Target)
+            skip_data_object_depth(c,depth+1)?;
+            skip_data_object_depth(c,depth+1)?;
+            skip_target(c)
+        }
         0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
             c.pos-=1;let _=parse_name(c)?;Ok(())
         }
         _=>Err(AmlError::UnsupportedOpcode)
+    }
+}
+
+fn skip_target(c:&mut Cursor<'_>)->Result<(),AmlError>{
+    let op=c.byte()?;
+    match op{
+        0x00|0x60..=0x6e=>Ok(()),
+        0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
+            c.pos-=1;let _=parse_name(c)?;Ok(())
+        }
+        _=>Err(AmlError::UnsupportedOpcode),
     }
 }
 
