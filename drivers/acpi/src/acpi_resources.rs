@@ -296,3 +296,11 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&[0x30, 0x79, 0]), Err(ResourceError::UnsupportedDescriptor));
  }
 }
+
+
+#[cfg(test)] mod stability_23_truncated_large_header {
+ use super::*;
+ #[test] fn rejects_large_header_missing_length_byte() {
+  assert_eq!(parse_resource_template(&[0x8a, 0x2b]), Err(ResourceError::Truncated));
+ }
+}
