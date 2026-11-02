@@ -137,8 +137,7 @@ unsafe fn initialize_registry_boot_drivers(
     // recoverable "continue boot" signal. LastKnownGood rollback is not yet
     // implemented, so the only honest policy is to stop before enumeration.
     if report.fatal_service.is_some() {
-        return Err(driver_init::DriverInitError::Schedule(
-            crate::ntoskrnl::driver_order::ScheduleError::Cycle));
+        return Err(driver_init::DriverInitError::FatalService(report.fatal_service.unwrap_or(usize::MAX)));
     }
     let _already_initialized = records[..count].iter()
         .filter(|record| matches!(record.status, DriverInitStatus::AlreadyInitialized)).count();
