@@ -760,8 +760,8 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
         let d=bytes.get(off+3..end).ok_or(AcpiError::Truncated)?;
         let parsed=match tag {
             0x88 if len>=13=>Some((0usize,1usize,3usize,5usize,7usize,9usize)), // Word address
-            0x87 if len>=23=>Some((0usize,1usize,4usize,7usize,11usize,15usize)), // DWord address
-            0x8a if len>=43=>Some((0usize,1usize,8usize,11usize,19usize,27usize)), // QWord address
+            0x87 if len>=23=>Some((0usize,1usize,4usize,4usize,8usize,12usize)), // DWord address
+            0x8a if len>=43=>Some((0usize,1usize,8usize,4usize,12usize,20usize)), // QWord address
             _=>None,
         };
         if let Some((typ_off,flags_off,width,gran_off,min_off,max_off))=parsed{
@@ -769,8 +769,8 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
             if resource_type<=2 {
                 let minimum=read_width(d,min_off,width)?;
                 let maximum=read_width(d,max_off,width)?;
-                let translation=read_width(d,max_off+width,width)?;
-                let length=read_width(d,max_off+2*width,width)?;
+                let translation=read_width(d,max_off+2*width,width)?;
+                let length=read_width(d,max_off+3*width,width)?;
                 if length==0||maximum<minimum{return Err(AcpiError::MalformedEntry)}
                 let last=minimum.checked_add(length-1).ok_or(AcpiError::AddressOutOfRange)?;
                 if last>maximum{return Err(AcpiError::MalformedEntry)}
