@@ -115,6 +115,15 @@ fn parse_name(c:&mut Cursor<'_>)->Result<AmlName,AmlError>{
     }
     n.count=count as u8;Ok(n)
 }
+/// Parse one AML NameString at `offset`, returning its decoded path and the
+/// first byte after it. This is shared by namespace lookup and method execution.
+pub fn parse_name_string(bytes:&[u8],offset:usize,limit:usize)->Result<(AmlName,usize),AmlError>{
+    if offset>limit||limit>bytes.len(){return Err(AmlError::Truncated)}
+    let mut cursor=Cursor{bytes,pos:offset,end:limit};
+    let name=parse_name(&mut cursor)?;
+    Ok((name,cursor.pos))
+}
+
 fn resolve_parent(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
     let mut p=if n.rooted{0}else{current};
     for _ in 0..n.parents{p=ns.nodes.get(p as usize).ok_or(AmlError::InvalidParent)?.parent;}
