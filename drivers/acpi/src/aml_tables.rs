@@ -200,6 +200,40 @@ mod tests {
         b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
         b
     }
+    fn method_table()->[u8;46]{
+        let mut b=[0u8;46];
+        b[0..4].copy_from_slice(b"DSDT");
+        b[4..8].copy_from_slice(&(46u32).to_le_bytes());
+        b[8]=2;b[10..16].copy_from_slice(b"COGNAC");
+        b[16..24].copy_from_slice(b"AMLTEST ");
+        b[24..28].copy_from_slice(&1u32.to_le_bytes());
+        b[28..32].copy_from_slice(b"COGN");
+        b[32..36].copy_from_slice(&1u32.to_le_bytes());
+        b[36..46].copy_from_slice(&[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7]);
+        b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
+        b
+    }
+    #[test]
+    fn method_dispatch_uses_owning_table_and_rejects_foreign_nodes(){
+        let dsdt=method_table();let mut manager=AmlTableManager::new();let mut gate=gate();
+        let handle=manager.load_dsdt(&dsdt,&mut gate).unwrap();
+        let method=manager.namespace().find_child(0,*b"TEST").unwrap();
+        assert_eq!(manager.execute_method(handle,&dsdt,method,&[]),Ok(AmlValue::Integer(7)));
+        assert_eq!(manager.execute_method(handle,&dsdt,0,&[]),Err(TableError::InvalidHandle));
+    }
+    #[test]
+    fn table_mutation_requires_execution_quiescence(){
+        let dsdt=table(*b"DSDT",*b"BASE",1);let mut manager=AmlTableManager::new();
+        let mut gate=TestGate{busy:true,entered:false};
+        assert_eq!(manager.load_dsdt(&dsdt,&mut gate),Err(TableError::ExecutionBusy));
+        assert_eq!(manager.table_count(),0);assert!(!gate.entered);
+        gate.busy=false;
+        let handle=manager.load_dsdt(&dsdt,&mut gate).unwrap();
+        assert!(!gate.entered);
+        manager.unload(handle,&mut gate).unwrap();
+        assert!(!gate.entered);
+    }
+
     #[test]
     fn loads_dsdt_then_ssdt_and_unloads_in_reverse(){
         let dsdt=table(*b"DSDT",*b"BASE",1);
@@ -211,7 +245,7 @@ mod tests {
         assert_eq!(manager.table_count(),2);
         assert!(manager.dsdt_loaded());
         assert!(manager.namespace().find_child(0,*b"BASE").is_some());
-        assert!(manager.namespace.find_child(0,*b"EXTR").is_some());
+        assert!(manager.namespace().find_child(0,*b"EXTR").is_some());
         assert_eq!(manager.unload(base,&mut gate),Err(TableError::UnloadOrder));
         manager.unload(extra,&mut gate).unwrap();
         manager.unload(base,&mut gate).unwrap();
