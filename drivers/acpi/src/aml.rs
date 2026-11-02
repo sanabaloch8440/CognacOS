@@ -130,6 +130,25 @@ fn resolve_parent(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>
     Ok(p)
 }
 
+/// Resolve a NameString using AML namespace search rules. Rooted and explicit
+/// parent paths are exact; unprefixed paths search successive ancestor scopes.
+pub fn resolve_name_string(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
+    if current as usize>=ns.count{return Err(AmlError::InvalidParent)}
+    if n.count==0{return Ok(resolve_parent(ns,current,n)?)}
+    let mut candidate=resolve_parent(ns,current,n)?;
+    let explicit=n.rooted||n.parents!=0;
+    loop {
+        if let Some(mut found)=ns.find_child(candidate,n.segments[0]) {
+            for segment in n.segments.iter().take(n.count as usize).skip(1){
+                found=ns.find_child(found,*segment).ok_or(AmlError::InvalidParent)?;
+            }
+            return Ok(found);
+        }
+        if explicit||candidate==0{return Err(AmlError::InvalidParent)}
+        candidate=ns.nodes.get(candidate as usize).ok_or(AmlError::InvalidParent)?.parent;
+    }
+}
+
 fn lookup_path(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
     if n.count==0{return Ok(if n.rooted{0}else{current})}
     let start=resolve_parent(ns,current,n)?;
