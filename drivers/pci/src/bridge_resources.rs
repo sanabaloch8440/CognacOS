@@ -73,14 +73,15 @@ pub fn intersect_path(host:&[Aperture],ancestors:&[BridgeWindows],out:&mut[Apert
         for current in staged[..count].iter().copied(){
             let candidate=match current.kind{
                 BarKind::Io=>bridge.io,
-                BarKind::Memory32 if current.prefetchable=>bridge.prefetchable,
-                BarKind::Memory32=>bridge.memory,
-                BarKind::Memory64=>bridge.prefetchable,
+                BarKind::Memory32|BarKind::Memory64 if current.prefetchable=>bridge.prefetchable,
+                BarKind::Memory32|BarKind::Memory64=>bridge.memory,
             };
             let Some(window)=candidate else{continue};
             let compatible = current.kind==window.kind
-                || (current.kind==BarKind::Memory32 && current.prefetchable
-                    && window.kind==BarKind::Memory64 && window.prefetchable);
+                || (current.kind!=BarKind::Io && window.kind!=BarKind::Io
+                    && current.prefetchable==window.prefetchable
+                    && ((current.prefetchable && window.kind==BarKind::Memory64)
+                        || (!current.prefetchable && window.kind==BarKind::Memory32)));
             if !compatible || (current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
             let a_end=current.start.checked_add(current.length).ok_or(BridgeWindowError::Overflow)?;
             let b_end=window.start.checked_add(window.length).ok_or(BridgeWindowError::Overflow)?;
@@ -253,6 +254,7 @@ pub fn aggregate_descendant_ranges(
         Ok(Some(Aperture{start,length:end.checked_sub(start).ok_or(BridgeWindowError::Overflow)?,kind,prefetchable}))
     };
     output.io=round(io,0x1000,BarKind::Io,false)?;
+    if mem.is_some_and(|(_,hi)|hi>1u64<<32){return Err(BridgeWindowError::InvalidEncoding)}
     output.memory=round(mem,0x10_0000,BarKind::Memory32,false)?;
     let pref_kind=if pref.is_some_and(|(_,hi)|hi<=1u64<<32){BarKind::Memory32}else{BarKind::Memory64};
     output.prefetchable=round(pref,0x10_0000,pref_kind,true)?;
