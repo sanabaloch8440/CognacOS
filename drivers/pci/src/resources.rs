@@ -73,7 +73,7 @@ pub fn size_bars<C: ConfigAccess>(
         let mut found = 0usize;
         while index < count {
             let low = original[index];
-            if low == 0 || low == u32::MAX { index += 1; continue; }
+            if low == u32::MAX { index += 1; continue; }
             let is_io = low & 1 != 0;
             let kind = if is_io { BarKind::Io } else {
                 match (low >> 1) & 3 {
