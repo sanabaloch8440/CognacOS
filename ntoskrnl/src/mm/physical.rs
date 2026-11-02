@@ -1016,7 +1016,7 @@ unsafe fn allocate_pages_in_node_range_mode(
     // SRAT ranges constrain ownership; intersect them with UEFI conventional
     // memory extents so this path can safely allocate never-before-freed pages.
     let mut owned_ranges = [(0u64, 0u64); crate::ntoskrnl::mm::topology::MAX_RANGES];
-    let owned_count = crate::ntoskrnl::mm::topology::memory_ranges_for_node(node, &mut owned_ranges);
+    let owned_count = crate::ntoskrnl::mm::topology::allocatable_memory_ranges_for_node(node, &mut owned_ranges);
     if owned_count == 0 { return Err(AllocError::OutOfMemory); }
     let mut allocated = 0usize;
     while allocated < output.len() {
