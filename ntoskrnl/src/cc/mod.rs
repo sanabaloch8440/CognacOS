@@ -358,18 +358,33 @@ pub unsafe extern "win64" fn cc_set_file_sizes(file: *mut FileObject, sizes: *co
         while !page.is_null() {
             let next = unsafe { (*page).next };
             let page_end = unsafe { (*page).file_offset }.saturating_add(CACHE_PAGE_SIZE as u64);
-            if unsafe { (*page).file_offset } >= sizes.file_size as u64 {
+            // Cached clean bytes must never survive beyond VDL, even when
+            // EOF is larger. This prevents a later read from exposing bytes
+            // invalidated by a filesystem size/VDL update.
+            let cache_limit = core::cmp::min(sizes.file_size, sizes.valid_data_length) as u64;
+            let page_offset = unsafe { (*page).file_offset };
+            let remove = page_offset >= cache_limit;
+            if remove {
                 unsafe {
                     *link = next;
                     (*page).next = release;
                     release = page;
                 }
             } else {
-                if page_end > sizes.file_size as u64 {
-                    let valid_end = (sizes.file_size as u64 - unsafe { (*page).file_offset }) as usize;
+                if page_end > cache_limit {
+                    let valid_end = (cache_limit - page_offset) as usize;
                     unsafe { (*page).valid_end = (*page).valid_end.min(valid_end as u16); }
                 }
-                link = unsafe { core::ptr::addr_of_mut!((*page).next) };
+                let empty_interval = unsafe { (*page).valid_start >= (*page).valid_end };
+                if empty_interval {
+                    unsafe {
+                        *link = next;
+                        (*page).next = release;
+                        release = page;
+                    }
+                } else {
+                    link = unsafe { core::ptr::addr_of_mut!((*page).next) };
+                }
             }
             page = next;
         }
@@ -793,6 +808,50 @@ mod tests {
             assert_eq!(unsafe { cc_uninitialize_cache_map(file, core::ptr::null(), core::ptr::null_mut()) }, 1);
         }
         assert_eq!(cache_map_count(), baseline);
+    }
+
+    #[test]
+    fn set_file_sizes_clips_cached_pages_to_valid_data_length() {
+        let _test_guard = TestGuard::acquire();
+        let mut file: FileObject = unsafe { core::mem::zeroed() };
+        let initial = CcFileSizes {
+            allocation_size: 12288, file_size: 12288, valid_data_length: 12288,
+        };
+        unsafe { cc_initialize_cache_map(&mut file, &initial, 0, core::ptr::null(), core::ptr::null_mut()); }
+
+        let first = unsafe { allocate_page_descriptor(0, core::ptr::null_mut(), 0, 4096) };
+        let second = unsafe { allocate_page_descriptor(4096, core::ptr::null_mut(), 0, 4096) };
+        let third = unsafe { allocate_page_descriptor(8192, core::ptr::null_mut(), 0, 4096) };
+        assert!(!first.is_null() && !second.is_null() && !third.is_null());
+        unsafe {
+            (*first).next = second;
+            (*second).next = third;
+            let _guard = Guard::acquire();
+            let map = find_map(&mut file);
+            (*map).pages = first;
+        }
+
+        let shrunk = CcFileSizes {
+            allocation_size: 12288, file_size: 12288, valid_data_length: 5000,
+        };
+        unsafe { cc_set_file_sizes(&mut file, &shrunk); }
+
+        {
+            let _guard = Guard::acquire();
+            let map = unsafe { find_map(&mut file) };
+            assert!(!map.is_null());
+            let pages = unsafe { (*map).pages };
+            assert!(!pages.is_null());
+            assert_eq!(unsafe { (*pages).file_offset }, 0);
+            assert_eq!(unsafe { (*pages).valid_end }, 4096);
+            let tail = unsafe { (*pages).next };
+            assert!(!tail.is_null());
+            assert_eq!(unsafe { (*tail).file_offset }, 4096);
+            assert_eq!(unsafe { (*tail).valid_end }, 904);
+            assert!(unsafe { (*tail).next.is_null() });
+        }
+
+        assert_eq!(unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()) }, 1);
     }
 
     #[test]
