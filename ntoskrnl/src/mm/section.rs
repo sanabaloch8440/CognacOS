@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn rejects_invalid_section_ranges_and_handles() {
         let mut handle = 0;
-        assert_eq!(create(0, &mut handle), STATUS_INVALID_PARAMETER);
+        assert_eq!(create(0, 1, &mut handle), STATUS_INVALID_PARAMETER);
         assert_eq!(reference(0,1), STATUS_INVALID_HANDLE);
         assert_eq!(dereference(0,1), STATUS_INVALID_HANDLE);
     }
