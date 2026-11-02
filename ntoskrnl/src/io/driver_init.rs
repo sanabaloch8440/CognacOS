@@ -28,7 +28,7 @@ impl DriverInitRecord {
     const EMPTY: Self = Self { service_index: usize::MAX, error_control: 0, status: DriverInitStatus::NotRun };
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DriverInitError { BufferTooSmall, InvalidServiceName, Schedule(ScheduleError) }
+pub enum DriverInitError { BufferTooSmall, InvalidServiceName, Schedule(ScheduleError), FatalService(usize) }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BootInitReport {
     pub scheduled: usize,
