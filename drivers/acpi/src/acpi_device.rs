@@ -54,6 +54,21 @@ pub trait AcpiMethodInvoker {
 pub struct IntegerMethodInvoker;
 impl AcpiMethodInvoker for IntegerMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
+        let node=namespace.nodes.get(method as usize).filter(|_|method as usize<namespace.count).ok_or(ExecError::InvalidMethod)?;
+        let start=node.body_start as usize;
+        let end=start.checked_add(node.body_length as usize).filter(|end|*end<=aml.len()).ok_or(ExecError::InvalidMethod)?;
+        let body=&aml[start..end];
+        // Fast-path direct Return(String/Package) objects. Integer/control-flow
+        // methods continue through the bounded AML scalar executor.
+        if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x0d){
+            let text=&body[2..];let n=text.iter().position(|b|*b==0).ok_or(ExecError::Truncated)?;
+            if n+3!=body.len(){return Err(ExecError::InvalidMethod)}
+            return Ok(AcpiMethodValue::String(AcpiId::from_bytes(&text[..n]).map_err(|_|ExecError::InvalidMethod)?));
+        }
+        if body.first()==Some(&0xa4)&&matches!(body.get(1),Some(0x12|0x13)){
+            let (ids,count)=decode_package_ids(&body[1..]).map_err(|_|ExecError::InvalidMethod)?;
+            return Ok(AcpiMethodValue::CompatibleIds{ids,count});
+        }
         Ok(AcpiMethodValue::Integer(aml_exec::execute_method(aml,namespace,method,&[])?.integer()))
     }
 }
@@ -141,7 +156,8 @@ fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoke
 }
 /// Evaluate _HID, _CID, _UID, _STA and _ADR for one namespace device.
 ///
-/// _HID is mandatory. _STA defaults to 0x0f when absent; _UID defaults to
+/// _HID identifies non-addressed devices; _ADR alone is sufficient for a
+/// PCI-enumerated child. _STA defaults to 0x0f when absent; _UID defaults to
 /// integer zero; _ADR remains absent when not defined. _CID accepts a single
 /// ID or a Package of IDs. String IDs are returned verbatim; integer IDs are
 /// decoded from ACPI EISAID encoding.
@@ -262,6 +278,30 @@ mod tests{
         assert_eq!(result.uid_string.unwrap().as_bytes(),b"SERIAL-7");
         assert_eq!(result.sta,DEVICE_STATUS_DEFAULT);
         assert_eq!(result.adr,Some(0x10002));
+    }
+    fn add_method(aml:&mut std::vec::Vec<u8>,name:[u8;4],body:&[u8]){
+        aml.push(0x14);aml.push((1+4+1+body.len()) as u8);aml.extend_from_slice(&name);aml.push(0);aml.extend_from_slice(body);
+    }
+    #[test]fn integer_invoker_evaluates_direct_string_and_package_methods(){
+        let mut aml=std::vec::Vec::new();aml.extend_from_slice(&[0x5b,0x82,0,b'D',b'E',b'V',b'0']);
+        add_method(&mut aml,*b"_HID",&[0xa4,0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0]);
+        add_method(&mut aml,*b"_CID",&[0xa4,0x12,0x16,2,
+            0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'2',0,
+            0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'3',0]);
+        add_method(&mut aml,*b"_UID",&[0xa4,0x0d,b'S',b'E',b'R',b'I',b'A',b'L',b'-',b'7',0]);
+        add_method(&mut aml,*b"_STA",&[0xa4,0x0a,0x0f]);
+        add_method(&mut aml,*b"_ADR",&[0xa4,0x0c,0x34,0x12,0,0]);
+        aml[2]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let dev=ns.find_child(0,*b"DEV0").unwrap();
+        let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
+        assert_eq!(result.hid.as_bytes(),b"ACME0001");
+        assert_eq!(result.compatible_id_count,2);
+        assert_eq!(result.compatible_ids[0].as_bytes(),b"ACME0002");
+        assert_eq!(result.compatible_ids[1].as_bytes(),b"ACME0003");
+        assert_eq!(result.uid_string.unwrap().as_bytes(),b"SERIAL-7");
+        assert_eq!(result.sta,DEVICE_STATUS_DEFAULT);
+        assert_eq!(result.adr,Some(0x1234));
     }
     #[test]fn rejects_device_without_hid(){
         let aml=[0x5b,0x82,0x05,b'D',b'E',b'V',b'0'];
