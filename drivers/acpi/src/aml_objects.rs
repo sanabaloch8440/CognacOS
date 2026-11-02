@@ -161,6 +161,16 @@ mod tests {
         let inner=arena.get(outer.elements[1]).unwrap();assert_eq!(inner.kind,AmlValueKind::Package);
         let nine=arena.get(inner.elements[0]).unwrap();assert_eq!(nine.integer,9);
     }
+    #[test] fn leaves_omitted_package_slots_uninitialized(){
+        let mut arena=AmlObjectArena::new();
+        let (id,end)=decode_data_object(&[0x12,0x02,2],0,3,&mut arena).unwrap();
+        assert_eq!(end,3);
+        let package=arena.get(id).unwrap();
+        assert_eq!(package.element_count,2);
+        for child in package.elements.iter().take(2) {
+            assert_eq!(arena.get(*child).unwrap().kind,AmlValueKind::Uninitialized);
+        }
+    }
     #[test] fn rejects_truncated_strings_and_oversized_packages(){
         let mut arena=AmlObjectArena::new();
         assert_eq!(decode_data_object(&[0x0d,b'x'],0,2,&mut arena),Err(ObjectError::Truncated));
