@@ -327,3 +327,35 @@ mod full_rebalance_tests {
   assert!(plan_hierarchy_rebalance(&host,&requests,&[],&mut out).is_err());assert_eq!(out,old);
  }
 }
+
+#[cfg(test)]
+mod atomic_rebalance_integration_tests {
+ use super::*;
+ struct FakeConfig{regs:[u32;64],fail_once:Option<u16>,failed:bool}
+ impl ConfigAccess for FakeConfig{
+  fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{let shift=if o&2==0{0}else{16};Ok((self.regs[o as usize/4]>>shift)as u16)}
+  fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{let i=o as usize/4;let shift=if o&2==0{0}else{16};self.regs[i]=(self.regs[i]&!(0xffff<<shift))|((v as u32)<<shift);Ok(())}
+  fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}
+  fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{if self.fail_once==Some(o)&&!self.failed{self.failed=true;return Err(ResourceError::Config)}self.regs[o as usize/4]=v;Ok(())}
+ }
+ fn request()->EndpointRequest{let mut r=EndpointRequest::EMPTY;r.bridge_path_len=1;r.bridge_path[0]=0;r.requirement_count=1;r.requirements[0]=Some(BarRequirement{index:0,kind:BarKind::Memory32,length:0x1000,alignment:0x1000,prefetchable:false,assigned:0});r}
+ #[test]
+ fn rebalance_encodes_and_commits_bridge_windows_as_one_operation(){
+  let host=[Aperture{start:0x8000_0000,length:0x0200_0000,kind:BarKind::Memory32,prefetchable:false}];
+  let mut configs=[FakeConfig{regs:[0;64],fail_once:None,failed:false}];configs[0].regs[1]=3;
+  let mut out=HierarchyPlan::empty();rebalance_hierarchy_atomic(&host,&[request()],&[],&mut configs,&mut out).unwrap();
+  assert_eq!(configs[0].regs[1]as u16,3);
+  let decoded=bridge_resources::decode_bridge_windows(&mut configs[0]).unwrap();
+  assert_eq!(decoded.memory,out.bridge_windows[0].unwrap().memory);
+ }
+ #[test]
+ fn failed_register_commit_rolls_back_and_does_not_publish_plan(){
+  let host=[Aperture{start:0x8000_0000,length:0x0200_0000,kind:BarKind::Memory32,prefetchable:false}];
+  let mut configs=[FakeConfig{regs:[0;64],fail_once:Some(bridge_resources::BRIDGE_MEMORY_BASE_LIMIT),failed:false}];
+  configs[0].regs[1]=3;let before=configs[0].regs;
+  let mut out=HierarchyPlan::empty();out.endpoint_count=7;let old=out;
+  assert!(rebalance_hierarchy_atomic(&host,&[request()],&[],&mut configs,&mut out).is_err());
+  assert_eq!(out,old);assert_eq!(configs[0].regs[1]as u16,3);
+  assert_eq!(configs[0].regs[bridge_resources::BRIDGE_MEMORY_BASE_LIMIT as usize/4],before[bridge_resources::BRIDGE_MEMORY_BASE_LIMIT as usize/4]);
+ }
+}
