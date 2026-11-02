@@ -24,6 +24,7 @@ static mut ACPI_BUS_RELATIONS:AcpiDeviceRelations=AcpiDeviceRelations{count:0,ob
 unsafe extern "win64" {
  fn IoCreateDevice(driver:*mut DRIVER_OBJECT,extension_size:u32,device_name:*mut cognacos_nt_abi::object::UNICODE_STRING,device_type:u32,characteristics:u32,exclusive:u8,output:*mut *mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn IoMarkBusEnumeratedPdo(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
+ fn IoPnPRegisterBusDevice(enumerator_id:u32,identity_hash:u64,device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,output_index:*mut u32)->i32;
  fn IoPnPEnumerateBus(bus:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn ExAllocatePoolWithTag(pool_type:u32,size:usize,tag:u32)->*mut u8;
  fn ExFreePoolWithTag(buffer:*mut u8,tag:u32);
@@ -41,6 +42,11 @@ IoCreateDevice:
 IoMarkBusEnumeratedPdo:
  jmp QWORD PTR [rip + __imp_io_IoMarkBusEnumeratedPdo]
 .size IoMarkBusEnumeratedPdo, .-IoMarkBusEnumeratedPdo
+.global IoPnPRegisterBusDevice
+.type IoPnPRegisterBusDevice,@function
+IoPnPRegisterBusDevice:
+ jmp QWORD PTR [rip + __imp_io_IoPnPRegisterBusDevice]
+.size IoPnPRegisterBusDevice, .-IoPnPRegisterBusDevice
 .global IoPnPEnumerateBus
 .type IoPnPEnumerateBus,@function
 IoPnPEnumerateBus:
@@ -62,6 +68,8 @@ ExFreePoolWithTag:
 __imp_io_IoCreateDevice: .quad 0
 .global __imp_io_IoMarkBusEnumeratedPdo
 __imp_io_IoMarkBusEnumeratedPdo: .quad 0
+.global __imp_io_IoPnPRegisterBusDevice
+__imp_io_IoPnPRegisterBusDevice: .quad 0
 .global __imp_io_IoPnPEnumerateBus
 __imp_io_IoPnPEnumerateBus: .quad 0
 .section .data.imports.ex,"aw",@progbits
@@ -585,6 +593,17 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         }
         let marked=unsafe{IoMarkBusEnumeratedPdo(pdo)};
         if marked!=STATUS_SUCCESS { return marked; }
+        // Publish the ACPI namespace identity into the kernel's generic PnP
+        // devnode table. The PDO relation database remains the WDM authority;
+        // this registration supplies the kernel arbiter with a stable owner.
+        let mut devnode_index=0u32;
+        let registered=unsafe{IoPnPRegisterBusDevice(
+            u32::from_le_bytes(*b"ACPI"),
+            (record.node as u64)+1,
+            pdo,
+            &mut devnode_index,
+        )};
+        if registered!=STATUS_SUCCESS{return registered;}
         unsafe { ACPI_PDOS[pdo_count]=pdo; }
         pdo_count+=1;
     }
