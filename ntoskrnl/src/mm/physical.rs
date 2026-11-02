@@ -777,6 +777,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 }
             }
             if !found_all { continue; }
+            super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
             for n in 0..pages {
                 let wanted = base + n as u64 * PAGE_SIZE;
                 let current_len = unsafe { *len_ptr };
@@ -789,7 +790,6 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 }
             }
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
-            super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(base);
         }
     }
@@ -817,6 +817,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
             let pointer = if high_memory {
                 match direct_map_address(candidate) { Some(v) => v as *mut u8, None => return Err(AllocError::InvalidMap) }
             } else { candidate as *mut u8 };
+            super::pfn::register_allocation_range(candidate, pages).map_err(|_| AllocError::OutOfMemory)?;
             if candidate == original.next {
                 regions[i].next = end;
             } else {
@@ -827,7 +828,6 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 count_atomic.store(count, core::sync::atomic::Ordering::Release);
             }
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
-            super::pfn::register_allocation_range(candidate, pages).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(candidate);
         }
     }
