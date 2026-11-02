@@ -197,7 +197,7 @@ fn skip_data_object_depth(c:&mut Cursor<'_>,depth:u8)->Result<(),AmlError>{
         // expressions. Parsing validates operand and target boundaries; the
         // executor independently decides which operations it can evaluate.
         0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f
-        |0x85|0x90|0x91|0x93|0x94|0x95=>{
+        |0x90|0x91|0x93|0x94|0x95=>{
             skip_data_object_depth(c,depth+1)?;
             skip_data_object_depth(c,depth+1)?;
             if matches!(op,0x90|0x91|0x93|0x94|0x95){Ok(())}
