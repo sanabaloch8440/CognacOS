@@ -170,7 +170,7 @@ mod tests {
         fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}
         fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{
             if self.fail_restore && v != u32::MAX { return Err(ResourceError::Config); }
-            self.regs[o as usize/4]=if v==u32::MAX { if o==PCI_BAR0 {0xffff_fff0} else {0xffff_ffff} } else {v}; Ok(())
+            self.regs[o as usize/4]=if v==u32::MAX { if o==PCI_BAR0 {0xffff_fff0} else {0} } else {v}; Ok(())
         }
     }
     #[test] fn bar_probe_restores_registers_and_never_restores_bus_master() {
