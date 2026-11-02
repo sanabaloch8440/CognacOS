@@ -474,7 +474,7 @@ impl AddressSpace {
     /// Number of tracked resident demand-zero pages in this address space.
     pub fn working_set_size(&self)->usize {
         let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        unsafe{(&*WORKING_SET.0.get()).iter().filter(|p|p.live&&!p.paged_out&&p.root==self.root).count()}
+        vm_working_set_locked(self.root).iter().filter(|p|p.live&&!p.paged_out&&p.root==self.root).count()
     }
 
     /// Remove a region's metadata only after its resident pages have been unmapped.
