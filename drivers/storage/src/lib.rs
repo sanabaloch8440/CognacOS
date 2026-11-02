@@ -69,6 +69,178 @@ impl BlockRequest {
     }
 }
 
+
+/// Legacy PCI IDE task-file transport primitives. This module is deliberately
+/// independent of ntoskrnl: pciide.sys supplies the register-I/O implementation,
+/// while ataport owns request scheduling and completion. No port I/O occurs
+/// until a controller-specific RegisterIo implementation is supplied.
+pub mod ide {
+    use super::StorageError;
+
+    pub const PRIMARY_COMMAND_BASE: u16 = 0x1f0;
+    pub const PRIMARY_CONTROL: u16 = 0x3f6;
+    pub const SECONDARY_COMMAND_BASE: u16 = 0x170;
+    pub const SECONDARY_CONTROL: u16 = 0x376;
+    pub const DATA: u16 = 0;
+    pub const ERROR_FEATURES: u16 = 1;
+    pub const SECTOR_COUNT: u16 = 2;
+    pub const LBA_LOW: u16 = 3;
+    pub const LBA_MID: u16 = 4;
+    pub const LBA_HIGH: u16 = 5;
+    pub const DRIVE_HEAD: u16 = 6;
+    pub const STATUS_COMMAND: u16 = 7;
+    pub const STATUS_BSY: u8 = 1 << 7;
+    pub const STATUS_DRDY: u8 = 1 << 6;
+    pub const STATUS_DF: u8 = 1 << 5;
+    pub const STATUS_DRQ: u8 = 1 << 3;
+    pub const STATUS_ERR: u8 = 1;
+    pub const CMD_IDENTIFY: u8 = 0xec;
+    pub const CMD_READ_SECTORS: u8 = 0x20;
+    pub const CMD_WRITE_SECTORS: u8 = 0x30;
+    pub const CMD_FLUSH_CACHE: u8 = 0xe7;
+    pub const SECTOR_BYTES: usize = 512;
+    pub const MAX_LBA28: u64 = 1 << 28;
+
+    /// Register offsets are relative to a channel's command base. The control
+    /// register is separate because PCI native-mode BARs need not be legacy ports.
+    pub trait RegisterIo {
+        fn read8(&mut self, port: u16) -> Result<u8, StorageError>;
+        fn write8(&mut self, port: u16, value: u8) -> Result<(), StorageError>;
+        fn read16(&mut self, port: u16) -> Result<u16, StorageError>;
+        fn write16(&mut self, port: u16, value: u16) -> Result<(), StorageError>;
+        fn delay_400ns(&mut self, alternate_status: u16) -> Result<(), StorageError>;
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Channel {
+        pub command_base: u16,
+        pub control: u16,
+        pub device: u8,
+        pub sectors: u64,
+        pub poll_budget: u32,
+    }
+
+    impl Channel {
+        pub fn validate(self) -> Result<Self, StorageError> {
+            if self.command_base == 0 || self.control == 0 || self.device > 1
+                || self.sectors == 0 || self.sectors > MAX_LBA28 || self.poll_budget == 0 {
+                return Err(StorageError::InvalidArgument);
+            }
+            Ok(self)
+        }
+
+        fn reg(self, offset: u16) -> Result<u16, StorageError> {
+            self.command_base.checked_add(offset).ok_or(StorageError::Overflow)
+        }
+
+        fn wait(&self, io: &mut impl RegisterIo, require_drq: bool) -> Result<u8, StorageError> {
+            for _ in 0..self.poll_budget {
+                let status = io.read8(self.reg(STATUS_COMMAND)?)?;
+                if status == 0xff { return Err(StorageError::DeviceError); }
+                if status & STATUS_BSY == 0 {
+                    if status & (STATUS_ERR | STATUS_DF) != 0 { return Err(StorageError::DeviceError); }
+                    if !require_drq || status & STATUS_DRQ != 0 { return Ok(status); }
+                }
+                core::hint::spin_loop();
+            }
+            Err(StorageError::Timeout)
+        }
+
+        pub fn identify(&mut self, io: &mut impl RegisterIo) -> Result<[u16; 256], StorageError> {
+            self.validate()?;
+            io.write8(self.reg(DRIVE_HEAD)?, 0xa0 | (self.device << 4))?;
+            io.delay_400ns(self.control)?;
+            io.write8(self.reg(SECTOR_COUNT)?, 0)?;
+            io.write8(self.reg(LBA_LOW)?, 0)?;
+            io.write8(self.reg(LBA_MID)?, 0)?;
+            io.write8(self.reg(LBA_HIGH)?, 0)?;
+            io.write8(self.reg(STATUS_COMMAND)?, CMD_IDENTIFY)?;
+            let status = io.read8(self.reg(STATUS_COMMAND)?)?;
+            if status == 0 || status == 0xff { return Err(StorageError::DeviceError); }
+            self.wait(io, true)?;
+            let mut words = [0u16; 256];
+            for word in &mut words { *word = io.read16(self.reg(DATA)?)?; }
+            let lba28 = words[49] & (1 << 9) != 0;
+            let sectors = words[60] as u64 | ((words[61] as u64) << 16);
+            if !lba28 || sectors == 0 { return Err(StorageError::Unsupported); }
+            self.sectors = sectors.min(MAX_LBA28);
+            Ok(words)
+        }
+
+        fn select_lba(&self, io: &mut impl RegisterIo, lba: u64) -> Result<(), StorageError> {
+            if lba >= self.sectors || lba >= MAX_LBA28 { return Err(StorageError::OutOfRange); }
+            io.write8(self.reg(DRIVE_HEAD)?, 0xe0 | (self.device << 4) | ((lba >> 24) as u8 & 0x0f))?;
+            io.delay_400ns(self.control)?;
+            io.write8(self.reg(SECTOR_COUNT)?, 1)?;
+            io.write8(self.reg(LBA_LOW)?, lba as u8)?;
+            io.write8(self.reg(LBA_MID)?, (lba >> 8) as u8)?;
+            io.write8(self.reg(LBA_HIGH)?, (lba >> 16) as u8)?;
+            Ok(())
+        }
+
+        pub fn read_sector(&self, io: &mut impl RegisterIo, lba: u64, out: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError> {
+            self.validate()?;
+            self.select_lba(io, lba)?;
+            io.write8(self.reg(STATUS_COMMAND)?, CMD_READ_SECTORS)?;
+            io.delay_400ns(self.control)?;
+            self.wait(io, true)?;
+            for chunk in out.chunks_exact_mut(2) {
+                chunk.copy_from_slice(&io.read16(self.reg(DATA)?)?.to_le_bytes());
+            }
+            self.wait(io, false)?;
+            Ok(())
+        }
+
+        pub fn write_sector(&self, io: &mut impl RegisterIo, lba: u64, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
+            self.validate()?;
+            self.select_lba(io, lba)?;
+            io.write8(self.reg(STATUS_COMMAND)?, CMD_WRITE_SECTORS)?;
+            io.delay_400ns(self.control)?;
+            self.wait(io, true)?;
+            for chunk in data.chunks_exact(2) {
+                io.write16(self.reg(DATA)?, u16::from_le_bytes([chunk[0], chunk[1]]))?;
+            }
+            self.wait(io, false)?;
+            Ok(())
+        }
+
+        pub fn flush(&self, io: &mut impl RegisterIo) -> Result<(), StorageError> {
+            self.validate()?;
+            self.wait(io, false)?;
+            io.write8(self.reg(DRIVE_HEAD)?, 0xe0 | (self.device << 4))?;
+            io.delay_400ns(self.control)?;
+            io.write8(self.reg(STATUS_COMMAND)?, CMD_FLUSH_CACHE)?;
+            self.wait(io, false)?;
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        struct Fake { status: u8, words: [u16; 256], writes: std::vec::Vec<(u16,u16)> }
+        impl RegisterIo for Fake {
+            fn read8(&mut self, _:u16)->Result<u8,StorageError>{Ok(self.status)}
+            fn write8(&mut self,p:u16,v:u8)->Result<(),StorageError>{self.writes.push((p,v as u16));Ok(())}
+            fn read16(&mut self,_:u16)->Result<u16,StorageError>{Ok(self.words[0])}
+            fn write16(&mut self,p:u16,v:u16)->Result<(),StorageError>{self.writes.push((p,v));Ok(())}
+            fn delay_400ns(&mut self,_:u16)->Result<(),StorageError>{Ok(())}
+        }
+        #[test]
+        fn rejects_invalid_channel_and_lba() {
+            let bad=Channel{command_base:0,control:0x3f6,device:0,sectors:10,poll_budget:8};
+            assert_eq!(bad.validate(),Err(StorageError::InvalidArgument));
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:10,poll_budget:8};
+            assert_eq!(ch.read_sector(&mut Fake{status:STATUS_DRQ,words:[0;256],writes:std::vec::Vec::new()},10,&mut [0;512]),Err(StorageError::OutOfRange));
+        }
+        #[test]
+        fn bounded_polling_times_out_on_busy_controller() {
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:10,poll_budget:2};
+            assert_eq!(ch.flush(&mut Fake{status:STATUS_BSY,words:[0;256],writes:std::vec::Vec::new()}),Err(StorageError::Timeout));
+        }
+    }
+}
+
 /// AHCI register offsets and bit definitions (AHCI 1.3.1 register model).
 pub mod ahci {
     use super::StorageError;
