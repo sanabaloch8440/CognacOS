@@ -46,9 +46,9 @@ pub unsafe fn serialize(r:&ResourceList,output:*mut u8,capacity:usize)->Result<u
  Resource::Io{minimum,maximum,length,alignment,decode_16_bit}=>unsafe{address(p,i,TYPE_PORT,PORT_IO|if decode_16_bit{PORT_16_BIT_DECODE}else{PORT_10_BIT_DECODE},length,alignment,minimum,maximum);i+=1;},
  Resource::Memory{minimum,maximum,length,alignment,writeable,cacheable,..}=>unsafe{address(p,i,TYPE_MEMORY,(if writeable{0}else{MEMORY_READ_ONLY})|(if cacheable{MEMORY_CACHEABLE}else{0}),length,alignment,minimum,maximum);i+=1;},
  Resource::BusNumber{minimum,maximum,length}=>{let d=unsafe{p.add(i*IO_RESOURCE_DESCRIPTOR_SIZE)};unsafe{header(p,i,TYPE_BUS_NUMBER,SHARE_EXCLUSIVE,0,0);w32(d,8,length as u32);w32(d,12,minimum as u32);w32(d,16,maximum as u32);}i+=1;},
- Resource::Irq{mask,level_triggered,shared,..}=>for vector in 0..16u32{if mask&(1u16<<vector)!=0{unsafe{pair(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level_triggered{INTERRUPT_LEVEL_SENSITIVE}else{0},vector,vector,i!=0);}i+=1;}},
- Resource::ExtendedIrq{flags,interrupts,count}=>{let level=flags&2!=0;let shared=flags&8!=0;for vector in interrupts[..count as usize].iter(){unsafe{pair(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level{INTERRUPT_LEVEL_SENSITIVE}else{0},*vector,*vector,i!=0);}i+=1;}},
- Resource::Dma{channels,..}=>for channel in 0..8u32{if channels&(1u8<<channel)!=0{unsafe{pair(p,i,TYPE_DMA,SHARE_EXCLUSIVE,0,channel,channel,i!=0);}i+=1;}},
+ Resource::Irq{mask,level_triggered,shared,..}=>{let mut choice=0usize;for vector in 0..16u32{if mask&(1u16<<vector)!=0{unsafe{pair(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level_triggered{INTERRUPT_LEVEL_SENSITIVE}else{0},vector,vector,choice!=0);}i+=1;choice+=1;}}},
+ Resource::ExtendedIrq{flags,interrupts,count}=>{let level=flags&2!=0;let shared=flags&8!=0;for (choice,vector) in interrupts[..count as usize].iter().enumerate(){unsafe{pair(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level{INTERRUPT_LEVEL_SENSITIVE}else{0},*vector,*vector,choice!=0);}i+=1;}},
+ Resource::Dma{channels,..}=>{let mut choice=0usize;for channel in 0..8u32{if channels&(1u8<<channel)!=0{unsafe{pair(p,i,TYPE_DMA,SHARE_EXCLUSIVE,0,channel,channel,choice!=0);}i+=1;choice+=1;}}},
  Resource::EndTag{..}=>{}
  }}
  if i!=count{return Err(RequirementsError::InvalidResourceList)}Ok(needed)
