@@ -77,11 +77,13 @@ pub fn intersect_path(host:&[Aperture],ancestors:&[BridgeWindows],out:&mut[Apert
                 BarKind::Memory32|BarKind::Memory64=>bridge.memory,
             };
             let Some(window)=candidate else{continue};
-            let compatible = current.kind==window.kind
-                || (current.kind!=BarKind::Io && window.kind!=BarKind::Io
+            let compatible = if current.kind==BarKind::Io {
+                window.kind==BarKind::Io
+            } else {
+                window.kind!=BarKind::Io
                     && current.prefetchable==window.prefetchable
-                    && ((current.prefetchable && window.kind==BarKind::Memory64)
-                        || (!current.prefetchable && window.kind==BarKind::Memory32)));
+                    && (current.prefetchable || window.kind==BarKind::Memory32)
+            };
             if !compatible || (current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
             let a_end=current.start.checked_add(current.length).ok_or(BridgeWindowError::Overflow)?;
             let b_end=window.start.checked_add(window.length).ok_or(BridgeWindowError::Overflow)?;
