@@ -1667,6 +1667,7 @@ pub unsafe fn offline_hotplug_memory(start:u64,length:u64)->Result<(),AllocError
 pub unsafe fn allocate_pages_with_slit_fallback(
     output:&mut [u64],preferred_node:u32,low:u64,high:u64,require_all:bool,
 )->Result<usize,AllocError> {
+    if output.is_empty(){return Ok(0)}
     let mut order=[u32::MAX;crate::ntoskrnl::mm::topology::MAX_NODES];
     let count=crate::ntoskrnl::mm::topology::allocation_order(preferred_node,&mut order);
     if count==0{return Err(AllocError::InvalidPage)}
