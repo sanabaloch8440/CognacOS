@@ -23,11 +23,22 @@ reservations for one device atomically. A failed alternative does not mutate
 the reservation database. Reservations are released by devnode owner during
 failed start and removal.
 
-The current PnP adapter exposes `assign_pnp_resource_alternative` for the
-kernel's indexed devnode table. That table is still PCI-oriented; the ACPI PDO
-relation database is not mapped to those devnodes. Consequently ACPI's
-published `IO_RESOURCE_REQUIREMENTS_LIST` is not consumed by this selection
-arbiter through a complete WDM start-device path.
+The PnP adapter exposes both `assign_pnp_resource_alternative` and
+`assign_pnp_wdm_requirements` for the kernel's indexed devnode table. The
+latter decodes the x64 `IO_RESOURCE_REQUIREMENTS_LIST` header and bounded
+`IO_RESOURCE_LIST` alternatives, then reserves one complete alternative in
+the kernel selection arbiter before moving the devnode to
+`PNP_DEVICE_RESOURCES_ASSIGNED`. A failed parse, selection, or state
+transition leaves no partial reservation.
+
+The initial WDM decoder is deliberately strict: it accepts exclusive port,
+memory, interrupt, DMA, and bus-number descriptors with one descriptor per
+requirement. It rejects `IO_RESOURCE_ALTERNATIVE` choice groups, shared
+resources, unsupported descriptor types, malformed lengths, and oversized
+lists. In particular, ACPI-generated lists containing IRQ/DMA choice groups
+are not yet consumable by this path. The indexed devnode table remains
+PCI-oriented; the ACPI PDO relation database is not mapped to those devnodes.
+This is a kernel API milestone, not a complete ACPI WDM start-device path.
 
 There is also a distinct WDM start-IRP resource-claim table in
 `wdm/pnp.rs`. It validates and tentatively reserves the translated
