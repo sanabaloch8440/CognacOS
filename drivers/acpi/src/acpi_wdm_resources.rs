@@ -27,13 +27,16 @@ pub unsafe fn serialize(r:&ResourceList,out:*mut u8,capacity:usize)->Result<usiz
  unsafe{core::ptr::write_bytes(out,0,needed);w32(out,0,1);}let full=unsafe{out.add(4)};
  unsafe{w32(full,0,15);w32(full,4,0);w16(full,8,1);w16(full,10,1);w32(full,12,count as u32);}
  let p=unsafe{full.add(16)};let mut i=0usize;
+ // Validate all descriptors before publishing any partially serialized list.
+ for item in r.entries[..r.count].iter().flatten(){match *item{
+ Resource::Io{minimum,maximum,..}|Resource::Memory{minimum,maximum,..}|Resource::BusNumber{minimum,maximum,..} if minimum!=maximum=>return Err(SerializeError::InvalidResourceList),
+ Resource::ExtendedIrq{count,..} if count as usize>8=>return Err(SerializeError::InvalidResourceList),
+ _=>{}
+ }}
  for item in r.entries[..r.count].iter().flatten(){match *item{
  Resource::Io{minimum,maximum,length,decode_16_bit,..}=>{if minimum!=maximum{return Err(SerializeError::InvalidResourceList)}unsafe{desc(p,i,TYPE_PORT,SHARE_EXCLUSIVE,if decode_16_bit{PORT_IO}else{0},minimum,length,0);i+=1;}},
  Resource::Memory{minimum,maximum,length,writeable,cacheable,..}=>{if minimum!=maximum{return Err(SerializeError::InvalidResourceList)}unsafe{desc(p,i,TYPE_MEMORY,SHARE_EXCLUSIVE,(if writeable{0}else{MEMORY_READ_ONLY})|(if cacheable{MEMORY_CACHEABLE}else{0}),minimum,length,0);i+=1;}},
  Resource::BusNumber{minimum,maximum,length,..}=>{if minimum!=maximum{return Err(SerializeError::InvalidResourceList)}unsafe{desc(p,i,TYPE_BUS_NUMBER,SHARE_EXCLUSIVE,0,minimum,length,0);i+=1;}},
- Resource::Io{minimum,length,decode_16_bit,..}=>unsafe{desc(p,i,TYPE_PORT,SHARE_EXCLUSIVE,if decode_16_bit{PORT_IO}else{0},minimum,length,0);i+=1;},
- Resource::Memory{minimum,length,writeable,cacheable,..}=>unsafe{desc(p,i,TYPE_MEMORY,SHARE_EXCLUSIVE,(if writeable{0}else{MEMORY_READ_ONLY})|(if cacheable{MEMORY_CACHEABLE}else{0}),minimum,length,0);i+=1;},
- Resource::BusNumber{minimum,length,..}=>unsafe{desc(p,i,TYPE_BUS_NUMBER,SHARE_EXCLUSIVE,0,minimum,length,0);i+=1;},
  Resource::Irq{mask,level_triggered,shared,..}=>for gsi in 0..16u32{if mask&(1u16<<gsi)!=0{unsafe{desc(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level_triggered{0}else{INTERRUPT_LATCHED},gsi as u64,gsi as u64,u64::MAX);i+=1;}}},
  Resource::ExtendedIrq{flags,interrupts,count}=>{let level=flags&2!=0;let shared=flags&8!=0;for gsi in interrupts[..count as usize].iter(){unsafe{desc(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level{0}else{INTERRUPT_LATCHED},*gsi as u64,*gsi as u64,u64::MAX);i+=1;}}},
  Resource::Dma{channels,transfer_size,bus_master}=>{let flags=match transfer_size{0=>0,1=>1,2=>2,_=>4}|if bus_master{8}else{0};for channel in 0..8u32{if channels&(1u8<<channel)!=0{unsafe{desc(p,i,TYPE_DMA,SHARE_EXCLUSIVE,flags,channel as u64,0,0);i+=1;}}}},
