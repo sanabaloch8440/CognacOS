@@ -96,7 +96,7 @@ pub(crate) const EXPORTS: &[(&str, u16)] = &[
     ("PoUserShutdownInitiated", 1932),
 ];
 
-#[path = "po/hibernate.rs"]
+#[path = "hibernate.rs"]
 pub(crate) mod hibernate;
 
 #[path = "po/runtime.rs"]

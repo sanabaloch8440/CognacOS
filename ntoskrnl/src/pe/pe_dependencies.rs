@@ -185,4 +185,5 @@ mod tests {
 }
 
 
+#[path = "pe_dependencies/transaction.rs"]
 pub mod transaction;
