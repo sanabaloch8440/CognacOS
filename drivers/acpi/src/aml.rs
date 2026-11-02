@@ -126,7 +126,10 @@ pub fn parse_name_string(bytes:&[u8],offset:usize,limit:usize)->Result<(AmlName,
 
 fn resolve_parent(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
     let mut p=if n.rooted{0}else{current};
-    for _ in 0..n.parents{p=ns.nodes.get(p as usize).ok_or(AmlError::InvalidParent)?.parent;}
+    for _ in 0..n.parents{
+        if p==0||p as usize>=ns.count{return Err(AmlError::InvalidParent)}
+        p=ns.nodes[p as usize].parent;
+    }
     Ok(p)
 }
 
@@ -551,6 +554,11 @@ mod tests{
     }
 
 
+    #[test]fn rejects_parent_prefixes_that_walk_above_namespace_root(){
+        let ns=AmlNamespace::new();
+        let name=AmlName{segments:[[0;4];MAX_NAME_SEGMENTS],count:0,rooted:false,parents:1};
+        assert_eq!(resolve_name_string(&ns,0,&name),Err(AmlError::InvalidParent));
+    }
     #[test]fn explicit_root_and_parent_paths_do_not_search_other_ancestors(){
         let aml=[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
                  0x10,0x0b,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
