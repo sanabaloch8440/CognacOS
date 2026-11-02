@@ -239,7 +239,7 @@ pub mod bus {
     pub struct PCI_IDE_CHANNEL_RESOURCES{
         pub command_base:u16,
         pub control_base:u16,
-        /// Bit 0 indicates native PCI programming-interface mode.
+        /// Bit 0 indicates native mode; bit 1 indicates the channel is switchable.
         pub flags:u32,
     }
     #[repr(C)]
