@@ -188,14 +188,14 @@ pub fn load_definition_block(aml:&[u8],namespace:&mut AmlNamespace)->Result<(),A
 mod tests{
     use super::*;
     #[test]fn package_length_decodes_all_widths(){
-        assert_eq!(decode_package_length(&[0x3f],0,1),Ok((63,63)));
-        assert_eq!(decode_package_length(&[0x41,0x01],0,2),Ok((17,17)));
-        assert_eq!(decode_package_length(&[0x80,0,0,0],0,4),Ok((4,4)));
+        assert_eq!(decode_package_length(&[0x3f;63],0,63),Ok((63,63)));
+        assert_eq!(decode_package_length(&[0x41,0x01,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,17),Ok((17,17)));
+        assert_eq!(decode_package_length(&[0x80,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,16),Ok((16,16)));
     }
     #[test]fn loads_device_and_name_namespace(){
         // Device(PCI0) { Name(_HID, EisaId("PNP0A08")) } -- the name value
         // is deliberately a simple AML string in this initial parser slice.
-        let aml=[0x5b,0x82,0x0f,0x50,b'P',b'C',b'I',b'0',0x08,b'_',
+        let aml=[0x5b,0x82,0x13,0x50,b'P',b'C',b'I',b'0',0x08,b'_',
             b'H',b'I',b'D',0x0d,b'P',b'N',b'P',b'0',b'A',b'0',b'8',0];
         let mut ns=AmlNamespace::new();
         assert!(load_definition_block(&aml,&mut ns).is_ok());
