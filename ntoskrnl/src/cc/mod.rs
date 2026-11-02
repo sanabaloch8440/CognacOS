@@ -690,10 +690,48 @@ mod tests {
         assert_eq!(section.shared_cache_map, first.private_cache_map);
         assert_eq!(cache_map_count(), baseline + 1);
 
+        // A page populated through the first FILE_OBJECT must be visible
+        // through the second FILE_OBJECT because both attach to one stream map.
+        let expected = b"shared-stream";
+        let page_data = core::ptr::addr_of_mut!(TEST_CACHE_PAGE.0).cast::<u8>();
+        unsafe { core::ptr::copy_nonoverlapping(expected.as_ptr(), page_data.add(64), expected.len()); }
+        let descriptor = unsafe { allocate_page_descriptor(0, page_data, 64, 64 + expected.len()) };
+        assert!(!descriptor.is_null());
+        {
+            let _guard = Guard::acquire();
+            let map = unsafe { find_map(&mut first) };
+            assert!(!map.is_null());
+            unsafe { (*map).pages = descriptor; }
+        }
+        let offset = 64i64;
+        let mut output = [0u8; 13];
+        let mut iosb = IoStatusBlock {
+            status: crate::nt_abi::io::IO_STATUS_BLOCK_STATUS { status: 0 },
+            information: 0,
+        };
+        assert_eq!(unsafe { cc_copy_read(&mut second, &offset, output.len() as u32, 1,
+            output.as_mut_ptr().cast(), &mut iosb) }, 1);
+        assert_eq!(&output, expected);
+
         assert_eq!(unsafe { cc_uninitialize_cache_map(&mut first, core::ptr::null(), core::ptr::null_mut()) }, 1);
         assert!(first.private_cache_map.is_null());
         assert_eq!(second.private_cache_map, section.shared_cache_map);
         assert_eq!(cache_map_count(), baseline + 1);
+
+        output.fill(0);
+        assert_eq!(unsafe { cc_copy_read(&mut second, &offset, output.len() as u32, 1,
+            output.as_mut_ptr().cast(), &mut iosb) }, 1);
+        assert_eq!(&output, expected);
+
+        // The backing bytes are static test storage, not MM-owned pages.
+        {
+            let _guard = Guard::acquire();
+            let map = unsafe { find_map(&mut second) };
+            unsafe { (*map).pages = core::ptr::null_mut(); }
+        }
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            descriptor.cast(), Some(CACHE_PAGE_TAG),
+        );
 
         assert_eq!(unsafe { cc_uninitialize_cache_map(&mut second, core::ptr::null(), core::ptr::null_mut()) }, 1);
         assert!(second.private_cache_map.is_null());
