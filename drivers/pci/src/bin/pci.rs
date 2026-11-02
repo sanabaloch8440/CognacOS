@@ -71,6 +71,10 @@ struct PciPdoExtension {
     version: u32,
     function_index: u32,
     started: u8,
+    raw_resources: PVOID,
+    raw_resources_size: usize,
+    translated_resources: PVOID,
+    translated_resources_size: usize,
     information: PCI_DEVICE_INFORMATION,
 }
 
@@ -78,7 +82,15 @@ unsafe fn delete_pdo(pdo: *mut DEVICE_OBJECT) {
     if pdo.is_null() { return; }
     let extension = unsafe { (*pdo).device_extension.cast::<PciPdoExtension>() };
     if !extension.is_null() && unsafe { (*extension).magic == PCI_PDO_EXTENSION_MAGIC } {
-        unsafe { (*extension).magic = 0; }
+        unsafe {
+            if !(*extension).raw_resources.is_null() { ExFreePoolWithTag((*extension).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
+            if !(*extension).translated_resources.is_null() { ExFreePoolWithTag((*extension).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
+            (*extension).raw_resources = core::ptr::null_mut();
+            (*extension).translated_resources = core::ptr::null_mut();
+            (*extension).raw_resources_size = 0;
+            (*extension).translated_resources_size = 0;
+            (*extension).magic = 0;
+        }
     }
     unsafe { IoDeleteDevice(pdo); }
 }
@@ -209,6 +221,18 @@ unsafe extern "win64" fn query_pdo_information(
 }
 
 
+/// Retrieve stable PDO-owned copies of resources accepted at START_DEVICE.
+/// Pointers remain valid until STOP/REMOVE; callers must not free them.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciGetAssignedResources(context:PVOID,raw_out:*mut PVOID,raw_size_out:*mut usize,translated_out:*mut PVOID,translated_size_out:*mut usize)->i32{
+    if context.is_null()||raw_out.is_null()||raw_size_out.is_null()||translated_out.is_null()||translated_size_out.is_null(){return STATUS_INVALID_PARAMETER}
+    let ext=context.cast::<PciPdoExtension>();
+    if unsafe{(*ext).magic!=PCI_PDO_EXTENSION_MAGIC||(*ext).version!=1}{return STATUS_INVALID_PARAMETER}
+    if unsafe{(*ext).started==0||(*ext).raw_resources.is_null()||(*ext).translated_resources.is_null()}{return STATUS_DEVICE_NOT_READY}
+    unsafe{raw_out.write((*ext).raw_resources);raw_size_out.write((*ext).raw_resources_size);translated_out.write((*ext).translated_resources);translated_size_out.write((*ext).translated_resources_size);}
+    STATUS_SUCCESS
+}
+
 /// Consume the PnP manager's assigned raw/translated resource lists. BARs are
 /// programmed from the bus-relative (raw) addresses; translated resources are
 /// retained only for consumers above the bus driver. Unsupported resource
@@ -313,10 +337,37 @@ unsafe fn start_pci_device(
             if len == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
         }
     }
-    if pci::program_assignments_exclusive(&mut config, function.header.header_type, &plan).is_err() {
+    let list_size = 20usize.checked_add(raw_n.checked_mul(pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).unwrap_or(usize::MAX)).unwrap_or(usize::MAX);
+    if list_size < 20 || list_size > 20 + 64 * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE {
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    unsafe { (*extension).started = 1; }
+    let raw_copy = unsafe { ExAllocatePoolWithTag(1, list_size, PCI_REQUIREMENTS_POOL_TAG) };
+    let translated_copy = unsafe { ExAllocatePoolWithTag(1, list_size, PCI_REQUIREMENTS_POOL_TAG) };
+    if raw_copy.is_null() || translated_copy.is_null() {
+        if !raw_copy.is_null() { unsafe { ExFreePoolWithTag(raw_copy, PCI_REQUIREMENTS_POOL_TAG); } }
+        if !translated_copy.is_null() { unsafe { ExFreePoolWithTag(translated_copy, PCI_REQUIREMENTS_POOL_TAG); } }
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(raw, raw_copy.cast::<u8>(), list_size);
+        core::ptr::copy_nonoverlapping(translated, translated_copy.cast::<u8>(), list_size);
+    }
+    if pci::program_assignments_exclusive(&mut config, function.header.header_type, &plan).is_err() {
+        unsafe {
+            ExFreePoolWithTag(raw_copy, PCI_REQUIREMENTS_POOL_TAG);
+            ExFreePoolWithTag(translated_copy, PCI_REQUIREMENTS_POOL_TAG);
+        }
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+    unsafe {
+        if !(*extension).raw_resources.is_null() { ExFreePoolWithTag((*extension).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
+        if !(*extension).translated_resources.is_null() { ExFreePoolWithTag((*extension).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
+        (*extension).raw_resources = raw_copy;
+        (*extension).raw_resources_size = list_size;
+        (*extension).translated_resources = translated_copy;
+        (*extension).translated_resources_size = list_size;
+        (*extension).started = 1;
+    }
     STATUS_SUCCESS
 }
 
@@ -326,7 +377,23 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { (*irp).io_status.information = 0; }
     let status = match unsafe { (*stack).minor_function } {
-                IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
+                IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => {
+            if !device.is_null() {
+                let ext = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+                if !ext.is_null() && unsafe { (*ext).magic == PCI_PDO_EXTENSION_MAGIC } {
+                    unsafe {
+                        if !(*ext).raw_resources.is_null() { ExFreePoolWithTag((*ext).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
+                        if !(*ext).translated_resources.is_null() { ExFreePoolWithTag((*ext).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
+                        (*ext).raw_resources = core::ptr::null_mut();
+                        (*ext).translated_resources = core::ptr::null_mut();
+                        (*ext).raw_resources_size = 0;
+                        (*ext).translated_resources_size = 0;
+                        (*ext).started = 0;
+                    }
+                }
+            }
+            STATUS_SUCCESS
+        },
         IRP_MN_QUERY_DEVICE_RELATIONS => {
             let relation_type = unsafe {
                 core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())
@@ -490,6 +557,10 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
                     version: 1,
                     function_index: index as u32,
                     started: 0,
+                    raw_resources: core::ptr::null_mut(),
+                    raw_resources_size: 0,
+                    translated_resources: core::ptr::null_mut(),
+                    translated_resources_size: 0,
                     information,
                 });
                 // DO_BUS_ENUMERATED_DEVICE: this is a PDO created by its bus.
