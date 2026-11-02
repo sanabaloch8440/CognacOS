@@ -1,6 +1,6 @@
-//! Bounded extraction of AML Buffer initializers from namespace Name objects.
-//! This deliberately handles immutable data objects only; evaluating a Buffer
-//! returned by a control method requires the typed AML execution engine.
+//! Bounded extraction of AML Buffer initializers from namespace Name objects
+//! and direct control-method Return(Buffer(...)) results. BufferSize TermArgs
+//! are evaluated by the independent bounded scalar expression evaluator.
 #![no_std]
 
 use crate::aml::{AmlNamespace,AmlObjectType};
@@ -8,20 +8,6 @@ use crate::aml::{AmlNamespace,AmlObjectType};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum BufferError { InvalidNode, NotBuffer, Truncated, InvalidPackage, BufferTooLarge, InitializerTooLong }
 
-fn integer(bytes:&[u8],pos:&mut usize,end:usize)->Result<u64,BufferError>{
-    let op=*bytes.get(*pos).filter(|_|*pos<end).ok_or(BufferError::Truncated)?;*pos+=1;
-    let (width,value)=match op {
-        0x00=>(0,0),0x01=>(0,1),0xff=>(0,u64::MAX),
-        0x0a=>(1,0),0x0b=>(2,0),0x0c=>(4,0),0x0e=>(8,0),
-        _=>return Err(BufferError::InvalidPackage),
-    };
-    if width==0{return Ok(value)}
-    let next=(*pos).checked_add(width).ok_or(BufferError::Truncated)?;
-    let data=bytes.get(*pos..next).filter(|_|next<=end).ok_or(BufferError::Truncated)?;
-    *pos=next;
-    let mut raw=[0u8;8];raw[..width].copy_from_slice(data);
-    Ok(u64::from_le_bytes(raw))
-}
 
 /// Decode one Name(Buffer(...)) initializer into caller-owned storage.
 /// The output is zero-filled to BufferSize as required by AML Buffer semantics.
@@ -43,7 +29,10 @@ pub fn decode_named_buffer(aml:&[u8],namespace:&AmlNamespace,node_index:u16,outp
     let package_end=length_pos.checked_add(package_length).filter(|end|*end==finish).ok_or(BufferError::InvalidPackage)?;
     let mut cursor=length_pos+1+follow;
     if cursor>package_end{return Err(BufferError::InvalidPackage)}
-    let declared=usize::try_from(integer(aml,&mut cursor,package_end)?).map_err(|_|BufferError::BufferTooLarge)?;
+    let (size,consumed)=crate::aml_exec::evaluate_term_argument(&aml[cursor..package_end])
+        .map_err(|_|BufferError::InvalidPackage)?;
+    cursor=cursor.checked_add(consumed).filter(|end|*end<=package_end).ok_or(BufferError::InvalidPackage)?;
+    let declared=usize::try_from(size).map_err(|_|BufferError::BufferTooLarge)?;
     if declared>output.len(){return Err(BufferError::BufferTooLarge)}
     let initializer_length=package_end-cursor;
     if initializer_length>declared{return Err(BufferError::InitializerTooLong)}
@@ -54,9 +43,9 @@ pub fn decode_named_buffer(aml:&[u8],namespace:&AmlNamespace,node_index:u16,outp
 
 
 /// Decode a method body whose complete result is Return(Buffer(...)).
-/// The package length must cover the exact Buffer object; BufferSize is
-/// currently restricted to AML integer constants, while the initializer is
-/// copied as opaque bytes and zero-padded to the declared size.
+/// The package length must cover the exact Buffer object. BufferSize is
+/// evaluated as a bounded AML TermArg; the initializer is copied as opaque
+/// bytes and zero-padded to the declared size.
 pub fn decode_returned_buffer(method_body:&[u8],output:&mut [u8])->Result<usize,BufferError>{
     if method_body.get(0)!=Some(&0xa4)||method_body.get(1)!=Some(&0x11){
         return Err(BufferError::NotBuffer);
@@ -93,6 +82,15 @@ mod tests {
         assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut out),Ok(4));
         assert_eq!(&out[..4],&[0x79,0x00,0,0]);
         assert_eq!(out[4],0xa5);
+    }
+    #[test]
+    fn evaluates_computed_buffer_size_in_named_object(){
+        // Name(_CRS, Buffer(Add(ByteConst(2), ByteConst(2), NullName)) { 0x79 })
+        let aml=[0x08,b'_',b'C',b'R',b'S',0x11,0x08,0x72,0x0a,2,0x0a,2,0x00,0x79];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"_CRS").unwrap();let mut output=[0xa5;8];
+        assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut output),Ok(4));
+        assert_eq!(&output[..4],&[0x79,0,0,0]);
     }
     #[test]
     fn decodes_single_byte_package_lengths_above_nibble_range(){
