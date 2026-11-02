@@ -691,3 +691,133 @@ mod dmar_selection_tests {
         assert!(!dmar_rmrr_covers_path(&info,3,0,&[DmarPath{device:5,function:1}]));
     }
 }
+
+
+/// Address-space aperture from an ACPI resource template (typically a
+/// PCI root bridge's evaluated _CRS). The range is bus-visible and inclusive
+/// in the AML descriptor; consumers must still reserve firmware-owned ranges.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct PciRootAperture {
+    pub resource_type:u8, // 0 memory, 1 I/O, 2 bus numbers
+    pub minimum:u64,
+    pub maximum:u64,
+    pub translation:u64,
+    pub length:u64,
+    pub minimum_fixed:bool,
+    pub maximum_fixed:bool,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct PciRootResources {
+    pub apertures:[PciRootAperture;32],
+    pub count:usize,
+}
+impl PciRootResources {
+    pub const EMPTY:Self=Self{apertures:[PciRootAperture{resource_type:0,minimum:0,maximum:0,translation:0,length:0,minimum_fixed:false,maximum_fixed:false};32],count:0};
+}
+fn read_width(bytes:&[u8],off:usize,width:usize)->Result<u64,AcpiError>{
+    let s=bytes.get(off..off.checked_add(width).ok_or(AcpiError::AddressOutOfRange)?).ok_or(AcpiError::Truncated)?;
+    let mut v=0u64;
+    for (i,b) in s.iter().enumerate(){v|=(*b as u64)<<(i*8);}
+    Ok(v)
+}
+
+/// Parse the ACPI resource-template descriptors used by PCI root-bridge _CRS.
+/// Supports Word/DWord/QWord address-space descriptors, fixed I/O, and
+/// fixed 32-bit memory. Unknown descriptors are skipped using their encoded
+/// lengths. EndTag is mandatory; malformed or overflowing ranges are rejected.
+pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>{
+    let mut out=PciRootResources::EMPTY;
+    let mut off=0usize;
+    let mut ended=false;
+    while off<bytes.len(){
+        let tag=*bytes.get(off).ok_or(AcpiError::Truncated)?;
+        if tag&0x80==0 {
+            let len=(tag&7) as usize;
+            let end=off.checked_add(1+len).ok_or(AcpiError::BadLength)?;
+            let d=bytes.get(off+1..end).ok_or(AcpiError::Truncated)?;
+            match tag {
+                0x79=>{ if len!=1{return Err(AcpiError::MalformedEntry)} ended=true;off=end;break; }
+                0x27 if len==7=>{ // I/O port descriptor
+                    let minimum=u16::from_le_bytes([d[1],d[2]]) as u64;
+                    let maximum=u16::from_le_bytes([d[3],d[4]]) as u64;
+                    if maximum<minimum{return Err(AcpiError::MalformedEntry)}
+                    push_root_aperture(&mut out,PciRootAperture{resource_type:1,minimum,maximum,translation:0,length:maximum-minimum+1,minimum_fixed:true,maximum_fixed:true})?;
+                }
+                0x4b if len==3=>{ // Fixed I/O
+                    let minimum=u16::from_le_bytes([d[0],d[1]]) as u64;
+                    let length=d[2] as u64;
+                    if length==0{return Err(AcpiError::MalformedEntry)}
+                    let maximum=minimum.checked_add(length-1).ok_or(AcpiError::AddressOutOfRange)?;
+                    push_root_aperture(&mut out,PciRootAperture{resource_type:1,minimum,maximum,translation:0,length,minimum_fixed:true,maximum_fixed:true})?;
+                }
+                _=>{}
+            }
+            off=end;
+            continue;
+        }
+        let len=u16::from_le_bytes([*bytes.get(off+1).ok_or(AcpiError::Truncated)?,*bytes.get(off+2).ok_or(AcpiError::Truncated)?]) as usize;
+        let end=off.checked_add(3).and_then(|v|v.checked_add(len)).ok_or(AcpiError::BadLength)?;
+        let d=bytes.get(off+3..end).ok_or(AcpiError::Truncated)?;
+        let parsed=match tag {
+            0x88 if len>=13=>Some((0usize,1usize,3usize,5usize,7usize,9usize)), // Word address
+            0x87 if len>=23=>Some((0usize,1usize,4usize,4usize,8usize,12usize)), // DWord address
+            0x8a if len>=43=>Some((0usize,1usize,8usize,4usize,12usize,20usize)), // QWord address
+            _=>None,
+        };
+        if let Some((typ_off,flags_off,width,gran_off,min_off,max_off))=parsed{
+            let resource_type=d[typ_off];
+            if resource_type<=2 {
+                let minimum=read_width(d,min_off,width)?;
+                let maximum=read_width(d,max_off,width)?;
+                let translation=read_width(d,max_off+2*width,width)?;
+                let length=read_width(d,max_off+3*width,width)?;
+                if length==0||maximum<minimum{return Err(AcpiError::MalformedEntry)}
+                let last=minimum.checked_add(length-1).ok_or(AcpiError::AddressOutOfRange)?;
+                if last>maximum{return Err(AcpiError::MalformedEntry)}
+                let _granularity=read_width(d,gran_off,width)?;
+                let flags=d[flags_off];
+                push_root_aperture(&mut out,PciRootAperture{resource_type,minimum,maximum,translation,length,minimum_fixed:flags&0x04!=0,maximum_fixed:flags&0x08!=0})?;
+            }
+        }
+        off=end;
+    }
+    if !ended{return Err(AcpiError::MalformedEntry)}
+    Ok(out)
+}
+fn push_root_aperture(out:&mut PciRootResources,a:PciRootAperture)->Result<(),AcpiError>{
+    if out.count==out.apertures.len(){return Err(AcpiError::TooManyEntries)}
+    if a.length==0||a.minimum.checked_add(a.length-1).is_none(){return Err(AcpiError::AddressOutOfRange)}
+    out.apertures[out.count]=a;out.count+=1;Ok(())
+}
+
+
+#[cfg(test)]
+mod pci_root_crs_tests {
+    use super::*;
+    #[test]
+    fn parses_qword_memory_and_io_ranges(){
+        // QWord address descriptor: memory, min=0x80000000,
+        // max=0x8fffffff, translation=0, length=0x10000000.
+        let mut b=vec![0x8a,43,0,
+            0,0,0,0,
+            0,0,0,0,0,0,0,0,
+            0,0,0,0x80,0,0,0,0,
+            0xff,0xff,0xff,0x8f,0,0,0,0,
+            0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,
+            0x79,0];
+        b[1..3].copy_from_slice(&43u16.to_le_bytes());
+        b[39..47].copy_from_slice(&(0x1000_0000u64).to_le_bytes());
+        let parsed=parse_pci_root_resources(&b).unwrap();
+        assert_eq!(parsed.count,1);
+        assert_eq!(parsed.apertures[0].resource_type,0);
+        assert_eq!(parsed.apertures[0].minimum,0x8000_0000);
+        assert_eq!(parsed.apertures[0].maximum,0x8fff_ffff);
+        assert_eq!(parsed.apertures[0].length,0x1000_0000);
+    }
+    #[test]
+    fn requires_end_tag_and_rejects_truncated_descriptor(){
+        assert_eq!(parse_pci_root_resources(&[0x79]),Err(AcpiError::Truncated));
+        assert_eq!(parse_pci_root_resources(&[0x8a,43,0]),Err(AcpiError::Truncated));
+    }
+}

@@ -6,6 +6,8 @@
 #![no_std]
 
 pub mod resources;
+pub mod resource_manager;
+pub mod bridge_resources;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
@@ -693,4 +695,116 @@ mod bridge_range_decode_tests {
         assert_eq!(decode_bridge_range(2,1,3,0,buses),Err(PciTopologyError::InvalidBridgeRange));
         assert_eq!(decode_bridge_range(2,2,3,0,0x0006_0702),Err(PciTopologyError::InvalidBridgeRange));
     }
+}
+
+
+/// A function-scoped configuration-space adapter for BAR/resource operations.
+/// The caller must hold the bus driver's exclusive configuration lock for the
+/// entire multi-register transaction (especially size_bars/program_assignments).
+pub struct EcamFunctionConfig<'a> {
+    pub window: &'a EcamWindow,
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+}
+impl resources::ConfigAccess for EcamFunctionConfig<'_> {
+    fn read_u16(&mut self, offset:u16)->Result<u16,resources::ResourceError>{
+        unsafe{self.window.read_u16(self.segment,self.bus,self.device,self.function,offset)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+    fn write_u16(&mut self,offset:u16,value:u16)->Result<(),resources::ResourceError>{
+        unsafe{self.window.write_u16(self.segment,self.bus,self.device,self.function,offset,value)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+    fn read_u32(&mut self,offset:u16)->Result<u32,resources::ResourceError>{
+        unsafe{self.window.read_u32(self.segment,self.bus,self.device,self.function,offset)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+    fn write_u32(&mut self,offset:u16,value:u32)->Result<(),resources::ResourceError>{
+        unsafe{self.window.write_u32(self.segment,self.bus,self.device,self.function,offset,value)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+}
+
+
+/// Global PCI configuration transaction lock.
+///
+/// PCI BAR sizing and assignment temporarily rewrite multiple configuration
+/// registers; serializing individual ECAM reads/writes is insufficient. Hold
+/// this guard across the complete read/modify/write/rollback sequence. The
+/// lock is intentionally non-recursive and does not spin forever: callers in
+/// interrupt context must not acquire it.
+static PCI_CONFIG_BUSY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigLockError { Busy }
+
+pub struct PciConfigTransactionGuard {
+    _private: (),
+}
+impl Drop for PciConfigTransactionGuard {
+    fn drop(&mut self) {
+        PCI_CONFIG_BUSY.store(false, Ordering::Release);
+    }
+}
+
+/// Acquire exclusive ownership for a complete multi-register PCI config
+/// transaction. A busy result is returned instead of spinning indefinitely.
+pub fn try_acquire_config_transaction() -> Result<PciConfigTransactionGuard, ConfigLockError> {
+    PCI_CONFIG_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map(|_| PciConfigTransactionGuard { _private: () })
+        .map_err(|_| ConfigLockError::Busy)
+}
+
+/// Run BAR sizing/assignment under exclusive configuration-space ownership.
+/// This is the preferred entry point for resource operations in passive PnP
+/// context; it guarantees release on every normal return path.
+pub fn with_config_transaction<T>(
+    operation: impl FnOnce() -> T,
+) -> Result<T, ConfigLockError> {
+    let _guard = try_acquire_config_transaction()?;
+    Ok(operation())
+}
+
+#[cfg(test)]
+mod config_transaction_lock_tests {
+    use super::*;
+    #[test]
+    fn transaction_lock_is_exclusive_and_released_on_drop() {
+        let guard = try_acquire_config_transaction().unwrap();
+        assert_eq!(try_acquire_config_transaction().err(), Some(ConfigLockError::Busy));
+        drop(guard);
+        assert!(try_acquire_config_transaction().is_ok());
+    }
+
+    #[test]
+    fn transaction_wrapper_releases_lock_after_operation() {
+        let result = with_config_transaction(|| 41usize + 1).unwrap();
+        assert_eq!(result, 42);
+        assert!(try_acquire_config_transaction().is_ok());
+    }
+}
+
+
+/// Safe resource-operation entry points. These wrappers prevent callers from
+/// accidentally interleaving BAR sizing/programming with another PCI config
+/// transaction on another function.
+pub fn size_bars_exclusive<C: resources::ConfigAccess>(
+    config: &mut C,
+    header_type: u8,
+    output: &mut [Option<resources::BarRequirement>; resources::MAX_BARS],
+) -> Result<usize, resources::ResourceError> {
+    let _guard = try_acquire_config_transaction().map_err(|_| resources::ResourceError::Config)?;
+    resources::size_bars(config, header_type, output)
+}
+
+pub fn program_assignments_exclusive<C: resources::ConfigAccess>(
+    config: &mut C,
+    header_type: u8,
+    plan: &resource_manager::AllocationPlan,
+) -> Result<(), resources::ResourceError> {
+    let _guard = try_acquire_config_transaction().map_err(|_| resources::ResourceError::Config)?;
+    resource_manager::program_assignments(config, header_type, plan)
 }
