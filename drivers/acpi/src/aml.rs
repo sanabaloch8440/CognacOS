@@ -461,6 +461,21 @@ mod tests{
         assert_eq!(ns.count,1);
         assert_eq!(ns.find_child(0,*b"BAD0"),None);
     }
+    #[test]fn rejects_truncated_unary_terms_and_restores_namespace(){
+        // Not has an operand and a target; the target is missing.
+        let not_missing_target=[0x08,b'B',b'A',b'D',b'2',0x11,0x05,
+            0x80,0x0a,1,0xaa];
+        let mut ns=AmlNamespace::new();
+        assert_eq!(load_definition_block(&not_missing_target,&mut ns),Err(AmlError::Truncated));
+        assert_eq!(ns.count,1);
+
+        // FindSetLeftBit is also a unary value plus target operation.
+        let bit_scan_missing_target=[0x08,b'B',b'A',b'D',b'3',0x11,0x05,
+            0x81,0x0a,1,0xaa];
+        assert_eq!(load_definition_block(&bit_scan_missing_target,&mut ns),Err(AmlError::Truncated));
+        assert_eq!(ns.count,1);
+    }
+
     #[test]fn rejects_unterminated_string_inside_package(){
         let aml=[0x08,b'B',b'A',b'D',b'1',0x12,0x05,1,0x0d,b'x',b'y'];
         let mut ns=AmlNamespace::new();
