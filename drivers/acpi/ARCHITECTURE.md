@@ -94,7 +94,7 @@ This is an implementation status record, not a compatibility claim.
 | DSDT/SSDT namespace | AML table manager and namespace loading | Connected during ACPI DriverEntry |
 | AML execution | Bounded integer-oriented method executor; typed data-object decoder; gated immutable Name(Buffer) extraction with bounded caller storage | Method-returned buffers, references, synchronization and full operation-region semantics remain incomplete |
 | Device identity | _HID, _CID, _UID, _STA, _ADR evaluator | Used to create initial ACPI PDO inventory; unsupported methods can suppress records |
-| ACPI PDO/PnP | Bus device, PDO creation, BusRelations response and kernel relation reference ownership; PDO QueryId returns ACPI-prefixed DeviceID, HardwareIDs, CompatibleIDs and instance IDs from paged pool; QueryCapabilities reports conservative D0/D3 and non-wake defaults | Partial; ContainerID, device text, bus information, TargetDeviceRelation, query-resources, query-resource-requirements and complete start/stop/remove behavior remain incomplete |
+| ACPI PDO/PnP | Bus device, PDO creation, BusRelations response and kernel relation reference ownership; PDO QueryId and conservative QueryCapabilities; PDO QueryResources now evaluates immutable static _CRS buffers and serializes supported fixed resources into a WDM CM_RESOURCE_LIST allocated from paged pool | Partial; method-returned _CRS buffers, non-fixed address ranges, translated interrupt vectors, QueryResourceRequirements, ContainerID, device text, bus information, TargetDeviceRelation and complete start/stop/remove behavior remain incomplete |
 | _CRS / _PRS / _SRS | Resource-template parser and resource-selection primitives | Not connected to live PDO resource IRPs or kernel arbiter |
 | _PRT | Typed route parser and link-device resolver interface | No complete AML-to-link-device-to-HAL route path |
 | Power / wake | State and _PRW data primitives | No complete kernel power-manager dispatch path |
@@ -139,7 +139,10 @@ This is not resource-start integration. The AML table manager now exposes a gate
 for immutable Name(Buffer) objects such as static _CRS/_PRS templates. It checks
 package bounds, BufferSize, initializer length and caller capacity, and zero-fills
 the declared buffer tail. Control methods returning buffers are still unsupported.
-The PDO currently does not implement _QueryResources_,
-_QueryResourceRequirements_, _QueryBusInformation_, or the full
-query/remove/cancel lifecycle. Do not enable hardware drivers that require
+The PDO now implements _QueryResources_ for immutable Name(Buffer) _CRS
+objects whose resource descriptors map to fixed raw bus resources. It rejects
+unassigned address ranges and unsupported AML/resource values. IRQ values are
+published as raw GSI bus-relative values; HAL translation and arbiter ownership
+remain outside this driver. _QueryResourceRequirements_, _QueryBusInformation_,
+and the full query/remove/cancel lifecycle remain incomplete. Do not enable hardware drivers that require
 resources based on this milestone alone.
