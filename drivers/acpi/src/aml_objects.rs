@@ -2,7 +2,7 @@
 //! Values live in a caller-owned fixed arena; no heap allocation or firmware I/O
 //! occurs here. Package elements reference other arena entries by index.
 #![no_std]
-use crate::aml::{decode_package_length,AmlError};
+use crate::aml::{decode_package_length,AmlError,AmlNamespace,AmlObjectType};
 
 pub const MAX_AML_VALUES:usize=128;
 pub const MAX_AML_BYTES:usize=256;
@@ -111,9 +111,33 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
     Ok((id,pos))
 }
 
+/// Decode a namespace NameOp's stored initializer into the supplied arena.
+/// The namespace loader stores the exact initializer byte range on Name nodes.
+pub fn decode_namespace_name(aml:&[u8],namespace:&AmlNamespace,node_index:u16,arena:&mut AmlObjectArena)->Result<u16,ObjectError>{
+    let node=namespace.nodes.get(node_index as usize).filter(|_|(node_index as usize)<namespace.count).ok_or(ObjectError::MalformedObject)?;
+    if node.object_type!=AmlObjectType::Name{return Err(ObjectError::MalformedObject)}
+    let start=node.body_start as usize;
+    let end=start.checked_add(node.body_length as usize).ok_or(ObjectError::Truncated)?;
+    if end>aml.len(){return Err(ObjectError::Truncated)}
+    let (value,next)=decode_data_object(aml,start,end,arena)?;
+    if next!=end{return Err(ObjectError::MalformedObject)}
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn resolves_namespace_name_initializer(){
+        let aml=[0x08,b'_',b'H',b'I',b'D',0x0d,b'P',b'N',b'P',b'0',b'C',0];
+        let mut namespace=AmlNamespace::new();
+        crate::aml::load_definition_block(&aml,&mut namespace).unwrap();
+        let id=namespace.find_child(0,*b"_HID").unwrap();
+        let mut arena=AmlObjectArena::new();
+        let value=decode_namespace_name(&aml,&namespace,id,&mut arena).unwrap();
+        let object=arena.get(value).unwrap();
+        assert_eq!(object.kind,AmlValueKind::String);
+        assert_eq!(&object.bytes[..5],b"PNP0C");
+    }
     #[test] fn decodes_integer_and_string_objects(){
         let mut arena=AmlObjectArena::new();
         let (n,p)=decode_data_object(&[0x0a,42],0,2,&mut arena).unwrap();
