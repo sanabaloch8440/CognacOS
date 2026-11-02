@@ -38,6 +38,7 @@ struct PciIdeFdoExtension {
     active_channels: u8,
     present_drives: u8,
 }
+const _: () = assert!(core::mem::size_of::<PciIdeFdoExtension>() <= 512);
 
 unsafe extern "win64" {
     fn IoCreateDevice(driver: *mut DRIVER_OBJECT, extension_size: u32,
