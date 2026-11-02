@@ -206,7 +206,7 @@ mod tests{
         let aml=[0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,8,
                  0x5b,0x81,0x0e,b'R',b'E',b'G',b'N',0x01,0x01,0x00,b'F',b'O',b'O',b'_',0x05];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-        let id=ns.find_child(ns.find_child(0,*b"REGN").unwrap(),*b"FOO_").unwrap();
+        let id=ns.find_child(0,*b"FOO_").unwrap();
         let mut mem=Memory{bytes:[0b1011_0100;32],locked:false};
         assert_eq!(read_field(&ns,id,&mut mem),Ok(0b10100));
         assert_eq!(write_field(&ns,id,0b00101,&mut mem),Ok(()));
