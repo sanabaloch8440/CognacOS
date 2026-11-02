@@ -298,7 +298,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         if ext==0x86{let _index=parse_name(&mut sub)?;let _data=parse_name(&mut sub)?;}
                         if ext==0x87{let _=parse_name(&mut sub)?;skip_data_object(&mut sub)?;}
                         let flags=sub.byte()?;
-                        if flags&0xf8!=0{return Err(AmlError::UnsupportedOpcode)}
+                        if flags&0xf8!=0||((flags>>1)&3)==3{return Err(AmlError::UnsupportedOpcode)}
                         let (region_node,mode)=if ext==0x81{
                             let id=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
                             if ns.nodes[id as usize].object_type!=AmlObjectType::OperationRegion{return Err(AmlError::InvalidParent)}
@@ -381,7 +381,8 @@ mod tests{
         assert_eq!(ns.find_child(0,*b"DAT0"),Some(2));
         assert_eq!(ns.nodes[2].body_start,0);
         assert_eq!(ns.nodes[2].body_length,8);
-        assert_eq!(ns.nodes[2].object_type,AmlObjectType::Field);\n        assert_eq!(ns.nodes[2].field_region,1);
+        assert_eq!(ns.nodes[2].object_type,AmlObjectType::Field);
+        assert_eq!(ns.nodes[2].field_region,1);
     }
     #[test]fn loads_mutex_event_and_external(){
         let aml=[0x5b,0x01,b'M',b'T',b'X',b'0',0,
