@@ -360,3 +360,14 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&bytes), Err(ResourceError::InvalidDescriptor));
  }
 }
+
+
+#[cfg(test)] mod stability_29_resource_capacity {
+ use super::*;
+ #[test] fn rejects_more_than_max_resources() {
+  let mut bytes = std::vec::Vec::new();
+  for _ in 0..=MAX_RESOURCES { bytes.extend_from_slice(&[0x4b, 0x78, 0x03, 3]); }
+  bytes.extend_from_slice(&[0x79, 0]);
+  assert_eq!(parse_resource_template(&bytes), Err(ResourceError::TooManyResources));
+ }
+}
