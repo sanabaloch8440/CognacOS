@@ -13,7 +13,9 @@ unsafe extern "win64" {
         device_type: u32, characteristics: u32, exclusive: u8,
         device_object: *mut *mut DEVICE_OBJECT,
     ) -> i32;
-    fn IoDeleteDevice(device: *mut DEVICE_OBJECT);\n    fn ExAllocatePoolWithTag(pool_type: u32, number_of_bytes: usize, tag: u32) -> PVOID;\n    fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
+    fn IoDeleteDevice(device: *mut DEVICE_OBJECT);
+    fn ExAllocatePoolWithTag(pool_type: u32, number_of_bytes: usize, tag: u32) -> PVOID;
+    fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
 }
 
 // These are ordinary PE import thunks. The PE conversion step turns the
@@ -49,6 +51,8 @@ const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
 struct PciPdoExtension {
     magic: u64,
     version: u32,
+    function_index: u32,
+    started: u8,
     information: PCI_DEVICE_INFORMATION,
 }
 
@@ -119,7 +123,10 @@ const IRP_MN_START_DEVICE: u8 = 0x00;
 const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
-const IRP_MN_QUERY_INTERFACE: u8 = 0x08;\nconst IRP_MN_QUERY_RESOURCE_REQUIREMENTS: u8 = 0x0b;\nconst IO_RESOURCE_REQUIREMENTS_MAX_SIZE: usize = 32 + 8 + 6 * pci::resource_manager::IO_RESOURCE_DESCRIPTOR_SIZE;\nconst PCI_REQUIREMENTS_POOL_TAG: u32 = u32::from_le_bytes(*b"PciR");
+const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
+const IRP_MN_QUERY_RESOURCE_REQUIREMENTS: u8 = 0x0b;
+const IO_RESOURCE_REQUIREMENTS_MAX_SIZE: usize = 32 + 8 + 6 * pci::resource_manager::IO_RESOURCE_DESCRIPTOR_SIZE;
+const PCI_REQUIREMENTS_POOL_TAG: u32 = u32::from_le_bytes(*b"PciR");
 
 /// Enumerate the PCI configuration inventory at the bus PnP discovery
 /// point, not during DriverEntry. PDO creation is deferred until BusRelations
@@ -183,14 +190,122 @@ unsafe extern "win64" fn query_pdo_information(
     STATUS_SUCCESS
 }
 
+
+/// Consume the PnP manager's assigned raw/translated resource lists. BARs are
+/// programmed from the bus-relative (raw) addresses; translated resources are
+/// retained only for consumers above the bus driver. Unsupported resource
+/// layouts fail closed rather than guessing an address.
+unsafe fn start_pci_device(
+    device: *mut DEVICE_OBJECT,
+    irp: *mut cognacos_nt_abi::io::IRP,
+    stack: *mut cognacos_nt_abi::io::IO_STACK_LOCATION,
+) -> i32 {
+    if device.is_null() || irp.is_null() || stack.is_null()
+        || !STATE.ready.load(Ordering::Acquire) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    let extension = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+    if extension.is_null()
+        || unsafe { (*extension).magic != PCI_PDO_EXTENSION_MAGIC || (*extension).version != 1 } {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if unsafe { (*extension).started != 0 } { return STATUS_SUCCESS; }
+    // START_DEVICE's first two pointer-sized fields are AllocatedResources and
+    // AllocatedResourcesTranslated in the x64 PnP stack parameter union.
+    let parameters = unsafe { (*stack).parameters.as_ptr() };
+    let raw = unsafe { core::ptr::read_unaligned(parameters.cast::<*const u8>()) };
+    let translated = unsafe { core::ptr::read_unaligned(parameters.add(8).cast::<*const u8>()) };
+    if raw.is_null() || translated.is_null() { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+
+    let address = HANDOFF.load(Ordering::Acquire);
+    if address == 0 { return STATUS_DEVICE_NOT_READY; }
+    let handoff = unsafe { &*(address as *const PciDriverHandoff) };
+    let mut remaining = unsafe { (*extension).function_index as usize };
+    let mut function = None;
+    for wi in 0..handoff.window_count as usize {
+        let n = unsafe { (*STATE.function_counts.get())[wi] };
+        if remaining >= n { remaining -= n; continue; }
+        function = unsafe { (*STATE.functions.get())[wi][remaining] };
+        break;
+    }
+    let Some(function) = function else { return STATUS_NOT_FOUND; };
+    let Some(window) = handoff.windows[..handoff.window_count as usize].iter().find(|w|
+        w.segment == function.segment && function.bus >= w.bus_start && function.bus <= w.bus_end
+    ) else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
+    let mut config = pci::EcamFunctionConfig {
+        window, segment: function.segment, bus: function.bus,
+        device: function.device, function: function.function,
+    };
+    let mut requirements: [Option<pci::resources::BarRequirement>; 6] = [None; 6];
+    let count = match pci::size_bars_exclusive(&mut config, function.header.header_type, &mut requirements) {
+        Ok(n) => n, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+    };
+
+    // CM_RESOURCE_LIST: count, then one CM_FULL_RESOURCE_DESCRIPTOR followed
+    // by a CM_PARTIAL_RESOURCE_LIST and 16-byte CM_PARTIAL_RESOURCE_DESCRIPTORs.
+    let full_count = unsafe { core::ptr::read_unaligned(raw.cast::<u32>()) };
+    if full_count != 1 { return STATUS_NOT_SUPPORTED; }
+    let partial_count = unsafe { core::ptr::read_unaligned(raw.add(16).cast::<u16>()) };
+    let raw_count = unsafe { core::ptr::read_unaligned(raw.add(18).cast::<u16>()) };
+    let raw_n = unsafe { core::ptr::read_unaligned(raw.add(20).cast::<u32>()) } as usize;
+    if raw_count != partial_count || raw_n > 64 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    let raw_desc = unsafe { raw.add(24) };
+    let trans_count = unsafe { core::ptr::read_unaligned(translated.cast::<u32>()) };
+    if trans_count != 1 { return STATUS_NOT_SUPPORTED; }
+    let trans_n = unsafe { core::ptr::read_unaligned(translated.add(20).cast::<u32>()) } as usize;
+    if trans_n != raw_n { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    let trans_desc = unsafe { translated.add(24) };
+
+    let mut plan = pci::resource_manager::AllocationPlan::empty();
+    let mut resource_index = 0usize;
+    for req in requirements.iter().take(count).flatten() {
+        let mut found = None;
+        while resource_index < raw_n {
+            let p = unsafe { raw_desc.add(resource_index * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
+            let kind = unsafe { *p };
+            let start = unsafe { core::ptr::read_unaligned(p.add(4).cast::<u64>()) };
+            let length = unsafe { core::ptr::read_unaligned(p.add(12).cast::<u32>()) } as u64;
+            resource_index += 1;
+            if (req.kind == pci::resources::BarKind::Io && kind == 1)
+                || (req.kind != pci::resources::BarKind::Io && kind == 3) {
+                if length < req.length || start % req.alignment != 0 {
+                    return STATUS_DEVICE_CONFIGURATION_ERROR;
+                }
+                found = Some(start);
+                break;
+            }
+        }
+        let Some(base) = found else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
+        plan.assignments[plan.count] = Some(pci::resource_manager::BarAssignment {
+            index: req.index, kind: req.kind, base, length: req.length, prefetchable: req.prefetchable,
+        });
+        plan.count += 1;
+    }
+    // Require translated descriptors to be structurally present before touching
+    // hardware. The OS has already performed address translation/arbitration.
+    for i in 0..trans_n {
+        let p = unsafe { trans_desc.add(i * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
+        let kind = unsafe { *p };
+        if kind == 1 || kind == 3 {
+            let _start = unsafe { core::ptr::read_unaligned(p.add(4).cast::<u64>()) };
+            let len = unsafe { core::ptr::read_unaligned(p.add(12).cast::<u32>()) };
+            if len == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+        }
+    }
+    if pci::program_assignments_exclusive(&mut config, function.header.header_type, &plan).is_err() {
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+    unsafe { (*extension).started = 1; }
+    STATUS_SUCCESS
+}
+
 unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { (*irp).io_status.information = 0; }
     let status = match unsafe { (*stack).minor_function } {
-        IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
-        IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
+                IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
         IRP_MN_QUERY_DEVICE_RELATIONS => {
             let relation_type = unsafe {
                 core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())
@@ -281,7 +396,7 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                 unsafe { CognacPciGetBusInterface(output) }
             }
         },
-        IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
+        IRP_MN_START_DEVICE => unsafe { start_pci_device(device, irp, stack) },
         _ => STATUS_INVALID_DEVICE_REQUEST,
     };
     unsafe { (*irp).io_status.status.status = status; }
@@ -352,6 +467,8 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
                 extension.write(PciPdoExtension {
                     magic: PCI_PDO_EXTENSION_MAGIC,
                     version: 1,
+                    function_index: index as u32,
+                    started: 0,
                     information,
                 });
                 // DO_BUS_ENUMERATED_DEVICE: this is a PDO created by its bus.
