@@ -159,6 +159,23 @@ mod tests{
         assert_eq!(schedule_boot_drivers(&cycle,&[],&[],&mut [0usize;2],&mut [0u8;2]),Err(ScheduleError::Cycle));
     }
     #[test]
+    fn preinitialized_platform_service_satisfies_dependency_without_scheduling_it(){
+        let acpi=[65u16,67,80,73];
+        let child=[67u16,72,73,76,68];
+        let dependency:[&[u16];1]=[&acpi];
+        let nodes=[ServiceNode{name:&acpi,group:&[],tag:None,start_type:0,
+                service_dependencies:&[],group_dependencies:&[]},
+            ServiceNode{name:&child,group:&[],tag:None,start_type:1,
+                service_dependencies:&dependency,group_dependencies:&[]}];
+        let initialized:[&[u16];1]=[&acpi];
+        let mut output=[usize::MAX;2];let mut state=[0u8;2];
+        assert_eq!(schedule_boot_drivers_with_initialized(
+            &nodes,&[],&[],&initialized,&mut output,&mut state),Ok(1));
+        assert_eq!(output[0],1);
+        assert_eq!(state,[1,1]);
+    }
+
+    #[test]
     fn rejects_non_boot_system_start_candidates(){
         let a=[65u16];let nodes=[ServiceNode{name:&a,group:&[],tag:None,start_type:2,service_dependencies:&[],group_dependencies:&[]}];
         assert_eq!(schedule_boot_drivers(&nodes,&[],&[],&mut [0usize;1],&mut [0u8;1]),Err(ScheduleError::InvalidStartType));
