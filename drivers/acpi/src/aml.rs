@@ -15,7 +15,7 @@ impl AmlName { pub const EMPTY:Self=Self{segments:[[0;4];MAX_NAME_SEGMENTS],coun
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
-pub enum AmlObjectType { Root=0, Scope=1, Device=2, Method=3, Name=4, Processor=5, PowerResource=6, ThermalZone=7, Alias=8, External=9 }
+pub enum AmlObjectType { Root=0, Scope=1, Device=2, Method=3, Name=4, Processor=5, PowerResource=6, ThermalZone=7, Alias=8, External=9, OperationRegion=10, Field=11, IndexField=12, BankField=13, Mutex=14, Event=15 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlNode {
     pub parent:u16, pub name:[u8;4], pub object_type:AmlObjectType,
@@ -105,7 +105,7 @@ fn skip_data_object(c:&mut Cursor<'_>)->Result<(),AmlError>{
         0x11|0x12|0x13=>{
             let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
             let pkg_start=c.pos;c.pos=end;
-            if op==0x11 { let mut sub=Cursor{bytes:c.bytes,pos:pkg_start+package_length_bytes(c.bytes,pkg_start,c.end)?,end};skip_data_object(&mut sub)?; }
+            if op==0x11 { let mut sub=Cursor{bytes:c.bytes,pos:pkg_start+package_length_bytes(c.bytes,pkg_start,c.end)?,end};skip_data_object(&mut sub)?; if sub.pos>end{return Err(AmlError::BadPackageLength)} }
             Ok(())
         }
         0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{c.pos-=1;let _=parse_name(c)?;Ok(())}
@@ -145,16 +145,16 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                 let _=resolve_path(ns,parent,&source,true,AmlObjectType::Alias,0,0,0)?;
                 resolve_path(ns,parent,&alias,true,AmlObjectType::Alias,0,0,0)?;
             }
-            0x15=>{let _=parse_name(c)?;let _=c.byte()?;skip_data_object(c)?;}
+            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;}
             0x5b=>{
                 let ext=c.byte()?;
                 match ext{
-                    0x82|0x83|0x85=>{
+                    0x82|0x83|0x84|0x85|0x86|0x87=>{
                         let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
                         let pkg_len_bytes=package_length_bytes(c.bytes,c.pos,c.end)?;
                         let mut sub=Cursor{bytes:c.bytes,pos:c.pos+pkg_len_bytes,end};
                         let name=parse_name(&mut sub)?;
-                        let kind=match ext{0x82=>AmlObjectType::Device,0x83=>AmlObjectType::Processor,_=>AmlObjectType::ThermalZone};
+                        let kind=match ext{0x82=>AmlObjectType::Device,0x83=>AmlObjectType::Processor,0x85=>AmlObjectType::ThermalZone,0x84=>AmlObjectType::PowerResource,0x86=>AmlObjectType::Field,_=>AmlObjectType::IndexField};
                         let node=resolve_path(ns,parent,&name,true,kind,0,0,0)?;
                         if ext==0x83{sub.take(6)?;}
                         parse_terms(&mut sub,ns,node,depth+1)?;
