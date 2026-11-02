@@ -78,11 +78,13 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let Some(device) = (unsafe { ext.device.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
     if !hal.compatible() || hal.read_mmio_u32.is_none() || hal.write_mmio_u32.is_none()
         || !device.compatible() || !device.has_dma() || !device.has_interrupts()
-        || !device.has_bus_master() {
+        || !device.has_bus_master() || device.free_dma.is_none() {
         return STATUS_NOT_SUPPORTED;
     }
     HANDOFF.store(ext as *const _ as u64, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+    object.major_function[IRP_MJ_READ] = Some(ahci_read_write_dispatch);
+    object.major_function[IRP_MJ_WRITE] = Some(ahci_read_write_dispatch);
     object.driver_unload = Some(driver_unload);
     STATUS_SUCCESS
 }
@@ -446,6 +448,41 @@ pub unsafe extern "win64" fn CognacStorAhciReadWrite(
     result
 }
 
+
+const IRP_MJ_READ: usize = 0x03;
+const IRP_MJ_WRITE: usize = 0x04;
+
+/// WDM read/write entry point for the AHCI device stack. The I/O manager must
+/// supply a resident system buffer (or a previously mapped MDL system address);
+/// the miniport never dereferences a user virtual address for DMA.
+unsafe extern "win64" fn ahci_read_write_dispatch(
+    _device: *mut cognacos_nt_abi::io::DEVICE_OBJECT,
+    irp: *mut cognacos_nt_abi::io::IRP,
+) -> i32 {
+    if irp.is_null() { return STATUS_INVALID_PARAMETER; }
+    let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
+    if stack.is_null() { return STATUS_INVALID_PARAMETER; }
+    let major = unsafe { (*stack).major_function };
+    if major as usize != IRP_MJ_READ && major as usize != IRP_MJ_WRITE {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    let length = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>()) } as usize;
+    let offset = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<i64>()) };
+    let buffer = unsafe { (*irp).user_buffer.cast::<u8>() };
+    let status = if offset < 0 || buffer.is_null() || length == 0 || length > AHCI_MAX_TRANSFER
+        || length % AHCI_SECTOR_BYTES != 0 || offset as u64 % AHCI_SECTOR_BYTES as u64 != 0 {
+        STATUS_INVALID_PARAMETER
+    } else {
+        let lba = offset as u64 / AHCI_SECTOR_BYTES as u64;
+        let sectors = (length / AHCI_SECTOR_BYTES) as u32;
+        unsafe { CognacStorAhciReadWrite(lba, sectors, buffer, major as usize == IRP_MJ_WRITE) }
+    };
+    unsafe {
+        (*irp).io_status.status.status = status;
+        (*irp).io_status.information = if status == STATUS_SUCCESS { length } else { 0 };
+    }
+    status
+}
 
 const IRP_MJ_PNP: usize = 0x1b;
 const IRP_MN_START_DEVICE: u8 = 0x00;
