@@ -171,7 +171,7 @@ impl AmlTableManager {
     }
     /// Atomically install the boot DSDT and all supplied SSDTs. If any
     /// definition block fails, every table added by this call is rolled back.
-    pub fn load_firmware_tables<G:AmlExecutionGate>(&mut self,dsdt:&[u8],ssdts:&[&[u8]],gate:&mut G)->Result<LoadedTableSet,TableError>{
+    pub fn load_firmware_tables<G:AmlExecutionGate>(&mut self,dsdt:&[u8],ssdts:&[&[u8]],gate:&G)->Result<LoadedTableSet,TableError>{
         self.with_quiescence(gate,|manager|{
             if manager.count!=0||manager.dsdt_loaded{return Err(TableError::DsdtAlreadyLoaded)}
             if ssdts.len()>MAX_AML_TABLES-1{return Err(TableError::TableLimit)}
@@ -195,13 +195,13 @@ impl AmlTableManager {
             result
         })
     }
-    pub fn load_dsdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&mut G)->Result<TableHandle,TableError>{
+    pub fn load_dsdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&G)->Result<TableHandle,TableError>{
         self.with_quiescence(gate,|manager|{
             if manager.dsdt_loaded||manager.count!=0{return Err(TableError::DsdtAlreadyLoaded)}
             manager.load(bytes,*b"DSDT")
         })
     }
-    pub fn load_ssdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&mut G)->Result<TableHandle,TableError>{
+    pub fn load_ssdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&G)->Result<TableHandle,TableError>{
         self.with_quiescence(gate,|manager|{
             if !manager.dsdt_loaded{return Err(TableError::DsdtRequired)}
             manager.load(bytes,*b"SSDT")
@@ -275,7 +275,7 @@ impl AmlTableManager {
     /// Only the most recently installed table may be removed. This preserves
     /// namespace indices and prevents unloading definitions underneath later
     /// SSDTs. The execution gate must stop new method entry and drain active calls.
-    pub fn unload<G:AmlExecutionGate>(&mut self,handle:TableHandle,gate:&mut G)->Result<AmlTableInfo,TableError>{
+    pub fn unload<G:AmlExecutionGate>(&mut self,handle:TableHandle,gate:&G)->Result<AmlTableInfo,TableError>{
         self.with_quiescence(gate,|manager|manager.unload_quiesced(handle))
     }
     fn unload_quiesced(&mut self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
@@ -353,14 +353,14 @@ mod tests {
         assert_eq!(manager.table_count(),0);assert!(!manager.dsdt_loaded());
         assert_eq!(manager.namespace().count,1);
         let ssdt=table(*b"SSDT",*b"EXTR",3);
-        let loaded=manager.load_firmware_tables(&dsdt,&[&ssdt],&mut gate).unwrap();
+        let loaded=manager.load_firmware_tables(&dsdt,&[&ssdt],&gate).unwrap();
         assert_eq!(loaded.ssdt_count,1);assert_eq!(manager.table_count(),2);
     }
 
     #[test]
     fn method_dispatch_uses_owning_table_and_rejects_foreign_nodes(){
         let dsdt=method_table();let mut manager=AmlTableManager::new();let mut gate=gate();
-        let handle=manager.load_dsdt(&dsdt,&mut gate).unwrap();
+        let handle=manager.load_dsdt(&dsdt,&gate).unwrap();
         let method=manager.namespace().find_child(0,*b"TEST").unwrap();
         assert_eq!(manager.execute_method(handle,&dsdt,method,&[],&gate),Ok(AmlValue::Integer(7)));
         assert_eq!(manager.execute_method(handle,&dsdt,0,&[],&gate),Err(TableError::InvalidHandle));
@@ -388,15 +388,15 @@ mod tests {
     #[test]
     fn table_mutation_requires_execution_quiescence(){
         let dsdt=table(*b"DSDT",*b"BASE",1);let mut manager=AmlTableManager::new();
-        let mut gate=TestGate{busy:true,entered:false};
-        assert_eq!(manager.load_dsdt(&dsdt,&mut gate),Err(TableError::ExecutionBusy));
+        let mut gate=TestGate{busy:core::sync::atomic::AtomicBool::new(true),entered:core::sync::atomic::AtomicBool::new(false)};
+        assert_eq!(manager.load_dsdt(&dsdt,&gate),Err(TableError::ExecutionBusy));
         assert_eq!(manager.table_count(),0);assert!(!gate.entered.load(Ordering::Acquire));
         gate.busy.store(false,Ordering::Release);
-        let handle=manager.load_dsdt(&dsdt,&mut gate).unwrap();
-        assert!(!gate.entered);
-        manager.unload(handle,&mut gate).unwrap();
-        assert!(!gate.entered);
-        let replacement=manager.load_dsdt(&dsdt,&mut gate).unwrap();
+        let handle=manager.load_dsdt(&dsdt,&gate).unwrap();
+        assert!(!gate.entered.load(Ordering::Acquire));
+        manager.unload(handle,&gate).unwrap();
+        assert!(!gate.entered.load(Ordering::Acquire));
+        let replacement=manager.load_dsdt(&dsdt,&gate).unwrap();
         assert_ne!(handle.generation,replacement.generation);
         assert_eq!(manager.table_info(handle),Err(TableError::InvalidHandle));
     }
@@ -406,16 +406,16 @@ mod tests {
         let dsdt=table(*b"DSDT",*b"BASE",1);
         let ssdt=table(*b"SSDT",*b"EXTR",2);
         let mut manager=AmlTableManager::new();let mut gate=gate();
-        assert_eq!(manager.load_ssdt(&ssdt,&mut gate),Err(TableError::DsdtRequired));
-        let base=manager.load_dsdt(&dsdt,&mut gate).unwrap();
-        let extra=manager.load_ssdt(&ssdt,&mut gate).unwrap();
+        assert_eq!(manager.load_ssdt(&ssdt,&gate),Err(TableError::DsdtRequired));
+        let base=manager.load_dsdt(&dsdt,&gate).unwrap();
+        let extra=manager.load_ssdt(&ssdt,&gate).unwrap();
         assert_eq!(manager.table_count(),2);
         assert!(manager.dsdt_loaded());
         assert!(manager.namespace().find_child(0,*b"BASE").is_some());
         assert!(manager.namespace().find_child(0,*b"EXTR").is_some());
-        assert_eq!(manager.unload(base,&mut gate),Err(TableError::UnloadOrder));
-        manager.unload(extra,&mut gate).unwrap();
-        manager.unload(base,&mut gate).unwrap();
+        assert_eq!(manager.unload(base,&gate),Err(TableError::UnloadOrder));
+        manager.unload(extra,&gate).unwrap();
+        manager.unload(base,&gate).unwrap();
         assert_eq!(manager.table_count(),0);
         assert!(!manager.dsdt_loaded());
     }
@@ -424,14 +424,14 @@ mod tests {
         let dsdt=table(*b"DSDT",*b"BASE",1);
         let mut bad=dsdt;bad[42]^=1;
         let mut manager=AmlTableManager::new();let mut gate=gate();
-        assert!(matches!(manager.load_dsdt(&bad,&mut gate),Err(TableError::InvalidSdt(AcpiError::BadChecksum))));
-        let base=manager.load_dsdt(&dsdt,&mut gate).unwrap();
-        assert_eq!(manager.load_ssdt(&dsdt,&mut gate),Err(TableError::UnsupportedSignature));
+        assert!(matches!(manager.load_dsdt(&bad,&gate),Err(TableError::InvalidSdt(AcpiError::BadChecksum))));
+        let base=manager.load_dsdt(&dsdt,&gate).unwrap();
+        assert_eq!(manager.load_ssdt(&dsdt,&gate),Err(TableError::UnsupportedSignature));
         let duplicate=table(*b"SSDT",*b"BASE",1);
         let ssdt=table(*b"SSDT",*b"EXTR",2);
-        manager.load_ssdt(&ssdt,&mut gate).unwrap();
-        assert_eq!(manager.load_ssdt(&duplicate,&mut gate),Err(TableError::DuplicateTable));
-        assert!(manager.unload(base,&mut gate).is_err());
+        manager.load_ssdt(&ssdt,&gate).unwrap();
+        assert_eq!(manager.load_ssdt(&duplicate,&gate),Err(TableError::DuplicateTable));
+        assert!(manager.unload(base,&gate).is_err());
     }
     #[test]
     fn failed_aml_parse_does_not_publish_a_table(){
@@ -439,7 +439,7 @@ mod tests {
         bad[36]=0x08;bad[37]=b'1';
         bad[9]=0;bad[9]=0u8.wrapping_sub(bad.iter().fold(0u8,|s,x|s.wrapping_add(*x)));
         let mut manager=AmlTableManager::new();let mut gate=gate();
-        assert!(manager.load_dsdt(&bad,&mut gate).is_err());
+        assert!(manager.load_dsdt(&bad,&gate).is_err());
         assert_eq!(manager.table_count(),0);
         assert_eq!(manager.namespace().count,1);
     }
