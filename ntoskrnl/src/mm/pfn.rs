@@ -212,6 +212,53 @@ pub fn release_allocation_range(base: u64, pages: usize) -> Result<(), PfnError>
     Ok(())
 }
 
+/// Register an arbitrary batch of freshly allocated frames atomically.
+/// Duplicate input PFNs, pre-existing live records, and capacity exhaustion
+/// reject the whole batch without publishing a partial owner set.
+pub fn register_allocations(pages: &[u64]) -> Result<(), PfnError> {
+    if pages.is_empty() { return Err(PfnError::InvalidPage); }
+    for (index, page) in pages.iter().copied().enumerate() {
+        if page == 0 || page & 0xfff != 0 { return Err(PfnError::InvalidPage); }
+        if pages[..index].contains(&page) { return Err(PfnError::AlreadyRegistered); }
+    }
+    let mut entries = DATABASE.lock();
+    let mut reusable = 0usize;
+    let mut live = 0usize;
+    for entry in entries.iter() {
+        match entry.state {
+            LIVE => live += 1,
+            EMPTY | TOMBSTONE => reusable += 1,
+            _ => {},
+        }
+    }
+    if reusable < pages.len() || live.checked_add(pages.len()).is_none_or(|count| count > CAPACITY) {
+        return Err(PfnError::DatabaseFull);
+    }
+    for page in pages.iter().copied() {
+        if find(&entries, page).is_some() { return Err(PfnError::AlreadyRegistered); }
+    }
+    for page in pages.iter().copied() {
+        let start = hash(page);
+        let mut tombstone = None;
+        for probe in 0..CAPACITY {
+            let index = (start + probe) & (CAPACITY - 1);
+            if entries[index].state == TOMBSTONE && tombstone.is_none() {
+                tombstone = Some(index);
+            }
+            if entries[index].state == EMPTY {
+                let target = tombstone.unwrap_or(index);
+                entries[target] = Entry { page, references: 1, mappings: 0, pins: 0, state: LIVE };
+                tombstone = None;
+                break;
+            }
+        }
+        if let Some(index) = tombstone {
+            entries[index] = Entry { page, references: 1, mappings: 0, pins: 0, state: LIVE };
+        }
+    }
+    Ok(())
+}
+
 /// Acquire a reference owned by a valid hardware mapping.
 pub fn acquire_mapping(page: u64) -> Result<(), PfnError> {
     let mut entries = DATABASE.lock();
