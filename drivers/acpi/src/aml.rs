@@ -184,7 +184,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(
                         let plen=package_length_bytes(c.bytes,c.pos,c.end)?;
                         let mut sub=Cursor{bytes:c.bytes,pos:c.pos+plen,end};
                         let region=parse_name(&mut sub)?;
-                        if ext==0x86{let _=parse_name(&mut sub)?;}
+                        if ext==0x86{let _index=parse_name(&mut sub)?;let _data=parse_name(&mut sub)?;}
                         if ext==0x87{let _=parse_name(&mut sub)?;skip_data_object(&mut sub)?;}
                         let _flags=sub.byte()?;
                         let node=resolve_path(ns,parent,&region,true,if ext==0x81{AmlObjectType::Field}else if ext==0x86{AmlObjectType::IndexField}else{AmlObjectType::BankField},0,0,0)?;
@@ -238,6 +238,29 @@ mod tests{
         assert!(load_definition_block(&aml,&mut ns).is_ok());
         assert_eq!(ns.find_child(0,*b"PCI0"),Some(1));
         assert_eq!(ns.find_child(1,*b"_HID"),Some(2));
+    }
+    #[test]fn loads_operation_region_and_named_field(){
+        let aml=[
+            0x5b,0x80,b'R',b'E',b'G',b'N',0x00,0x0a,0x00,0x0a,0x10,
+            0x5b,0x81,0x0b,b'R',b'E',b'G',b'N',0x00,b'D',b'A',b'T',b'0',0x08
+        ];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&aml,&mut ns).is_ok());
+        assert_eq!(ns.find_child(0,*b"REGN"),Some(1));
+        assert_eq!(ns.nodes[1].object_type,AmlObjectType::OperationRegion);
+        assert_eq!(ns.find_child(1,*b"DAT0"),Some(2));
+        assert_eq!(ns.nodes[2].object_type,AmlObjectType::Field);
+    }
+    #[test]fn loads_mutex_event_and_external(){
+        let aml=[0x5b,0x01,b'M',b'T',b'X',b'0',0,
+                 0x5b,0x02,b'E',b'V',b'T',b'0',
+                 0x15,b'M',b'E',b'T',b'0',8,2];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&aml,&mut ns).is_ok());
+        assert_eq!(ns.nodes[1].object_type,AmlObjectType::Mutex);
+        assert_eq!(ns.nodes[2].object_type,AmlObjectType::Event);
+        assert_eq!(ns.nodes[3].object_type,AmlObjectType::External);
+        assert_eq!(ns.nodes[3].method_flags,2);
     }
     #[test]fn rejects_truncated_package(){
         let mut ns=AmlNamespace::new();
