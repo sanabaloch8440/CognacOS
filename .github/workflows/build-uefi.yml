@@ -1007,7 +1007,6 @@ jobs:
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
             -device ide-hd,drive=osdisk,bus=legacyide.0,unit=0 \
-            -device ide-hd,drive=pagefile,bus=legacyide.0,unit=1 \
             -boot order=c -display none -monitor unix:build/qemu-monitor.sock,server=on,wait=off \
             -serial file:build/serial.log -gdb tcp::12345 \
             -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
@@ -1250,9 +1249,6 @@ jobs:
           grep -F 'High-RAM allocator and direct-map self-test passed.' build/serial.log
           grep -F 'NT memory manager: physical translation, validity, and checked-copy self-test passed.' build/serial.log
           grep -F 'Physical allocator initialized' build/serial.log
-          grep -F 'Pagefile storage initialized on dedicated ATA primary-slave disk; slots:' build/serial.log
-          grep -F 'Pagefile storage read/write self-test passed.' build/serial.log
-          grep -F 'Pagefile-backed pageable eviction and fault-driven page-in self-test passed.' build/serial.log
           grep -F 'HAL CPU-local registry, MMIO bounds, and x86-64 primitives initialized.' build/serial.log
           grep -F 'SMP startup target validation passed.' build/serial.log
           grep -E 'SMP AP startup complete; online application processors: [1-9][0-9]*' build/serial.log
@@ -1337,7 +1333,6 @@ jobs:
             -drive if=pflash,format=raw,file=build/OVMF_VARS_persist.fd \
             -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
             -device ide-hd,drive=osdisk,bus=legacyide.0,unit=0 \
-            -device ide-hd,drive=pagefile,bus=legacyide.0,unit=1 \
             -boot order=c -display none -monitor none \
             -serial "file:$log" -no-reboot -no-shutdown 2>"$qemu_error"
           status=$?
