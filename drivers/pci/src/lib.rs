@@ -266,6 +266,14 @@ impl PciFunctionHeader {
     pub const fn is_nvme(&self)->bool {
         self.class_code == 0x01 && self.subclass == 0x08 && self.programming_interface == 0x02
     }
+    /// PCI IDE controller class (01h/01h). Programming-interface bits
+    /// describe primary/secondary channel native mode and bus-master support.
+    pub const fn is_ide_controller(&self)->bool {
+        self.class_code == 0x01 && self.subclass == 0x01
+    }
+    pub const fn ide_primary_native_mode(&self)->bool { self.programming_interface & 0x01 != 0 }
+    pub const fn ide_secondary_native_mode(&self)->bool { self.programming_interface & 0x04 != 0 }
+    pub const fn ide_bus_master_capable(&self)->bool { self.programming_interface & 0x80 != 0 }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PciFunction {
@@ -398,6 +406,20 @@ mod function_header_tests {
         assert!(h.is_xhci());assert_eq!(h.command,6);
     }
     #[test]
+    #[test]
+    fn recognizes_ide_class_and_programming_interface_modes() {
+        let legacy = PciFunctionHeader { class_code:0x01, subclass:0x01, programming_interface:0x00, ..Default::default() };
+        assert!(legacy.is_ide_controller());
+        assert!(!legacy.ide_primary_native_mode());
+        assert!(!legacy.ide_secondary_native_mode());
+        let native = PciFunctionHeader { class_code:0x01, subclass:0x01, programming_interface:0x85, ..Default::default() };
+        assert!(native.is_ide_controller());
+        assert!(native.ide_primary_native_mode());
+        assert!(native.ide_secondary_native_mode());
+        assert!(native.ide_bus_master_capable());
+        let ahci = PciFunctionHeader { class_code:0x01, subclass:0x06, programming_interface:0x01, ..Default::default() };
+        assert!(!ahci.is_ide_controller());
+    }
     fn class_codes_identify_ahci_and_nvme_without_enabling_devices() {
         let ahci = PciFunctionHeader { class_code: 0x01, subclass: 0x06, programming_interface: 0x01, ..Default::default() };
         let nvme = PciFunctionHeader { class_code: 0x01, subclass: 0x08, programming_interface: 0x02, ..Default::default() };
