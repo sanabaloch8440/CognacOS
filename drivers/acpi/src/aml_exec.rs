@@ -5,7 +5,7 @@
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
