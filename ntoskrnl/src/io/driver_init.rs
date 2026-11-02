@@ -54,10 +54,12 @@ fn dependencies_initialized(
     index: usize,
     nodes: &[ServiceNode<'_>],
     records: &[DriverInitRecord],
+    preinitialized_services: &[&[u16]],
 ) -> bool {
     let node = &nodes[index];
     for dependency in node.service_dependencies {
         let Some(dep_index) = nodes.iter().position(|candidate| name_eq(candidate.name, dependency)) else {
+            if preinitialized_services.iter().any(|name| name_eq(name, dependency)) { continue; }
             return false;
         };
         if !matches!(records[dep_index].status, DriverInitStatus::Loaded(_) | DriverInitStatus::AlreadyInitialized) {
@@ -125,7 +127,7 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
         // The order pass establishes a topological sequence, but initialization
         // can still fail. Never start a dependent after its service/group
         // prerequisite failed at runtime.
-        if !dependencies_initialized(service_index, nodes, records) {
+        if !dependencies_initialized(service_index, nodes, records, preinitialized_services) {
             let failure = RegistryDriverLoadError::DependencyFailed;
             records[service_index] = DriverInitRecord {
                 service_index, error_control: 1, status: DriverInitStatus::Failed(failure),
