@@ -15,6 +15,7 @@ use crate::ntoskrnl::cm::hive::Hive;
 pub enum DriverInitStatus {
     NotRun,
     Loaded(LoadedDriver),
+    AlreadyInitialized,
     Failed(RegistryDriverLoadError),
 }
 #[derive(Clone, Copy, Debug)]
@@ -66,7 +67,7 @@ fn dependencies_initialized(
     for dependency in node.group_dependencies {
         if !nodes.iter().enumerate().any(|(candidate_index, candidate)| {
             name_eq(candidate.group, dependency)
-                && matches!(records[candidate_index].status, DriverInitStatus::Loaded(_))
+                && matches!(records[candidate_index].status, DriverInitStatus::Loaded(_) | DriverInitStatus::AlreadyInitialized)
         }) {
             return false;
         }
@@ -83,6 +84,7 @@ pub unsafe fn initialize_boot_drivers<F>(
     nodes: &[ServiceNode<'_>],
     group_order: &[&[u16]],
     tag_orders: &[GroupTagOrder<'_>],
+    preinitialized_services: &[&[u16]],
     schedule: &mut [usize],
     scheduler_state: &mut [u8],
     driver_objects: &mut [DriverObject],
@@ -104,8 +106,17 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
         }
     }
     records[..count].fill(DriverInitRecord::EMPTY);
-    let scheduled = driver_order::schedule_boot_drivers(
-        nodes, group_order, tag_orders, schedule, scheduler_state,
+    for (index, node) in nodes.iter().enumerate() {
+        if preinitialized_services.iter().any(|name| name_eq(node.name, name)) {
+            records[index] = DriverInitRecord {
+                service_index: index,
+                error_control: 0,
+                status: DriverInitStatus::AlreadyInitialized,
+            };
+        }
+    }
+    let scheduled = driver_order::schedule_boot_drivers_with_initialized(
+        nodes, group_order, tag_orders, preinitialized_services, schedule, scheduler_state,
     ).map_err(DriverInitError::Schedule)?;
     let mut report = BootInitReport { scheduled, ..BootInitReport::default() };
 
