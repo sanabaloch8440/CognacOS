@@ -72,11 +72,15 @@ pub fn intersect_path(host:&[Aperture],ancestors:&[BridgeWindows],out:&mut[Apert
         for current in staged[..count].iter().copied(){
             let candidate=match current.kind{
                 BarKind::Io=>bridge.io,
+                BarKind::Memory32 if current.prefetchable=>bridge.prefetchable,
                 BarKind::Memory32=>bridge.memory,
                 BarKind::Memory64=>bridge.prefetchable,
             };
             let Some(window)=candidate else{continue};
-            if current.kind!=window.kind || (current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
+            let compatible = current.kind==window.kind
+                || (current.kind==BarKind::Memory32 && current.prefetchable
+                    && window.kind==BarKind::Memory64 && window.prefetchable);
+            if !compatible || (current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
             let a_end=current.start.checked_add(current.length).ok_or(BridgeWindowError::Overflow)?;
             let b_end=window.start.checked_add(window.length).ok_or(BridgeWindowError::Overflow)?;
             let start=current.start.max(window.start);let end=a_end.min(b_end);
@@ -249,7 +253,8 @@ pub fn aggregate_descendant_ranges(
     };
     output.io=round(io,0x1000,BarKind::Io,false)?;
     output.memory=round(mem,0x10_0000,BarKind::Memory32,false)?;
-    output.prefetchable=round(pref,0x10_0000,BarKind::Memory64,true)?;
+    let pref_kind=if pref.is_some_and(|(_,hi)|hi<=1u64<<32){BarKind::Memory32}else{BarKind::Memory64};
+    output.prefetchable=round(pref,0x10_0000,pref_kind,true)?;
     Ok(())
 }
 
@@ -266,4 +271,24 @@ pub fn encode_bridge_windows<C:ConfigAccess>(c:&mut C,w:&BridgeWindows)->Result<
  let m=if let Some(a)=w.memory{if a.kind!=BarKind::Memory32||a.prefetchable||a.length==0||a.start&0xfffff!=0||a.length&0xfffff!=0{return Err(BridgeWindowError::InvalidEncoding)}let e=a.start.checked_add(a.length).and_then(|v|v.checked_sub(1)).ok_or(BridgeWindowError::Overflow)?;if e>=1u64<<32{return Err(BridgeWindowError::InvalidEncoding)}((a.start>>16)as u32&0xfff0)|(((e>>16)as u32&0xfff0)<<16)}else{0xfff0};
  let (p,pb,pl)=if let Some(a)=w.prefetchable{if !a.prefetchable||!matches!(a.kind,BarKind::Memory32|BarKind::Memory64)||a.length==0||a.start&0xfffff!=0||a.length&0xfffff!=0{return Err(BridgeWindowError::InvalidEncoding)}let e=a.start.checked_add(a.length).and_then(|v|v.checked_sub(1)).ok_or(BridgeWindowError::Overflow)?;let wide=a.kind==BarKind::Memory64||a.start>u32::MAX as u64||e>u32::MAX as u64;let t=wide as u32;((((a.start>>16)as u32&0xfff0)|t)|((((e>>16)as u32&0xfff0)|t)<<16),if wide{(a.start>>32)as u32}else{0},if wide{(e>>32)as u32}else{0})}else{(0xfff0,0,0)};
  let mut u=BridgeWindowUpdate::empty();u.push(BRIDGE_IO_BASE_LIMIT,io)?;u.push(BRIDGE_MEMORY_BASE_LIMIT,m)?;u.push(BRIDGE_PREFETCH_BASE_LIMIT,p)?;u.push(BRIDGE_PREFETCH_BASE_UPPER,pb)?;u.push(BRIDGE_PREFETCH_LIMIT_UPPER,pl)?;u.push(BRIDGE_IO_BASE_UPPER,iu)?;Ok(u)
+}
+
+#[cfg(test)]
+mod topology_window_tests {
+ use super::*;
+ #[test]
+ fn prefetchable_32bit_bar_intersects_64bit_capable_bridge_window(){
+  let host=[Aperture{start:0x8000_0000,length:0x1000_0000,kind:BarKind::Memory32,prefetchable:true}];
+  let bridge=[BridgeWindows{prefetchable:Some(Aperture{start:0x8000_0000,length:0x1000_0000,kind:BarKind::Memory64,prefetchable:true}),..BridgeWindows::default()}];
+  let mut out=[Aperture{start:0,length:0,kind:BarKind::Io,prefetchable:false};4];
+  let n=intersect_path(&host,&bridge,&mut out).unwrap();
+  assert_eq!(n,1);assert_eq!(out[0].kind,BarKind::Memory32);assert!(out[0].prefetchable);
+ }
+ #[test]
+ fn descendant_prefetch_window_uses_32bit_encoding_when_possible(){
+  let a=[crate::resource_manager::BarAssignment{index:0,kind:BarKind::Memory32,base:0x9000_0000,length:0x1000,prefetchable:true}];
+  let mut w=BridgeWindows::default();aggregate_descendant_ranges(&a,&mut w).unwrap();
+  assert_eq!(w.prefetchable.unwrap().kind,BarKind::Memory32);
+  assert_eq!(w.prefetchable.unwrap().start,0x9000_0000);
+ }
 }
