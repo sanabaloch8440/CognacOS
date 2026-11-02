@@ -328,6 +328,7 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
 
 
 fn read_pdo_resource_template(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,name:[u8;4])->Result<acpi::acpi_resources::ResourceList,i32>{
+ if device.is_null(){return Err(STATUS_INVALID_PARAMETER)}
  let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
  if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{return Err(STATUS_INVALID_PARAMETER)}
  let ext=unsafe{&*ext};let handle=ext.table.ok_or(STATUS_INVALID_PARAMETER)?;
