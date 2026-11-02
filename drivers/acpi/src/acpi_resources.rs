@@ -86,8 +86,8 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                     validate_range(min,max,size)?;Resource::Memory{minimum:min,maximum:max,alignment:align,length:size,writeable:p[0]&1!=0,cacheable:false,kind:0}},
                 0x05 if len==17=>{let min=u32le(p,1)? as u64;let max=u32le(p,5)? as u64;let align=u32le(p,9)? as u64;let size=u32le(p,13)? as u64;
                     validate_range(min,max,size)?;Resource::Memory{minimum:min,maximum:max,alignment:align,length:size,writeable:p[0]&1!=0,cacheable:false,kind:1}},
-                0x06 if len==9=>{let base=u32le(p,1)? as u64;let size=u32le(p,5)? as u64;let max=base.checked_add(size.checked_sub(1).ok_or(ResourceError::InvalidDescriptor)?).ok_or(ResourceError::IntegerOverflow)?;
-                    validate_range(base,max,size)?;Resource::Memory{minimum:base,maximum:max,alignment:0,length:size,writeable:p[0]&1!=0,cacheable:false,kind:2}},
+                0x06 if len==9=>{let base=u32le(p,1)? as u64;let size=u32le(p,5)? as u64;
+                    validate_range(base,base,size)?;Resource::Memory{minimum:base,maximum:base,alignment:0,length:size,writeable:p[0]&1!=0,cacheable:false,kind:2}},
                 0x07=>address_space(p,4)?,
                 0x08=>address_space(p,2)?,
                 0x09 if len>=6=>{let flags=p[0];let count=p[1] as usize;if count==0||count>8||len!=2+count*4{return Err(ResourceError::InvalidLength)}
@@ -100,8 +100,8 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                     match space{0=>Resource::Memory{minimum:min,maximum:max,alignment:align,length:size,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:8},
                     1=>Resource::Io{minimum:min,maximum:max,alignment:align,length:size,decode_16_bit:flags&1!=0},
                     2=>Resource::BusNumber{minimum:min,maximum:max,length:size},_=>return Err(ResourceError::UnsupportedDescriptor)}},
-                0x0c if len==3=>{let base=u16le(p,0)? as u64;let size=p[2] as u64;let max=base.checked_add(size.checked_sub(1).ok_or(ResourceError::InvalidDescriptor)?).ok_or(ResourceError::IntegerOverflow)?;
-                    validate_range(base,max,size)?;Resource::Io{minimum:base,maximum:max,alignment:1,length:size,decode_16_bit:true}},
+                0x0c if len==3=>{let base=u16le(p,0)? as u64;let size=p[2] as u64;
+                    validate_range(base,base,size)?;Resource::Io{minimum:base,maximum:base,alignment:1,length:size,decode_16_bit:true}},
                 _=>return Err(ResourceError::UnsupportedDescriptor),
             };
             out.push(item)?;pos=end;
