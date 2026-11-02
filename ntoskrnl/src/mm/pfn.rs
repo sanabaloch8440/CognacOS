@@ -11,7 +11,11 @@
 //! and node/range allocators must use the same registration hooks before they
 //! are considered fully covered by this milestone.
 
-use crate::hal::IrqSpinLock;
+#[cfg(target_os = "none")]
+use crate::hal::{IrqSpinLock, IrqSpinLockGuard};
+#[cfg(not(target_os = "none"))]
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::ops::{Deref, DerefMut};
 
 const CAPACITY: usize = 65_536;
 const EMPTY: u8 = 0;
@@ -30,7 +34,56 @@ impl Entry {
     const EMPTY: Self = Self { page: 0, references: 0, mappings: 0, pins: 0, state: EMPTY };
 }
 
-static DATABASE: IrqSpinLock<[Entry; CAPACITY]> = IrqSpinLock::new([Entry::EMPTY; CAPACITY]);
+struct Database {
+    #[cfg(target_os = "none")]
+    lock: IrqSpinLock<()>,
+    #[cfg(not(target_os = "none"))]
+    lock: AtomicBool,
+    entries: core::cell::UnsafeCell<[Entry; CAPACITY]>,
+}
+unsafe impl Sync for Database {}
+static DATABASE: Database = Database {
+    #[cfg(target_os = "none")]
+    lock: IrqSpinLock::new(()),
+    #[cfg(not(target_os = "none"))]
+    lock: AtomicBool::new(false),
+    entries: core::cell::UnsafeCell::new([Entry::EMPTY; CAPACITY]),
+};
+
+struct DatabaseGuard<'a> {
+    database: &'a Database,
+    #[cfg(target_os = "none")]
+    _irq: IrqSpinLockGuard<'a, ()>,
+}
+impl Deref for DatabaseGuard<'_> {
+    type Target = [Entry; CAPACITY];
+    fn deref(&self) -> &Self::Target { unsafe { &*self.database.entries.get() } }
+}
+impl DerefMut for DatabaseGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { unsafe { &mut *self.database.entries.get() } }
+}
+impl Drop for DatabaseGuard<'_> {
+    fn drop(&mut self) {
+        #[cfg(not(target_os = "none"))]
+        self.database.lock.store(false, Ordering::Release);
+    }
+}
+impl Database {
+    fn lock(&self) -> DatabaseGuard<'_> {
+        #[cfg(target_os = "none")]
+        {
+            let irq = self.lock.lock();
+            DatabaseGuard { database: self, _irq: irq }
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            while self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                core::hint::spin_loop();
+            }
+            DatabaseGuard { database: self }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PfnError {
