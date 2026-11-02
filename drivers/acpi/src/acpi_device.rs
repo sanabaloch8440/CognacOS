@@ -40,7 +40,7 @@ pub struct AcpiDeviceIdentity {
     pub sta:u32,
 }
 impl AcpiDeviceIdentity {
-    const EMPTY:Self=Self{hid:AcpiId::EMPTY,has_hid:false,compatible_ids:[AcpiId::EMPTY;MAX_COMPATIBLE_IDS],
+    pub const EMPTY:Self=Self{hid:AcpiId::EMPTY,has_hid:false,compatible_ids:[AcpiId::EMPTY;MAX_COMPATIBLE_IDS],
         compatible_id_count:0,uid:None,uid_string:None,adr:None,sta:DEVICE_STATUS_DEFAULT};
 }
 /// Method dispatch boundary. The ACPI runtime owns execution gating, method
@@ -147,8 +147,9 @@ fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoke
 /// decoded from ACPI EISAID encoding.
 pub fn evaluate_device_identity(ns:&AmlNamespace,aml:&[u8],device:u16,invoker:&mut impl AcpiMethodInvoker)->Result<AcpiDeviceIdentity,IdentityError>{
     let mut out=AcpiDeviceIdentity::EMPTY;
-    let hid=eval_optional(ns,aml,device,*b"_HID",invoker)?.ok_or(IdentityError::MissingHid)?;
-    out.hid=id_from_value(hid)?;out.has_hid=true;
+    if let Some(hid)=eval_optional(ns,aml,device,*b"_HID",invoker)?{
+        out.hid=id_from_value(hid)?;out.has_hid=true;
+    }
     if let Some(cid)=eval_optional(ns,aml,device,*b"_CID",invoker)?{
         match cid{
             IdentityValue::CompatibleIds{ids,count}=>{out.compatible_ids=ids;out.compatible_id_count=count;},
@@ -164,6 +165,9 @@ pub fn evaluate_device_identity(ns:&AmlNamespace,aml:&[u8],device:u16,invoker:&m
     if let Some(sta)=eval_optional(ns,aml,device,*b"_STA",invoker)?{
         match sta{IdentityValue::Integer(v)=>out.sta=v as u32,_=>return Err(IdentityError::UnsupportedObject)}
     }
+    // PCI-enumerated children commonly expose _ADR without _HID. A device
+    // with neither identifier cannot be matched or addressed by its parent.
+    if !out.has_hid&&out.adr.is_none(){return Err(IdentityError::MissingHid)}
     Ok(out)
 }
 
