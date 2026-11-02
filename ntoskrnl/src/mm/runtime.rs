@@ -313,12 +313,31 @@ pub fn lock_pfns(pfns: &[u64]) -> bool {
         } else { new_entries += 1; }
     }
     if table.iter().filter(|entry| !entry.live).count() < new_entries { return false; }
+
+    // PFN pinning is transactional: if any tracked page cannot be pinned,
+    // undo every earlier pin before publishing the legacy lookup entries.
+    for (index, pfn) in pfns.iter().copied().enumerate() {
+        match super::pfn::pin_page(pfn.saturating_mul(PAGE_SIZE)) {
+            Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
+            Err(_) => {
+                for prior in pfns[..index].iter().copied() {
+                    let _ = super::pfn::unpin_page(prior.saturating_mul(PAGE_SIZE));
+                }
+                return false;
+            }
+        }
+    }
     for pfn in pfns.iter().copied() {
         if let Some(entry) = table.iter_mut().find(|entry| entry.live && entry.pfn == pfn) {
             entry.references += 1;
         } else if let Some(entry) = table.iter_mut().find(|entry| !entry.live) {
             *entry = LockedPage { pfn, references: 1, live: true };
-        } else { return false; }
+        } else {
+            for pinned in pfns.iter().copied() {
+                let _ = super::pfn::unpin_page(pinned.saturating_mul(PAGE_SIZE));
+            }
+            return false;
+        }
     }
     true
 }
@@ -328,6 +347,7 @@ pub fn unlock_pfns(pfns: &[u64]) {
         if let Some(entry) = table.iter_mut().find(|entry| entry.live && entry.pfn == pfn) {
             if entry.references > 1 { entry.references -= 1; }
             else { *entry = LockedPage::EMPTY; }
+            let _ = super::pfn::unpin_page(pfn.saturating_mul(PAGE_SIZE));
         }
     }
 }

@@ -329,9 +329,9 @@ fn drain_deferred_frees_locked() {
         if slot.state.compare_exchange(2, 1, core::sync::atomic::Ordering::Acquire,
             core::sync::atomic::Ordering::Relaxed).is_err() { continue; }
         let page = slot.page.load(core::sync::atomic::Ordering::Relaxed);
-        if free.1 == FREE_CAPACITY {
+        if free.1 == FREE_CAPACITY || release_pfn_owner(page).is_err() {
             slot.state.store(2, core::sync::atomic::Ordering::Release);
-            break;
+            continue;
         }
         free.0[free.1] = page;
         free.1 += 1;
@@ -602,6 +602,7 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
             return Err(AllocError::InvalidMap);
         }
         unsafe { ptr::write_bytes(pointer as *mut u8, 0, PAGE_SIZE as usize); }
+        super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
         Ok(page)
     } else {
         unsafe { allocate_page() }
@@ -649,6 +650,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
                 unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE as usize); }
+                super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
                 return Ok(page);
             }
             i += 1;
@@ -666,6 +668,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
+                super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
                 return Ok(page);
             }
             i += 1;
@@ -703,6 +706,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                     count_atomic.store(count, core::sync::atomic::Ordering::Release);
                 }
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
+                super::pfn::register_allocation(candidate).map_err(|_| AllocError::OutOfMemory)?;
                 return Ok(candidate);
             }
             i += 1;
@@ -785,6 +789,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 }
             }
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
+            super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(base);
         }
     }
@@ -822,6 +827,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 count_atomic.store(count, core::sync::atomic::Ordering::Release);
             }
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
+            super::pfn::register_allocation_range(candidate, pages).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(candidate);
         }
     }
@@ -890,6 +896,22 @@ pub unsafe fn try_allocate_pages_in_range(
             }
         } else { page as *mut u8 };
         unsafe { ptr::write_bytes(pointer, 0, PAGE_SIZE as usize); }
+    }
+    for (index, page) in output[..count].iter().copied().enumerate() {
+        if super::pfn::register_allocation(page).is_err() {
+            for rollback in output[..count].iter().copied() {
+                if super::pfn::snapshot(rollback).is_some() {
+                    let _ = super::pfn::release_allocation(rollback);
+                }
+                let pages = if rollback >= PHYSICAL_LIMIT { &mut *high_free } else { &mut *low_free };
+                if pages.1 < FREE_CAPACITY {
+                    pages.0[pages.1] = rollback;
+                    pages.1 += 1;
+                }
+            }
+            let _ = index;
+            return Err(AllocError::OutOfMemory);
+        }
     }
     if count == 0 { Err(AllocError::OutOfMemory) } else { Ok(count) }
 }
@@ -1080,6 +1102,7 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
         free.1 -= 1;
         let page = free.0[free.1];
         unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
+        super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
         return Ok(page);
     }
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
@@ -1089,6 +1112,7 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
             let page = region.next;
             region.next += PAGE_SIZE;
             unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
+            super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(page);
         }
     }
@@ -1099,9 +1123,9 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
 pub unsafe fn try_allocate_page() -> Result<u64, AllocError> {
     let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
     let free = unsafe { &mut *FREE_PAGES.0.get() };
-    if free.1 != 0 { free.1 -= 1; let page=free.0[free.1]; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); }
+    if free.1 != 0 { free.1 -= 1; let page=free.0[free.1]; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; return Ok(page); }
     let count=REGION_COUNT.load(core::sync::atomic::Ordering::Acquire); let regions=unsafe { &mut *REGIONS.0.get() };
-    for region in regions.iter_mut().take(count) { if region.next.checked_add(PAGE_SIZE).is_some_and(|end|end<=region.end) { let page=region.next; region.next+=PAGE_SIZE; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); } }
+    for region in regions.iter_mut().take(count) { if region.next.checked_add(PAGE_SIZE).is_some_and(|end|end<=region.end) { let page=region.next; region.next+=PAGE_SIZE; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; return Ok(page); } }
     Err(AllocError::OutOfMemory)
 }
 
@@ -1138,7 +1162,8 @@ pub unsafe fn allocate_contiguous_pages_below(
                 free.0.copy_within(i + pages..old_len, i);
                 free.1 = old_len - pages;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
             i += 1;
         }
@@ -1152,7 +1177,8 @@ pub unsafe fn allocate_contiguous_pages_below(
                 let base = region.next;
                 region.next = end;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
         }
     }
@@ -1184,7 +1210,8 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
                 free.0.copy_within(i + pages..old_len, i);
                 free.1 = old_len - pages;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
             i += 1;
         }
@@ -1198,7 +1225,8 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
                 let base = region.next;
                 region.next = end;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
-                return Ok(base);
+                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            return Ok(base);
             }
         }
     }
@@ -1235,6 +1263,13 @@ pub unsafe fn try_free_page(page: u64) -> Result<(), AllocError> {
     unsafe { free_page_mode(page, true) }
 }
 
+fn release_pfn_owner(page: u64) -> Result<(), AllocError> {
+    match super::pfn::snapshot(page) {
+        None => Ok(()), // Boot and externally-owned frames predate PFN registration.
+        Some(_) => super::pfn::release_allocation(page).map_err(|_| AllocError::InvalidPage),
+    }
+}
+
 unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     if page >= PHYSICAL_LIMIT {
         if page >= DIRECT_MAP_PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0
@@ -1245,6 +1280,7 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
         if if try_only { page_is_locked_try(page) } else { page_is_locked(page) } { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 < FREE_CAPACITY {
+            release_pfn_owner(page)?;
             free.0[free.1] = page;
             free.1 += 1;
             return Ok(());
@@ -1253,10 +1289,11 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
         let count = HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
         let end = page.checked_add(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
         for region in regions.iter_mut().take(count) {
-            if end == region.next { region.next = page; return Ok(()); }
-            if page == region.end { region.end = end; return Ok(()); }
+            if end == region.next { release_pfn_owner(page)?; region.next = page; return Ok(()); }
+            if page == region.end { release_pfn_owner(page)?; region.end = end; return Ok(()); }
         }
         if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+        release_pfn_owner(page)?;
         regions[count] = Region { next: page, end };
         HIGH_REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
         return Ok(());
@@ -1283,6 +1320,7 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 < FREE_CAPACITY {
+        release_pfn_owner(page)?;
         free.0[free.1] = page;
         free.1 += 1;
         return Ok(());
@@ -1296,15 +1334,18 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
     for region in regions.iter_mut().take(count) {
         if end == region.next {
+            release_pfn_owner(page)?;
             region.next = page;
             return Ok(());
         }
         if page == region.end {
+            release_pfn_owner(page)?;
             region.end = end;
             return Ok(());
         }
     }
     if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+    release_pfn_owner(page)?;
     regions[count] = Region { next: page, end };
     REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
     Ok(())
@@ -1312,6 +1353,13 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
 
 /// Return a contiguous allocation to the physical free-page stack atomically.
 /// No pages are released if the free stack cannot hold the entire run.
+fn release_pfn_range_owner(base: u64, pages: usize) -> Result<(), AllocError> {
+    if super::pfn::snapshot(base).is_none() {
+        return Ok(());
+    }
+    super::pfn::release_allocation_range(base, pages).map_err(|_| AllocError::InvalidPage)
+}
+
 pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), AllocError> {
     if pages == 0 || base < LOW_RESERVED_END || base & (PAGE_SIZE - 1) != 0 {
         return Err(AllocError::InvalidPage);
@@ -1326,6 +1374,7 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if pages <= FREE_CAPACITY - free.1 {
+        release_pfn_range_owner(base, pages)?;
         let mut page = base;
         while page < end {
             free.0[free.1] = page;
@@ -1341,15 +1390,18 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
     for region in regions.iter_mut().take(count) {
         if end == region.next {
+            release_pfn_range_owner(base, pages)?;
             region.next = base;
             return Ok(());
         }
         if base == region.end {
+            release_pfn_range_owner(base, pages)?;
             region.end = end;
             return Ok(());
         }
     }
     if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+    release_pfn_range_owner(base, pages)?;
     regions[count] = Region { next: base, end };
     REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
     Ok(())

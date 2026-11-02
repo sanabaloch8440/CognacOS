@@ -106,12 +106,12 @@ pub fn check_wdm() -> Result<(), String> {
     report("WDM", errors)
 }
 pub fn check_xstate() -> Result<(), String> {
-    let xstate = read("kernel/src/ntoskrnl/ke/runtime/xstate.rs")?;
-    let address_space = read("kernel/src/ntoskrnl/mm/address_space.rs")?;
-    let user_range = read("kernel/src/ntoskrnl/mm/user_range.rs")?;
-    let process = read("kernel/src/process.rs")?;
-    let syscall = read("kernel/src/syscall.rs")?;
-    let arch = read("kernel/src/ntoskrnl/ke/arch.rs")?;
+    let xstate = read("ntoskrnl/src/ke/runtime/xstate.rs")?;
+    let address_space = read("ntoskrnl/src/mm/address_space.rs")?;
+    let user_range = read("ntoskrnl/src/mm/user_range.rs")?;
+    let process = read("ntoskrnl/src/ps/process.rs")?;
+    let syscall = read("ntoskrnl/src/ke/syscall.rs")?;
+    let arch = read("ntoskrnl/src/ke/arch.rs")?;
     let ntdll = read("ntdll/src/native/exception.rs")?;
     let mut errors = Vec::new();
     for (source, needle) in [
