@@ -58,6 +58,11 @@ impl ParsedAlternative {
     }
 }
 
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, RequirementsError> {
+    let s = bytes.get(offset..offset.checked_add(2).ok_or(RequirementsError::InvalidSize)?)
+        .ok_or(RequirementsError::Truncated)?;
+    Ok(u16::from_le_bytes([s[0], s[1]]))
+}
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, RequirementsError> {
     let s = bytes.get(offset..offset.checked_add(4).ok_or(RequirementsError::InvalidSize)?)
         .ok_or(RequirementsError::Truncated)?;
@@ -127,6 +132,9 @@ fn parse_requirements(bytes: &[u8]) -> Result<([ParsedAlternative; MAX_ALTERNATI
         let header_end = cursor.checked_add(IO_RESOURCE_LIST_HEADER_SIZE)
             .ok_or(RequirementsError::InvalidSize)?;
         if header_end > list_size { return Err(RequirementsError::Truncated); }
+        if read_u16(bytes, cursor)? != 1 || read_u16(bytes, cursor + 2)? != 1 {
+            return Err(RequirementsError::UnsupportedDescriptor);
+        }
         let descriptor_count = read_u32(bytes, cursor + 4)? as usize;
         if descriptor_count > MAX_DESCRIPTORS_PER_LIST {
             return Err(RequirementsError::TooManyDescriptors);
