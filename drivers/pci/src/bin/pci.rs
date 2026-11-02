@@ -479,11 +479,11 @@ unsafe extern "win64" fn query_pdo_ide_resources(
     let result=cognacos_nt_abi::bus::PCI_IDE_RESOURCES{
         primary:cognacos_nt_abi::bus::PCI_IDE_CHANNEL_RESOURCES{
             command_base:ports.primary.command_base,control_base:ports.primary.control_base,
-            flags:ports.primary.native as u32,
+            flags:(ports.primary.native as u32)|((ports.primary.switchable as u32)<<1),
         },
         secondary:cognacos_nt_abi::bus::PCI_IDE_CHANNEL_RESOURCES{
             command_base:ports.secondary.command_base,control_base:ports.secondary.control_base,
-            flags:ports.secondary.native as u32,
+            flags:(ports.secondary.native as u32)|((ports.secondary.switchable as u32)<<1),
         },
         bus_master_base:ports.bus_master_base.unwrap_or(0),
         flags:(ports.bus_master_capable as u16)|((ports.bus_master_base.is_some() as u16)<<1),
