@@ -274,6 +274,7 @@ impl AmlTableManager {
         if self.namespace.count>=MAX_NAMESPACE_NODES{return Err(TableError::NamespaceCapacity)}
         let before=self.namespace.count;
         load_definition_block(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace)?;
+        for node in before..self.namespace.count{self.namespace.nodes[node].source_table=self.count as u8;}
         if self.namespace.count>u16::MAX as usize{
             self.namespace.count=before;
             return Err(TableError::NamespaceCapacity)
@@ -290,17 +291,24 @@ impl AmlTableManager {
     /// Evaluate ACPI-1 identity objects for a device owned by this loaded table.
     /// AML method execution is routed through the manager's in-flight execution
     /// gate so unload and table replacement cannot race device identification.
-    pub fn evaluate_device_identity<G:AmlExecutionGate,I:AcpiMethodInvoker>(&self,handle:TableHandle,bytes:&[u8],device:u16,gate:&G,method_runtime:&mut I)->Result<AcpiDeviceIdentity,TableError>{
+    pub fn evaluate_device_identity<G:AmlExecutionGate,I:AcpiMethodInvoker>(&self,handle:TableHandle,table_bytes:&[&[u8]],device:u16,gate:&G,method_runtime:&mut I)->Result<AcpiDeviceIdentity,TableError>{
         let info=self.table_info(handle)?;
-        let header=parse_sdt_header(bytes)?;
-        if header.length!=info.length||header.signature!=info.signature||header.checksum!=info.checksum
-            ||fingerprint(&bytes[..header.length as usize])!=info.content_fingerprint{
-            return Err(TableError::InvalidHandle)
-        }
         if device<info.namespace_start||device>=info.namespace_end{return Err(TableError::InvalidHandle)}
-        let aml=&bytes[SDT_HEADER_SIZE..info.length as usize];
+        if table_bytes.len()<self.count{return Err(TableError::InvalidHandle)}
+        let mut aml_tables:[&[u8];MAX_AML_TABLES]=[&[];MAX_AML_TABLES];
+        for slot in 0..self.count{
+            let bytes=table_bytes[slot];
+            let record=self.records[slot];
+            if !record.active{return Err(TableError::InvalidHandle)}
+            let header=parse_sdt_header(bytes)?;
+            if header.signature!=record.info.signature||header.length!=record.info.length
+                ||header.checksum!=record.info.checksum||fingerprint(&bytes[..header.length as usize])!=record.info.content_fingerprint{
+                return Err(TableError::InvalidHandle)
+            }
+            aml_tables[slot]=&bytes[SDT_HEADER_SIZE..header.length as usize];
+        }
         let mut invoker=GatedDeviceInvoker{inner:method_runtime,gate};
-        acpi_device::evaluate_device_identity(&self.namespace,aml,device,&mut invoker)
+        acpi_device::evaluate_device_identity(&self.namespace,&aml_tables[..self.count],device,&mut invoker)
             .map_err(|error|match error{
                 IdentityError::Method(method)=>TableError::MethodExecution(method),
                 other=>TableError::DeviceIdentity(other),
