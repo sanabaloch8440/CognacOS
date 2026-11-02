@@ -177,9 +177,9 @@ mod tests{
     }
     #[test]fn decodes_integer_eisa_hid_and_cid_package(){
         // EISAID("PNP0A03") is encoded as the little-endian integer 0x030ad041.
-        let aml=[0x5b,0x82,0x1b,b'D',b'E',b'V',b'0',
+        let aml=[0x5b,0x82,0x21,b'D',b'E',b'V',b'0',
             0x08,b'_',b'H',b'I',b'D',0x0c,0x41,0xd0,0x0a,0x03,
-            0x08,b'_',b'C',b'I',b'D',0x12,0x08,2,0x0c,0x41,0xd0,0x0a,0x03,
+            0x08,b'_',b'C',b'I',b'D',0x12,0x0c,2,0x0c,0x41,0xd0,0x0a,0x03,
             0x0c,0x42,0xd0,0x0a,0x03];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
@@ -199,9 +199,9 @@ mod tests{
     }
     #[test]fn evaluates_sta_and_adr_methods(){
         // Device(DEV0) with _HID string and integer-returning _STA/_ADR methods.
-        let aml=[0x5b,0x82,0x1e,b'D',b'E',b'V',b'0',
+        let aml=[0x5b,0x82,0x2b,b'D',b'E',b'V',b'0',
             0x08,b'_',b'H',b'I',b'D',0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0,
-            0x14,0x0a,b'_',b'S',b'T',b'A',0,0xa4,0x0a,0x0b,
+            0x14,0x09,b'_',b'S',b'T',b'A',0,0xa4,0x0a,0x0b,
             0x14,0x0c,b'_',b'A',b'D',b'R',0,0xa4,0x0c,3,0,2,0];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
