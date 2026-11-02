@@ -27,6 +27,7 @@ static mut BOOT_DRIVER_IMAGE_BUFFER: [u8; 8 * 1024 * 1024] = [0; 8 * 1024 * 1024
 /// never invoked a second time.
 unsafe fn initialize_registry_boot_drivers(
     registry: &registry_init::SystemRegistryState,
+    preinitialized: &[&[u16]],
 ) -> Result<crate::ntoskrnl::io::driver_init::BootInitReport, crate::ntoskrnl::io::driver_init::DriverInitError> {
     use crate::ntoskrnl::driver_order::{GroupTagOrder, ServiceNode};
     use crate::ntoskrnl::io::driver_init::{self, DriverInitStatus};
@@ -103,9 +104,6 @@ unsafe fn initialize_registry_boot_drivers(
             tags: &group_tag_values_snapshot[index][..group_tag_counts_snapshot[index]],
         };
     }
-    const ACPI: &[u16] = &[65, 67, 80, 73];
-    const PCI: &[u16] = &[80, 67, 73];
-    let preinitialized: [&[u16]; 2] = [ACPI, PCI];
     let bytes = crate::boot_handoff::boot_hive_bytes("SYSTEM")
         .ok_or(driver_init::DriverInitError::BufferTooSmall)?;
     let hive = Hive::open(bytes).map_err(|_| driver_init::DriverInitError::BufferTooSmall)?;
@@ -141,7 +139,7 @@ unsafe fn initialize_registry_boot_drivers(
     let report = unsafe {
         driver_init::initialize_boot_drivers(
             &hive, &nodes[..count], &group_order[..registry.service_group_count.min(64)],
-            &tag_orders[..registry.service_group_count.min(64)], &preinitialized,
+            &tag_orders[..registry.service_group_count.min(64)], preinitialized,
             schedule, scheduler_state, objects, names, records,
             &mut [0u16; 1024], image_buffer,
             |path, output| platform_devices::resolve_builtin_driver_image(path, output),
@@ -661,7 +659,8 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             // only after platform-owned ACPI/PCI initialization, but before any
             // bus enumeration. Fatal dependencies and ErrorControl=severe/
             // critical failures stop here; PCI.sys is never entered twice.
-            let boot_driver_report = match initialize_registry_boot_drivers(&system_registry) {
+            let preinitialized_platform: [&[u16]; 2] = [&[65, 67, 80, 73], &[80, 67, 73]];
+            let boot_driver_report = match initialize_registry_boot_drivers(&system_registry, &preinitialized_platform) {
                 Ok(report) => report,
                 Err(_) => {
                     serial_write(b"FATAL: boot-driver dependency scheduling or ErrorControl policy failed; device enumeration is blocked.\\r\\n");
@@ -762,7 +761,22 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                 }
             }
         } else {
-            serial_write(b"WARNING: no firmware ACPI RSDP handoff; SMP discovery skipped.\r\n");
+            serial_write(b"WARNING: no firmware ACPI RSDP handoff; SMP discovery skipped.\\r\\n");
+            // Registry-selected boot/system drivers still run without ACPI.
+            // ACPI.sys and PCI.sys are not falsely marked preinitialized.
+            let boot_driver_report = match initialize_registry_boot_drivers(&system_registry, &[]) {
+                Ok(report) => report,
+                Err(_) => {
+                    serial_write(b"FATAL: boot-driver dependency scheduling or ErrorControl policy failed; boot cannot continue.\\r\\n");
+                    halt();
+                }
+            };
+            let _boot_drivers_loaded = boot_driver_report.loaded;
+            let _boot_drivers_failed_nonfatal = boot_driver_report.failed;
+            if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
+                serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\\r\\n");
+                halt();
+            }
         }
 
         // Exercise scheduler metadata/priority/affinity without switching stacks.
