@@ -44,7 +44,7 @@ impl PciIdeIdentity {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResourceKind { Port, Interrupt, Memory }
+pub enum ResourceKind { Port, Interrupt, Memory, Dma }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AssignedResource {
     pub kind: ResourceKind,
@@ -109,6 +109,10 @@ pub fn parse_translated_resources(bytes: &[u8]) -> Result<IdeResourceSet, i32> {
                     if vector == 0 { return Err(INVALID); }
                     Some(AssignedResource { kind: ResourceKind::Interrupt, start: vector, length: 1, flags })
                 }
+                4 => {
+                    let channel = u32::from_le_bytes(bytes[d+4..d+8].try_into().unwrap()) as u64;
+                    Some(AssignedResource { kind: ResourceKind::Dma, start: channel, length: 1, flags })
+                }
                 _ => return Err(INVALID),
             };
             if let Some(resource) = parsed {
@@ -127,7 +131,7 @@ pub fn parse_translated_resources(bytes: &[u8]) -> Result<IdeResourceSet, i32> {
 }
 fn overlaps(a: AssignedResource, b: AssignedResource) -> bool {
     if a.kind != b.kind { return false; }
-    if a.kind == ResourceKind::Interrupt { return a.start == b.start; }
+    if matches!(a.kind, ResourceKind::Interrupt | ResourceKind::Dma) { return a.start == b.start; }
     a.start < b.start.saturating_add(b.length) && b.start < a.start.saturating_add(a.length)
 }
 
@@ -172,6 +176,12 @@ impl PciIdeController {
         const STATE: i32 = 0xC000_0184u32 as i32;
         if self.state != ControllerState::ResourcesAssigned { return Err(STATE); }
         self.state = ControllerState::Started; Ok(())
+    }
+    /// Roll back a failed lower-stack START_DEVICE transaction. The caller
+    /// restores the state that preceded resource assignment so rebalance can retry.
+    pub fn start_failed(&mut self, previous: ControllerState) {
+        self.resources = IdeResourceSet::empty();
+        self.state = previous;
     }
     pub fn stop_succeeded(&mut self) -> Result<(), i32> {
         const STATE: i32 = 0xC000_0184u32 as i32;
