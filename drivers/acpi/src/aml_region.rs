@@ -239,7 +239,7 @@ mod tests {
         ];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let mut table=OperationRegionTable::new();
-        assert_eq!(table.load_namespace(&aml,&ns),Err(RegionError::MalformedTermArg));
+        assert_eq!(table.load_namespace(&aml,&ns),Err(RegionError::ZeroLength));
         assert_eq!(table.count(),0);
     }
 
