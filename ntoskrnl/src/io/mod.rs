@@ -12,6 +12,8 @@ pub use wdm::*;
 pub use wdm::Irp as WdmIrp;
 #[path = "dma.rs"]
 pub(crate) mod dma;
+#[path = "paging.rs"]
+pub(crate) mod paging;
 pub const EXPORTS: &[(&str, u16)] = &[
     ("CcAddDirtyPagesToExternalCache", 62),
     ("CcAsyncCopyRead", 63),
