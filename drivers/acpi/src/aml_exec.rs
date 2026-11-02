@@ -96,7 +96,7 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
 mod tests{
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
  #[test]fn executes_integer_method_with_arg_and_add(){
-  let aml=[0x14,0x0d,b'T',b'E',b'S',b'T',1,0xa4,0x72,0x68,0x0a,2,0x00];
+  let aml=[0x14,0x0c,b'T',b'E',b'S',b'T',1,0xa4,0x72,0x68,0x0a,2,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[40]).unwrap(),AmlValue::Integer(42));
  }
@@ -108,7 +108,7 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,id,&[0]).unwrap(),AmlValue::Integer(9));
  }
  #[test]fn rejects_wrong_argument_count(){
-  let aml=[0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
+  let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[1]),Err(ExecError::BadArgumentCount));
  }
