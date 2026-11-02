@@ -32,6 +32,7 @@ pub trait FieldIo {
 fn field_node(ns:&AmlNamespace,id:u16)->Result<&crate::aml::AmlNode,FieldError>{
     let n=ns.nodes.get(id as usize).filter(|_|(id as usize)<ns.count).ok_or(FieldError::InvalidNode)?;
     if n.object_type!=AmlObjectType::Field{return Err(FieldError::NotField)}
+    if n.field_mode!=0||n.field_connection{return Err(FieldError::UnsupportedAccess)}
     if n.field_region==u16::MAX{return Err(FieldError::InvalidNode)}
     if n.body_length==0{return Err(FieldError::InvalidLength)}
     if n.body_length>MAX_FIELD_BITS{return Err(FieldError::FieldTooWide)}
