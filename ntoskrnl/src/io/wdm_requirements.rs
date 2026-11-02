@@ -175,20 +175,27 @@ pub fn reserve_wdm_requirements_with(
     let mut refs: [&[ResourceRequest]; MAX_ALTERNATIVE_LISTS] = [&[]; MAX_ALTERNATIVE_LISTS];
     for i in 0..count { refs[i] = &parsed[i].requests[..parsed[i].count]; }
     let selected_count = arbiter.reserve_alternative(owner, &refs[..count], output)?;
-    let selected_index = parsed[..count].iter().position(|a| a.count == selected_count
-        && a.requests[..a.count] == output[..selected_count].iter().map(|a| ResourceRequest {
-            kind: a.kind, minimum: a.start, maximum: a.start, length: a.length, alignment: 1,
-        }).collect::<[ResourceRequest; MAX_DESCRIPTORS_PER_LIST]>()[..selected_count]);
-    // The arbiter returns the chosen assignments but not the alternative
-    // index. Match the committed assignments against the bounded candidates.
-    let index = selected_index.unwrap_or_else(|| {
-        parsed[..count].iter().position(|a| a.count == selected_count).unwrap_or(0)
-    });
+    // The arbiter returns the selected assignments but not its list index.
+    // A committed assignment must satisfy every request in the selected list.
+    let index = parsed[..count].iter().position(|alternative| {
+        alternative.count == selected_count
+            && alternative.requests[..selected_count].iter().zip(output[..selected_count].iter())
+                .all(|(request, assignment)| {
+                    assignment.kind == request.kind
+                        && assignment.length == request.length
+                        && assignment.start >= request.minimum
+                        && assignment.start <= request.maximum
+                        && assignment.start % request.alignment == 0
+                })
+    }).ok_or(RequirementsError::InvalidSize)?;
     Ok((index, selected_count))
 }
 
 #[cfg(test)]
+extern crate std;
+#[cfg(test)]
 mod tests {
+    use std::vec;
     use super::*;
 
     fn make_list(alternatives: &[(u32, u32)]) -> std::vec::Vec<u8> {
