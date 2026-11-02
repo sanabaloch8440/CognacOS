@@ -647,6 +647,32 @@ pub unsafe fn import_pci_inventory_and_match(
 /// completed. A failed start is recorded as FAILED; it can never be reported as
 /// STARTED. The caller is responsible for unwinding hardware resources before
 /// removing a failed device, matching the Windows PnP start/remove contract.
+
+/// Ask the kernel arbiter to select and reserve one complete bus-published
+/// resource alternative for an enumerated devnode. The bus driver remains
+/// responsible for programming firmware (ACPI _SRS) and starting the device.
+pub fn assign_pnp_resource_alternative(
+    index:u32,
+    alternatives:&[&[crate::io::resource_arbiter::ResourceRequest]],
+    output:&mut[crate::io::resource_arbiter::ResourceAssignment],
+)->Result<usize,PnpError>{
+    let snapshot=query_pnp_device(index).ok_or(PnpError::InvalidState)?;
+    if snapshot.state!=PNP_DEVICE_ENUMERATED{return Err(PnpError::InvalidState)}
+    let owner=(index as u64).checked_add(1).ok_or(PnpError::InvalidState)?;
+    let mut selected=[crate::io::resource_arbiter::ResourceAssignment{
+        kind:crate::io::resource_arbiter::ResourceKind::Port,start:0,length:0
+    };crate::io::resource_arbiter::MAX_REQUESTS_PER_ALTERNATIVE];
+    let count=crate::io::resource_arbiter::SYSTEM_RESOURCE_ARBITER
+        .reserve_alternative(owner,alternatives,&mut selected)
+        .map_err(|_|PnpError::InvalidState)?;
+    if transition_pnp_device(index,PNP_DEVICE_RESOURCES_ASSIGNED,0).is_err(){
+        let _=crate::io::resource_arbiter::SYSTEM_RESOURCE_ARBITER.release_owner(owner);
+        return Err(PnpError::InvalidState)
+    }
+    output[..count].copy_from_slice(&selected[..count]);
+    Ok(count)
+}
+
 pub fn transition_pnp_device(index: u32, next: u32, status: i32) -> Result<(), PnpError> {
     let _guard = lock_pnp_table();
     let node = PNP_DEVICES.get(index as usize).ok_or(PnpError::InvalidState)?;
@@ -665,8 +691,13 @@ pub fn transition_pnp_device(index: u32, next: u32, status: i32) -> Result<(), P
     let release_device = if next == PNP_DEVICE_REMOVED {
         node.device_object.swap(0, Ordering::AcqRel)
     } else { 0 };
+    let release_resources = next == PNP_DEVICE_REMOVED
+        || (current == PNP_DEVICE_RESOURCES_ASSIGNED && next == PNP_DEVICE_STARTED && status < 0);
     node.state.store(next, Ordering::Release);
     drop(_guard);
+    if release_resources {
+        let _ = crate::io::resource_arbiter::SYSTEM_RESOURCE_ARBITER.release_owner((index as u64)+1);
+    }
     if release_device != 0 {
         unsafe { crate::io::io_dereference_device_object(release_device as *mut crate::io::DeviceObject); }
     }
