@@ -23,7 +23,8 @@ pub fn descriptor_count(r:&ResourceList)->Result<usize,RequirementsError>{
  };n=n.checked_add(add).ok_or(RequirementsError::SizeOverflow)?;}Ok(n)
 }
 pub fn required_size(r:&ResourceList)->Result<usize,RequirementsError>{
- REQUIREMENTS_HEADER_SIZE.checked_add(ALTERNATIVE_HEADER_SIZE).and_then(|n|n.checked_add(descriptor_count(r).ok()?.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE)?)).ok_or(RequirementsError::SizeOverflow)
+ let count=descriptor_count(r)?;
+ REQUIREMENTS_HEADER_SIZE.checked_add(ALTERNATIVE_HEADER_SIZE).and_then(|n|n.checked_add(count.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE)?)).ok_or(RequirementsError::SizeOverflow)
 }
 unsafe fn w16(p:*mut u8,o:usize,v:u16){unsafe{p.add(o).cast::<u16>().write_unaligned(v)}}
 unsafe fn w32(p:*mut u8,o:usize,v:u32){unsafe{p.add(o).cast::<u32>().write_unaligned(v)}}
