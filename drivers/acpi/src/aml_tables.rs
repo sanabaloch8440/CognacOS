@@ -6,6 +6,7 @@
 
 use crate::{parse_sdt_header,AcpiError};
 use crate::aml::{AmlError,AmlNamespace,load_definition_block,MAX_NAMESPACE_NODES};
+use crate::aml_exec::{self,AmlValue,ExecError};
 
 pub const MAX_AML_TABLES:usize=32;
 const SDT_HEADER_SIZE:usize=36;
@@ -23,6 +24,8 @@ pub enum TableError {
     InvalidHandle,
     UnloadOrder,
     NamespaceChanged,
+    ExecutionBusy,
+    MethodExecution(ExecError),
 }
 impl From<AcpiError> for TableError {fn from(e:AcpiError)->Self{Self::InvalidSdt(e)}}
 impl From<AmlError> for TableError {fn from(e:AmlError)->Self{Self::Parse(e)}}
@@ -51,8 +54,16 @@ impl TableRecord {
         namespace_start:0,namespace_end:0,
     }};
 }
+/// Platform/runtime contract: stop new AML method entry and wait for all
+/// in-flight AML methods to leave before namespace mutation. Implementations
+/// must be safe against concurrent method dispatch on every CPU.
+pub trait AmlExecutionGate {
+    fn enter_quiescent(&mut self)->Result<(),()>;
+    fn leave_quiescent(&mut self);
+}
+
 pub struct AmlTableManager {
-    pub namespace:AmlNamespace,
+    namespace:AmlNamespace,
     records:[TableRecord;MAX_AML_TABLES],
     count:usize,
     next_generation:u32,
@@ -63,19 +74,30 @@ impl AmlTableManager {
         Self{namespace:AmlNamespace::new(),records:[TableRecord::EMPTY;MAX_AML_TABLES],
             count:0,next_generation:1,dsdt_loaded:false}
     }
+    pub fn namespace(&self)->&AmlNamespace{&self.namespace}
     pub fn table_count(&self)->usize{self.count}
     pub fn dsdt_loaded(&self)->bool{self.dsdt_loaded}
     pub fn table_info(&self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
         let record=self.records.get(handle.slot as usize).filter(|r|r.active&&r.generation==handle.generation).ok_or(TableError::InvalidHandle)?;
         Ok(record.info)
     }
-    pub fn load_dsdt(&mut self,bytes:&[u8])->Result<TableHandle,TableError>{
-        if self.dsdt_loaded||self.count!=0{return Err(TableError::DsdTAlreadyLoaded)}
-        self.load(bytes,*b"DSDT")
+    pub fn load_dsdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&mut G)->Result<TableHandle,TableError>{
+        self.with_quiescence(gate,|manager|{
+            if manager.dsdt_loaded||manager.count!=0{return Err(TableError::DsdTAlreadyLoaded)}
+            manager.load(bytes,*b"DSDT")
+        })
     }
-    pub fn load_ssdt(&mut self,bytes:&[u8])->Result<TableHandle,TableError>{
-        if !self.dsdt_loaded{return Err(TableError::DsdTRequired)}
-        self.load(bytes,*b"SSDT")
+    pub fn load_ssdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&mut G)->Result<TableHandle,TableError>{
+        self.with_quiescence(gate,|manager|{
+            if !manager.dsdt_loaded{return Err(TableError::DsdTRequired)}
+            manager.load(bytes,*b"SSDT")
+        })
+    }
+    fn with_quiescence<T,G:AmlExecutionGate>(&mut self,gate:&mut G,operation:impl FnOnce(&mut Self)->Result<T,TableError>)->Result<T,TableError>{
+        gate.enter_quiescent().map_err(|_|TableError::ExecutionBusy)?;
+        let result=operation(self);
+        gate.leave_quiescent();
+        result
     }
     fn load(&mut self,bytes:&[u8],expected:[u8;4])->Result<TableHandle,TableError>{
         if self.count>=MAX_AML_TABLES{return Err(TableError::TableLimit)}
@@ -110,10 +132,31 @@ impl AmlTableManager {
         if expected==*b"DSDT"{self.dsdt_loaded=true;}
         Ok(TableHandle{slot:slot as u8,generation})
     }
+    /// Execute a method only when its namespace node belongs to this table.
+    /// The caller supplies the same validated table bytes retained by the ACPI
+    /// table owner; the manager verifies the table identity and exact extent.
+    pub fn execute_method(&self,handle:TableHandle,bytes:&[u8],method_index:u16,args:&[u64])->Result<AmlValue,TableError>{
+        let info=self.table_info(handle)?;
+        let header=parse_sdt_header(bytes)?;
+        if !same_identity(info,AmlTableInfo{signature:header.signature,revision:header.revision,
+            oem_id:header.oem_id,oem_table_id:header.oem_table_id,oem_revision:header.oem_revision,
+            creator_id:header.creator_id,creator_revision:header.creator_revision,length:header.length,
+            namespace_start:0,namespace_end:0})||header.length!=info.length{
+            return Err(TableError::InvalidHandle)
+        }
+        if method_index<info.namespace_start||method_index>=info.namespace_end{
+            return Err(TableError::InvalidHandle)
+        }
+        aml_exec::execute_method(&bytes[SDT_HEADER_SIZE..info.length as usize],&self.namespace,method_index,args)
+            .map_err(TableError::MethodExecution)
+    }
     /// Only the most recently installed table may be removed. This preserves
     /// namespace indices and prevents unloading definitions underneath later
     /// SSDTs. A caller must also quiesce AML method execution before unloading.
-    pub fn unload(&mut self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
+    pub fn unload<G:AmlExecutionGate>(&mut self,handle:TableHandle,gate:&mut G)->Result<AmlTableInfo,TableError>{
+        self.with_quiescence(gate,|manager|manager.unload_quiesced(handle))
+    }
+    fn unload_quiesced(&mut self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
         if self.count==0||handle.slot as usize!=self.count-1{return Err(TableError::UnloadOrder)}
         let record=self.records[handle.slot as usize];
         if !record.active||record.generation!=handle.generation{return Err(TableError::InvalidHandle)}
@@ -137,6 +180,12 @@ fn same_identity(a:AmlTableInfo,b:AmlTableInfo)->bool{
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct TestGate{busy:bool,entered:bool}
+    impl AmlExecutionGate for TestGate{
+        fn enter_quiescent(&mut self)->Result<(),()>{if self.busy{return Err(())}self.entered=true;Ok(())}
+        fn leave_quiescent(&mut self){self.entered=false;}
+    }
+    fn gate()->TestGate{TestGate{busy:false,entered:false}}
     fn table(signature:[u8;4],name:[u8;4],value:u8)->[u8;43]{
         let mut b=[0u8;43];
         b[0..4].copy_from_slice(&signature);
@@ -155,17 +204,17 @@ mod tests {
     fn loads_dsdt_then_ssdt_and_unloads_in_reverse(){
         let dsdt=table(*b"DSDT",*b"BASE",1);
         let ssdt=table(*b"SSDT",*b"EXTR",2);
-        let mut manager=AmlTableManager::new();
-        assert_eq!(manager.load_ssdt(&ssdt),Err(TableError::DsdTRequired));
-        let base=manager.load_dsdt(&dsdt).unwrap();
-        let extra=manager.load_ssdt(&ssdt).unwrap();
+        let mut manager=AmlTableManager::new();let mut gate=gate();
+        assert_eq!(manager.load_ssdt(&ssdt,&mut gate),Err(TableError::DsdTRequired));
+        let base=manager.load_dsdt(&dsdt,&mut gate).unwrap();
+        let extra=manager.load_ssdt(&ssdt,&mut gate).unwrap();
         assert_eq!(manager.table_count(),2);
         assert!(manager.dsdt_loaded());
-        assert!(manager.namespace.find_child(0,*b"BASE").is_some());
+        assert!(manager.namespace().find_child(0,*b"BASE").is_some());
         assert!(manager.namespace.find_child(0,*b"EXTR").is_some());
-        assert_eq!(manager.unload(base),Err(TableError::UnloadOrder));
-        manager.unload(extra).unwrap();
-        manager.unload(base).unwrap();
+        assert_eq!(manager.unload(base,&mut gate),Err(TableError::UnloadOrder));
+        manager.unload(extra,&mut gate).unwrap();
+        manager.unload(base,&mut gate).unwrap();
         assert_eq!(manager.table_count(),0);
         assert!(!manager.dsdt_loaded());
     }
@@ -173,24 +222,24 @@ mod tests {
     fn rejects_bad_checksum_duplicate_and_wrong_signature(){
         let dsdt=table(*b"DSDT",*b"BASE",1);
         let mut bad=dsdt;bad[42]^=1;
-        let mut manager=AmlTableManager::new();
-        assert!(matches!(manager.load_dsdt(&bad),Err(TableError::InvalidSdt(AcpiError::BadChecksum))));
-        let base=manager.load_dsdt(&dsdt).unwrap();
-        assert_eq!(manager.load_ssdt(&dsdt),Err(TableError::UnsupportedSignature));
+        let mut manager=AmlTableManager::new();let mut gate=gate();
+        assert!(matches!(manager.load_dsdt(&bad,&mut gate),Err(TableError::InvalidSdt(AcpiError::BadChecksum))));
+        let base=manager.load_dsdt(&dsdt,&mut gate).unwrap();
+        assert_eq!(manager.load_ssdt(&dsdt,&mut gate),Err(TableError::UnsupportedSignature));
         let duplicate=table(*b"SSDT",*b"BASE",1);
         let ssdt=table(*b"SSDT",*b"EXTR",2);
-        manager.load_ssdt(&ssdt).unwrap();
-        assert_eq!(manager.load_ssdt(&duplicate),Err(TableError::DuplicateTable));
-        assert!(manager.unload(base).is_err());
+        manager.load_ssdt(&ssdt,&mut gate).unwrap();
+        assert_eq!(manager.load_ssdt(&duplicate,&mut gate),Err(TableError::DuplicateTable));
+        assert!(manager.unload(base,&mut gate).is_err());
     }
     #[test]
     fn failed_aml_parse_does_not_publish_a_table(){
         let mut bad=table(*b"DSDT",*b"BASE",1);
         bad[36]=0x08;bad[37]=b'1';
         bad[9]=0;bad[9]=0u8.wrapping_sub(bad.iter().fold(0u8,|s,x|s.wrapping_add(*x)));
-        let mut manager=AmlTableManager::new();
-        assert!(manager.load_dsdt(&bad).is_err());
+        let mut manager=AmlTableManager::new();let mut gate=gate();
+        assert!(manager.load_dsdt(&bad,&mut gate).is_err());
         assert_eq!(manager.table_count(),0);
-        assert_eq!(manager.namespace.count,1);
+        assert_eq!(manager.namespace().count,1);
     }
 }
