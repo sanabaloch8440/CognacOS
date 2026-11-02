@@ -399,7 +399,7 @@ pub(crate) fn cache_insert_clean(file: *mut FileObject, offset: u64, data: &[u8]
 
         let Ok(new_data) = crate::ntoskrnl::mm::kernel_space::allocate_pages(1) else { return; };
         unsafe { core::ptr::write_bytes(new_data, 0, CACHE_PAGE_SIZE); }
-        core::ptr::copy_nonoverlapping(chunk.as_ptr(), unsafe { new_data.add(within) }, amount);
+        unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), new_data.add(within), amount); }
         let descriptor = unsafe { allocate_page_descriptor(page_offset, new_data, within, within + amount) };
         if descriptor.is_null() {
             let _ = crate::ntoskrnl::mm::kernel_space::free_pages(new_data, 1);
