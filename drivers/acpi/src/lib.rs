@@ -7,6 +7,7 @@ pub mod aml_exec;
 pub mod aml_objects;
 pub mod aml_runtime;
 pub mod aml_region;
+pub mod aml_field;
 
 
 /// Common 36-byte ACPI System Description Table header.
