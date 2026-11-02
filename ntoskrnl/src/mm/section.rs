@@ -197,7 +197,7 @@ pub fn unmap_view(root: u64, base: u64) -> i32 {
 /// per-view copy-on-write. The section's original backing page remains owned
 /// by the section; the new frame is owned by this view until it is unmapped.
 pub fn handle_copy_on_write(root: u64, address: u64) -> bool {
-    if root == 0 || address & (PAGE - 1) >= PAGE { return false; }
+    if root == 0 || !super::address_space::is_user_range(address, 1) { return false; }
     let page_va = address & !(PAGE - 1);
     let _guard = LOCK.lock();
     let sections = unsafe { &*core::ptr::addr_of!(SECTIONS) };
