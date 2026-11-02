@@ -96,9 +96,9 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
             if count>MAX_PACKAGE_ELEMENTS{return Err(ObjectError::TooManyElements)}
             value.kind=AmlValueKind::Package;
             for _ in 0..count {
-                if pos>=end { // AML packages may omit trailing elements; absent slots are integer zero.
-                    let zero=arena.push({let mut z=AmlRuntimeValue::EMPTY;z.kind=AmlValueKind::Integer;z})?;
-                    value.elements[value.element_count as usize]=zero;value.element_count+=1;continue
+                if pos>=end { // Missing package initializers remain Uninitialized.
+                    let missing=arena.push({let mut z=AmlRuntimeValue::EMPTY;z.kind=AmlValueKind::Uninitialized;z})?;
+                    value.elements[value.element_count as usize]=missing;value.element_count+=1;continue
                 }
                 let (child,next)=decode_data_object(bytes,pos,end,arena)?;
                 value.elements[value.element_count as usize]=child;value.element_count+=1;pos=next;
