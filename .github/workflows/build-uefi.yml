@@ -162,6 +162,8 @@ jobs:
         run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Test AML definition-block parser and namespace loader
         run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml::
+      - name: Test bounded AML method TermArg execution
+        run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_exec::
       - name: Check PCI driver library
         run: cargo check --manifest-path drivers/pci/Cargo.toml --lib
       - name: Test PCI ECAM and xHCI resource decoding
