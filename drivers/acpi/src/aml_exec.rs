@@ -137,22 +137,22 @@ mod tests{
  }
  #[test]fn executes_divide_and_stores_quotient_and_remainder(){
   // Return(Divide(ByteConst(23), ByteConst(5), Local0, Local1))
-  let aml=[0x14,0x12,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,23,0x0a,5,0x60,0x61];
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,23,0x0a,5,0x60,0x61];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(4));
  }
  #[test]fn rejects_divide_by_zero(){
-  let aml=[0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,1,0x00,0x60,0x61];
+  let aml=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,1,0x00,0x60,0x61];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::DivideByZero));
  }
  #[test]fn shift_counts_at_or_above_integer_width_yield_zero(){
-  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x79,0x0a,1,0x0a,64,0x00];
+  let aml=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x79,0x0a,1,0x0a,64,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
  }
  #[test]fn executes_increment_decrement_and_bitwise_complements(){
-  let aml=[0x14,0x12,b'T',b'E',b'S',b'T',0,0x70,0x0a,7,0x60,0x75,0x60,0x76,0x60,0xa4,0x7e,0x60,0x0a,0];
+  let aml=[0x14,0x13,b'T',b'E',b'S',b'T',0,0x70,0x0a,7,0x60,0x75,0x60,0x76,0x60,0xa4,0x7e,0x60,0x0a,0];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(!7u64));
  }
