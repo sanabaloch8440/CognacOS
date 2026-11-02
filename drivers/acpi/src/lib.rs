@@ -980,7 +980,7 @@ mod pci_root_crs_tests {
         // QWord address descriptor: memory, min=0x80000000,
         // max=0x8fffffff, translation=0, length=0x10000000.
         let mut b=vec![0x8a,43,0,
-            0,0,0,0,
+            0,0,0,
             0,0,0,0,0,0,0,0,
             0,0,0,0x80,0,0,0,0,
             0xff,0xff,0xff,0x8f,0,0,0,0,
