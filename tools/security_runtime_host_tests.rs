@@ -15,5 +15,5 @@ mod thread {
     pub fn current_process_id() -> u64 { 0 }
     pub fn reference_current_impersonation_token() -> *mut c_void { core::ptr::null_mut() }
 }
-#[path = "../kernel/src/ntoskrnl/se/runtime.rs"]
+#[path = "../ntoskrnl/src/se/runtime.rs"]
 mod runtime;
