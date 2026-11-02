@@ -670,6 +670,38 @@ mod tests {
     }
 
     #[test]
+    fn file_objects_for_same_section_share_one_stream_cache_map() {
+        let _test_guard = TestGuard::acquire();
+        let baseline = cache_map_count();
+        let mut first: FileObject = unsafe { core::mem::zeroed() };
+        let mut second: FileObject = unsafe { core::mem::zeroed() };
+        let mut section = crate::nt_abi::io::SECTION_OBJECT_POINTERS::default();
+        first.section_object_pointer = &mut section as *mut _ as *mut c_void;
+        second.section_object_pointer = &mut section as *mut _ as *mut c_void;
+        let sizes = CcFileSizes { allocation_size: 8192, file_size: 4096, valid_data_length: 4096 };
+
+        unsafe {
+            cc_initialize_cache_map(&mut first, &sizes, 0, core::ptr::null(), core::ptr::null_mut());
+            cc_initialize_cache_map(&mut second, &sizes, 0, core::ptr::null(), core::ptr::null_mut());
+        }
+
+        assert!(!first.private_cache_map.is_null());
+        assert_eq!(first.private_cache_map, second.private_cache_map);
+        assert_eq!(section.shared_cache_map, first.private_cache_map);
+        assert_eq!(cache_map_count(), baseline + 1);
+
+        assert_eq!(unsafe { cc_uninitialize_cache_map(&mut first, core::ptr::null(), core::ptr::null_mut()) }, 1);
+        assert!(first.private_cache_map.is_null());
+        assert_eq!(second.private_cache_map, section.shared_cache_map);
+        assert_eq!(cache_map_count(), baseline + 1);
+
+        assert_eq!(unsafe { cc_uninitialize_cache_map(&mut second, core::ptr::null(), core::ptr::null_mut()) }, 1);
+        assert!(second.private_cache_map.is_null());
+        assert!(section.shared_cache_map.is_null());
+        assert_eq!(cache_map_count(), baseline);
+    }
+
+    #[test]
     fn cache_metadata_has_no_128_stream_or_eight_page_ceiling() {
         let _test_guard = TestGuard::acquire();
         const STREAMS: usize = 160;
