@@ -5,6 +5,7 @@
 
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
 use crate::aml_exec::{self,ExecError};
+use crate::aml_objects::MAX_AML_BYTES;
 
 pub const DEVICE_PRESENT:u32=1;
 pub const DEVICE_ENABLED:u32=2;
@@ -47,7 +48,12 @@ impl AcpiDeviceIdentity {
 /// serialization, argument objects and interpreter state; this trait keeps
 /// device enumeration independent of firmware execution mechanics.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum AcpiMethodValue { Integer(u64), String(AcpiId), CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8} }
+pub enum AcpiMethodValue {
+    Integer(u64),
+    String(AcpiId),
+    Buffer{bytes:[u8;MAX_AML_BYTES],length:u16},
+    CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8}
+}
 pub trait AcpiMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>;
 }
@@ -68,6 +74,12 @@ impl AcpiMethodInvoker for IntegerMethodInvoker {
         if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x12){
             let (ids,count)=decode_package_ids(&body[1..]).map_err(|_|ExecError::InvalidMethod)?;
             return Ok(AcpiMethodValue::CompatibleIds{ids,count});
+        }
+        if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x11){
+            let mut bytes=[0u8;MAX_AML_BYTES];
+            let length=crate::aml_buffer::decode_returned_buffer(body,&mut bytes)
+                .map_err(|_|ExecError::InvalidMethod)?;
+            return Ok(AcpiMethodValue::Buffer{bytes,length:length as u16});
         }
         Ok(AcpiMethodValue::Integer(aml_exec::execute_method(aml,namespace,method,&[])?.integer()))
     }
@@ -148,6 +160,7 @@ fn evaluate_object(ns:&AmlNamespace,aml_tables:&[&[u8]],node:u16,invoker:&mut im
         AmlObjectType::Method=>{match invoker.evaluate_value(ns,aml,node).map_err(IdentityError::Method)?{
             AcpiMethodValue::Integer(v)=>Ok(IdentityValue::Integer(v)),
             AcpiMethodValue::String(v)=>Ok(IdentityValue::String(v)),
+            AcpiMethodValue::Buffer{..}=>Err(IdentityError::UnsupportedObject),
             AcpiMethodValue::CompatibleIds{ids,count}=>{if count as usize>MAX_COMPATIBLE_IDS{return Err(IdentityError::TooManyCompatibleIds)}Ok(IdentityValue::CompatibleIds{ids,count})}
         }},
         _=>Err(IdentityError::UnsupportedObject),
