@@ -319,6 +319,11 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
         io.write32(base + PORT_CMD, cmd | CMD_FRE).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_CMD, cmd | CMD_FRE | CMD_ST).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         ahci_wait_ready(&mut io, base)?;
+        // Bus mastering is enabled only after all DMA regions are allocated,
+        // initialized, and validated for this PCI requester.
+        let Some(device) = (unsafe { ext.device.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
+        let Some(set_bus_master) = device.set_bus_master else { return STATUS_NOT_SUPPORTED; };
+        if unsafe { set_bus_master(ext.device_object, true) }.code != 0 { return STATUS_DEVICE_NOT_READY; }
         unsafe { ahci_issue(&mut io, &runtime, 0xec, 0, 1, 512, false, false)?; }
         let words = unsafe { core::slice::from_raw_parts(bounce_cpu as *const u16, 256) };
         let sectors = if words[83] & (1 << 10) != 0 {
@@ -327,9 +332,6 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
         if sectors == 0 { return STATUS_DEVICE_NOT_READY; }
         let runtime = AhciRuntime { sectors, ..runtime };
         unsafe { (*AHCI_RUNTIME.0.get()).write(runtime); }
-        let Some(device) = (unsafe { ext.device.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
-        let Some(set_bus_master) = device.set_bus_master else { return STATUS_NOT_SUPPORTED; };
-        if unsafe { set_bus_master(ext.device_object, true) }.code != 0 { return STATUS_DEVICE_NOT_READY; }
         AHCI_ONLINE.store(true, Ordering::Release);
         STATUS_SUCCESS
     })();
