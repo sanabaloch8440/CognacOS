@@ -7,6 +7,19 @@ use crate::aml::{AmlNamespace,AmlObjectType};
 
 pub const MAX_OPERATION_REGIONS:usize=128;
 
+pub const SPACE_SYSTEM_MEMORY:u8=0x00;
+pub const SPACE_SYSTEM_IO:u8=0x01;
+pub const SPACE_PCI_CONFIG:u8=0x02;
+pub const SPACE_EMBEDDED_CONTROLLER:u8=0x03;
+pub const SPACE_SMBUS:u8=0x04;
+pub const SPACE_SYSTEM_CMOS:u8=0x05;
+pub const SPACE_PCI_BAR_TARGET:u8=0x06;
+pub const SPACE_IPMI:u8=0x07;
+pub const SPACE_GPIO:u8=0x08;
+pub const SPACE_GENERIC_SERIAL_BUS:u8=0x09;
+pub const SPACE_PLATFORM_COMMUNICATION_CHANNEL:u8=0x0a;
+pub const SPACE_FUNCTIONAL_FIXED_HARDWARE:u8=0x7f;
+
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RegionError {
     InvalidNode,NotOperationRegion,MalformedTermArg,UnsupportedTermArg,
@@ -43,19 +56,19 @@ fn decode_integer(bytes:&[u8],pos:&mut usize,end:usize)->Result<u64,RegionError>
             *pos+=1;Ok(b as u64)
         }
         0x0b=>{
-            let s=bytes.get(*pos..pos.checked_add(2).ok_or(RegionError::MalformedTermArg)?)
-                .filter(|_|*pos+2<=end).ok_or(RegionError::MalformedTermArg)?;
-            *pos+=2;Ok(u16::from_le_bytes([s[0],s[1]]) as u64)
+            let next=(*pos).checked_add(2).ok_or(RegionError::MalformedTermArg)?;
+            let s=bytes.get(*pos..next).filter(|_|next<=end).ok_or(RegionError::MalformedTermArg)?;
+            *pos=next;Ok(u16::from_le_bytes([s[0],s[1]]) as u64)
         }
         0x0c=>{
-            let s=bytes.get(*pos..pos.checked_add(4).ok_or(RegionError::MalformedTermArg)?)
-                .filter(|_|*pos+4<=end).ok_or(RegionError::MalformedTermArg)?;
-            *pos+=4;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]) as u64)
+            let next=(*pos).checked_add(4).ok_or(RegionError::MalformedTermArg)?;
+            let s=bytes.get(*pos..next).filter(|_|next<=end).ok_or(RegionError::MalformedTermArg)?;
+            *pos=next;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]) as u64)
         }
         0x0e=>{
-            let s=bytes.get(*pos..pos.checked_add(8).ok_or(RegionError::MalformedTermArg)?)
-                .filter(|_|*pos+8<=end).ok_or(RegionError::MalformedTermArg)?;
-            *pos+=8;Ok(u64::from_le_bytes(s.try_into().map_err(|_|RegionError::MalformedTermArg)?))
+            let next=(*pos).checked_add(8).ok_or(RegionError::MalformedTermArg)?;
+            let s=bytes.get(*pos..next).filter(|_|next<=end).ok_or(RegionError::MalformedTermArg)?;
+            *pos=next;Ok(u64::from_le_bytes(s.try_into().map_err(|_|RegionError::MalformedTermArg)?))
         }
         _=>Err(RegionError::UnsupportedTermArg),
     }
@@ -105,12 +118,27 @@ impl OperationRegionTable {
         let region=decode_operation_region(aml,namespace,node)?;
         self.register(region)
     }
+    /// Load every OperationRegion in a namespace atomically. A malformed or
+    /// unsupported declaration rolls back the table to its prior count.
+    pub fn load_namespace(&mut self,aml:&[u8],namespace:&AmlNamespace)
+        ->Result<(),RegionError>{
+        let original=self.count;
+        for index in 1..namespace.count {
+            if namespace.nodes[index].object_type==AmlObjectType::OperationRegion {
+                if let Err(error)=self.load_node(aml,namespace,index as u16) {
+                    self.count=original;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn find_containing(&self,space_id:u8,address:u64,width:u8)
         ->Result<&OperationRegion,RegionError>{
         validate_width(width)?;
         let access_end=address.checked_add(width as u64).ok_or(RegionError::AddressOverflow)?;
         self.entries.iter().take(self.count)
-            .find(|r|r.space_id==space_id&&address>=r.base&&access_end<=r.base.saturating_add(r.length))
+            .find(|r|r.space_id==space_id&&address>=r.base&&r.base.checked_add(r.length).is_some_and(|end|access_end<=end))
             .ok_or(RegionError::RegionNotFound)
     }
 }
@@ -201,6 +229,18 @@ mod tests {
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let id=ns.find_child(0,*b"REGN").unwrap();
         assert_eq!(decode_operation_region(&aml,&ns,id),Err(RegionError::UnsupportedTermArg));
+    }
+
+    #[test]
+    fn namespace_load_is_transactional_when_later_region_is_invalid(){
+        let aml=[
+            0x5b,0x80,b'R',b'E',b'G',b'1',0x00,0x0a,0x10,0x0a,8,
+            0x5b,0x80,b'R',b'E',b'G',b'2',0x00,0x0a,0x20,0x00,0x00
+        ];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let mut table=OperationRegionTable::new();
+        assert_eq!(table.load_namespace(&aml,&ns),Err(RegionError::MalformedTermArg));
+        assert_eq!(table.count(),0);
     }
 
     #[test]
