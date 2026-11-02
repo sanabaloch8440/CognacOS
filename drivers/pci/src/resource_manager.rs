@@ -57,7 +57,11 @@ pub fn allocate_all(
                 if candidate_end>end||(requirement.kind==BarKind::Memory32&&candidate_end>(1u64<<32))||(requirement.kind==BarKind::Io&&candidate_end>0x1_0000){break}
                 let mut conflict=None;
                 for range in occupied.iter().copied().chain(plan.assignments[..plan.count].iter().flatten().map(|a:&BarAssignment|OccupiedRange{start:a.base,length:a.length,kind:a.kind})){
-                    if range.kind!=requirement.kind{continue}
+                    // I/O and memory are separate address spaces. All
+                    // memory BAR encodings (32/64-bit, prefetchable or not)
+                    // share one physical address space and must conflict.
+                    let same_address_space=(range.kind==BarKind::Io)==(requirement.kind==BarKind::Io);
+                    if !same_address_space{continue}
                     let range_end=range.start.checked_add(range.length).ok_or(ResourceError::AddressOverflow)?;
                     if candidate<range_end&&range.start<candidate_end{conflict=Some(conflict.map_or(range_end,|old:u64|old.max(range_end)))}
                 }
