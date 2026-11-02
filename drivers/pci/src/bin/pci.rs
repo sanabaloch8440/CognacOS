@@ -593,6 +593,34 @@ pub unsafe extern "win64" fn CognacPciFindAhci(output: *mut pci::PciFunction) ->
     }
     STATUS_NOT_FOUND
 }
+/// Locate the first PCI IDE-class controller (base class 01h, subclass
+/// 01h). This is inventory only: it does not size BARs, change decode bits,
+/// enable bus mastering, or claim resources. The PnP start-device resource
+/// transaction remains the only authority for activating the controller.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciFindIde(output: *mut cognacos_nt_abi::bus::PCI_DEVICE_INFORMATION) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    for window in 0..MAX_WINDOWS {
+        let count = unsafe { (*STATE.function_counts.get())[window] };
+        let functions = unsafe { &(*STATE.functions.get())[window] };
+        for function in functions.iter().take(count).flatten() {
+            let h = function.header;
+            if h.is_ide_controller() {
+                unsafe { output.write(cognacos_nt_abi::bus::PCI_DEVICE_INFORMATION {
+                    segment: function.segment, bus: function.bus, device: function.device,
+                    function: function.function, header_type: h.header_type,
+                    revision_id: h.revision_id, programming_interface: h.programming_interface,
+                    subclass: h.subclass, class_code: h.class_code, reserved: 0,
+                    vendor_id: h.vendor_id, device_id: h.device_id, command: h.command,
+                }); }
+                return STATUS_SUCCESS;
+            }
+        }
+    }
+    STATUS_NOT_FOUND
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacPciFindNvme(output: *mut pci::PciFunction) -> i32 {
     if output.is_null() { return STATUS_INVALID_PARAMETER; }
