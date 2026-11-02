@@ -278,7 +278,7 @@ pub fn plan_hierarchy_rebalance(
             let pw=staged.bridge_windows[parent as usize].ok_or(HierarchyError::InvalidPath)?;
             let mut allowed=[Aperture{start:0,length:0,kind:BarKind::Io,prefetchable:false};3];let mut n=0;
             for a in [pw.io,pw.memory,pw.prefetchable].into_iter().flatten(){allowed[n]=a;n+=1;}
-            bridge_resources::validate_forwarding_path(&allowed[..n],&[],&required)?;
+            validate_forwarding_path(&allowed[..n],&[],&required)?;
         }else{
             bridge_resources::validate_forwarding_path(host_apertures,&[],&required)?;
         }
