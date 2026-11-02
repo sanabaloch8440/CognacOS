@@ -31,16 +31,16 @@ impl Machine{
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
    0x60..=0x67=>Ok(self.locals[(op-0x60)as usize]),0x68..=0x6e=>Ok(self.args[(op-0x68)as usize]),
-   0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f=>{
+   0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term(r)?;let b=self.term(r)?;
     let v=match op{
      0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),
      0x79=>if b>=64{0}else{a<<b},0x7a=>if b>=64{0}else{a>>b},
-     0x7b=>a&b,0x7c=>!(a&b),0x7d=>a|b,0x7e=>!(a|b),_=>a^b
+     0x7b=>a&b,0x7c=>!(a&b),0x7d=>a|b,0x7e=>!(a|b),0x85=>{if b==0{return Err(ExecError::DivideByZero)}a%b},_=>a^b
     };
     let t=Self::target(r)?;self.store(t,v);Ok(v)
    }
-   0x75|0x76=>{
+   0x81|0x82=>{\n    let value=self.term(r)?;\n    let result=if value==0{0}else if op==0x81{64-value.leading_zeros() as u64}else{value.trailing_zeros() as u64+1};\n    let t=Self::target(r)?;self.store(t,result);Ok(result)\n   }\n   0x75|0x76=>{
     let t=Self::target(r)?;
     let current=match t{Target::Null=>0,Target::Local(i)=>self.locals[i],Target::Arg(i)=>self.args[i]};
     let value=if op==0x75{current.wrapping_add(1)}else{current.wrapping_sub(1)};
@@ -142,6 +142,26 @@ mod tests{
            0xa4,0x72,0x60,0x61,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(7));
+ }
+ #[test]fn executes_modulo_and_rejects_zero_divisor(){
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x85,0x0a,23,0x0a,5,0x60,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(3));
+  let zero=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x85,0x0a,23,0x00,0x60,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&zero,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&zero,&ns,id,&[]),Err(ExecError::DivideByZero));
+ }
+ #[test]fn executes_find_set_bit_operations_with_aml_bit_positions(){
+  // FindSetLeftBit(0x8000) => 16; FindSetRightBit(0x8000) => 16.
+  let left=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x81,0x0c,0x00,0x80,0,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&left,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&left,&ns,id,&[]).unwrap(),AmlValue::Integer(16));
+  let right=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x82,0x0c,0x00,0x80,0,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&right,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&right,&ns,id,&[]).unwrap(),AmlValue::Integer(16));
+  let zero=[0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,0x81,0x00,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&zero,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&zero,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
  }
  #[test]fn rejects_divide_by_zero(){
   let aml=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,1,0x00,0x60,0x61];
