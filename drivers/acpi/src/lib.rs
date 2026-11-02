@@ -433,6 +433,90 @@ pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
 }
 
 
+
+/// Maximum NUMA proximity domains retained from SRAT/SLIT firmware tables.
+pub const MAX_NUMA_DOMAINS:usize=64;
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct NumaCpuAffinity { pub proximity_domain:u32,pub apic_id:u32,pub enabled:bool,pub x2apic:bool }
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct NumaMemoryAffinity {
+    pub proximity_domain:u32,pub base:u64,pub length:u64,
+    pub enabled:bool,pub hot_pluggable:bool,pub non_volatile:bool,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SratInfo {
+    pub cpus:[NumaCpuAffinity;128],pub cpu_count:usize,
+    pub memory:[NumaMemoryAffinity;128],pub memory_count:usize,
+}
+impl SratInfo {
+    pub const EMPTY:Self=Self{cpus:[NumaCpuAffinity{proximity_domain:0,apic_id:0,enabled:false,x2apic:false};128],cpu_count:0,
+        memory:[NumaMemoryAffinity{proximity_domain:0,base:0,length:0,enabled:false,hot_pluggable:false,non_volatile:false};128],memory_count:0};
+}
+/// Parse ACPI SRAT processor and memory affinity records. Unknown newer
+/// architecture-specific records are skipped by their validated record length.
+pub fn parse_srat(bytes:&[u8])->Result<SratInfo,AcpiError>{
+    if bytes.len()<48{return Err(AcpiError::Truncated)}
+    let h=validate_sdt(bytes,Some(*b"SRAT"))?;let end=h.length as usize;
+    if end<48{return Err(AcpiError::BadLength)}
+    let mut out=SratInfo::EMPTY;let mut off=48;
+    while off<end{
+        if off+2>end{return Err(AcpiError::MalformedEntry)}
+        let kind=bytes[off];let size=bytes[off+1] as usize;
+        if size<2||off.checked_add(size).filter(|e|*e<=end).is_none(){return Err(AcpiError::MalformedEntry)}
+        let e=&bytes[off..off+size];
+        match kind{
+            0 if size>=16=>{
+                if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
+                let domain=(e[2] as u32)|((e[9] as u32)<<8)|((e[10] as u32)<<16)|((e[11] as u32)<<24);
+                let flags=u32le(e,4)?;
+                out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id:e[3] as u32,enabled:flags&1!=0,x2apic:false};out.cpu_count+=1;
+            }
+            1 if size>=40=>{
+                if out.memory_count==out.memory.len(){return Err(AcpiError::TooManyEntries)}
+                let domain=u32le(e,2)?;
+                let base=u64::from_le_bytes(e[8..16].try_into().map_err(|_|AcpiError::Truncated)?);
+                let length=u64::from_le_bytes(e[16..24].try_into().map_err(|_|AcpiError::Truncated)?);
+                let flags=u32le(e,28)?;
+                if length==0||base.checked_add(length).is_none(){return Err(AcpiError::MalformedEntry)}
+                out.memory[out.memory_count]=NumaMemoryAffinity{proximity_domain:domain,base,length,
+                    enabled:flags&1!=0,hot_pluggable:flags&2!=0,non_volatile:flags&4!=0};out.memory_count+=1;
+            }
+            2 if size>=24=>{
+                if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
+                let domain=u32le(e,4)?;let apic_id=u32le(e,8)?;let flags=u32le(e,12)?;
+                out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id,enabled:flags&1!=0,x2apic:true};out.cpu_count+=1;
+            }
+            _=>{}
+        }
+        off+=size;
+    }
+    Ok(out)
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SlitInfo { pub locality_count:usize,pub distances:[[u8;MAX_NUMA_DOMAINS];MAX_NUMA_DOMAINS] }
+impl SlitInfo {
+    pub const EMPTY:Self=Self{locality_count:0,distances:[[0;MAX_NUMA_DOMAINS];MAX_NUMA_DOMAINS]};
+    pub fn distance(&self,from:usize,to:usize)->Option<u8>{if from<self.locality_count&&to<self.locality_count{Some(self.distances[from][to])}else{None}}
+}
+/// Parse the SLIT relative-distance matrix. The table is bounded to 64
+/// proximity domains; asymmetric firmware matrices are preserved as supplied.
+pub fn parse_slit(bytes:&[u8])->Result<SlitInfo,AcpiError>{
+    if bytes.len()<44{return Err(AcpiError::Truncated)}
+    let h=validate_sdt(bytes,Some(*b"SLIT"))?;let end=h.length as usize;
+    let count=u64::from_le_bytes(bytes[36..44].try_into().map_err(|_|AcpiError::Truncated)?);
+    if count==0||count as usize>MAX_NUMA_DOMAINS{return Err(AcpiError::TooManyEntries)}
+    let n=count as usize;let matrix=n.checked_mul(n).ok_or(AcpiError::BadLength)?;
+    if 44usize.checked_add(matrix).filter(|v|*v==end).is_none(){return Err(AcpiError::BadLength)}
+    let mut out=SlitInfo::EMPTY;out.locality_count=n;
+    for i in 0..n{for j in 0..n{
+        let d=bytes[44+i*n+j];
+        if i==j&&d!=10{return Err(AcpiError::MalformedEntry)}
+        if i!=j&&d<10{return Err(AcpiError::MalformedEntry)}
+        out.distances[i][j]=d;
+    }}
+    Ok(out)
+}
+
 /// PCI path element within an ACPI DMAR device scope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DmarPath { pub device:u8, pub function:u8 }
@@ -989,5 +1073,40 @@ mod acpi_5_6_revision_tests {
         madt[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
         madt[44..50].copy_from_slice(&[4,6,0,0x02,0,1]);checksum(&mut madt);
         assert_eq!(parse_madt(&madt),Err(AcpiError::MalformedEntry));
+    }
+}
+
+#[cfg(test)]
+mod numa_table_tests {
+    use super::*;
+    fn finish(b:&mut [u8]){b[9]=0;let s=b.iter().fold(0u8,|a,v|a.wrapping_add(*v));b[9]=0u8.wrapping_sub(s);}
+    #[test]
+    fn parses_srat_x2apic_and_hotplug_nonvolatile_memory(){
+        let mut b=vec![0u8;48+24+40];b[0..4].copy_from_slice(b"SRAT");
+        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());b[8]=3;
+        b[48..72].copy_from_slice(&[2,24,0,0,3,0,0,0,0x44,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0]);
+        b[72]=1;b[73]=40;b[74..78].copy_from_slice(&2u32.to_le_bytes());
+        b[80..88].copy_from_slice(&0x1_0000_0000u64.to_le_bytes());
+        b[88..96].copy_from_slice(&0x2000_0000u64.to_le_bytes());
+        b[100..104].copy_from_slice(&7u32.to_le_bytes());finish(&mut b);
+        let s=parse_srat(&b).unwrap();
+        assert_eq!(s.cpu_count,1);assert_eq!(s.cpus[0].proximity_domain,3);assert!(s.cpus[0].x2apic);
+        assert_eq!(s.memory_count,1);assert_eq!(s.memory[0].proximity_domain,2);
+        assert!(s.memory[0].enabled&&s.memory[0].hot_pluggable&&s.memory[0].non_volatile);
+    }
+    #[test]
+    fn parses_slit_and_checks_matrix_shape_and_local_diagonal(){
+        let mut b=vec![0u8;48];b[0..4].copy_from_slice(b"SLIT");
+        b[4..8].copy_from_slice(&(48u32).to_le_bytes());b[8]=1;
+        b[36..44].copy_from_slice(&2u64.to_le_bytes());b[44..48].copy_from_slice(&[10,20,25,10]);finish(&mut b);
+        let s=parse_slit(&b).unwrap();assert_eq!(s.locality_count,2);
+        assert_eq!(s.distance(0,1),Some(20));assert_eq!(s.distance(1,0),Some(25));
+        b[44]=9;finish(&mut b);assert_eq!(parse_slit(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_srat_memory_range_overflow(){
+        let mut b=vec![0u8;88];b[0..4].copy_from_slice(b"SRAT");b[4..8].copy_from_slice(&(88u32).to_le_bytes());
+        b[48]=1;b[49]=40;b[80..88].copy_from_slice(&u64::MAX.to_le_bytes());finish(&mut b);
+        assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
     }
 }
