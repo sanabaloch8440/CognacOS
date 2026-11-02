@@ -7,6 +7,7 @@
 use crate::{parse_sdt_header,AcpiError};
 use crate::aml::{AmlError,AmlNamespace,load_definition_block,MAX_NAMESPACE_NODES};
 use crate::aml_exec::{self,AmlValue,ExecError};
+use core::sync::atomic::{AtomicUsize,Ordering};
 
 pub const MAX_AML_TABLES:usize=32;
 const SDT_HEADER_SIZE:usize=36;
@@ -62,8 +63,50 @@ impl TableRecord {
 /// in-flight AML methods to leave before namespace mutation. Implementations
 /// must be safe against concurrent method dispatch on every CPU.
 pub trait AmlExecutionGate {
-    fn enter_quiescent(&mut self)->Result<(),()>;
-    fn leave_quiescent(&mut self);
+    fn enter_method(&self)->Result<(),()>;
+    fn leave_method(&self);
+    fn enter_quiescent(&self)->Result<(),()>;
+    fn leave_quiescent(&self);
+}
+
+/// Bounded, fail-fast barrier shared by AML method dispatch and table updates.
+/// It prevents new method entry while a DSDT/SSDT namespace change is active.
+pub struct AmlExecutionBarrier {state:AtomicUsize,spin_limit:usize}
+impl AmlExecutionBarrier {
+    const QUIESCING:usize=1usize<<(usize::BITS-1);
+    const ACTIVE_MASK:usize=Self::QUIESCING-1;
+    pub const fn new(spin_limit:usize)->Self{Self{state:AtomicUsize::new(0),spin_limit}}
+    pub fn active_methods(&self)->usize{self.state.load(Ordering::Acquire)&Self::ACTIVE_MASK}
+    pub fn is_quiescing(&self)->bool{self.state.load(Ordering::Acquire)&Self::QUIESCING!=0}
+}
+impl AmlExecutionGate for AmlExecutionBarrier {
+    fn enter_method(&self)->Result<(),()>{
+        for _ in 0..self.spin_limit{
+            let state=self.state.load(Ordering::Acquire);
+            if state&Self::QUIESCING!=0||state&Self::ACTIVE_MASK==Self::ACTIVE_MASK{return Err(())}
+            if self.state.compare_exchange_weak(state,state+1,Ordering::AcqRel,Ordering::Acquire).is_ok(){return Ok(())}
+            core::hint::spin_loop();
+        }
+        Err(())
+    }
+    fn leave_method(&self){self.state.fetch_sub(1,Ordering::Release);}
+    fn enter_quiescent(&self)->Result<(),()>{
+        let mut acquired=false;
+        for _ in 0..self.spin_limit{
+            let state=self.state.load(Ordering::Acquire);
+            if state&Self::QUIESCING!=0{return Err(())}
+            if self.state.compare_exchange_weak(state,state|Self::QUIESCING,Ordering::AcqRel,Ordering::Acquire).is_ok(){acquired=true;break}
+            core::hint::spin_loop();
+        }
+        if !acquired{return Err(())}
+        for _ in 0..self.spin_limit{
+            if self.active_methods()==0{return Ok(())}
+            core::hint::spin_loop();
+        }
+        self.state.fetch_and(Self::ACTIVE_MASK,Ordering::Release);
+        Err(())
+    }
+    fn leave_quiescent(&self){self.state.store(0,Ordering::Release);}
 }
 
 pub struct AmlTableManager {
@@ -88,7 +131,7 @@ impl AmlTableManager {
     /// current bootstrap identity-map contract and therefore rejects firmware
     /// table addresses outside the first 4 GiB. The caller must invoke this
     /// only while those physical ranges are mapped and readable.
-    pub unsafe fn load_from_rsdp<G:AmlExecutionGate>(&mut self,rsdp_address:u64,gate:&mut G)->Result<LoadedTableSet,TableError>{
+    pub unsafe fn load_from_rsdp<G:AmlExecutionGate>(&mut self,rsdp_address:u64,gate:&G)->Result<LoadedTableSet,TableError>{
         const IDENTITY_LIMIT:u64=0x1_0000_0000;
         const MAX_TABLE_LENGTH:usize=1024*1024;
         let fadt=unsafe{crate::find_table(rsdp_address,*b"FACP",0)}?;
@@ -164,7 +207,7 @@ impl AmlTableManager {
             manager.load(bytes,*b"SSDT")
         })
     }
-    fn with_quiescence<T,G:AmlExecutionGate>(&mut self,gate:&mut G,operation:impl FnOnce(&mut Self)->Result<T,TableError>)->Result<T,TableError>{
+    fn with_quiescence<T,G:AmlExecutionGate>(&mut self,gate:&G,operation:impl FnOnce(&mut Self)->Result<T,TableError>)->Result<T,TableError>{
         gate.enter_quiescent().map_err(|_|TableError::ExecutionBusy)?;
         let result=operation(self);
         gate.leave_quiescent();
@@ -207,7 +250,13 @@ impl AmlTableManager {
     /// Execute a method only when its namespace node belongs to this table.
     /// The caller supplies the same validated table bytes retained by the ACPI
     /// table owner; the manager verifies the table identity and exact extent.
-    pub fn execute_method(&self,handle:TableHandle,bytes:&[u8],method_index:u16,args:&[u64])->Result<AmlValue,TableError>{
+    pub fn execute_method<G:AmlExecutionGate>(&self,handle:TableHandle,bytes:&[u8],method_index:u16,args:&[u64],gate:&G)->Result<AmlValue,TableError>{
+        gate.enter_method().map_err(|_|TableError::ExecutionBusy)?;
+        let result=self.execute_method_quiesced(handle,bytes,method_index,args);
+        gate.leave_method();
+        result
+    }
+    fn execute_method_quiesced(&self,handle:TableHandle,bytes:&[u8],method_index:u16,args:&[u64])->Result<AmlValue,TableError>{
         let info=self.table_info(handle)?;
         let header=parse_sdt_header(bytes)?;
         if !same_identity(info,AmlTableInfo{signature:header.signature,revision:header.revision,checksum:header.checksum,
@@ -258,12 +307,14 @@ fn same_identity(a:AmlTableInfo,b:AmlTableInfo)->bool{
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct TestGate{busy:bool,entered:bool}
+    struct TestGate{busy:core::sync::atomic::AtomicBool,entered:core::sync::atomic::AtomicBool}
     impl AmlExecutionGate for TestGate{
-        fn enter_quiescent(&mut self)->Result<(),()>{if self.busy{return Err(())}self.entered=true;Ok(())}
-        fn leave_quiescent(&mut self){self.entered=false;}
+        fn enter_method(&self)->Result<(),()>{if self.busy.load(Ordering::Acquire){Err(())}else{Ok(())}}
+        fn leave_method(&self){}
+        fn enter_quiescent(&self)->Result<(),()>{if self.busy.load(Ordering::Acquire){return Err(())}self.entered.store(true,Ordering::Release);Ok(())}
+        fn leave_quiescent(&self){self.entered.store(false,Ordering::Release);}
     }
-    fn gate()->TestGate{TestGate{busy:false,entered:false}}
+    fn gate()->TestGate{TestGate{busy:core::sync::atomic::AtomicBool::new(false),entered:core::sync::atomic::AtomicBool::new(false)}}
     fn table(signature:[u8;4],name:[u8;4],value:u8)->[u8;43]{
         let mut b=[0u8;43];
         b[0..4].copy_from_slice(&signature);
@@ -298,7 +349,7 @@ mod tests {
         bad_ssdt[37]=b'1';bad_ssdt[9]=0;
         bad_ssdt[9]=0u8.wrapping_sub(bad_ssdt.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
         let mut manager=AmlTableManager::new();let mut gate=gate();
-        assert!(manager.load_firmware_tables(&dsdt,&[&bad_ssdt],&mut gate).is_err());
+        assert!(manager.load_firmware_tables(&dsdt,&[&bad_ssdt],&gate).is_err());
         assert_eq!(manager.table_count(),0);assert!(!manager.dsdt_loaded());
         assert_eq!(manager.namespace().count,1);
         let ssdt=table(*b"SSDT",*b"EXTR",3);
@@ -311,19 +362,36 @@ mod tests {
         let dsdt=method_table();let mut manager=AmlTableManager::new();let mut gate=gate();
         let handle=manager.load_dsdt(&dsdt,&mut gate).unwrap();
         let method=manager.namespace().find_child(0,*b"TEST").unwrap();
-        assert_eq!(manager.execute_method(handle,&dsdt,method,&[]),Ok(AmlValue::Integer(7)));
-        assert_eq!(manager.execute_method(handle,&dsdt,0,&[]),Err(TableError::InvalidHandle));
+        assert_eq!(manager.execute_method(handle,&dsdt,method,&[],&gate),Ok(AmlValue::Integer(7)));
+        assert_eq!(manager.execute_method(handle,&dsdt,0,&[],&gate),Err(TableError::InvalidHandle));
         let mut substituted=dsdt;substituted[45]=8;substituted[9]=0;
         substituted[9]=0u8.wrapping_sub(substituted.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
-        assert_eq!(manager.execute_method(handle,&substituted,method,&[]),Err(TableError::InvalidHandle));
+        assert_eq!(manager.execute_method(handle,&substituted,method,&[],&gate),Err(TableError::InvalidHandle));
     }
+    #[test]
+    fn execution_barrier_drains_active_methods_and_blocks_new_entries(){
+        let barrier=AmlExecutionBarrier::new(8);
+        assert_eq!(barrier.enter_method(),Ok(()));
+        assert_eq!(barrier.active_methods(),1);
+        assert_eq!(barrier.enter_quiescent(),Err(()));
+        assert!(!barrier.is_quiescing());
+        barrier.leave_method();
+        assert_eq!(barrier.enter_quiescent(),Ok(()));
+        assert!(barrier.is_quiescing());
+        assert_eq!(barrier.enter_method(),Err(()));
+        barrier.leave_quiescent();
+        assert!(!barrier.is_quiescing());
+        assert_eq!(barrier.enter_method(),Ok(()));
+        barrier.leave_method();
+    }
+
     #[test]
     fn table_mutation_requires_execution_quiescence(){
         let dsdt=table(*b"DSDT",*b"BASE",1);let mut manager=AmlTableManager::new();
         let mut gate=TestGate{busy:true,entered:false};
         assert_eq!(manager.load_dsdt(&dsdt,&mut gate),Err(TableError::ExecutionBusy));
-        assert_eq!(manager.table_count(),0);assert!(!gate.entered);
-        gate.busy=false;
+        assert_eq!(manager.table_count(),0);assert!(!gate.entered.load(Ordering::Acquire));
+        gate.busy.store(false,Ordering::Release);
         let handle=manager.load_dsdt(&dsdt,&mut gate).unwrap();
         assert!(!gate.entered);
         manager.unload(handle,&mut gate).unwrap();
