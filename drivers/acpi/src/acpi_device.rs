@@ -221,7 +221,7 @@ mod tests{
             0x0c,0x41,0xd0,0x0a,0x04];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
-        let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
+        let result=evaluate_device_identity(&ns,&one_table(&aml),dev,&mut IntegerMethodInvoker).unwrap();
         assert_eq!(result.hid.as_bytes(),b"PNP0A03");
         assert_eq!(result.compatible_id_count,2);
         assert_eq!(result.compatible_ids[0].as_bytes(),b"PNP0A03");
@@ -243,7 +243,7 @@ mod tests{
             0x14,0x0c,b'_',b'A',b'D',b'R',0,0xa4,0x0c,3,0,2,0];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
-        let result=evaluate_device_identity(&ns,&aml,dev,&mut FixedMethods).unwrap();
+        let result=evaluate_device_identity(&ns,&one_table(&aml),dev,&mut FixedMethods).unwrap();
         assert_eq!(result.sta,0x0b);assert_eq!(result.adr,Some(0x0002_0003));
     }
     #[test]fn accepts_pci_address_identity_without_hid(){
@@ -251,7 +251,7 @@ mod tests{
             0x08,b'_',b'A',b'D',b'R',0x0c,0x34,0x12,0,0];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
-        let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
+        let result=evaluate_device_identity(&ns,&one_table(&aml),dev,&mut IntegerMethodInvoker).unwrap();
         assert!(!result.has_hid);assert_eq!(result.adr,Some(0x1234));
     }
     struct TypedMethods;
@@ -274,7 +274,7 @@ mod tests{
         aml[2]=(aml.len()-2) as u8;
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
-        let result=evaluate_device_identity(&ns,&aml,dev,&mut TypedMethods).unwrap();
+        let result=evaluate_device_identity(&ns,&one_table(&aml),dev,&mut TypedMethods).unwrap();
         assert_eq!(result.hid.as_bytes(),b"ACME0001");
         assert_eq!(result.compatible_ids[0].as_bytes(),b"ACME0002");
         assert_eq!(result.uid_string.unwrap().as_bytes(),b"SERIAL-7");
@@ -296,7 +296,7 @@ mod tests{
         aml[2]=(aml.len()-2) as u8;
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
-        let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
+        let result=evaluate_device_identity(&ns,&one_table(&aml),dev,&mut IntegerMethodInvoker).unwrap();
         assert_eq!(result.hid.as_bytes(),b"ACME0001");
         assert_eq!(result.compatible_id_count,2);
         assert_eq!(result.compatible_ids[0].as_bytes(),b"ACME0002");
@@ -308,6 +308,6 @@ mod tests{
     #[test]fn rejects_device_without_hid(){
         let aml=[0x5b,0x82,0x05,b'D',b'E',b'V',b'0'];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-        assert_eq!(evaluate_device_identity(&ns,&aml,1,&mut IntegerMethodInvoker),Err(IdentityError::MissingHid));
+        assert_eq!(evaluate_device_identity(&ns,&one_table(&aml),1,&mut IntegerMethodInvoker),Err(IdentityError::MissingHid));
     }
 }
