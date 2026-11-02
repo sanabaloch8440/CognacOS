@@ -73,15 +73,17 @@ pub fn intersect_path(host:&[Aperture],ancestors:&[BridgeWindows],out:&mut[Apert
         for current in staged[..count].iter().copied(){
             let candidate=match current.kind{
                 BarKind::Io=>bridge.io,
-                BarKind::Memory32 if current.prefetchable=>bridge.prefetchable,
-                BarKind::Memory32=>bridge.memory,
-                BarKind::Memory64=>bridge.prefetchable,
+                BarKind::Memory32|BarKind::Memory64 if current.prefetchable=>bridge.prefetchable,
+                BarKind::Memory32|BarKind::Memory64=>bridge.memory,
             };
             let Some(window)=candidate else{continue};
-            let kind_compatible = current.kind == window.kind
-                || (current.kind == BarKind::Memory32 && current.prefetchable
-                    && window.kind == BarKind::Memory64 && window.prefetchable);
-            if !kind_compatible || (current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
+            let compatible=if current.kind==BarKind::Io{
+                window.kind==BarKind::Io
+            }else{
+                window.kind!=BarKind::Io&&current.prefetchable==window.prefetchable
+                    &&(current.prefetchable||window.kind==BarKind::Memory32)
+            };
+            if !compatible||(current.kind!=BarKind::Io&&current.prefetchable!=window.prefetchable){continue}
             let a_end=current.start.checked_add(current.length).ok_or(BridgeWindowError::Overflow)?;
             let b_end=window.start.checked_add(window.length).ok_or(BridgeWindowError::Overflow)?;
             let start=current.start.max(window.start);let end=a_end.min(b_end);
