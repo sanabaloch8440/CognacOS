@@ -972,6 +972,15 @@ mod acpi_5_6_revision_tests {
         assert_eq!(madt.x2apic_nmis[0].lint,1);
     }
     #[test]
+    fn parses_acpi_65_multiprocessor_wakeup_mailbox(){
+        let mut table=header(*b"APIC",60,6);
+        table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
+        table[44..60].copy_from_slice(&[16,16,0,0,0x00,0x10,0,0,0,0,0,0,0,0,0,0]);
+        checksum(&mut table);
+        let madt=parse_madt(&table).unwrap();
+        assert_eq!(madt.wakeup_mailbox,Some(MadtWakeupMailbox{address:0x1000}));
+    }
+    #[test]
     fn rejects_bad_fadt_checksum_and_reserved_nmi_flags(){
         let mut table=header(*b"FACP",148,6);
         table[40..44].copy_from_slice(&1u32.to_le_bytes());checksum(&mut table);
