@@ -17,7 +17,7 @@ This follow-up is based on `main` after PR #14 merged at `5fb6b63b3d7d4efb33d353
 - [~] Integrated PFN registration and final-owner release into single-page, data-page, constrained-range, contiguous-run, and NUMA batch allocation/free paths. Follow-up hardening made registration precede allocator mutation, added atomic arbitrary-batch registration, corrected NUMA rollback PFN/byte units, and made PTE map/unmap/replace and pageout reference failures transactional. Remaining audit: boot-time/external allocators, page-table ownership, section/prototype transitions, and every caller-specific contiguous free path must be proven by tests.
 - [~] Integrated mapping references into user PTE install/replace/unmap and address-space teardown. Teardown now clears each user PTE and completes a global shootdown before dropping mapping/owner references. Remaining audit: KUSER_SHARED_DATA, kernel/system mappings, section/prototype transitions, and non-user mapping paths.
 - [~] MDL pin/unpin now acquires/releases PFN pin references transactionally while retaining the existing locked-PFN lookup table for compatibility. A full registry unification and exhaustive duplicate-PFN/rollback tests remain.
-- [ ] Move demand-area and working-set metadata into dynamically allocated process/address-space-owned structures.
+- [x] Move demand-area and working-set arrays out of the global singleton tables into a nonpaged VM-pool allocation registered per address-space root, created on address-space initialization/attachment and released during teardown. Per-address-space capacities remain bounded (256 demand areas, 8192 working-set entries); global ownership registry is bounded to the process limit (64). Follow-up work may make each per-process collection growable rather than fixed-capacity.
 - [ ] Implement and register a real storage-stack paging provider.
 - [ ] Implement file-backed control areas, prototype PTEs, and file page-in.
 - [ ] Run host tests, kernel build, and QEMU acceptance tests.
@@ -27,6 +27,7 @@ The PFN database is now wired into the principal user-page and physical allocati
 ## Follow-up hardening (branch `mm-lifecycle-followup`)
 
 - PFN batch registration is atomic: duplicate PFNs, invalid alignment, and capacity exhaustion leave the database unchanged.
+- Demand-area and working-set storage is now dynamically allocated per address space from the nonpaged VM pool, with a bounded root-to-metadata registry and explicit teardown release.
 - Single-page, contiguous, constrained-range, and NUMA allocators publish PFN ownership before removing a frame from its free extent. Metadata-capacity failures are checked before extent mutation.
 - NUMA batch rollback converts PFNs back to physical byte addresses before returning frames.
 - PTE mapping acquisition failure rolls back newly allocated intermediate tables. Unmap and replacement restore their prior PTE if mapping-reference release fails.
