@@ -143,6 +143,11 @@ The PDO now implements _QueryResources_ for immutable Name(Buffer) _CRS
 objects whose resource descriptors map to fixed raw bus resources. It rejects
 unassigned address ranges and unsupported AML/resource values. IRQ values are
 published as raw GSI bus-relative values; HAL translation and arbiter ownership
-remain outside this driver. _QueryResourceRequirements_, _QueryBusInformation_,
-and the full query/remove/cancel lifecycle remain incomplete. Do not enable hardware drivers that require
+remain outside this driver. QueryResourceRequirements is also implemented for
+immutable Name(Buffer) _PRS objects, including bounded dependent-function
+alternatives. Child IRP_MN_START_DEVICE now fails closed with
+STATUS_NOT_SUPPORTED: the driver must not publish a child as started until the
+selected configuration is translated, programmed through _SRS, and verified
+against _CRS. Typed AML method-returned buffers and the complete start/stop/
+remove lifecycle remain incomplete. Do not enable hardware drivers that require
 resources based on this milestone alone.
