@@ -425,3 +425,6 @@ mod ntstatus_adapter_tests {
         assert_eq!(error_to_ntstatus(StorageError::Unsupported), STATUS_INVALID_DEVICE_REQUEST);
     }
 }
+
+/// Versioned port/miniport ABI shared by ataport.sys and controller drivers.
+pub mod ata_port;
