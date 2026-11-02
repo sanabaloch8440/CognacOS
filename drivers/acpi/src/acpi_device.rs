@@ -163,21 +163,21 @@ fn package_ids(bytes:&[u8],out:&mut AcpiDeviceIdentity)->Result<(),IdentityError
 pub fn evaluate_device_identity(ns:&AmlNamespace,aml:&[u8],device:u16,invoker:&mut impl AcpiMethodInvoker)->Result<AcpiDeviceIdentity,IdentityError>{
     let mut out=AcpiDeviceIdentity::EMPTY;
     let hid=eval_optional(ns,aml,device,*b"_HID",invoker)?.ok_or(IdentityError::MissingHid)?;
-    out.hid=id_from_value(hid?)?;out.has_hid=true;
+    out.hid=id_from_value(hid)?;out.has_hid=true;
     if let Some(cid)=eval_optional(ns,aml,device,*b"_CID",invoker)?{
-        match cid?{
+        match cid{
             IdentityValue::CompatibleIds{ids,count}=>{out.compatible_ids=ids;out.compatible_id_count=count;},
             value=>{out.compatible_ids[0]=id_from_value(value)?;out.compatible_id_count=1;}
         }
     }
     if let Some(uid)=eval_optional(ns,aml,device,*b"_UID",invoker)?{
-        match uid?{IdentityValue::Integer(v)=>out.uid=Some(v),IdentityValue::String(s)=>out.uid_string=Some(s),_=>return Err(IdentityError::UnsupportedObject)}
+        match uid{IdentityValue::Integer(v)=>out.uid=Some(v),IdentityValue::String(s)=>out.uid_string=Some(s),_=>return Err(IdentityError::UnsupportedObject)}
     }else{out.uid=Some(0);}
     if let Some(adr)=eval_optional(ns,aml,device,*b"_ADR",invoker)?{
-        match adr?{IdentityValue::Integer(v)=>out.adr=Some(v),_=>return Err(IdentityError::UnsupportedObject)}
+        match adr{IdentityValue::Integer(v)=>out.adr=Some(v),_=>return Err(IdentityError::UnsupportedObject)}
     }
     if let Some(sta)=eval_optional(ns,aml,device,*b"_STA",invoker)?{
-        match sta?{IdentityValue::Integer(v)=>out.sta=v as u32,_=>return Err(IdentityError::UnsupportedObject)}
+        match sta{IdentityValue::Integer(v)=>out.sta=v as u32,_=>return Err(IdentityError::UnsupportedObject)}
     }
     Ok(out)
 }
