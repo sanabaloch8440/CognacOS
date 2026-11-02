@@ -15,7 +15,7 @@ impl AmlName { pub const EMPTY:Self=Self{segments:[[0;4];MAX_NAME_SEGMENTS],coun
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
-pub enum AmlObjectType { Root=0, Scope=1, Device=2, Method=3, Name=4, Processor=5, PowerResource=6, ThermalZone=7, Alias=8, External=9, OperationRegion=10, Field=11, IndexField=12, BankField=13, Mutex=14, Event=15 }
+pub enum AmlObjectType { Root=0, Scope=1, Device=2, Method=3, Name=4, Processor=5, PowerResource=6, ThermalZone=7, Alias=8, External=9, OperationRegion=10, Field=11, IndexField=12, BankField=13, Mutex=14, Event=15, DataRegion=16 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlNode {
     pub parent:u16, pub name:[u8;4], pub object_type:AmlObjectType,
@@ -74,8 +74,9 @@ fn parse_name(c:&mut Cursor<'_>)->Result<AmlName,AmlError>{
     let mut b=c.byte()?;
     if b==0x5c{n.rooted=true;b=c.byte()?;}
     while b==0x5e{n.parents=n.parents.checked_add(1).ok_or(AmlError::BadName)?;b=c.byte()?;}
+    if n.rooted&&n.parents!=0{return Err(AmlError::BadName)}
     let prefixed=b==0x2e||b==0x2f;
-    let count=match b{0x00=>0,0x2e=>2,0x2f=>c.byte()? as usize,_=>1};
+    let count=match b{0x00=>0,0x2e=>2,0x2f=>{let n=c.byte()? as usize;if n==0{return Err(AmlError::BadName)}n},_=>1};
     if count>MAX_NAME_SEGMENTS{return Err(AmlError::BadName)}
     for i in 0..count{
         let mut segment=[0u8;4];
@@ -253,6 +254,16 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         parse_field_list(&mut sub,ns,parent)?;
                         c.pos=end;
                     }
+                    0x88=>{
+                        // DataRegion(Name, SignatureString, OEMIDString,
+                        // OEMTableIDString). Preserve the three data objects
+                        // for later namespace evaluation; do not interpret
+                        // firmware-provided table identifiers in the parser.
+                        let name=parse_name(c)?;
+                        let start=c.pos;
+                        skip_data_object(c)?;skip_data_object(c)?;skip_data_object(c)?;
+                        resolve_path(ns,parent,&name,true,AmlObjectType::DataRegion,start,c.pos-start,0)?;
+                    }
                     0x82|0x83|0x84|0x85=>{
                         let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
                         let plen=package_length_bytes(c.bytes,c.pos,c.end)?;
@@ -361,6 +372,27 @@ mod tests{
         let mut ns=AmlNamespace::new();
         assert_eq!(load_definition_block(&aml,&mut ns),Err(AmlError::Truncated));
         assert_eq!(ns.count,1);
+    }
+
+    #[test]fn loads_data_region_declaration(){
+        // DataRegion(DREG, "SSDT", "OEMID", "TABLEID")
+        let aml=[0x5b,0x88,b'D',b'R',b'E',b'G',
+            0x0d,b'S',b'S',b'D',b'T',0,
+            0x0d,b'O',b'E',b'M',b'I',b'D',0,
+            0x0d,b'T',b'A',b'B',b'L',b'E',b'I',b'D',0];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&aml,&mut ns).is_ok());
+        let id=ns.find_child(0,*b"DREG").unwrap() as usize;
+        assert_eq!(ns.nodes[id].object_type,AmlObjectType::DataRegion);
+        assert_eq!(ns.nodes[id].body_length,25);
+    }
+    #[test]fn rejects_invalid_name_prefix_forms(){
+        let mut ns=AmlNamespace::new();
+        // Root prefix followed by a parent prefix is not a valid NameString.
+        assert_eq!(load_definition_block(&[0x08,0x5c,0x5e],&mut ns),Err(AmlError::BadName));
+        assert_eq!(ns.count,1);
+        // MultiNamePrefix must carry at least one NameSeg.
+        assert_eq!(load_definition_block(&[0x08,0x2f,0],&mut ns),Err(AmlError::BadName));
     }
 
 }
