@@ -5,6 +5,8 @@
 //! assume a universal ECAM base or silently identity-map arbitrary physical RAM.
 #![no_std]
 
+pub mod resources;
+
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)]
