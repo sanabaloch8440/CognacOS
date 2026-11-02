@@ -88,14 +88,14 @@ static PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
 static TRACE_PARTITION_START: AtomicU64 = AtomicU64::new(0);
 static TRACE_PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
 
-// GPT entry 3 is usable for paging only when its first sector contains an
-// explicit CognacOS pagefile marker. This prevents treating an arbitrary
-// third partition as scratch storage and keeps pagefile I/O off ext4/cache.
-const PAGEFILE_GPT_INDEX: u32 = 3;
-const PAGEFILE_MARKER: &[u8; 8] = b"COGNACPF";
-const PAGEFILE_HEADER_BYTES: u64 = 4096;
-const PAGEFILE_VERSION: u32 = 1;
-static PAGEFILE_DATA_START_LBA: AtomicU64 = AtomicU64::new(0);
+// File-backed pagefile.sys. Extents are discovered and validated once during
+// boot, then paging callbacks use the precomputed map and raw disk transport.
+// This bypasses filesystem/cache-manager recursion on hard page faults.
+const PAGEFILE_MAX_SLOTS: usize = 32768;
+struct PagefileBlockMap(core::cell::UnsafeCell<[u64; PAGEFILE_MAX_SLOTS]>);
+unsafe impl Sync for PagefileBlockMap {}
+static PAGEFILE_BLOCK_MAP: PagefileBlockMap =
+    PagefileBlockMap(core::cell::UnsafeCell::new([0; PAGEFILE_MAX_SLOTS]));
 static PAGEFILE_SLOT_COUNT: AtomicU64 = AtomicU64::new(0);
 impl AtaPrimaryMaster {
     fn initialize() -> Result<Self, AtaError> {
@@ -388,78 +388,80 @@ fn trace_store_transfer(offset: u64, output: &mut [u8]) -> bool {
     true
 }
 
-/// Resident raw-block paging callbacks. They use the already initialized ATA
-/// transport directly: no filesystem, cache manager, synchronous IRP allocation,
-/// pageable buffer, or storage discovery is entered from a page fault.
-unsafe fn paging_partition_read(context: usize, slot: u32, destination: *mut u8) -> i32 {
-    if destination.is_null() || destination as usize & 4095 != 0 { return STATUS_IO_DEVICE_ERROR; }
-    let base_lba = context as u64;
-    let Some(offset) = base_lba.checked_mul(SECTOR_BYTES as u64)
-        .and_then(|base| (slot as u64).checked_mul(4096).and_then(|delta| base.checked_add(delta))) else {
+/// Pagefile callbacks operate only on a precomputed ext4 block map and the
+/// resident ATA transport. They never submit IRPs or enter ext4/cache manager.
+unsafe fn paging_file_read(context: usize, slot: u32, destination: *mut u8) -> i32 {
+    if destination.is_null() || destination as usize & 4095 != 0
+        || slot as u64 >= PAGEFILE_SLOT_COUNT.load(Ordering::Acquire) {
+        return STATUS_IO_DEVICE_ERROR;
+    }
+    let block = unsafe { core::ptr::read_volatile((*PAGEFILE_BLOCK_MAP.0.get()).as_ptr().add(slot as usize)) };
+    let Some(offset) = (block as u64).checked_mul(4096)
+        .and_then(|delta| (context as u64).checked_add(delta)) else {
         return STATUS_IO_DEVICE_ERROR;
     };
     let output = unsafe { core::slice::from_raw_parts_mut(destination, 4096) };
-    let Some(mut disk) = STORAGE_DISK.try_lock() else { return STATUS_IO_DEVICE_ERROR; };
-    match disk.as_mut().and_then(|device| device.read_at(offset, output).ok().map(|_| ())) {
+    let Some(mut guard) = STORAGE_DISK.try_lock() else { return STATUS_IO_DEVICE_ERROR; };
+    match guard.as_mut().and_then(|disk| disk.read_at(offset, output).ok().map(|_| ())) {
         Some(()) => 0,
         None => STATUS_IO_DEVICE_ERROR,
     }
 }
 
-unsafe fn paging_partition_write(context: usize, slot: u32, source: *const u8) -> i32 {
-    if source.is_null() || source as usize & 4095 != 0 { return STATUS_IO_DEVICE_ERROR; }
-    let base_lba = context as u64;
-    let Some(offset) = base_lba.checked_mul(SECTOR_BYTES as u64)
-        .and_then(|base| (slot as u64).checked_mul(4096).and_then(|delta| base.checked_add(delta))) else {
+unsafe fn paging_file_write(context: usize, slot: u32, source: *const u8) -> i32 {
+    if source.is_null() || source as usize & 4095 != 0
+        || slot as u64 >= PAGEFILE_SLOT_COUNT.load(Ordering::Acquire) {
+        return STATUS_IO_DEVICE_ERROR;
+    }
+    let block = unsafe { core::ptr::read_volatile((*PAGEFILE_BLOCK_MAP.0.get()).as_ptr().add(slot as usize)) };
+    let Some(offset) = (block as u64).checked_mul(4096)
+        .and_then(|delta| (context as u64).checked_add(delta)) else {
         return STATUS_IO_DEVICE_ERROR;
     };
     let input = unsafe { core::slice::from_raw_parts(source, 4096) };
-    let Some(mut disk) = STORAGE_DISK.try_lock() else { return STATUS_IO_DEVICE_ERROR; };
-    match disk.as_mut() {
-        Some(device) => {
-            if device.write_at(offset, input).is_err() || device.flush().is_err() {
+    let Some(mut guard) = STORAGE_DISK.try_lock() else { return STATUS_IO_DEVICE_ERROR; };
+    match guard.as_mut() {
+        Some(disk) => {
+            if disk.write_at(offset, input).is_err() || disk.flush().is_err() {
                 STATUS_IO_DEVICE_ERROR
-            } else {
-                0
-            }
+            } else { 0 }
         }
         None => STATUS_IO_DEVICE_ERROR,
     }
 }
 
-/// Register paging only for a deliberately provisioned GPT entry. The first
-/// 4 KiB must contain COGNACPF, version 1, and a 4096-byte header size. Slot 0
-/// begins after that header; all capacity arithmetic is checked and capped to
-/// the current I/O-manager paging interface's maximum.
-fn try_register_paging_partition(disk: &mut AtaPrimaryMaster) {
-    let mut whole_disk = *disk;
-    let Ok(partition) = extfs::read_gpt_partition(&mut whole_disk, PAGEFILE_GPT_INDEX, SECTOR_BYTES as u32) else { return; };
-    let (Ok(start), Ok(capacity)) = (partition.start_byte(), partition.capacity_bytes()) else { return; };
-    if start % SECTOR_BYTES as u64 != 0 || capacity <= PAGEFILE_HEADER_BYTES { return; }
-    let mut header = [0u8; 16];
-    if disk.read_at(start, &mut header).is_err()
-        || &header[..8] != PAGEFILE_MARKER
-        || u32::from_le_bytes([header[8], header[9], header[10], header[11]]) != PAGEFILE_VERSION
-        || u32::from_le_bytes([header[12], header[13], header[14], header[15]]) != PAGEFILE_HEADER_BYTES as u32 {
-        return;
-    }
-    let slots = ((capacity - PAGEFILE_HEADER_BYTES) / 4096).min(32768) as u32;
-    if slots == 0 { return; }
-    let data_start_lba = match start.checked_add(PAGEFILE_HEADER_BYTES)
-        .and_then(|value| value.checked_div(SECTOR_BYTES as u64)) {
-        Some(value) => value,
-        None => return,
+/// Register root:\pagefile.sys on the mounted ext4 volume. The file must already
+/// exist, be fully allocated, use initialized extents, and have 4 KiB blocks.
+/// Extents are pinned in a resident map before the backend is published.
+fn try_register_volume_pagefile(partition_device: *mut DeviceObject) -> bool {
+    let mut volume = IoManagerBlockDevice {
+        device: partition_device,
+        capacity: PARTITION_CAPACITY.load(Ordering::Acquire),
     };
+    let map = unsafe {
+        core::slice::from_raw_parts_mut(
+            (*PAGEFILE_BLOCK_MAP.0.get()).as_mut_ptr(),
+            PAGEFILE_MAX_SLOTS,
+        )
+    };
+    let Ok((bytes, slots)) = extfs::root_file_page_map(&mut volume, b"\\pagefile.sys", map) else {
+        return false;
+    };
+    if slots == 0 || slots > PAGEFILE_MAX_SLOTS || bytes != (slots as u64) * 4096 {
+        return false;
+    }
+    PAGEFILE_SLOT_COUNT.store(slots as u64, Ordering::Release);
     let backend = crate::ntoskrnl::io::paging::PagingBackend {
-        context: data_start_lba as usize,
-        slot_count: slots,
-        read_page: paging_partition_read,
-        write_page: paging_partition_write,
+        context: PARTITION_START.load(Ordering::Acquire) as usize,
+        slot_count: slots as u32,
+        read_page: paging_file_read,
+        write_page: paging_file_write,
     };
-    if crate::ntoskrnl::io::paging::register_pagefile_backend(backend).is_ok() {
-        PAGEFILE_DATA_START_LBA.store(data_start_lba, Ordering::Release);
-        PAGEFILE_SLOT_COUNT.store(slots as u64, Ordering::Release);
+    if crate::ntoskrnl::io::paging::register_pagefile_backend(backend).is_err() {
+        PAGEFILE_SLOT_COUNT.store(0, Ordering::Release);
+        return false;
     }
+    true
 }
 
 /// End-to-end guest check. The physical port driver backs a registered disk
@@ -468,11 +470,6 @@ pub fn run_ext4_readme_test() -> bool {
     let disk = match AtaPrimaryMaster::initialize() { Ok(d) => d, Err(_) => return false };
     DISK_CAPACITY.store(disk.sectors.saturating_mul(SECTOR_BYTES as u64), Ordering::Release);
     *STORAGE_DISK.lock() = Some(disk);
-    // The pagefile provider is optional and fail-closed. It is enabled only
-    // when GPT entry 3 carries the explicit pagefile marker described above.
-    if let Some(mut active_disk) = STORAGE_DISK.try_lock().and_then(|guard| guard.as_ref().copied()) {
-        try_register_paging_partition(&mut active_disk);
-    }
     let disk_device=match create_storage_device(&[0x5c,0,0x44,0,0x65,0,0x76,0,0x69,0,0x63,0,0x65,0,0x5c,0,0x48,0,0x61,0,0x72,0,0x64,0,0x64,0,0x69,0,0x73,0,0x6b,0,0x30,0],false){Ok(device)=>device,Err(_)=>return false};
     unsafe { crate::serial_write(b"Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.\r\n"); }
     let mut whole_disk = IoManagerBlockDevice { device: disk_device, capacity: DISK_CAPACITY.load(Ordering::Acquire) };
@@ -505,6 +502,9 @@ pub fn run_ext4_readme_test() -> bool {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot write skipped or failed.\r\n"); }
     }
     if crate::file_services::mount_ext4_volume(partition_device)<0{return false;}
+    // Discover pagefile.sys on the ordinary mounted volume. Registration only
+    // succeeds for a fully allocated, initialized, 4-KiB-block ext4 file.
+    let _ = try_register_volume_pagefile(partition_device);
 
     // Verify that the mounted ext4 volume is reachable through the public
     // FILE_OBJECT/IRP file-service path, not only through the block parser.
