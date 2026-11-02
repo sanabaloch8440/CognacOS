@@ -54,3 +54,19 @@ in the pull request.
 Use concise imperative commit subjects. Explain the reason for non-obvious
 changes and list validation performed. Do not include generated `target/`,
 `build/`, QEMU disk images, or runtime logs in source commits.
+
+
+## Licensing and source notices
+
+First-party CognacOS contributions are accepted under the project's dual
+license, MIT OR Apache-2.0, unless a contributor explicitly identifies a
+different license or a separate written agreement applies. By submitting a
+contribution for inclusion, you represent that you have the right to submit
+it under those terms.
+
+New first-party source files should include the SPDX identifier
+`MIT OR Apache-2.0` in the appropriate comment syntax. Do not add guessed
+copyright-holder names or dates. Preserve all third-party copyright, license,
+patent, attribution, and NOTICE text; never relabel upstream code as
+CognacOS-licensed. Review [LICENSE-POLICY.md](LICENSE-POLICY.md) before
+contributing code derived from or copied from another project.

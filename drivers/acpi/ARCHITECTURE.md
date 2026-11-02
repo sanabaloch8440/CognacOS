@@ -4,6 +4,16 @@ This document is the design guardrail for the native ACPI bus driver. It records
 which layer owns each operation so ACPI work does not silently migrate into
 the HAL, PCI driver, or kernel executive.
 
+## Independent implementation and licensing
+
+The ACPI/AML implementation in CognacOS is independently authored. ACPICA is
+not a dependency or implementation source: do not integrate its code, copy its
+source, or create a close code-level derivative. Use the ACPI specifications
+and documented Windows driver contracts as behavioral requirements, while
+maintaining an independently designed implementation and test suite. Any
+external code proposed for this subsystem requires a provenance and license
+review before it is accepted. See the repository [license policy](../../LICENSE-POLICY.md).
+
 ## Reference architecture
 
 Microsoft Windows driver documentation is the primary behavioral reference:

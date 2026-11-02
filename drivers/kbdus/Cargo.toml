@@ -2,7 +2,7 @@
 name = "cognacos-kbdus"
 version = "0.1.0"
 edition = "2024"
-license = "GPL-2.0-or-later"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 cognacos-kbdclass = { path = "../../drivers/kbdclass" }

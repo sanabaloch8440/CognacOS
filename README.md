@@ -11,7 +11,7 @@
 - **Language:** Rust, with a no_std kernel and UEFI loader
 - **Architecture:** x86-64 / AMD64
 - **Boot image:** UEFI loader and PE32+ kernel
-- **License:** GPL-2.0-or-later
+- **License:** MIT OR Apache-2.0
 
 ## Documentation
 
@@ -67,4 +67,4 @@ These are implementation foundations, not declarations of full Windows 11 compat
 
 ## License
 
-GNU GPL v2.0 or (at your option) any later version. See [LICENSE](LICENSE); third-party components retain their own notices and licenses.
+Dual-licensed under either the [MIT License](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE), at your option. See [LICENSE](LICENSE) and [LICENSE-POLICY.md](LICENSE-POLICY.md). Third-party components retain their own licenses and notices.
