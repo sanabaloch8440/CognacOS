@@ -229,7 +229,7 @@ mod tests{
         assert_eq!(result.sta,0x0b);assert_eq!(result.adr,Some(0x0002_0003));
     }
     #[test]fn accepts_pci_address_identity_without_hid(){
-        let aml=[0x5b,0x82,0x0d,b'D',b'E',b'V',b'0',
+        let aml=[0x5b,0x82,0x0f,b'D',b'E',b'V',b'0',
             0x08,b'_',b'A',b'D',b'R',0x0c,0x34,0x12,0,0];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
