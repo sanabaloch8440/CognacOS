@@ -239,6 +239,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
                 ns.nodes[id as usize].field_access_length=access_length;
                 ns.nodes[id as usize].field_lock_rule=flags&1;
                 ns.nodes[id as usize].field_update_rule=(flags>>1)&3;
+                connection=false;
                 bit_offset=bit_offset.checked_add(bit_length).ok_or(AmlError::BadPackageLength)?;
             }
         }
