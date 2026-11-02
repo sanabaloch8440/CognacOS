@@ -494,6 +494,22 @@ pub unsafe extern "win64" fn cc_can_i_write(file: *mut FileObject, _bytes: u32, 
 pub(crate) fn cache_insert_clean(file: *mut FileObject, offset: u64, data: &[u8]) {
     if file.is_null() || data.is_empty()
         || unsafe { crate::ntoskrnl::ke::runtime::ke_get_current_irql() } > 1 { return; }
+    // Never populate cache beyond the current file size or valid-data
+    // boundary. In particular, zero-filled page tails must not become visible
+    // later if VDL is extended without a corresponding filesystem read.
+    let cache_limit = {
+        let _guard = Guard::acquire();
+        let map = unsafe { find_map(file) };
+        if map.is_null() { return; }
+        let sizes = unsafe { (*map).sizes };
+        core::cmp::min(sizes.file_size, sizes.valid_data_length) as u64
+    };
+    if offset >= cache_limit { return; }
+    let Some(request_end) = offset.checked_add(data.len() as u64) else { return; };
+    let bounded_len = core::cmp::min(request_end, cache_limit).saturating_sub(offset) as usize;
+    if bounded_len == 0 { return; }
+    let data = &data[..bounded_len];
+
     let mut done = 0usize;
     while done < data.len() {
         let Some(absolute) = offset.checked_add(done as u64) else { return; };
@@ -846,6 +862,28 @@ mod tests {
         assert_eq!(output, [0xA5; 2]);
 
         assert_eq!(unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()) }, 1);
+    }
+
+    #[test]
+    fn clean_insert_never_caches_bytes_beyond_vdl() {
+        let _test_guard = TestGuard::acquire();
+        let mut file: FileObject = unsafe { core::mem::zeroed() };
+        let sizes = CcFileSizes {
+            allocation_size: 4096, file_size: 4096, valid_data_length: 4,
+        };
+        unsafe { cc_initialize_cache_map(&mut file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
+        let bytes = [0x5Au8; 16];
+        cache_insert_clean(&mut file, 0, &bytes);
+        let _guard = Guard::acquire();
+        let map = unsafe { find_map(&mut file) };
+        assert!(!map.is_null());
+        let page = unsafe { (*map).pages };
+        assert!(!page.is_null());
+        assert_eq!(unsafe { (*page).valid_start }, 0);
+        assert_eq!(unsafe { (*page).valid_end }, 4);
+        assert_eq!(unsafe { (*page).data.add(3).read() }, 0x5A);
+        assert_eq!(unsafe { (*page).data.add(4).read() }, 0);
+        assert!(unsafe { (*page).next.is_null() });
     }
 
     #[test]
