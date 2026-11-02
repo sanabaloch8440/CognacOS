@@ -222,3 +222,23 @@ mod tests{
  #[test]fn rejects_duplicate_bar_assignments_before_writing(){struct Fake{regs:[u32;64]}impl ConfigAccess for Fake{fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{Ok(self.regs[o as usize/4]as u16)}fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{self.regs[o as usize/4]=(self.regs[o as usize/4]&0xffff_0000)|v as u32;Ok(())}fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{self.regs[o as usize/4]=v;Ok(())}}let mut f=Fake{regs:[0;64]};let plan=AllocationPlan{assignments:[Some(BarAssignment{index:0,kind:BarKind::Memory32,base:0x8000_0000,length:0x1000,prefetchable:false}),Some(BarAssignment{index:0,kind:BarKind::Memory32,base:0x8000_1000,length:0x1000,prefetchable:false}),None,None,None,None],count:2};assert_eq!(program_assignments(&mut f,0,&plan),Err(ResourceError::InvalidBar));assert_eq!(f.regs[4],0)}
  #[test]fn emits_wdk_requirements_and_cm_wire_layout(){let req=[r(0,BarKind::Memory64,0x2000,true),None,None,None,None,None];let mut io=[0u8;40+6*32];let n=encode_requirements_alternative(&req,1,3,&mut io).unwrap();assert_eq!(n,72);assert_eq!(u32::from_le_bytes(io[36..40].try_into().unwrap()),1);let resources=[Some(PublishedResource{kind:BarKind::Memory64,raw_start:0x1000,translated_start:0x8000_1000,length:0x2000,prefetchable:true}),None,None,None,None,None];let mut cm=[0u8;20+6*16];assert_eq!(encode_cm_resource_list(&resources,1,3,true,&mut cm).unwrap(),36);assert_eq!(u64::from_le_bytes(cm[24..32].try_into().unwrap()),0x8000_1000)}
 }
+
+
+/// Probe one quiesced function and encode its native PnP resource-requirements
+/// list as a single operation. The caller must be in passive PnP context and
+/// must not call this for a started function. The exclusive config transaction
+/// covers the destructive BAR probe; no assignment or bus mastering is enabled.
+/// The caller supplies storage suitable for the returned requirements list and
+/// transfers/copies it using the kernel's pool-allocation contract.
+pub fn probe_and_encode_requirements<C: ConfigAccess>(
+    config: &mut C,
+    header_type: u8,
+    bus: u32,
+    output: &mut [u8],
+) -> Result<usize, ResourceError> {
+    let mut requirements: [Option<BarRequirement>; MAX_ASSIGNMENTS] = [None; MAX_ASSIGNMENTS];
+    let count = crate::size_bars_exclusive(config, header_type, &mut requirements)?;
+    let alternative = RequirementAlternative { requirements, count };
+    encode_requirements_list(core::slice::from_ref(&alternative), bus, output)
+}
+
