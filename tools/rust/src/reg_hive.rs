@@ -3,9 +3,9 @@
 //! a bounded, documented subset of .reg syntax and rejects unsupported constructs
 //! instead of silently generating a different registry image.
 
-#[path = "../../../kernel/src/ntoskrnl/cm/hive.rs"]
+#[path = "../../../ntoskrnl/src/cm/hive.rs"]
 mod hive;
-#[path = "../../../kernel/src/ntoskrnl/cm/hive_writer.rs"]
+#[path = "../../../ntoskrnl/src/cm/hive_writer.rs"]
 mod hive_writer;
 
 use std::{fs, path::Path};
