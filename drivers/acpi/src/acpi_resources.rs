@@ -155,7 +155,7 @@ impl ResourceAlternatives {
     };
     fn push(&mut self, list: ResourceList) -> Result<(), ResourceError> {
         if self.count == MAX_RESOURCE_ALTERNATIVES {
-            return Err(ResourceError::TooManyResources);
+            return Err(ResourceError::TooManyAlternatives);
         }
         self.entries[self.count] = list;
         self.count += 1;
