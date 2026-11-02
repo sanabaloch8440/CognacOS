@@ -7,9 +7,9 @@
 //! atomic commit performed by bridge_resources::apply_hierarchy_atomic.
 #![no_std]
 
-use crate::resources::{BarKind, BarRequirement, ResourceError};
+use crate::resources::{BarKind, BarRequirement, ConfigAccess, ResourceError};
 use crate::resource_manager::{self, AllocationPlan, Aperture, OccupiedRange};
-use crate::bridge_resources::{self, BridgeWindows, BridgeWindowError};
+use crate::bridge_resources::{self, BridgeWindows, BridgeWindowError, BridgeRebalanceEntry};
 
 pub const MAX_HIERARCHY_ENDPOINTS: usize = 64;
 pub const MAX_HIERARCHY_BRIDGES: usize = bridge_resources::MAX_REBALANCE_BRIDGES;
@@ -210,4 +210,93 @@ mod tests {
         let mut out=HierarchyPlan::empty();
         assert_eq!(plan_hierarchy(&host,&bridges,&[request],&[],&mut out),Err(HierarchyError::InvalidPath));
     }
+}
+
+
+/// Plan a full rebalance without relying on the currently programmed bridge
+/// windows. Endpoints are allocated against ACPI-provided host apertures using
+/// one global occupied-range ledger. New bridge windows are derived bottom-up
+/// and checked against their parent before any hardware is changed.
+pub fn plan_hierarchy_rebalance(
+    host_apertures:&[Aperture],
+    requests:&[EndpointRequest],
+    existing:&[OccupiedRange],
+    output:&mut HierarchyPlan,
+)->Result<[Option<u8>;MAX_HIERARCHY_BRIDGES],HierarchyError>{
+    if host_apertures.is_empty()||host_apertures.len()>64||requests.len()>MAX_HIERARCHY_ENDPOINTS||existing.len()>MAX_HIERARCHY_OCCUPIED {
+        return Err(HierarchyError::Capacity);
+    }
+    let mut staged=HierarchyPlan::empty();
+    let bridge_count=requests.iter().flat_map(|r|r.bridge_path[..(r.bridge_path_len as usize).min(8)].iter()).map(|v|*v as usize+1).max().unwrap_or(0);
+    if bridge_count>MAX_HIERARCHY_BRIDGES{return Err(HierarchyError::Capacity)}
+    staged.bridge_count=bridge_count;
+    let mut parents=[None;MAX_HIERARCHY_BRIDGES];let mut seen=[false;MAX_HIERARCHY_BRIDGES];
+    let mut occupied=[OccupiedRange{start:0,length:0,kind:BarKind::Io};MAX_HIERARCHY_OCCUPIED];
+    let mut occupied_count=existing.len();occupied[..existing.len()].copy_from_slice(existing);
+    for (ei,request) in requests.iter().enumerate(){
+        let depth=request.bridge_path_len as usize;
+        if depth>request.bridge_path.len()||request.requirement_count>resource_manager::MAX_ASSIGNMENTS{return Err(HierarchyError::InvalidPath)}
+        for d in 0..depth{
+            let index=request.bridge_path[d] as usize;
+            if index>=bridge_count||request.bridge_path[..d].contains(&request.bridge_path[d]){return Err(HierarchyError::InvalidPath)}
+            let parent=if d==0{None}else{Some(request.bridge_path[d-1])};
+            if seen[index]&&parents[index]!=parent{return Err(HierarchyError::InvalidPath)}
+            parents[index]=parent;seen[index]=true;
+            if let Some(p)=parent{if p as usize>=index{return Err(HierarchyError::InvalidPath)}}
+        }
+        let mut allowed=[Aperture{start:0,length:0,kind:BarKind::Io,prefetchable:false};64];let mut allowed_count=0;
+        for a in host_apertures.iter().copied(){
+            if depth>0&&a.kind==BarKind::Memory64&&!a.prefetchable{
+                if a.start>=1u64<<32{continue}
+                let end=a.start.checked_add(a.length).ok_or(HierarchyError::InvalidRequirement)?.min(1u64<<32);
+                if end>a.start{allowed[allowed_count]=Aperture{start:a.start,length:end-a.start,kind:BarKind::Memory32,prefetchable:false};allowed_count+=1;}
+            }else{allowed[allowed_count]=a;allowed_count+=1;}
+        }
+        let mut plan=AllocationPlan::empty();
+        resource_manager::allocate_all(&request.requirements,request.requirement_count,&allowed[..allowed_count],&occupied[..occupied_count],&mut plan)?;
+        for a in plan.assignments[..plan.count].iter().flatten(){
+            if occupied_count==occupied.len(){return Err(HierarchyError::Capacity)}
+            occupied[occupied_count]=OccupiedRange{start:a.base,length:a.length,kind:a.kind};occupied_count+=1;
+        }
+        staged.endpoints[ei]=Some(EndpointAllocation{plan});staged.endpoint_count+=1;
+    }
+    for bi in 0..bridge_count{
+        let mut descendants=[resource_manager::BarAssignment{index:0,kind:BarKind::Io,base:0,length:0,prefetchable:false};MAX_HIERARCHY_ENDPOINTS*resource_manager::MAX_ASSIGNMENTS];let mut n=0;
+        for (request,allocation) in requests.iter().zip(staged.endpoints.iter()).take(staged.endpoint_count){
+            let depth=request.bridge_path_len as usize;if !request.bridge_path[..depth].contains(&(bi as u8)){continue}
+            let Some(allocation)=allocation else{return Err(HierarchyError::InvalidPath)};
+            for a in allocation.plan.assignments[..allocation.plan.count].iter().flatten(){if n==descendants.len(){return Err(HierarchyError::Capacity)}descendants[n]=*a;n+=1;}
+        }
+        let mut w=BridgeWindows::default();bridge_resources::aggregate_descendant_ranges(&descendants[..n],&mut w)?;staged.bridge_windows[bi]=Some(w);
+    }
+    for bi in 0..bridge_count{
+        let required=staged.bridge_windows[bi].ok_or(HierarchyError::InvalidPath)?;
+        if let Some(parent)=parents[bi]{
+            let pw=staged.bridge_windows[parent as usize].ok_or(HierarchyError::InvalidPath)?;
+            let mut allowed=[Aperture{start:0,length:0,kind:BarKind::Io,prefetchable:false};3];let mut n=0;
+            for a in [pw.io,pw.memory,pw.prefetchable].into_iter().flatten(){allowed[n]=a;n+=1;}
+            bridge_resources::validate_forwarding_path(&allowed[..n],&[],&required)?;
+        }else{
+            bridge_resources::validate_forwarding_path(host_apertures,&[],&required)?;
+        }
+    }
+    *output=staged;Ok(parents)
+}
+
+/// Calculate, encode and atomically commit every bridge in one rebalance.
+/// Config accessors are ordered parent-before-child and indexed like paths.
+pub fn rebalance_hierarchy_atomic<C:ConfigAccess>(
+    host_apertures:&[Aperture],requests:&[EndpointRequest],existing:&[OccupiedRange],
+    configs:&mut[C],output:&mut HierarchyPlan,
+)->Result<(),HierarchyError>{
+    if configs.len()>MAX_HIERARCHY_BRIDGES{return Err(HierarchyError::Capacity)}
+    let mut staged=HierarchyPlan::empty();let parents=plan_hierarchy_rebalance(host_apertures,requests,existing,&mut staged)?;
+    if configs.len()!=staged.bridge_count{return Err(HierarchyError::InvalidPath)}
+    let mut entries=[BridgeRebalanceEntry::EMPTY;MAX_HIERARCHY_BRIDGES];
+    for i in 0..staged.bridge_count{
+        let w=staged.bridge_windows[i].ok_or(HierarchyError::InvalidPath)?;
+        entries[i]=BridgeRebalanceEntry{parent:parents[i],update:bridge_resources::encode_bridge_windows(&mut configs[i],&w)?};
+    }
+    bridge_resources::apply_hierarchy_atomic(configs,&entries[..staged.bridge_count])?;
+    *output=staged;Ok(())
 }
