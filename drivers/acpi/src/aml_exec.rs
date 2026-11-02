@@ -5,7 +5,7 @@
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -23,7 +23,9 @@ impl Machine{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn target(r:&mut Reader<'_>)->Result<Target,ExecError>{let op=r.byte()?;match op{0x00=>Ok(Target::Null),0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),_=>Err(ExecError::BadTarget)}}
  fn store(&mut self,t:Target,v:u64){match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=v,Target::Arg(i)=>self.args[i]=v}}
- fn term(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
+ fn term(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{self.term_depth(r,0)}
+ fn term_depth(&mut self,r:&mut Reader<'_>,depth:u8)->Result<u64,ExecError>{
+  if depth>32{return Err(ExecError::NestingLimit)}
   self.step()?;let op=r.byte()?;
   match op{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(u64::MAX),0x0a=>Ok(r.byte()? as u64),
@@ -32,7 +34,7 @@ impl Machine{
    0x0e=>{let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
    0x60..=0x67=>Ok(self.locals[(op-0x60)as usize]),0x68..=0x6e=>Ok(self.args[(op-0x68)as usize]),
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
-    let a=self.term(r)?;let b=self.term(r)?;
+    let a=self.term_depth(r,depth+1)?;let b=self.term(r)?;
     let v=match op{
      0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),
      0x79=>if b>=64{0}else{a<<b},0x7a=>if b>=64{0}else{a>>b},
@@ -216,6 +218,14 @@ mod tests{
  #[test]fn term_argument_decoder_reports_truncation_and_unsupported_names(){
   assert_eq!(evaluate_term_argument(&[0x0c,0x11,0x22]),Err(ExecError::Truncated));
   assert_eq!(evaluate_term_argument(&[b'V',b'A',b'L',b'0']),Err(ExecError::UnsupportedOpcode));
+ }
+ #[test]fn bounds_recursive_term_argument_nesting(){
+  let mut nested=std::vec![0x92;34];
+  nested.push(0x01);
+  assert_eq!(evaluate_term_argument(&nested),Err(ExecError::NestingLimit));
+  let mut allowed=std::vec![0x92;33];
+  allowed.push(0x01);
+  assert_eq!(evaluate_term_argument(&allowed),Ok((1,34)));
  }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
