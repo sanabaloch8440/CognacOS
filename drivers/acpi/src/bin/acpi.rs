@@ -154,6 +154,17 @@ const ACPI_POOL_TAG: u32 = u32::from_le_bytes(*b"ACPI");
 
 /// Build a WDM-owned UTF-16 ID buffer. PnP owns and frees this paged-pool
 /// allocation after consuming IoStatus.Information.
+unsafe fn allocate_id_string(id:&acpi::acpi_device::AcpiId)->Result<usize,i32>{
+    if id.length==0{return Err(STATUS_INVALID_PARAMETER);}
+    let units=(id.length as usize+1).checked_mul(2).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    let buffer=unsafe{ExAllocatePoolWithTag(PAGED_POOL,units,ACPI_POOL_TAG)};
+    if buffer.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES);}
+    let output=buffer.cast::<u16>();
+    for (index,byte) in id.as_bytes().iter().enumerate(){unsafe{output.add(index).write(*byte as u16);}}
+    unsafe{output.add(id.length as usize).write(0);}
+    Ok(buffer as usize)
+}
+
 unsafe fn allocate_id_list(ids:&[acpi::acpi_device::AcpiId])->Result<usize,i32>{
     if ids.is_empty(){return Err(STATUS_NOT_SUPPORTED);}
     let mut units=1usize; // final second NUL for a MULTI_SZ
@@ -204,7 +215,7 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
     match id_type {
         BUS_QUERY_DEVICE_ID => {
             if !identity.has_hid{return Err(STATUS_NOT_SUPPORTED);}
-            unsafe{allocate_id_list(core::slice::from_ref(&identity.hid))}
+            unsafe{allocate_id_string(&identity.hid)}
         }
         BUS_QUERY_HARDWARE_IDS => {
             if !identity.has_hid{return Err(STATUS_NOT_SUPPORTED);}
@@ -223,13 +234,7 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
         }
         BUS_QUERY_INSTANCE_ID => {
             let uid=identity.uid_string.unwrap_or_else(||decimal_uid(identity.uid.unwrap_or(extension.node as u64)));
-            let bytes=(uid.length as usize+1).checked_mul(2).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-            let buffer=unsafe{ExAllocatePoolWithTag(PAGED_POOL,bytes,ACPI_POOL_TAG)};
-            if buffer.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES);}
-            let output=buffer.cast::<u16>();
-            for (index,byte) in uid.as_bytes().iter().enumerate(){unsafe{output.add(index).write(*byte as u16);}}
-            unsafe{output.add(uid.length as usize).write(0);}
-            Ok(buffer as usize)
+            unsafe{allocate_id_string(&uid)}
         }
         _=>Err(STATUS_NOT_SUPPORTED),
     }
