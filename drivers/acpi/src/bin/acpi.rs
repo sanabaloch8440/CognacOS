@@ -242,6 +242,8 @@ struct AcpiDeviceCapabilities {
     size:u16,
     version:u16,
     flags:u32,
+    address:u32,
+    ui_number:u32,
     device_state:[u32;7],
     system_wake:u32,
     device_wake:u32,
@@ -266,7 +268,9 @@ unsafe fn query_pdo_capabilities(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,
         size:size as u16,
         version,
         flags:0, // UniqueID remains FALSE: the instance ID is parent-bus scoped.
-        device_state:[4,1,4,4,4,4,4], // Working=D0; sleep/hibernate/shutdown=D3.
+        address:u32::MAX,
+        ui_number:u32::MAX,
+        device_state:[0,1,4,4,4,4,4], // Unspecified; Working=D0; sleep/hibernate/shutdown=D3.
         system_wake:0,
         device_wake:0,
         d1_latency:0,
@@ -274,7 +278,7 @@ unsafe fn query_pdo_capabilities(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,
         d3_latency:0,
     };
     if unsafe{(*extension).identity.sta}&acpi::acpi_device::DEVICE_UI==0 {
-        value.flags|=1<<13; // NoDisplayInUI
+        value.flags|=1<<17; // NoDisplayInUI
     }
     unsafe{core::ptr::copy_nonoverlapping(&value as *const AcpiDeviceCapabilities as *const u8,capabilities as *mut u8,DEVICE_CAPABILITIES_SIZE);}
     STATUS_SUCCESS
