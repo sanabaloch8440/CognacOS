@@ -173,6 +173,17 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
 #[cfg(test)]
 mod tests{
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
+ #[test]fn invokes_nested_method_with_an_independent_local_frame(){
+  // MTH0 copies Arg0 to its Local0 and returns it. MTH1 keeps 7 in its own
+  // Local0 while invoking MTH0; the nested frame must not overwrite it.
+  let aml=[
+   0x14,0x0b,b'M',b'T',b'H',b'0',1,0x70,0x68,0x60,0xa4,0x60,
+   0x14,0x12,b'M',b'T',b'H',b'1',1,0x70,0x0a,7,0x60,0x70,b'M',b'T',b'H',b'0',0x68,0x61,0xa4,0x60
+  ];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"MTH1").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[42]).unwrap(),AmlValue::Integer(7));
+ }
  #[test]fn executes_integer_method_with_arg_and_add(){
   let aml=[0x14,0x0c,b'T',b'E',b'S',b'T',1,0xa4,0x72,0x68,0x0a,2,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
