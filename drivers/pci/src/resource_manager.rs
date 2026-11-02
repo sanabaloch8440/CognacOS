@@ -255,7 +255,10 @@ mod memory_overlap_tests {
  #[test]
  fn memory32_and_memory64_assignments_share_one_conflict_domain(){
   let reqs=[Some(BarRequirement{index:0,kind:BarKind::Memory32,length:0x1000,alignment:0x1000,prefetchable:false,assigned:0}),Some(BarRequirement{index:1,kind:BarKind::Memory64,length:0x1000,alignment:0x1000,prefetchable:false,assigned:0}),None,None,None,None];
-  let aperture=[Aperture{start:0x8000_0000,length:0x4000,kind:BarKind::Memory32,prefetchable:false}];
+  let aperture=[
+   Aperture{start:0x8000_0000,length:0x4000,kind:BarKind::Memory32,prefetchable:false},
+   Aperture{start:0x8000_0000,length:0x4000,kind:BarKind::Memory64,prefetchable:false},
+  ];
   let mut out=AllocationPlan::empty();allocate_all(&reqs,2,&aperture,&[],&mut out).unwrap();
   assert_ne!(out.assignments[0].unwrap().base,out.assignments[1].unwrap().base);
  }
