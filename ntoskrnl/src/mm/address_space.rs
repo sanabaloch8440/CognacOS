@@ -275,7 +275,15 @@ impl AddressSpace {
         }
         match super::pfn::acquire_mapping(physical_address) {
             Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
-            Err(_) => return Err(VmError::OutOfMemory),
+            Err(_) => {
+                // The leaf is still unpublished. Roll back every intermediate
+                // table allocated by this operation before returning.
+                for undo in (0..created).rev() {
+                    unsafe { created_slots[undo].write(0); }
+                    let _ = unsafe { crate::memory::free_page(created_pages[undo]) };
+                }
+                return Err(VmError::OutOfMemory);
+            }
         }
         let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
@@ -763,7 +771,20 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
-        let _ = super::pfn::release_mapping(physical);
+        match super::pfn::release_mapping(physical) {
+            Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
+            Err(_) => {
+                // Do not return a frame whose ownership accounting could not
+                // be discharged. Restore the translation before exposing an
+                // error to the caller.
+                unsafe {
+                    leaf.write(entry);
+                    asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+                }
+                crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                return Err(VmError::AddressSpaceBusy);
+            }
+        }
 
         // Reclaim empty PT/PD/PDPT tables bottom-up. A non-empty table is never
         // freed, and the PML4 root remains owned by AddressSpace.
@@ -813,7 +834,20 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
-        let _ = super::pfn::release_mapping(expected_physical);
+        match super::pfn::release_mapping(expected_physical) {
+            Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
+            Err(_) => {
+                // Roll back the PTE replacement if the old mapping reference
+                // cannot be released; neither frame may be recycled early.
+                unsafe {
+                    leaf.write(entry);
+                    asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+                }
+                crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                let _ = super::pfn::release_mapping(new_physical);
+                return Err(VmError::AddressSpaceBusy);
+            }
+        }
         Ok(())
     }
 
