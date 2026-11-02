@@ -255,7 +255,9 @@ mod tests{
         assert!(load_definition_block(&aml,&mut ns).is_ok());
         assert_eq!(ns.find_child(0,*b"REGN"),Some(1));
         assert_eq!(ns.nodes[1].object_type,AmlObjectType::OperationRegion);
-        assert_eq!(ns.find_child(0,*b"DAT0"),Some(2));\n        assert_eq!(ns.nodes[2].body_start,0);\n        assert_eq!(ns.nodes[2].body_length,8);
+        assert_eq!(ns.find_child(0,*b"DAT0"),Some(2));
+        assert_eq!(ns.nodes[2].body_start,0);
+        assert_eq!(ns.nodes[2].body_length,8);
         assert_eq!(ns.nodes[2].object_type,AmlObjectType::Field);
     }
     #[test]fn loads_mutex_event_and_external(){
