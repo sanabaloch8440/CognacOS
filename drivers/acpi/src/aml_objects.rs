@@ -220,6 +220,14 @@ mod tests {
             assert_eq!(arena.get(*child).unwrap().kind,AmlValueKind::Uninitialized);
         }
     }
+    #[test] fn rejects_excessive_package_depth_without_leaking_arena_entries(){
+        let mut bytes=std::vec::Vec::new();
+        for _ in 0..(MAX_DATA_OBJECT_DEPTH as usize+2){bytes.extend_from_slice(&[0x12,0x03,1]);}
+        bytes.push(0x01);
+        let mut arena=AmlObjectArena::new();
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
+        assert_eq!(arena.count,0);
+    }
     #[test] fn rejects_package_payload_after_declared_initializer_count(){
         let bytes=[0x12,0x04,1,0x01,0x01];
         let mut arena=AmlObjectArena::new();
