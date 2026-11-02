@@ -139,21 +139,6 @@ fn evaluate_object<'a>(ns:&AmlNamespace,aml:&'a [u8],node:u16,invoker:&mut impl 
 fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<IdentityValue>,IdentityError>{
     match find_object(ns,device,name)?{Some(id)=>Ok(Some(evaluate_object(ns,aml,id,invoker)?)),None=>Ok(None)}
 }
-fn package_ids(bytes:&[u8],out:&mut AcpiDeviceIdentity)->Result<(),IdentityError>{
-    let (_,end)=decode_package_length(bytes,1,bytes.len()).map_err(|_|IdentityError::MalformedObject)?;
-    let plen=1+((bytes[1]>>6)as usize);let mut pos=1+plen;
-    let count=*bytes.get(pos).ok_or(IdentityError::MalformedObject)? as usize;pos+=1;
-    if count>MAX_COMPATIBLE_IDS{return Err(IdentityError::TooManyCompatibleIds)}
-    for _ in 0..count{
-        let value=if bytes.get(pos)==Some(&0x0d){
-            pos+=1;let tail=bytes.get(pos..end).ok_or(IdentityError::MalformedObject)?;
-            let n=tail.iter().position(|b|*b==0).ok_or(IdentityError::MalformedObject)?;
-            let id=AcpiId::from_bytes(&tail[..n])?;pos+=n+1;id
-        }else{eisa_id(read_integer(bytes,&mut pos)?)?};
-        out.compatible_ids[out.compatible_id_count as usize]=value;out.compatible_id_count+=1;
-    }
-    if pos!=end{return Err(IdentityError::MalformedObject)}Ok(())
-}
 /// Evaluate _HID, _CID, _UID, _STA and _ADR for one namespace device.
 ///
 /// _HID is mandatory. _STA defaults to 0x0f when absent; _UID defaults to
