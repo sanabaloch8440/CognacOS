@@ -7,7 +7,7 @@
 use crate::{parse_sdt_header,AcpiError};
 use crate::aml::{AmlError,AmlNamespace,load_definition_block,MAX_NAMESPACE_NODES};
 use crate::aml_exec::{self,AmlValue,ExecError};
-use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,IdentityError,GatedDeviceInvoker};
+use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,AcpiMethodValue,IdentityError};
 use core::sync::atomic::{AtomicUsize,Ordering};
 
 pub const MAX_AML_TABLES:usize=32;
