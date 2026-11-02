@@ -789,3 +789,32 @@ fn push_root_aperture(out:&mut PciRootResources,a:PciRootAperture)->Result<(),Ac
     if a.length==0||a.minimum.checked_add(a.length-1).is_none(){return Err(AcpiError::AddressOutOfRange)}
     out.apertures[out.count]=a;out.count+=1;Ok(())
 }
+
+
+#[cfg(test)]
+mod pci_root_crs_tests {
+    use super::*;
+    #[test]
+    fn parses_qword_memory_and_io_ranges(){
+        // QWord address descriptor: memory, min=0x80000000,
+        // max=0x8fffffff, translation=0, length=0x10000000.
+        let mut b=vec![0x8a,43,0,0,0,0,0,0,0,0,0,
+            0x00,0x00,0x00,0x80,0,0,0,0,
+            0xff,0xff,0xff,0x8f,0,0,0,0,
+            0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,
+            0x79,0];
+        b[1..3].copy_from_slice(&43u16.to_le_bytes());
+        let parsed=parse_pci_root_resources(&b).unwrap();
+        assert_eq!(parsed.count,1);
+        assert_eq!(parsed.apertures[0].resource_type,0);
+        assert_eq!(parsed.apertures[0].minimum,0x8000_0000);
+        assert_eq!(parsed.apertures[0].maximum,0x8fff_ffff);
+        assert_eq!(parsed.apertures[0].length,0x1000_0000);
+    }
+    #[test]
+    fn requires_end_tag_and_rejects_truncated_descriptor(){
+        assert_eq!(parse_pci_root_resources(&[0x79]),Err(AcpiError::Truncated));
+        assert_eq!(parse_pci_root_resources(&[0x8a,43,0]),Err(AcpiError::Truncated));
+    }
+}
