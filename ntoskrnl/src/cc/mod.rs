@@ -498,16 +498,16 @@ mod tests {
         const STREAMS: usize = 160;
         let baseline = cache_map_count();
         let sizes = CcFileSizes { allocation_size: 1 << 20, file_size: 1 << 20, valid_data_length: 1 << 20 };
-        let mut files: alloc::vec::Vec<FileObject> = alloc::vec::Vec::with_capacity(STREAMS);
-        for _ in 0..STREAMS {
-            files.push(unsafe { core::mem::zeroed() });
-            let file = files.last_mut().unwrap() as *mut FileObject;
+        let mut files: [core::mem::MaybeUninit<FileObject>; STREAMS] =
+            [const { core::mem::MaybeUninit::uninit() }; STREAMS];
+        for entry in files.iter_mut() {
+            let file = entry.write(unsafe { core::mem::zeroed() }) as *mut FileObject;
             unsafe { cc_initialize_cache_map(file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
             assert!(!unsafe { (*file).private_cache_map }.is_null());
         }
         assert_eq!(cache_map_count(), baseline + STREAMS);
 
-        let file = files[0].as_mut() as *mut FileObject;
+        let file = files[0].as_mut_ptr();
         let mut head = core::ptr::null_mut::<CachePage>();
         for index in 0..12usize {
             let page = unsafe { allocate_page_descriptor((index * CACHE_PAGE_SIZE) as u64, core::ptr::null_mut(), 0, CACHE_PAGE_SIZE) };
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(cache_page_count(file), 12);
 
         for entry in files.iter_mut() {
-            let file = entry as *mut FileObject;
+            let file = entry.as_mut_ptr();
             assert_eq!(unsafe { cc_uninitialize_cache_map(file, core::ptr::null(), core::ptr::null_mut()) }, 1);
         }
         assert_eq!(cache_map_count(), baseline);
