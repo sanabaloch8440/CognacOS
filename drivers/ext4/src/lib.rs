@@ -2010,4 +2010,4 @@ mod inline_extent_enumeration_tests {
 
 
 pub mod file_io;
-pub use file_io::{read_root_file_range, root_file_size, write_root_file_range};
+pub use file_io::{read_root_file_range, root_file_size, root_file_page_map, write_root_file_range};
