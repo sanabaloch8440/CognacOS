@@ -55,7 +55,8 @@ pub fn decode_bridge_windows<C:ConfigAccess>(c:&mut C)->Result<BridgeWindows,Bri
     let pref_upper_limit=c.read_u32(BRIDGE_PREFETCH_LIMIT_UPPER).map_err(|_|BridgeWindowError::Config)? as u64;
     let pref_base=(((pref&0x0000fff0) as u64)<<16) | if pref_64{pref_upper_base<<32}else{0};
     let pref_limit=((((pref>>16)&0x0000fff0) as u64)<<16) | if pref_64{pref_upper_limit<<32}else{0} | 0xfffff;
-    let prefetchable=if pref_base<=pref_limit{aperture(pref_base,pref_limit,BarKind::Memory64,true)?}else{None};
+    let prefetch_kind=if pref_64{BarKind::Memory64}else{BarKind::Memory32};
+    let prefetchable=if pref_base<=pref_limit{aperture(pref_base,pref_limit,prefetch_kind,true)?}else{None};
     Ok(BridgeWindows{io:io_window,memory,prefetchable})
 }
 
@@ -290,5 +291,38 @@ mod topology_window_tests {
   let mut w=BridgeWindows::default();aggregate_descendant_ranges(&a,&mut w).unwrap();
   assert_eq!(w.prefetchable.unwrap().kind,BarKind::Memory32);
   assert_eq!(w.prefetchable.unwrap().start,0x9000_0000);
+ }
+}
+
+#[cfg(test)]
+mod bridge_encoding_tests {
+ use super::*;
+ struct Fake { regs:[u32;64] }
+ impl ConfigAccess for Fake {
+  fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{Ok((self.regs[o as usize/4]>>(if o&2==0{0}else{16}))as u16)}
+  fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{let i=o as usize/4;let shift=if o&2==0{0}else{16};self.regs[i]=(self.regs[i]&!(0xffff<<shift))|((v as u32)<<shift);Ok(())}
+  fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}
+  fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{self.regs[o as usize/4]=v;Ok(())}
+ }
+ #[test]
+ fn encode_decode_roundtrip_for_32bit_and_64bit_prefetch_windows(){
+  let mut c=Fake{regs:[0;64]};
+  let windows=BridgeWindows{
+   io:Some(Aperture{start:0x2000,length:0x4000,kind:BarKind::Io,prefetchable:false}),
+   memory:Some(Aperture{start:0x8000_0000,length:0x20_0000,kind:BarKind::Memory32,prefetchable:false}),
+   prefetchable:Some(Aperture{start:0x9000_0000,length:0x20_0000,kind:BarKind::Memory32,prefetchable:true}),
+  };
+  let u=encode_bridge_windows(&mut c,&windows).unwrap();
+  for r in u.registers.iter().take(u.count).flatten(){c.write_u32(r.offset,r.value).unwrap();}
+  let decoded=decode_bridge_windows(&mut c).unwrap();
+  assert_eq!(decoded.io,windows.io);assert_eq!(decoded.memory,windows.memory);assert_eq!(decoded.prefetchable,windows.prefetchable);
+ }
+ #[test]
+ fn 64bit_prefetch_upper_address_roundtrips(){
+  let mut c=Fake{regs:[0;64]};
+  let windows=BridgeWindows{prefetchable:Some(Aperture{start:0x1_2000_0000,length:0x20_0000,kind:BarKind::Memory64,prefetchable:true}),..BridgeWindows::default()};
+  let u=encode_bridge_windows(&mut c,&windows).unwrap();
+  for r in u.registers.iter().take(u.count).flatten(){c.write_u32(r.offset,r.value).unwrap();}
+  assert_eq!(decode_bridge_windows(&mut c).unwrap().prefetchable,windows.prefetchable);
  }
 }
