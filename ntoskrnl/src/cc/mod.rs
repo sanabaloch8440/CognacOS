@@ -48,9 +48,18 @@ struct CachePage {
 }
 unsafe impl Send for CachePage {}
 
+struct CacheFileLink {
+    next: *mut CacheFileLink,
+    file: *mut FileObject,
+}
+unsafe impl Send for CacheFileLink {}
+
 struct CacheMap {
     next: *mut CacheMap,
-    file: *mut FileObject,
+    // SECTION_OBJECT_POINTERS is the identity shared by file objects for a stream.
+    // If absent, retain the conservative per-FILE_OBJECT identity.
+    stream_identity: *mut c_void,
+    files: *mut CacheFileLink,
     sizes: CcFileSizes,
     callbacks: CacheManagerCallbacks,
     lazy_write_context: *mut c_void,
@@ -93,14 +102,52 @@ fn valid_sizes(s: CcFileSizes) -> bool {
         && s.valid_data_length <= s.file_size && s.file_size <= s.allocation_size
 }
 
-unsafe fn find_map(file: *mut FileObject) -> *mut CacheMap {
+unsafe fn stream_identity(file: *mut FileObject) -> *mut c_void {
     if file.is_null() { return core::ptr::null_mut(); }
+    let section = unsafe { (*file).section_object_pointer };
+    if section.is_null() { file.cast() } else { section }
+}
+
+unsafe fn find_stream(identity: *mut c_void) -> *mut CacheMap {
+    if identity.is_null() { return core::ptr::null_mut(); }
     let mut map = unsafe { MAPS_HEAD };
     while !map.is_null() {
-        if unsafe { (*map).file == file } { return map; }
+        if unsafe { (*map).stream_identity == identity } { return map; }
         map = unsafe { (*map).next };
     }
     core::ptr::null_mut()
+}
+
+unsafe fn find_map(file: *mut FileObject) -> *mut CacheMap {
+    if file.is_null() { return core::ptr::null_mut(); }
+    let map = unsafe { find_stream(stream_identity(file)) };
+    if map.is_null() { return map; }
+    let mut link = unsafe { (*map).files };
+    while !link.is_null() {
+        if unsafe { (*link).file == file } { return map; }
+        link = unsafe { (*link).next };
+    }
+    core::ptr::null_mut()
+}
+
+const CACHE_FILE_LINK_TAG: u32 = u32::from_le_bytes(*b"CcFl");
+
+unsafe fn allocate_file_link(file: *mut FileObject) -> *mut CacheFileLink {
+    let link = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(
+        core::mem::size_of::<CacheFileLink>(), CACHE_FILE_LINK_TAG, true,
+    ).cast::<CacheFileLink>();
+    if !link.is_null() {
+        unsafe { link.write(CacheFileLink { next: core::ptr::null_mut(), file }); }
+    }
+    link
+}
+
+unsafe fn free_file_link(link: *mut CacheFileLink) {
+    if !link.is_null() {
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            link.cast(), Some(CACHE_FILE_LINK_TAG),
+        );
+    }
 }
 
 unsafe fn read_sizes(ptr: *const CcFileSizes) -> Option<CcFileSizes> {
@@ -109,7 +156,7 @@ unsafe fn read_sizes(ptr: *const CcFileSizes) -> Option<CcFileSizes> {
     valid_sizes(s).then_some(s)
 }
 
-unsafe fn allocate_map(file: *mut FileObject, sizes: CcFileSizes,
+unsafe fn allocate_map(identity: *mut c_void, sizes: CcFileSizes,
     callbacks: CacheManagerCallbacks, context: *mut c_void) -> *mut CacheMap {
     let p = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(
         core::mem::size_of::<CacheMap>(), CACHE_MAP_TAG, true,
@@ -117,7 +164,8 @@ unsafe fn allocate_map(file: *mut FileObject, sizes: CcFileSizes,
     if p.is_null() { return p; }
     unsafe {
         p.write(CacheMap {
-            next: core::ptr::null_mut(), file, sizes, callbacks,
+            next: core::ptr::null_mut(), stream_identity: identity,
+            files: core::ptr::null_mut(), sizes, callbacks,
             lazy_write_context: context, read_ahead_granularity: 0x10000,
             pages: core::ptr::null_mut(),
         });
@@ -165,34 +213,60 @@ pub unsafe extern "win64" fn cc_initialize_cache_map(
     let callbacks = if callbacks.is_null() { CacheManagerCallbacks::default() }
         else { unsafe { callbacks.read_unaligned() } };
 
-    // Allocate before taking the metadata lock: pool allocation can fault and
-    // must never occur while the Cache Manager spin lock is held.
-    let candidate = unsafe { allocate_map(file, sizes, callbacks, lazy_write_context) };
+    // Allocate candidate metadata before taking the lock. File links allow
+    // multiple FILE_OBJECTs for one SECTION_OBJECT_POINTERS stream to share
+    // the same cache map and cached pages.
+    let identity = unsafe { stream_identity(file) };
+    let candidate = unsafe { allocate_map(identity, sizes, callbacks, lazy_write_context) };
     if candidate.is_null() { return; }
-    let inserted = {
+    let candidate_link = unsafe { allocate_file_link(file) };
+    if candidate_link.is_null() {
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(candidate.cast(), Some(CACHE_MAP_TAG));
+        return;
+    }
+
+    let mut discard_map = false;
+    let mut discard_link = false;
+    {
         let _guard = Guard::acquire();
-        let existing = unsafe { find_map(file) };
+        let existing = unsafe { find_stream(identity) };
         if !existing.is_null() {
+            let mut attached = unsafe { (*existing).files };
+            while !attached.is_null() && unsafe { (*attached).file != file } {
+                attached = unsafe { (*attached).next };
+            }
             unsafe {
                 (*existing).sizes = sizes;
                 (*existing).callbacks = callbacks;
                 (*existing).lazy_write_context = lazy_write_context;
+                (*file).private_cache_map = existing.cast();
+                if attached.is_null() {
+                    (*candidate_link).next = (*existing).files;
+                    (*existing).files = candidate_link;
+                } else {
+                    discard_link = true;
+                }
+                let section = (*file).section_object_pointer.cast::<u8>();
+                if !section.is_null() {
+                    core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), existing.cast());
+                }
             }
-            false
+            discard_map = true;
         } else {
             unsafe {
+                (*candidate).files = candidate_link;
                 (*candidate).next = MAPS_HEAD;
                 MAPS_HEAD = candidate;
-                (*file).private_cache_map = candidate.cast::<c_void>();
+                (*file).private_cache_map = candidate.cast();
                 let section = (*file).section_object_pointer.cast::<u8>();
                 if !section.is_null() {
                     core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), candidate.cast());
                 }
             }
-            true
         }
-    };
-    if !inserted {
+    }
+    if discard_link { unsafe { free_file_link(candidate_link); } }
+    if discard_map {
         let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(candidate.cast(), Some(CACHE_MAP_TAG));
     }
 }
@@ -206,29 +280,50 @@ pub unsafe extern "win64" fn cc_uninitialize_cache_map(
     _uninitialize_event: *mut c_void,
 ) -> u8 {
     if file.is_null() { return 0; }
-    let map = {
+    let (map_to_free, link_to_free) = {
         let _guard = Guard::acquire();
-        let mut link = core::ptr::addr_of_mut!(MAPS_HEAD);
-        let mut current = unsafe { *link };
-        while !current.is_null() && unsafe { (*current).file != file } {
-            link = unsafe { core::ptr::addr_of_mut!((*current).next) };
-            current = unsafe { *link };
-        }
-        if current.is_null() { return 1; }
-        unsafe {
-            *link = (*current).next;
-            (*file).private_cache_map = core::ptr::null_mut();
-            let section = (*file).section_object_pointer.cast::<u8>();
-            if !section.is_null()
-                && core::ptr::read_unaligned(section.add(8).cast::<*mut c_void>()) == current.cast() {
-                core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), core::ptr::null_mut());
+        let mut map_link = core::ptr::addr_of_mut!(MAPS_HEAD);
+        let mut map = unsafe { *map_link };
+        let mut found_link = core::ptr::null_mut::<CacheFileLink>();
+        let mut previous = core::ptr::null_mut::<CacheFileLink>();
+        while !map.is_null() {
+            let mut link = unsafe { (*map).files };
+            previous = core::ptr::null_mut();
+            while !link.is_null() && unsafe { (*link).file != file } {
+                previous = link;
+                link = unsafe { (*link).next };
             }
+            if !link.is_null() { found_link = link; break; }
+            map_link = unsafe { core::ptr::addr_of_mut!((*map).next) };
+            map = unsafe { *map_link };
         }
-        current
+        if map.is_null() || found_link.is_null() { return 1; }
+        unsafe {
+            if previous.is_null() { (*map).files = (*found_link).next; }
+            else { (*previous).next = (*found_link).next; }
+            (*file).private_cache_map = core::ptr::null_mut();
+        }
+        let last_file = unsafe { (*map).files.is_null() };
+        if last_file {
+            unsafe {
+                *map_link = (*map).next;
+                let section = (*file).section_object_pointer.cast::<u8>();
+                if !section.is_null()
+                    && core::ptr::read_unaligned(section.add(8).cast::<*mut c_void>()) == map.cast() {
+                    core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), core::ptr::null_mut());
+                }
+            }
+            (map, found_link)
+        } else {
+            (core::ptr::null_mut(), found_link)
+        }
     };
-    unsafe {
-        free_page_list((*map).pages);
-        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(map.cast(), Some(CACHE_MAP_TAG));
+    unsafe { free_file_link(link_to_free); }
+    if !map_to_free.is_null() {
+        unsafe {
+            free_page_list((*map_to_free).pages);
+            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(map_to_free.cast(), Some(CACHE_MAP_TAG));
+        }
     }
     1
 }
