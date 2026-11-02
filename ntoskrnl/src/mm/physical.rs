@@ -1,3 +1,9 @@
+#[cfg(target_os = "none")]
+use super::pfn;
+#[cfg(not(target_os = "none"))]
+#[path = "pfn.rs"]
+mod pfn;
+
 //! Early physical-page allocator built only from UEFI EfiConventionalMemory ranges.
 //! Mutations are serialized with an interrupt-safe lock on the kernel target.
 //! Page-table frames stay below 4 GiB; data frames may use high RAM through the direct map.
@@ -602,7 +608,7 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
             return Err(AllocError::InvalidMap);
         }
         unsafe { ptr::write_bytes(pointer as *mut u8, 0, PAGE_SIZE as usize); }
-        super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
+        pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
         Ok(page)
     } else {
         unsafe { allocate_page() }
@@ -647,7 +653,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
         while i < free.1 {
             let page = free.0[i];
             if allowed(page, low, high, boundary) {
-                super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
+                pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
                 unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE as usize); }
@@ -665,7 +671,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                 // Validate the direct-map alias before removing the PFN from
                 // the free stack, so a failed mapping check cannot leak it.
                 let pointer = direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8;
-                super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
+                pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
@@ -699,7 +705,7 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                 if candidate != original.next && count == MAX_REGIONS {
                     return Err(AllocError::TooManyRegions);
                 }
-                super::pfn::register_allocation(candidate).map_err(|_| AllocError::OutOfMemory)?;
+                pfn::register_allocation(candidate).map_err(|_| AllocError::OutOfMemory)?;
                 if candidate == original.next {
                     regions[i].next = candidate + PAGE;
                 } else {
@@ -779,7 +785,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
                 }
             }
             if !found_all { continue; }
-            super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+            pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
             for n in 0..pages {
                 let wanted = base + n as u64 * PAGE_SIZE;
                 let current_len = unsafe { *len_ptr };
@@ -822,7 +828,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
             if candidate != original.next && count == MAX_REGIONS {
                 return Err(AllocError::TooManyRegions);
             }
-            super::pfn::register_allocation_range(candidate, pages).map_err(|_| AllocError::OutOfMemory)?;
+            pfn::register_allocation_range(candidate, pages).map_err(|_| AllocError::OutOfMemory)?;
             if candidate == original.next {
                 regions[i].next = end;
             } else {
@@ -901,7 +907,7 @@ pub unsafe fn try_allocate_pages_in_range(
         } else { page as *mut u8 };
         unsafe { ptr::write_bytes(pointer, 0, PAGE_SIZE as usize); }
     }
-    if count != 0 && super::pfn::register_allocations(&output[..count]).is_err() {
+    if count != 0 && pfn::register_allocations(&output[..count]).is_err() {
         // Batch registration is atomic: no PFN owner was published, so every
         // selected frame can be returned to the exact pool it came from.
         for rollback in output[..count].iter().copied() {
@@ -1021,7 +1027,7 @@ unsafe fn allocate_pages_in_node_range_mode(
                 if page >= low && page.checked_add(PAGE_SIZE - 1).is_some_and(|end| end <= high)
                     && crate::ntoskrnl::mm::topology::node_for_range(page, PAGE_SIZE) == Some(node)
                     && (page < PHYSICAL_LIMIT || direct_map_address(page).is_some()) {
-                    if super::pfn::register_allocation(page).is_err() { break; }
+                    if pfn::register_allocation(page).is_err() { break; }
                     pages.1 -= 1;
                     pages.0[i] = pages.0[pages.1];
                     found = Some(page);
@@ -1053,7 +1059,7 @@ unsafe fn allocate_pages_in_node_range_mode(
                         }
                         if high_memory && direct_map_address(candidate).is_none() { continue; }
                         if candidate != original.next && page_end != original.end && region_count == MAX_REGIONS { continue; }
-                        if super::pfn::register_allocation(candidate).is_err() { continue; }
+                        if pfn::register_allocation(candidate).is_err() { continue; }
                         if candidate == original.next {
                             regions[index].next = page_end;
                         } else if page_end == original.end {
@@ -1105,7 +1111,7 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 != 0 {
         let page = free.0[free.1 - 1];
-        super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
+        pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
         free.1 -= 1;
         unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
         return Ok(page);
@@ -1115,7 +1121,7 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
     for region in regions.iter_mut().take(count) {
         if region.next.checked_add(PAGE_SIZE).is_some_and(|end| end <= region.end) {
             let page = region.next;
-            super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
+            pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
             region.next += PAGE_SIZE;
             unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
             return Ok(page);
@@ -1128,9 +1134,9 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
 pub unsafe fn try_allocate_page() -> Result<u64, AllocError> {
     let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
     let free = unsafe { &mut *FREE_PAGES.0.get() };
-    if free.1 != 0 { let page=free.0[free.1-1]; super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; free.1 -= 1; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); }
+    if free.1 != 0 { let page=free.0[free.1-1]; pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; free.1 -= 1; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); }
     let count=REGION_COUNT.load(core::sync::atomic::Ordering::Acquire); let regions=unsafe { &mut *REGIONS.0.get() };
-    for region in regions.iter_mut().take(count) { if region.next.checked_add(PAGE_SIZE).is_some_and(|end|end<=region.end) { let page=region.next; super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; region.next+=PAGE_SIZE; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); } }
+    for region in regions.iter_mut().take(count) { if region.next.checked_add(PAGE_SIZE).is_some_and(|end|end<=region.end) { let page=region.next; pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; region.next+=PAGE_SIZE; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); } }
     Err(AllocError::OutOfMemory)
 }
 
@@ -1163,7 +1169,7 @@ pub unsafe fn allocate_contiguous_pages_below(
                 }
             }
             if run {
-                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+                pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
                 let old_len = free.1;
                 free.0.copy_within(i + pages..old_len, i);
                 free.1 = old_len - pages;
@@ -1180,7 +1186,7 @@ pub unsafe fn allocate_contiguous_pages_below(
         if let Some(end) = region.next.checked_add(bytes) {
             if end <= region.end && end <= exclusive_limit {
                 let base = region.next;
-                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+                pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
                 region.next = end;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
                 return Ok(base);
@@ -1211,7 +1217,7 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
                 }
             }
             if run {
-                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+                pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
                 let old_len = free.1;
                 free.0.copy_within(i + pages..old_len, i);
                 free.1 = old_len - pages;
@@ -1228,7 +1234,7 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
         if let Some(end) = region.next.checked_add(bytes) {
             if end <= region.end {
                 let base = region.next;
-                super::pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
+                pfn::register_allocation_range(base, pages).map_err(|_| AllocError::OutOfMemory)?;
                 region.next = end;
                 unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
                 return Ok(base);
@@ -1269,9 +1275,9 @@ pub unsafe fn try_free_page(page: u64) -> Result<(), AllocError> {
 }
 
 fn release_pfn_owner(page: u64) -> Result<(), AllocError> {
-    match super::pfn::snapshot(page) {
+    match pfn::snapshot(page) {
         None => Ok(()), // Boot and externally-owned frames predate PFN registration.
-        Some(_) => super::pfn::release_allocation(page).map_err(|_| AllocError::InvalidPage),
+        Some(_) => pfn::release_allocation(page).map_err(|_| AllocError::InvalidPage),
     }
 }
 
@@ -1359,10 +1365,10 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
 /// Return a contiguous allocation to the physical free-page stack atomically.
 /// No pages are released if the free stack cannot hold the entire run.
 fn release_pfn_range_owner(base: u64, pages: usize) -> Result<(), AllocError> {
-    if super::pfn::snapshot(base).is_none() {
+    if pfn::snapshot(base).is_none() {
         return Ok(());
     }
-    super::pfn::release_allocation_range(base, pages).map_err(|_| AllocError::InvalidPage)
+    pfn::release_allocation_range(base, pages).map_err(|_| AllocError::InvalidPage)
 }
 
 pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), AllocError> {
