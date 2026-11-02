@@ -21,6 +21,16 @@ branch:
   interval, preventing reads from treating uncached holes as valid data.
 - SECTION_OBJECT_POINTERS shared-cache-map publication now uses the typed ABI
   structure field rather than a hard-coded byte offset.
+- `CcSetFileSizes` now clips cached clean-page validity to
+  `min(FileSize, ValidDataLength)`, removes pages wholly beyond that boundary,
+  and discards a page whose remaining valid interval becomes empty. This avoids
+  retaining clean cached bytes beyond a reduced VDL when EOF itself is unchanged.
+- Added a regression test covering VDL shrink with unchanged EOF, including a
+  partial final page and removal of the page beyond VDL.
+- Fixed the CI host test harness to import the relocated
+  `ntoskrnl/src/mm/user_range.rs` instead of the deleted legacy kernel path;
+  the previous PR run failed at this stale test-module path after the kernel
+  artifact had already built.
 - A host stress test exercises 160 simultaneous maps and 12 page descriptors
   on one map.
 
@@ -48,7 +58,7 @@ cache, not a full Cache Manager:
   lazy-writer queue, or writeback error propagation.
 - Read-ahead granularity is recorded but no independent read-ahead work is
   scheduled.
-- Size changes discard/truncate clean pages only; purge is not implemented.
+- Size changes now clip clean cached pages to EOF and VDL; purge is not implemented.
 - The current spin lock protects metadata while copy operations touch cached
   pages, which is not an acceptable long-term concurrency/rundown model.
 - Disjoint clean fragments within one page are conservatively not merged; a
