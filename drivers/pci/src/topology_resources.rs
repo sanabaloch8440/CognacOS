@@ -280,7 +280,7 @@ pub fn plan_hierarchy_rebalance(
             for a in [pw.io,pw.memory,pw.prefetchable].into_iter().flatten(){allowed[n]=a;n+=1;}
             validate_forwarding_path(&allowed[..n],&[],&required)?;
         }else{
-            bridge_resources::validate_forwarding_path(host_apertures,&[],&required)?;
+            validate_forwarding_path(host_apertures,&[],&required)?;
         }
     }
     *output=staged;Ok(parents)
