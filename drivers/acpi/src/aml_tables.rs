@@ -7,6 +7,7 @@
 use crate::{parse_sdt_header,AcpiError};
 use crate::aml::{AmlError,AmlNamespace,load_definition_block,MAX_NAMESPACE_NODES};
 use crate::aml_exec::{self,AmlValue,ExecError};
+use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,IdentityError};
 use core::sync::atomic::{AtomicUsize,Ordering};
 
 pub const MAX_AML_TABLES:usize=32;
@@ -107,6 +108,17 @@ impl AmlExecutionGate for AmlExecutionBarrier {
         Err(())
     }
     fn leave_quiescent(&self){self.state.store(0,Ordering::Release);}
+}
+
+struct TableMethodInvoker<'a,'g,G:AmlExecutionGate>{
+    manager:&'a AmlTableManager,handle:TableHandle,bytes:&'a [u8],gate:&'g G,
+}
+impl<G:AmlExecutionGate> AcpiMethodInvoker for TableMethodInvoker<'_,'_,G>{
+    fn evaluate_integer(&mut self,namespace:&AmlNamespace,_aml:&[u8],method:u16)->Result<u64,ExecError>{
+        if !core::ptr::eq(namespace,&self.manager.namespace){return Err(ExecError::InvalidMethod)}
+        self.manager.execute_method(self.handle,self.bytes,method,&[],self.gate)
+            .map(|value|value.integer()).map_err(|_|ExecError::InvalidMethod)
+    }
 }
 
 pub struct AmlTableManager {
@@ -246,6 +258,19 @@ impl AmlTableManager {
         self.count+=1;
         if expected==*b"DSDT"{self.dsdt_loaded=true;}
         Ok(TableHandle{slot:slot as u8,generation})
+    }
+    /// Evaluate ACPI-1 identity objects for a device owned by this loaded table.
+    /// AML method execution is routed through the manager's in-flight execution
+    /// gate so unload and table replacement cannot race device identification.
+    pub fn evaluate_device_identity<G:AmlExecutionGate>(&self,handle:TableHandle,bytes:&[u8],device:u16,gate:&G)->Result<AcpiDeviceIdentity,TableError>{
+        let info=self.table_info(handle)?;
+        if device<info.namespace_start||device>=info.namespace_end{return Err(TableError::InvalidHandle)}
+        let mut invoker=TableMethodInvoker{manager:self,handle,bytes,gate};
+        acpi_device::evaluate_device_identity(&self.namespace,&bytes[SDT_HEADER_SIZE..info.length as usize],device,&mut invoker)
+            .map_err(|error|match error{
+                IdentityError::Method(method)=>TableError::MethodExecution(method),
+                _=>TableError::InvalidHandle,
+            })
     }
     /// Execute a method only when its namespace node belongs to this table.
     /// The caller supplies the same validated table bytes retained by the ACPI
