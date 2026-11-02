@@ -884,14 +884,13 @@ jobs:
             echo "BEEP.SYS IMAGE INPUT: NOT INCLUDED - test/beep.sys is absent."
           fi
           truncate -s 256M build/cognacos-uefi.img
-          truncate -s 128M build/pagefile.img
           parted -s build/cognacos-uefi.img mklabel gpt
           # Keep the FAT32 EFI System Partition small and dedicate the remaining
           # disk space to a real ext4 data partition consumed by the guest.
           parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 65MiB
           parted -s build/cognacos-uefi.img set 1 esp on
           # Keep the final 16 MiB as an explicit debug-trace partition.
-          # The kernel writes only inside GPT entry 3; it never uses ext4 free space or GPT backup metadata.
+          # Paging uses /pagefile.sys on ext4; this partition is trace-only.
           parted -s build/cognacos-uefi.img mkpart COGNACDATA ext4 65MiB 240MiB
           parted -s build/cognacos-uefi.img mkpart COGNACDEBUG ext4 240MiB 255MiB
           mformat -i build/cognacos-uefi.img@@1048576 -F -T 131072 ::
@@ -913,6 +912,8 @@ jobs:
           fi
           mkdir -p build/ext4-root
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
+          # Preallocate a normal volume file; the kernel pins its ext4 extents at boot.
+          dd if=/dev/zero of=build/ext4-root/pagefile.sys bs=1M count=64 status=none
           loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
           cleanup_loop() { sudo losetup -d "$loopdev" 2>/dev/null || true; }
           trap cleanup_loop EXIT
@@ -928,7 +929,9 @@ jobs:
           sudo debugfs -R 'cat /README.txt' "${loopdev}p2" 2>/dev/null > build/ext4-readback.txt
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-expected.txt
           cmp build/ext4-expected.txt build/ext4-readback.txt
-          echo "GPT ext4 partition created; /README.txt contents verified byte-for-byte."
+          sudo debugfs -R 'stat /pagefile.sys' "${loopdev}p2" 2>/dev/null | tee build/pagefile-stat.txt
+          grep -Eq 'Size: 67108864' build/pagefile-stat.txt
+          echo "Ext4 volume verified: README contents and preallocated /pagefile.sys."
           cleanup_loop
           trap - EXIT
       - name: Validate source-level QEMU crash resolver
@@ -1004,7 +1007,6 @@ jobs:
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
             -device ide-hd,drive=osdisk,bus=legacyide.0,unit=0 \
-            -drive if=none,id=pagefile,format=raw,file=build/pagefile.img \
             -device ide-hd,drive=pagefile,bus=legacyide.0,unit=1 \
             -boot order=c -display none -monitor unix:build/qemu-monitor.sock,server=on,wait=off \
             -serial file:build/serial.log -gdb tcp::12345 \
@@ -1043,7 +1045,7 @@ jobs:
           monitor.sendall(b"info qtree\n")
           tree = read_prompt()
           monitor.close()
-          for expected in ("qemu-xhci", "usb-kbd", "piix3-ide", "osdisk", "pagefile"):
+          for expected in ("qemu-xhci", "usb-kbd", "piix3-ide", "osdisk"):
               if expected not in tree:
                   raise SystemExit(f"QEMU device topology missing {expected}:\n{tree}")
           print("QEMU topology verified: xHCI + USB keyboard + PIIX3 primary-channel ATA disks.")
@@ -1307,7 +1309,6 @@ jobs:
             --code "$code" \
             --vars-template "$vars_template" \
             --disk build/cognacos-uefi.img \
-            --pagefile build/pagefile.img \
             --serial build/serial-ps2.log \
             --monitor build/qemu-ps2-monitor.sock \
             --debug-log build/qemu-ps2-debug.log
@@ -1336,7 +1337,6 @@ jobs:
             -drive if=pflash,format=raw,file=build/OVMF_VARS_persist.fd \
             -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
             -device ide-hd,drive=osdisk,bus=legacyide.0,unit=0 \
-            -drive if=none,id=pagefile,format=raw,file=build/pagefile.img \
             -device ide-hd,drive=pagefile,bus=legacyide.0,unit=1 \
             -boot order=c -display none -monitor none \
             -serial "file:$log" -no-reboot -no-shutdown 2>"$qemu_error"
@@ -1373,7 +1373,6 @@ jobs:
               -drive if=pflash,format=raw,readonly=on,file="$code" \
               -drive if=pflash,format=raw,file="build/OVMF_VARS_smp_$cpus.fd" \
               -drive if=ide,format=raw,file=build/cognacos-uefi.img \
-              -drive if=ide,format=raw,index=1,file=build/pagefile.img \
               -boot order=c -display none -monitor none \
               -serial "file:$log" -no-reboot -no-shutdown
             status=$?
