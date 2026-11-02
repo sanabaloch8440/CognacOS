@@ -28,8 +28,13 @@ capacity, nor does it establish complete Windows stream identity.
 The current `ntoskrnl/src/cc/mod.rs` implementation remains a clean-page read
 cache, not a full Cache Manager:
 
-- Cache identity is still the FILE_OBJECT address; stream identity shared
-  through SECTION_OBJECT_POINTERS and stream rundown are not implemented.
+- Cache maps are now keyed by the SECTION_OBJECT_POINTERS address when present,
+  with a per-FILE_OBJECT fallback when it is absent. A dynamically allocated
+  attachment list lets multiple FILE_OBJECTs for one stream share the same map.
+  Uninitializing one attachment preserves the map until the final attachment is
+  removed. This is a first stream-sharing step, not yet a full Windows stream
+  rundown protocol: callers must still obey file-object close/uninitialize
+  ordering, and mapped views/MDLs/in-flight I/O need explicit rundown pins.
 - `CcCopyWrite` always falls back.
 - `CcFlushCache` reports success without performing filesystem writeback.
 - There is no dirty-page state, dirty-range accounting, modified-page list,
@@ -103,8 +108,10 @@ changes before stale cached bytes can be observed.
    add allocation-failure, long-run churn, and teardown tests. The Executive
    pool's own allocation-table/slab bounds must also be addressed before
    claiming unbounded dynamic capacity.
-2. Stream identity: same stream through multiple FILE_OBJECTs, independent
-   streams on one file object, close/reopen reuse, and concurrent uninitialize.
+2. Stream identity: same SECTION_OBJECT_POINTERS through multiple FILE_OBJECTs
+   (initial sharing test added), independent streams, close/reopen reuse, stale
+   section-pointer reuse, and concurrent uninitialize. Add generation/rundown
+   references for mapped views, MDLs, and in-flight I/O before claiming closure.
 3. Dirty accounting: overlapping writes, cross-page writes, write during
    writeback, failed/short writes, and dirty-page count reconciliation.
 4. Copy operations: cache hit, miss, EOF, VDL boundary, zero length, overflow,
