@@ -300,3 +300,27 @@ pub fn rebalance_hierarchy_atomic<C:ConfigAccess>(
     bridge_resources::apply_hierarchy_atomic(configs,&entries[..staged.bridge_count])?;
     *output=staged;Ok(())
 }
+
+#[cfg(test)]
+mod full_rebalance_tests {
+ use super::*;
+ fn request(path:&[u8],index:u8,length:u64)->EndpointRequest{
+  let mut r=EndpointRequest::EMPTY;r.bridge_path_len=path.len() as u8;r.bridge_path[..path.len()].copy_from_slice(path);
+  r.requirement_count=1;r.requirements[0]=Some(BarRequirement{index,kind:BarKind::Memory32,length,alignment:length,prefetchable:false,assigned:0});r
+ }
+ #[test]
+ fn nested_bridge_windows_are_derived_and_parent_contains_child(){
+  let host=[Aperture{start:0x8000_0000,length:0x0200_0000,kind:BarKind::Memory32,prefetchable:false}];
+  let requests=[request(&[0],0,0x1000),request(&[0,1],0,0x2000)];
+  let mut out=HierarchyPlan::empty();let parents=plan_hierarchy_rebalance(&host,&requests,&[],&mut out).unwrap();
+  assert_eq!(parents[0],None);assert_eq!(parents[1],Some(0));
+  let root=out.bridge_windows[0].unwrap().memory.unwrap();let child=out.bridge_windows[1].unwrap().memory.unwrap();
+  assert!(root.start<=child.start);assert!(root.start+root.length>=child.start+child.length);
+ }
+ #[test]
+ fn failed_rebalance_preserves_previous_plan(){
+  let host=[Aperture{start:0x8000_0000,length:0x1000,kind:BarKind::Memory32,prefetchable:false}];
+  let requests=[request(&[0],0,0x2000)];let mut out=HierarchyPlan::empty();out.endpoint_count=9;let old=out;
+  assert!(plan_hierarchy_rebalance(&host,&requests,&[],&mut out).is_err());assert_eq!(out,old);
+ }
+}
