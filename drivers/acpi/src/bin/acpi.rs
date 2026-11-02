@@ -143,6 +143,7 @@ const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
 const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
+const IRP_MN_QUERY_CAPABILITIES: u8 = 0x09;
 const IRP_MN_QUERY_ID: u8 = 0x13;
 const BUS_QUERY_DEVICE_ID: u32 = 0;
 const BUS_QUERY_INSTANCE_ID: u32 = 1;
@@ -234,6 +235,49 @@ fn decimal_uid(value:u64)->acpi::acpi_device::AcpiId{
     id
 }
 
+#[repr(C)]
+struct AcpiDeviceCapabilities {
+    size:u16,
+    version:u16,
+    flags:u32,
+    device_state:[u32;7],
+    system_wake:u32,
+    device_wake:u32,
+    d1_latency:u32,
+    d2_latency:u32,
+    d3_latency:u32,
+}
+const DEVICE_CAPABILITIES_SIZE:usize=core::mem::size_of::<AcpiDeviceCapabilities>();
+
+unsafe fn query_pdo_capabilities(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,stack:*mut cognacos_nt_abi::io::IO_STACK_LOCATION)->i32{
+    if device.is_null()||stack.is_null(){return STATUS_INVALID_PARAMETER;}
+    let extension=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+    if extension.is_null()||unsafe{(*extension).signature}!=ACPI_PDO_SIGNATURE{return STATUS_INVALID_PARAMETER;}
+    let capabilities=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<*mut AcpiDeviceCapabilities>())};
+    if capabilities.is_null(){return STATUS_INVALID_PARAMETER;}
+    let size=unsafe{core::ptr::read_unaligned(core::ptr::addr_of!((*capabilities).size))} as usize;
+    let version=unsafe{core::ptr::read_unaligned(core::ptr::addr_of!((*capabilities).version))};
+    if version!=1||size<DEVICE_CAPABILITIES_SIZE{return STATUS_INVALID_PARAMETER;}
+    // Conservative ACPI defaults: the firmware runtime has not yet connected
+    // _SxD/_SxW/_PRW, so do not advertise unsupported wake or D1/D2 behavior.
+    let mut value=AcpiDeviceCapabilities{
+        size:size as u16,
+        version,
+        flags:0, // UniqueID remains FALSE: the instance ID is parent-bus scoped.
+        device_state:[4,1,4,4,4,4,4], // Working=D0; sleep/hibernate/shutdown=D3.
+        system_wake:0,
+        device_wake:0,
+        d1_latency:0,
+        d2_latency:0,
+        d3_latency:0,
+    };
+    if unsafe{(*extension).identity.sta}&acpi::acpi_device::DEVICE_UI==0 {
+        value.flags|=1<<13; // NoDisplayInUI
+    }
+    unsafe{core::ptr::copy_nonoverlapping(&value as *const AcpiDeviceCapabilities as *const u8,capabilities as *mut u8,DEVICE_CAPABILITIES_SIZE);}
+    STATUS_SUCCESS
+}
+
 unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut cognacos_nt_abi::io::IRP,stack:*mut cognacos_nt_abi::io::IO_STACK_LOCATION)->Result<usize,i32>{
     if device.is_null()||irp.is_null()||stack.is_null(){return Err(STATUS_INVALID_PARAMETER);}
     let extension=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
@@ -297,6 +341,9 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                 PDO_RELATIONS_LOCK.store(false,Ordering::Release);
                 STATUS_SUCCESS
             }
+        },
+        IRP_MN_QUERY_CAPABILITIES if device!=unsafe{ACPI_BUS_DEVICE} => {
+            unsafe{query_pdo_capabilities(device,stack)}
         },
         IRP_MN_QUERY_ID if device!=unsafe{ACPI_BUS_DEVICE} => {
             match unsafe{query_pdo_id(device,irp,stack)} {
