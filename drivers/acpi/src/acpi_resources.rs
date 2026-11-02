@@ -115,8 +115,15 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
  #[test]fn rejects_missing_end_tag(){assert_eq!(parse_resource_template(&[0x47,1,0,1,1,8,0]),Err(ResourceError::MissingEndTag));}
  #[test]fn rejects_truncated_descriptor(){assert_eq!(parse_resource_template(&[0x47,1]),Err(ResourceError::Truncated));}
  #[test]fn rejects_zero_length_range(){assert_eq!(parse_resource_template(&[0x47,1,0,1,1,0,0x79,0]),Err(ResourceError::InvalidDescriptor));}
- #[test]fn parses_qword_memory_range(){let mut d=[0u8;46];d[0]=0x8a;d[1]=43;d[2]=0;d[3]=0;d[4]=0;d[5]=0;d[6]=0;d[7]=0;d[8]=0;d[9]=0;d[10]=0;d[11]=0;d[12]=0;d[13]=0x00;d[14]=0x10;d[15]=0;d[16]=0;d[17]=0;d[18]=0;d[19]=0xff;d[20]=0x1f;d[21]=0;d[22]=0;d[23]=0;d[24]=0;d[25]=0;d[26]=0;d[27]=1;d[35]=0;d[36]=0x10;d[45]=0x79; // corrected below: EndTag must follow descriptor
-  d[44]=0;d[45]=0x79; // descriptor length is 43 bytes: tag+2-byte length+43-byte payload = 46; append EndTag separately in next test path
+ #[test]fn parses_qword_memory_range(){
+  let mut d=[0u8;49];d[0]=0x8a;d[1]=43;d[2]=0;d[3]=0; // large QWord address-space descriptor, memory
+  d[14..22].copy_from_slice(&0x100000u64.to_le_bytes());
+  d[22..30].copy_from_slice(&0x10ffffu64.to_le_bytes());
+  d[30..38].copy_from_slice(&1u64.to_le_bytes());
+  d[38..46].copy_from_slice(&0x10000u64.to_le_bytes());
+  d[46]=0x79;d[47]=0;
+  let parsed=parse_resource_template(&d).unwrap();
+  assert!(matches!(parsed.entries[0],Some(Resource::Memory{minimum:0x100000,maximum:0x10ffff,length:0x10000,..})));
  }
  #[test]fn rejects_trailing_data_after_end_tag(){assert_eq!(parse_resource_template(&[0x79,0,0]),Err(ResourceError::InvalidLength));}
 }
