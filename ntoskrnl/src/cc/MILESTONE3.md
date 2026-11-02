@@ -5,15 +5,31 @@ Target: Windows 11 x64 / NT 10.0.26100 Cache Manager semantics.
 This document is the acceptance contract for the Cache Manager work. It is
 intentionally not a claim that the current implementation is complete.
 
-## Current audited gaps
+## Implementation progress
 
-The current `ntoskrnl/src/cc/mod.rs` implementation is a clean-page read cache,
-not a full Cache Manager:
+The first dynamic-metadata architecture step is committed on the Milestone 3
+branch:
 
-- Cache maps are held in a global 128-entry array.
-- Each stream is limited to eight cache pages.
-- Cache identity is the FILE_OBJECT address; there is no stream lifetime or
-  section-object-pointer identity/rundown model.
+- The fixed 128-entry cache-map array is replaced by pool-allocated linked maps.
+- The fixed eight-page per-map array is replaced by pool-allocated linked page
+  descriptors.
+- Cache-map and page-descriptor allocations carry distinct pool tags.
+- Map/page allocation and reclamation are performed outside the cache metadata
+  lock; kernel builds use the HAL interrupt-safe spin lock.
+- A host stress test exercises 160 simultaneous maps and 12 page descriptors
+  on one map.
+
+This removes those two Cache Manager-local array ceilings. It does **not**
+remove the underlying Executive pool's current bounded allocation-table/slab
+capacity, nor does it establish complete Windows stream identity.
+
+## Remaining audited gaps
+
+The current `ntoskrnl/src/cc/mod.rs` implementation remains a clean-page read
+cache, not a full Cache Manager:
+
+- Cache identity is still the FILE_OBJECT address; stream identity shared
+  through SECTION_OBJECT_POINTERS and stream rundown are not implemented.
 - `CcCopyWrite` always falls back.
 - `CcFlushCache` reports success without performing filesystem writeback.
 - There is no dirty-page state, dirty-range accounting, modified-page list,
@@ -82,8 +98,11 @@ changes before stale cached bytes can be observed.
 
 ## Acceptance gates
 
-1. Dynamic metadata stress: more than 128 simultaneous streams and more than
-   eight resident pages per stream; allocation failure and teardown tests.
+1. Dynamic metadata stress: more than 128 simultaneous maps and more than
+   eight page descriptors per map (initial host test: 160 maps / 12 pages);
+   add allocation-failure, long-run churn, and teardown tests. The Executive
+   pool's own allocation-table/slab bounds must also be addressed before
+   claiming unbounded dynamic capacity.
 2. Stream identity: same stream through multiple FILE_OBJECTs, independent
    streams on one file object, close/reopen reuse, and concurrent uninitialize.
 3. Dirty accounting: overlapping writes, cross-page writes, write during
