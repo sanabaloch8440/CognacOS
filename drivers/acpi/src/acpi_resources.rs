@@ -320,3 +320,14 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&[0x89, 6, 0, 0, 0, 0, 0, 0, 0x79, 0]), Err(ResourceError::InvalidLength));
  }
 }
+
+
+#[cfg(test)] mod stability_26_extended_irq_bound {
+ use super::*;
+ #[test] fn rejects_more_than_eight_extended_interrupts() {
+  let mut bytes = std::vec![0x89, 38, 0, 0, 9];
+  bytes.extend_from_slice(&[0; 36]);
+  bytes.extend_from_slice(&[0x79, 0]);
+  assert_eq!(parse_resource_template(&bytes), Err(ResourceError::InvalidLength));
+ }
+}
