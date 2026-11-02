@@ -34,7 +34,10 @@ impl AmlObjectArena {
         if self.count==MAX_AML_VALUES{return Err(ObjectError::ValueArenaFull)}
         let id=self.count as u16;self.values[self.count]=value;self.count+=1;Ok(id)
     }
-    pub fn get(&self,id:u16)->Option<&AmlRuntimeValue>{self.values.get(id as usize).filter(|_|(id as usize)<self.count)}\n    pub fn get_mut(&mut self,id:u16)->Option<&mut AmlRuntimeValue>{if id as usize>=self.count{return None}self.values.get_mut(id as usize)}\n    /// Allocate a caller-constructed value in this bounded arena.\n    pub fn allocate(&mut self,value:AmlRuntimeValue)->Result<u16,ObjectError>{self.push(value)}
+    pub fn get(&self,id:u16)->Option<&AmlRuntimeValue>{self.values.get(id as usize).filter(|_|(id as usize)<self.count)}
+    pub fn get_mut(&mut self,id:u16)->Option<&mut AmlRuntimeValue>{if id as usize>=self.count{return None}self.values.get_mut(id as usize)}
+    /// Allocate a caller-constructed value in this bounded arena.
+    pub fn allocate(&mut self,value:AmlRuntimeValue)->Result<u16,ObjectError>{self.push(value)}
 }
 impl Default for AmlObjectArena { fn default()->Self { Self::new() } }
 
