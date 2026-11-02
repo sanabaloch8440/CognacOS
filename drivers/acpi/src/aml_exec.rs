@@ -184,6 +184,13 @@ mod tests{
   let id=ns.find_child(0,*b"MTH1").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[42]).unwrap(),AmlValue::Integer(7));
  }
+ #[test]fn rejects_recursive_method_invocation_at_call_depth_limit(){
+  // A method that returns its own zero-argument invocation.
+  let aml=[0x14,0x0b,b'R',b'E',b'C',b'U',0,0xa4,b'R',b'E',b'C',b'U'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"RECU").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::CallDepthLimit));
+ }
  #[test]fn executes_integer_method_with_arg_and_add(){
   let aml=[0x14,0x0c,b'T',b'E',b'S',b'T',1,0xa4,0x72,0x68,0x0a,2,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
