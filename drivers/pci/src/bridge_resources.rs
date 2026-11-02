@@ -252,3 +252,18 @@ pub fn aggregate_descendant_ranges(
     output.prefetchable=round(pref,0x10_0000,BarKind::Memory64,true)?;
     Ok(())
 }
+
+/// Encode validated Type-1 bridge forwarding windows. Absent apertures are
+/// disabled; malformed, unaligned or unrepresentable apertures fail closed.
+pub fn encode_bridge_windows<C:ConfigAccess>(c:&mut C,w:&BridgeWindows)->Result<BridgeWindowUpdate,BridgeWindowError>{
+ let _=c.read_u32(BRIDGE_IO_BASE_LIMIT).map_err(|_|BridgeWindowError::Config)?;
+ let _=c.read_u32(BRIDGE_MEMORY_BASE_LIMIT).map_err(|_|BridgeWindowError::Config)?;
+ let _=c.read_u32(BRIDGE_PREFETCH_BASE_LIMIT).map_err(|_|BridgeWindowError::Config)?;
+ let _=c.read_u32(BRIDGE_PREFETCH_BASE_UPPER).map_err(|_|BridgeWindowError::Config)?;
+ let _=c.read_u32(BRIDGE_PREFETCH_LIMIT_UPPER).map_err(|_|BridgeWindowError::Config)?;
+ let _=c.read_u32(BRIDGE_IO_BASE_UPPER).map_err(|_|BridgeWindowError::Config)?;
+ let (io,iu)=if let Some(a)=w.io{if a.kind!=BarKind::Io||a.length==0||a.start&0xfff!=0||a.length&0xfff!=0{return Err(BridgeWindowError::InvalidEncoding)}let e=a.start.checked_add(a.length).and_then(|v|v.checked_sub(1)).ok_or(BridgeWindowError::Overflow)?;if e>u32::MAX as u64{return Err(BridgeWindowError::InvalidEncoding)}let wide=a.start>0xffff||e>0xffff;let t=wide as u32;((((a.start>>8)as u32&0xf0)|t)|((((e>>8)as u32&0xf0)|t)<<8),if wide{((a.start>>16)as u32&0xffff)|(((e>>16)as u32&0xffff)<<16)}else{0})}else{(0xf0,0)};
+ let m=if let Some(a)=w.memory{if a.kind!=BarKind::Memory32||a.prefetchable||a.length==0||a.start&0xfffff!=0||a.length&0xfffff!=0{return Err(BridgeWindowError::InvalidEncoding)}let e=a.start.checked_add(a.length).and_then(|v|v.checked_sub(1)).ok_or(BridgeWindowError::Overflow)?;if e>=1u64<<32{return Err(BridgeWindowError::InvalidEncoding)}((a.start>>16)as u32&0xfff0)|(((e>>16)as u32&0xfff0)<<16)}else{0xfff0};
+ let (p,pb,pl)=if let Some(a)=w.prefetchable{if !a.prefetchable||!matches!(a.kind,BarKind::Memory32|BarKind::Memory64)||a.length==0||a.start&0xfffff!=0||a.length&0xfffff!=0{return Err(BridgeWindowError::InvalidEncoding)}let e=a.start.checked_add(a.length).and_then(|v|v.checked_sub(1)).ok_or(BridgeWindowError::Overflow)?;let wide=a.kind==BarKind::Memory64||a.start>u32::MAX as u64||e>u32::MAX as u64;let t=wide as u32;((((a.start>>16)as u32&0xfff0)|t)|((((e>>16)as u32&0xfff0)|t)<<16),if wide{(a.start>>32)as u32}else{0},if wide{(e>>32)as u32}else{0})}else{(0xfff0,0,0)};
+ let mut u=BridgeWindowUpdate::empty();u.push(BRIDGE_IO_BASE_LIMIT,io)?;u.push(BRIDGE_MEMORY_BASE_LIMIT,m)?;u.push(BRIDGE_PREFETCH_BASE_LIMIT,p)?;u.push(BRIDGE_PREFETCH_BASE_UPPER,pb)?;u.push(BRIDGE_PREFETCH_LIMIT_UPPER,pl)?;u.push(BRIDGE_IO_BASE_UPPER,iu)?;Ok(u)
+}
