@@ -7,7 +7,7 @@
 use crate::{parse_sdt_header,AcpiError};
 use crate::aml::{AmlError,AmlNamespace,load_definition_block,MAX_NAMESPACE_NODES};
 use crate::aml_exec::{self,AmlValue,ExecError};
-use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,AcpiMethodValue,IdentityError};
+use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,IdentityError,GatedDeviceInvoker};
 use core::sync::atomic::{AtomicUsize,Ordering};
 
 pub const MAX_AML_TABLES:usize=32;
@@ -110,14 +110,15 @@ impl AmlExecutionGate for AmlExecutionBarrier {
     fn leave_quiescent(&self){self.state.store(0,Ordering::Release);}
 }
 
-struct TableMethodInvoker<'a,'g,G:AmlExecutionGate>{
-    manager:&'a AmlTableManager,handle:TableHandle,bytes:&'a [u8],gate:&'g G,
+struct GatedDeviceInvoker<'a,'g,G: AmlExecutionGate,I:AcpiMethodInvoker>{
+    inner:&'a mut I,gate:&'g G,
 }
-impl<G:AmlExecutionGate> AcpiMethodInvoker for TableMethodInvoker<'_,'_,G>{
-    fn evaluate_value(&mut self,namespace:&AmlNamespace,_aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
-        if !core::ptr::eq(namespace,&self.manager.namespace){return Err(ExecError::InvalidMethod)}
-        self.manager.execute_method(self.handle,self.bytes,method,&[],self.gate)
-            .map(|value|AcpiMethodValue::Integer(value.integer())).map_err(|_|ExecError::InvalidMethod)
+impl<G:AmlExecutionGate,I:AcpiMethodInvoker> AcpiMethodInvoker for GatedDeviceInvoker<'_,'_,G,I>{
+    fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
+        self.gate.enter_method().map_err(|_|ExecError::StepLimit)?;
+        let result=self.inner.evaluate_value(namespace,aml,method);
+        self.gate.leave_method();
+        result
     }
 }
 
@@ -287,11 +288,17 @@ impl AmlTableManager {
     /// Evaluate ACPI-1 identity objects for a device owned by this loaded table.
     /// AML method execution is routed through the manager's in-flight execution
     /// gate so unload and table replacement cannot race device identification.
-    pub fn evaluate_device_identity<G:AmlExecutionGate>(&self,handle:TableHandle,bytes:&[u8],device:u16,gate:&G)->Result<AcpiDeviceIdentity,TableError>{
+    pub fn evaluate_device_identity<G:AmlExecutionGate,I:AcpiMethodInvoker>(&self,handle:TableHandle,bytes:&[u8],device:u16,gate:&G,method_runtime:&mut I)->Result<AcpiDeviceIdentity,TableError>{
         let info=self.table_info(handle)?;
+        let header=parse_sdt_header(bytes)?;
+        if header.length!=info.length||header.signature!=info.signature||header.checksum!=info.checksum
+            ||fingerprint(&bytes[..header.length as usize])!=info.content_fingerprint{
+            return Err(TableError::InvalidHandle)
+        }
         if device<info.namespace_start||device>=info.namespace_end{return Err(TableError::InvalidHandle)}
-        let mut invoker=TableMethodInvoker{manager:self,handle,bytes,gate};
-        acpi_device::evaluate_device_identity(&self.namespace,&bytes[SDT_HEADER_SIZE..info.length as usize],device,&mut invoker)
+        let aml=&bytes[SDT_HEADER_SIZE..info.length as usize];
+        let mut invoker=GatedDeviceInvoker{inner:method_runtime,gate};
+        acpi_device::evaluate_device_identity(&self.namespace,aml,device,&mut invoker)
             .map_err(|error|match error{
                 IdentityError::Method(method)=>TableError::MethodExecution(method),
                 _=>TableError::InvalidHandle,
