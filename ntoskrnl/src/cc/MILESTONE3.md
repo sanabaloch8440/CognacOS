@@ -16,6 +16,11 @@ branch:
 - Cache-map and page-descriptor allocations carry distinct pool tags.
 - Map/page allocation and reclamation are performed outside the cache metadata
   lock; kernel builds use the HAL interrupt-safe spin lock.
+- Cache page descriptors currently model one contiguous valid byte interval.
+  Clean-page population now refuses to merge disjoint fragments into that
+  interval, preventing reads from treating uncached holes as valid data.
+- SECTION_OBJECT_POINTERS shared-cache-map publication now uses the typed ABI
+  structure field rather than a hard-coded byte offset.
 - A host stress test exercises 160 simultaneous maps and 12 page descriptors
   on one map.
 
@@ -46,6 +51,9 @@ cache, not a full Cache Manager:
 - Size changes discard/truncate clean pages only; purge is not implemented.
 - The current spin lock protects metadata while copy operations touch cached
   pages, which is not an acceptable long-term concurrency/rundown model.
+- Disjoint clean fragments within one page are conservatively not merged; a
+  multi-range validity representation is needed to cache those fragments
+  without false cache hits.
 
 ## Required design
 
