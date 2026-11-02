@@ -16,7 +16,7 @@ fn integer(bytes:&[u8],pos:&mut usize,end:usize)->Result<u64,BufferError>{
         _=>return Err(BufferError::InvalidPackage),
     };
     if width==0{return Ok(value)}
-    let next=pos.checked_add(width).ok_or(BufferError::Truncated)?;
+    let next=(*pos).checked_add(width).ok_or(BufferError::Truncated)?;
     let data=bytes.get(*pos..next).filter(|_|next<=end).ok_or(BufferError::Truncated)?;
     *pos=next;
     let mut raw=[0u8;8];raw[..width].copy_from_slice(data);
