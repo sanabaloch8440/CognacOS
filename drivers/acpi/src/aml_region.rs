@@ -144,7 +144,7 @@ impl OperationRegionTable {
 }
 impl Default for OperationRegionTable{fn default()->Self{Self::new()}}
 
-fn validate_width(width:u8)->Result<(),RegionError>{
+fn width_mask(width:u8)->u64{if width==8{u64::MAX}else{(1u64<<(width as u32*8))-1}}\n\nfn validate_width(width:u8)->Result<(),RegionError>{
     match width{1|2|4|8=>Ok(()),_=>Err(RegionError::AccessWidth)}
 }
 
@@ -167,7 +167,7 @@ pub fn read_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     if relative_end>region.length{return Err(RegionError::AccessOutOfBounds)}
     let address=region.base.checked_add(offset).ok_or(RegionError::AddressOverflow)?;
     if !handler.supports(region.space_id){return Err(RegionError::NoHandler)}
-    handler.read(region.space_id,address,width).map_err(|_|RegionError::HandlerFailure)
+    handler.read(region.space_id,address,width).map(|value|value & width_mask(width)).map_err(|_|RegionError::HandlerFailure)
 }
 
 pub fn write_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
@@ -178,7 +178,7 @@ pub fn write_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     if relative_end>region.length{return Err(RegionError::AccessOutOfBounds)}
     let address=region.base.checked_add(offset).ok_or(RegionError::AddressOverflow)?;
     if !handler.supports(region.space_id){return Err(RegionError::NoHandler)}
-    handler.write(region.space_id,address,width,value).map_err(|_|RegionError::HandlerFailure)
+    handler.write(region.space_id,address,width,value & width_mask(width)).map_err(|_|RegionError::HandlerFailure)
 }
 
 #[cfg(test)]
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(read_region(&table,id,4,4,&mut h),Ok(0x1234));
         assert_eq!(h.address,0x1004);assert_eq!(h.width,4);
         assert_eq!(write_region(&table,id,8,2,0xabcd,&mut h),Ok(()));
-        assert_eq!(h.address,0x1008);assert_eq!(h.value,0xabcd);
+        assert_eq!(h.address,0x1008);assert_eq!(h.value,0xabcd);\n        assert_eq!(write_region(&table,id,0,1,0x1234,&mut h),Ok(()));\n        assert_eq!(h.value,0x34);
         assert_eq!(read_region(&table,id,0x1f,2,&mut h),Err(RegionError::AccessOutOfBounds));
     }
 
