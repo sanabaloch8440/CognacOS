@@ -113,7 +113,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
 #[cfg(test)] extern crate std;
 #[cfg(test)] mod tests{
  use super::*;
- #[test]fn parses_io_irq_and_end_tag(){let data=[0x47,0x01,0x00,0x01,0x00,0x01,0x08,0x79,0x00];let r=parse_resource_template(&data).unwrap();
+ #[test]fn parses_io_irq_and_end_tag(){let data=[0x47,0x01,0x00,0x01,0x00,0x01,0x08,0x22,0x0b,0x00,0x79,0x00];let r=parse_resource_template(&data).unwrap();
   assert_eq!(r.count,3);assert!(matches!(r.entries[0],Some(Resource::Io{minimum:0x100,maximum:0x100,length:8,..})));
   assert!(matches!(r.entries[1],Some(Resource::Irq{mask:0x0b,..})));}
  #[test]fn parses_fixed_io_descriptor(){let parsed=parse_resource_template(&[0x4b,0x78,0x03,0x03,0x79,0]);assert!(matches!(parsed.unwrap().entries[0],Some(Resource::Io{minimum:0x378,maximum:0x378,length:3,..})));}
