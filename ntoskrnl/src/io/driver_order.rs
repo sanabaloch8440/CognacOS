@@ -45,17 +45,22 @@ fn group_started(nodes:&[ServiceNode<'_>],state:&[u8],group:&[u16])->bool{
     nodes.iter().enumerate().any(|(i,node)|state[i]==1&&eq(node.group,group))
 }
 fn dependencies_ready(
-    index:usize,nodes:&[ServiceNode<'_>],state:&[u8]
+    index:usize,nodes:&[ServiceNode<'_>],state:&[u8],initialized:&[&[u16]]
 )->Result<bool,ScheduleError>{
     let node=&nodes[index];
     for dependency in node.service_dependencies{
-        let Some(dep)=find_service(nodes,dependency) else{return Err(ScheduleError::MissingServiceDependency)};
-        if dep==index{return Err(ScheduleError::Cycle)}
-        if state[dep]!=1{return Ok(false)}
+        if let Some(dep)=find_service(nodes,dependency) {
+            if dep==index{return Err(ScheduleError::Cycle)}
+            if state[dep]!=1{return Ok(false)}
+        } else if !initialized.iter().any(|name|eq(name,dependency)) {
+            return Err(ScheduleError::MissingServiceDependency)
+        }
     }
     for dependency in node.group_dependencies{
-        if !group_present(nodes,dependency){return Err(ScheduleError::MissingGroupDependency)}
-        if !group_started(nodes,state,dependency){return Ok(false)}
+        let candidate_group=group_present(nodes,dependency);
+        let initialized_group=nodes.iter().any(|node|initialized.iter().any(|name|eq(node.name,name))&&eq(node.group,dependency));
+        if !candidate_group&&!initialized_group{return Err(ScheduleError::MissingGroupDependency)}
+        if candidate_group&&!group_started(nodes,state,dependency)&&!initialized_group{return Ok(false)}
     }
     Ok(true)
 }
@@ -79,9 +84,23 @@ pub fn schedule_boot_drivers(
     output:&mut[usize],
     state:&mut[u8],
 )->Result<usize,ScheduleError>{
+    schedule_boot_drivers_with_initialized(nodes,group_order,tag_orders,&[],output,state)
+}
+
+pub fn schedule_boot_drivers_with_initialized(
+    nodes:&[ServiceNode<'_>],
+    group_order:&[&[u16]],
+    tag_orders:&[GroupTagOrder<'_>],
+    initialized:&[&[u16]],
+    output:&mut[usize],
+    state:&mut[u8],
+)->Result<usize,ScheduleError>{
     let count=nodes.len();
     if output.len()<count||state.len()<count{return Err(ScheduleError::BufferTooSmall)}
     state[..count].fill(0);
+    for (index,node) in nodes.iter().enumerate() {
+        if initialized.iter().any(|name|eq(node.name,name)) { state[index]=1; }
+    }
     for (i,node) in nodes.iter().enumerate(){
         if node.name.is_empty(){return Err(ScheduleError::EmptyName)}
         if node.start_type>1{return Err(ScheduleError::InvalidStartType)}
@@ -92,7 +111,7 @@ pub fn schedule_boot_drivers(
         let mut best:Option<usize>=None;
         for i in 0..count{
             if state[i]!=0{continue}
-            if !dependencies_ready(i,nodes,&state[..count])?{continue}
+            if !dependencies_ready(i,nodes,&state[..count],initialized)?{continue}
             if best.map(|current|precedes(i,current,nodes,group_order,tag_orders)).unwrap_or(true){best=Some(i)}
         }
         let Some(index)=best else{return Err(ScheduleError::Cycle)};
