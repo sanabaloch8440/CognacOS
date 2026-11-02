@@ -131,6 +131,8 @@ impl AmlTableManager {
     }
     fn load(&mut self,bytes:&[u8],expected:[u8;4])->Result<TableHandle,TableError>{
         if self.count>=MAX_AML_TABLES{return Err(TableError::TableLimit)}
+        let generation=self.next_generation;
+        let next_generation=generation.checked_add(1).ok_or(TableError::TableLimit)?;
         let header=parse_sdt_header(bytes)?;
         if header.signature!=expected{return Err(TableError::UnsupportedSignature)}
         let length=header.length as usize;
@@ -155,8 +157,7 @@ impl AmlTableManager {
         let mut stored=info;
         stored.namespace_end=self.namespace.count as u16;
         let slot=self.count;
-        let generation=self.next_generation;
-        self.next_generation=self.next_generation.checked_add(1).ok_or(TableError::TableLimit)?;
+        self.next_generation=next_generation;
         self.records[slot]=TableRecord{active:true,generation,info:stored};
         self.count+=1;
         if expected==*b"DSDT"{self.dsdt_loaded=true;}
