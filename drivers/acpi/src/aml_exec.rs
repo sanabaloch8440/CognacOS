@@ -189,6 +189,13 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[40]).unwrap(),AmlValue::Integer(42));
  }
+ #[test]fn resolves_integer_name_objects_from_method_bodies(){
+  let aml=[0x08,b'V',b'A',b'L',b'0',0x0a,42,
+           0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,b'V',b'A',b'L',b'0'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+ }
  #[test]fn executes_if_else_and_comparison_predicate(){
   // If (LEqual (Arg0, One)) Return (7); Else Return (9)
   let aml=[0x14,0x13,b'T',b'E',b'S',b'T',1,0xa0,0x07,0x93,0x68,0x01,0xa4,0x0a,7,0xa1,0x04,0xa4,0x0a,9];
