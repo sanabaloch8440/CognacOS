@@ -144,7 +144,9 @@ impl OperationRegionTable {
 }
 impl Default for OperationRegionTable{fn default()->Self{Self::new()}}
 
-fn width_mask(width:u8)->u64{if width==8{u64::MAX}else{(1u64<<(width as u32*8))-1}}\n\nfn validate_width(width:u8)->Result<(),RegionError>{
+fn width_mask(width:u8)->u64{if width==8{u64::MAX}else{(1u64<<(width as u32*8))-1}}
+
+fn validate_width(width:u8)->Result<(),RegionError>{
     match width{1|2|4|8=>Ok(()),_=>Err(RegionError::AccessWidth)}
 }
 
@@ -204,7 +206,9 @@ mod tests {
         assert_eq!(read_region(&table,id,4,4,&mut h),Ok(0x1234));
         assert_eq!(h.address,0x1004);assert_eq!(h.width,4);
         assert_eq!(write_region(&table,id,8,2,0xabcd,&mut h),Ok(()));
-        assert_eq!(h.address,0x1008);assert_eq!(h.value,0xabcd);\n        assert_eq!(write_region(&table,id,0,1,0x1234,&mut h),Ok(()));\n        assert_eq!(h.value,0x34);
+        assert_eq!(h.address,0x1008);assert_eq!(h.value,0xabcd);
+        assert_eq!(write_region(&table,id,0,1,0x1234,&mut h),Ok(()));
+        assert_eq!(h.value,0x34);
         assert_eq!(read_region(&table,id,0x1f,2,&mut h),Err(RegionError::AccessOutOfBounds));
     }
 
