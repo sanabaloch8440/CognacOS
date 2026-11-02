@@ -131,7 +131,15 @@ pub fn apply_bridge_update<C:ConfigAccess>(c:&mut C,update:&BridgeWindowUpdate)-
         written+=1;
     }
     // Re-enable the prior I/O/memory decode state but never bus mastering.
-    c.write_u16(PCI_COMMAND,command&!PCI_COMMAND_BUS_MASTER).map_err(|_|BridgeWindowError::Config)?;
+    if c.write_u16(PCI_COMMAND,command&!PCI_COMMAND_BUS_MASTER).is_err() {
+        let mut rollback_ok=true;
+        for i in (0..written).rev() {
+            if c.write_u32(old[i].offset,old[i].value).is_err(){rollback_ok=false}
+        }
+        let safe=command&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER);
+        if c.write_u16(PCI_COMMAND,if rollback_ok{command&!PCI_COMMAND_BUS_MASTER}else{safe}).is_err(){rollback_ok=false}
+        return Err(if rollback_ok{BridgeWindowError::Config}else{BridgeWindowError::InvalidEncoding})
+    }
     Ok(())
 }
 
