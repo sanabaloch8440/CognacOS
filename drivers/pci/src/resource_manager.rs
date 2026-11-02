@@ -32,7 +32,17 @@ pub fn allocate_all(
 )->Result<(),ResourceError>{
     if count>MAX_ASSIGNMENTS||apertures.is_empty(){return Err(ResourceError::NoWindow)}
     let mut plan=AllocationPlan::empty();
+    let mut used_bars=0u8;
     for requirement in requirements.iter().take(count).flatten(){
+        let index=requirement.index as usize;
+        if index>=MAX_ASSIGNMENTS{return Err(ResourceError::InvalidBar)}
+        let mut mask=1u8<<index;
+        if requirement.kind==BarKind::Memory64 {
+            if index+1>=MAX_ASSIGNMENTS{return Err(ResourceError::InvalidBar)}
+            mask|=1u8<<(index+1);
+        }
+        if used_bars&mask!=0{return Err(ResourceError::InvalidBar)}
+        used_bars|=mask;
         if requirement.length==0||requirement.alignment==0||!requirement.alignment.is_power_of_two(){return Err(ResourceError::InvalidAlignment)}
         let mut selected=None;
         for aperture in apertures.iter().copied(){
@@ -41,7 +51,7 @@ pub fn allocate_all(
             let mut candidate=aperture.start.checked_add(requirement.alignment-1).ok_or(ResourceError::AddressOverflow)?&!(requirement.alignment-1);
             loop{
                 let candidate_end=candidate.checked_add(requirement.length).ok_or(ResourceError::AddressOverflow)?;
-                if candidate_end>end||(requirement.kind==BarKind::Memory32&&candidate_end>(1u64<<32)){break}
+                if candidate_end>end||(requirement.kind==BarKind::Memory32&&candidate_end>(1u64<<32))||(requirement.kind==BarKind::Io&&candidate_end>0x1_0000){break}
                 let mut conflict=None;
                 for range in occupied.iter().copied().chain(plan.assignments[..plan.count].iter().flatten().map(|a:&BarAssignment|OccupiedRange{start:a.base,length:a.length,kind:a.kind})){
                     if range.kind!=requirement.kind{continue}
@@ -97,6 +107,13 @@ pub fn program_assignments<C:ConfigAccess>(config:&mut C,header_type:u8,plan:&Al
     if plan.count>MAX_ASSIGNMENTS{return Err(ResourceError::Capacity)}
     let command=config.read_u16(PCI_COMMAND)?;
     let mut saved=[0u32;MAX_ASSIGNMENTS];let mut touched=[false;MAX_ASSIGNMENTS];
+    let mut used_bars=0u8;
+    for a in plan.assignments[..plan.count].iter().flatten(){
+        let i=a.index as usize;if i>=bars{return Err(ResourceError::InvalidBar)}
+        let mut mask=1u8<<i;
+        if a.kind==BarKind::Memory64{if i+1>=bars{return Err(ResourceError::InvalidBar)}mask|=1u8<<(i+1)}
+        if used_bars&mask!=0{return Err(ResourceError::InvalidBar)}used_bars|=mask;
+    }
     let operation=(||{
         config.write_u16(PCI_COMMAND,command&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER))?;
         for i in 0..bars{saved[i]=config.read_u32(PCI_BAR0+i as u16*4)?;touched[i]=true}
@@ -137,7 +154,7 @@ pub fn encode_requirements_alternative(reqs:&[Option<BarRequirement>;MAX_ASSIGNM
     if count>MAX_ASSIGNMENTS||out.len()<size{return Err(ResourceError::Capacity)}
     out[..size].fill(0);out[0..4].copy_from_slice(&(size as u32).to_le_bytes());out[4..8].copy_from_slice(&15i32.to_le_bytes());out[8..12].copy_from_slice(&bus.to_le_bytes());
     out[32..34].copy_from_slice(&1u16.to_le_bytes());out[34..36].copy_from_slice(&1u16.to_le_bytes());out[36..40].copy_from_slice(&(count as u32).to_le_bytes());
-    let mut n=0;for r in reqs.iter().take(count).flatten(){let p=40+n*IO_RESOURCE_DESCRIPTOR_SIZE;out[p]=0;out[p+1]=if r.kind==BarKind::Io{1}else{3};out[p+2]=1;out[p+4..p+6].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());out[p+8..p+12].copy_from_slice(&u32::try_from(r.length).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());out[p+12..p+16].copy_from_slice(&u32::try_from(r.alignment).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());out[p+24..p+32].copy_from_slice(&u64::MAX.to_le_bytes());n+=1}
+    let mut n=0;for r in reqs.iter().take(count).flatten(){let p=40+n*IO_RESOURCE_DESCRIPTOR_SIZE;out[p]=0;out[p+1]=if r.kind==BarKind::Io{1}else{3};out[p+2]=1;out[p+4..p+6].copy_from_slice(&(if r.kind==BarKind::Io{1u16}else if r.prefetchable{4}else{0}).to_le_bytes());out[p+8..p+12].copy_from_slice(&u32::try_from(r.length).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());out[p+12..p+16].copy_from_slice(&u32::try_from(r.alignment).map_err(|_|ResourceError::AddressOverflow)?.to_le_bytes());let maximum=match r.kind{BarKind::Io=>0xffffu64,BarKind::Memory32=>0xffff_ffffu64,BarKind::Memory64=>u64::MAX};out[p+24..p+32].copy_from_slice(&maximum.to_le_bytes());n+=1}
     if n!=count{return Err(ResourceError::InvalidBar)}Ok(size)
 }
 
