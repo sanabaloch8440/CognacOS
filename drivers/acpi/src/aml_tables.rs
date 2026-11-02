@@ -33,6 +33,8 @@ impl From<AmlError> for TableError {fn from(e:AmlError)->Self{Self::Parse(e)}}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct TableHandle {slot:u8,generation:u32}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct LoadedTableSet {pub dsdt:TableHandle,pub ssdts:[Option<TableHandle>;MAX_AML_TABLES-1],pub ssdt_count:usize}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlTableInfo {
     pub signature:[u8;4],
     pub revision:u8,
@@ -82,6 +84,32 @@ impl AmlTableManager {
     pub fn table_info(&self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
         let record=self.records.get(handle.slot as usize).filter(|r|r.active&&r.generation==handle.generation).ok_or(TableError::InvalidHandle)?;
         Ok(record.info)
+    }
+    /// Atomically install the boot DSDT and all supplied SSDTs. If any
+    /// definition block fails, every table added by this call is rolled back.
+    pub fn load_firmware_tables<G:AmlExecutionGate>(&mut self,dsdt:&[u8],ssdts:&[&[u8]],gate:&mut G)->Result<LoadedTableSet,TableError>{
+        self.with_quiescence(gate,|manager|{
+            if manager.count!=0||manager.dsdt_loaded{return Err(TableError::DsdtAlreadyLoaded)}
+            if ssdts.len()>MAX_AML_TABLES-1{return Err(TableError::TableLimit)}
+            let before=manager.count;
+            let result=(||{
+                let dsdt_handle=manager.load(dsdt,*b"DSDT")?;
+                let mut handles=[None;MAX_AML_TABLES-1];
+                for (index,table) in ssdts.iter().enumerate(){
+                    handles[index]=Some(manager.load(table,*b"SSDT")?);
+                }
+                Ok(LoadedTableSet{dsdt:dsdt_handle,ssdts:handles,ssdt_count:ssdts.len()})
+            })();
+            if result.is_err(){
+                while manager.count>before{
+                    let slot=manager.count-1;
+                    let record=manager.records[slot];
+                    let handle=TableHandle{slot:slot as u8,generation:record.generation};
+                    if manager.unload_quiesced(handle).is_err(){return Err(TableError::NamespaceChanged)}
+                }
+            }
+            result
+        })
     }
     pub fn load_dsdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&mut G)->Result<TableHandle,TableError>{
         self.with_quiescence(gate,|manager|{
@@ -221,6 +249,21 @@ mod tests {
         b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
         b
     }
+    #[test]
+    fn firmware_table_set_load_is_transactional(){
+        let dsdt=table(*b"DSDT",*b"BASE",1);
+        let mut bad_ssdt=table(*b"SSDT",*b"FAIL",2);
+        bad_ssdt[37]=b'1';bad_ssdt[9]=0;
+        bad_ssdt[9]=0u8.wrapping_sub(bad_ssdt.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
+        let mut manager=AmlTableManager::new();let mut gate=gate();
+        assert!(manager.load_firmware_tables(&dsdt,&[&bad_ssdt],&mut gate).is_err());
+        assert_eq!(manager.table_count(),0);assert!(!manager.dsdt_loaded());
+        assert_eq!(manager.namespace().count,1);
+        let ssdt=table(*b"SSDT",*b"EXTR",3);
+        let loaded=manager.load_firmware_tables(&dsdt,&[&ssdt],&mut gate).unwrap();
+        assert_eq!(loaded.ssdt_count,1);assert_eq!(manager.table_count(),2);
+    }
+
     #[test]
     fn method_dispatch_uses_owning_table_and_rejects_foreign_nodes(){
         let dsdt=method_table();let mut manager=AmlTableManager::new();let mut gate=gate();
