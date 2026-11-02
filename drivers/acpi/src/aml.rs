@@ -124,22 +124,24 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
 }
 
 fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(),AmlError>{
+    let mut bit_offset=0usize;
     while c.pos<c.end{
         let op=c.byte()?;
         match op{
-            0x00=>{let _bit_length=read_pkg_value(c)?;}
-            0x01=>{c.take(2)?;}
-            0x02=>{skip_data_object(c)?;}
-            0x03=>{c.take(3)?;}
+            0x00=>{ // ReservedField: advance by encoded bit length.
+                bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
+            }
+            0x01=>{c.take(2)?;} // AccessField
+            0x02=>{skip_data_object(c)?;} // ConnectField
+            0x03=>{c.take(3)?;} // ExtendedAccessField
             _=>{
                 c.pos-=1;
                 let seg=c.take(4)?;
                 if !valid_name_seg(seg){return Err(AmlError::BadName)}
                 let mut name=[0;4];name.copy_from_slice(seg);
-                let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
-                let len=end-c.pos;
-                ns.insert(parent,name,AmlObjectType::Field,0,c.pos,len)?;
-                c.pos=end;
+                let bit_length=read_pkg_value(c)?;
+                ns.insert(parent,name,AmlObjectType::Field,0,bit_offset,bit_length)?;
+                bit_offset=bit_offset.checked_add(bit_length).ok_or(AmlError::BadPackageLength)?;
             }
         }
     }
@@ -196,7 +198,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         if ext==0x87{let _=parse_name(&mut sub)?;skip_data_object(&mut sub)?;}
                         let _flags=sub.byte()?;
                         let node=resolve_path(ns,parent,&region,true,if ext==0x81{AmlObjectType::Field}else if ext==0x86{AmlObjectType::IndexField}else{AmlObjectType::BankField},0,0,0)?;
-                        parse_field_list(&mut sub,ns,node)?;
+                        parse_field_list(&mut sub,ns,parent)?;
                         c.pos=end;
                     }
                     0x82|0x83|0x84|0x85=>{
