@@ -19,8 +19,10 @@ pub const MAX_DESCRIPTORS_PER_LIST: usize = 16;
 pub const MAX_CHOICES_PER_REQUIREMENT: usize = 8;
 pub const MAX_EXPANDED_ALTERNATIVES: usize = 8;
 
-const OPTION_PREFERRED: u8 = 0;
+const OPTION_PREFERRED: u8 = 0x01;
 const OPTION_ALTERNATIVE: u8 = 0x08;
+const OPTION_MASK: u8 = OPTION_PREFERRED | OPTION_ALTERNATIVE;
+const INTERRUPT_LEVEL_SENSITIVE: u16 = 0x0001;
 const SHARE_EXCLUSIVE: u8 = 1;
 const SHARE_SHARED: u8 = 3;
 const TYPE_PORT: u8 = 1;
@@ -84,7 +86,19 @@ fn parse_descriptor(bytes:&[u8],offset:usize)->Result<ResourceRequest,Requiremen
         TYPE_INTERRUPT=>{
             let min=read_u32(bytes,offset+8)? as u64;
             let max=read_u32(bytes,offset+12)? as u64;
-            let rk=match share{SHARE_EXCLUSIVE=>ResourceKind::Interrupt,SHARE_SHARED=>ResourceKind::SharedInterrupt,_=>return Err(RequirementsError::UnsupportedDescriptor)};
+            let flags=read_u16(bytes,offset+4)?;
+            let rk=match share{
+                SHARE_EXCLUSIVE=>ResourceKind::Interrupt,
+                SHARE_SHARED=>{
+                    // Only level-sensitive line interrupts are shareable in
+                    // this initial arbiter. Edge/MSI/policy variants fail closed.
+                    if flags&INTERRUPT_LEVEL_SENSITIVE==0 || flags&!INTERRUPT_LEVEL_SENSITIVE!=0 {
+                        return Err(RequirementsError::UnsupportedDescriptor)
+                    }
+                    ResourceKind::SharedInterrupt
+                },
+                _=>return Err(RequirementsError::UnsupportedDescriptor)
+            };
             (rk,min,max,1,1)
         }
         TYPE_DMA=>{
@@ -111,10 +125,11 @@ fn parse_descriptor(bytes:&[u8],offset:usize)->Result<ResourceRequest,Requiremen
 #[derive(Clone,Copy)]
 struct ChoiceGroup {
     choices:[ResourceRequest;MAX_CHOICES_PER_REQUIREMENT],
+    preferred:[bool;MAX_CHOICES_PER_REQUIREMENT],
     count:usize,
 }
 impl ChoiceGroup {
-    const fn new()->Self{Self{choices:[ParsedAlternative::EMPTY_REQUEST;MAX_CHOICES_PER_REQUIREMENT],count:0}}
+    const fn new()->Self{Self{choices:[ParsedAlternative::EMPTY_REQUEST;MAX_CHOICES_PER_REQUIREMENT],preferred:[false;MAX_CHOICES_PER_REQUIREMENT],count:0}}
 }
 
 /// Expand one IO_RESOURCE_LIST's descriptor choice groups into full resource
@@ -130,13 +145,14 @@ fn expand_io_resource_list(
     for i in 0..descriptor_count{
         let offset=descriptor_start+i*IO_RESOURCE_DESCRIPTOR_SIZE;
         let option=*bytes.get(offset).ok_or(RequirementsError::Truncated)?;
-        if option!=OPTION_PREFERRED&&option!=OPTION_ALTERNATIVE{return Err(RequirementsError::UnsupportedDescriptor)}
+        if option&!OPTION_MASK!=0{return Err(RequirementsError::UnsupportedDescriptor)}
         let request=parse_descriptor(bytes,offset)?;
-        if option==OPTION_PREFERRED{
+        if option&OPTION_ALTERNATIVE==0{
             if group_count>=MAX_DESCRIPTORS_PER_LIST{return Err(RequirementsError::TooManyDescriptors)}
             groups[group_count].choices[0]=request;
             groups[group_count].count=1;
             group_count+=1;
+            if option&OPTION_PREFERRED!=0 { groups[group_count-1].preferred[0]=true; }
         }else{
             if group_count==0{return Err(RequirementsError::InvalidSize)}
             let group=&mut groups[group_count-1];
@@ -145,7 +161,25 @@ fn expand_io_resource_list(
             // sharing disposition; otherwise it cannot be safely arbitrated.
             if group.choices[0].kind!=request.kind{return Err(RequirementsError::UnsupportedDescriptor)}
             group.choices[group.count]=request;
+            group.preferred[group.count]=option&OPTION_PREFERRED!=0;
             group.count+=1;
+        }
+    }
+    // Move explicitly preferred choices ahead of ordinary choices while
+    // retaining descriptor order within each preference class.
+    for group in groups[..group_count].iter_mut(){
+        for i in 0..group.count {
+            if group.preferred[i] {
+                let choice=group.choices[i];
+                let mut j=i;
+                while j>0 && !group.preferred[j-1] {
+                    group.choices[j]=group.choices[j-1];
+                    group.preferred[j]=group.preferred[j-1];
+                    j-=1;
+                }
+                group.choices[j]=choice;
+                group.preferred[j]=true;
+            }
         }
     }
     let mut expanded=1usize;
@@ -265,6 +299,18 @@ pub fn reserve_wdm_requirements_with(
   arb.reserve_alternative(1,&[&shared],&mut out).unwrap();
   assert_eq!(arb.reserve_alternative(2,&[&shared],&mut out),Ok(1));
   assert_eq!(arb.reserve_alternative(3,&[&exclusive],&mut out),Err(ArbiterError::Conflict));
+ }
+ #[test]fn preferred_alternative_is_tried_before_unpreferred_choice(){
+  let b=make_list(&[(0,TYPE_PORT,SHARE_EXCLUSIVE,0x300,0x300),(9,TYPE_PORT,SHARE_EXCLUSIVE,0x400,0x400)]);
+  let(parsed,count)=parse_requirements(&b).unwrap();assert_eq!(count,2);
+  assert_eq!(parsed[0].requests[0].minimum,0x400);assert_eq!(parsed[1].requests[0].minimum,0x300);
+ }
+ #[test]fn shared_irq_requires_level_sensitive_flag(){
+  let mut b=make_list(&[(0,TYPE_INTERRUPT,SHARE_SHARED,9,9)]);
+  let flags_offset=40+4;b[flags_offset..flags_offset+2].copy_from_slice(&INTERRUPT_LEVEL_SENSITIVE.to_le_bytes());
+  assert!(parse_requirements(&b).is_ok());
+  b[flags_offset..flags_offset+2].copy_from_slice(&0u16.to_le_bytes());
+  assert_eq!(parse_requirements(&b),Err(RequirementsError::UnsupportedDescriptor));
  }
  #[test]fn rejects_choice_group_class_mismatch(){
   let b=make_list(&[(0,TYPE_PORT,SHARE_EXCLUSIVE,0x300,0x300),(8,TYPE_MEMORY,SHARE_EXCLUSIVE,0x400,0x400)]);
