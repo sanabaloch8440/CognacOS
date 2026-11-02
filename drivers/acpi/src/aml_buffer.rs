@@ -1,0 +1,83 @@
+//! Bounded extraction of AML Buffer initializers from namespace Name objects.
+//! This deliberately handles immutable data objects only; evaluating a Buffer
+//! returned by a control method requires the typed AML execution engine.
+#![no_std]
+
+use crate::aml::{AmlNamespace,AmlObjectType};
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum BufferError { InvalidNode, NotBuffer, Truncated, InvalidPackage, BufferTooLarge, InitializerTooLong }
+
+fn integer(bytes:&[u8],pos:&mut usize,end:usize)->Result<u64,BufferError>{
+    let op=*bytes.get(*pos).filter(|_|*pos<end).ok_or(BufferError::Truncated)?;*pos+=1;
+    let (width,value)=match op {
+        0x00=>(0,0),0x01=>(0,1),0xff=>(0,u64::MAX),
+        0x0a=>(1,0),0x0b=>(2,0),0x0c=>(4,0),0x0e=>(8,0),
+        _=>return Err(BufferError::InvalidPackage),
+    };
+    if width==0{return Ok(value)}
+    let next=pos.checked_add(width).ok_or(BufferError::Truncated)?;
+    let data=bytes.get(*pos..next).filter(|_|next<=end).ok_or(BufferError::Truncated)?;
+    *pos=next;
+    let mut raw=[0u8;8];raw[..width].copy_from_slice(data);
+    Ok(u64::from_le_bytes(raw))
+}
+
+/// Decode one Name(Buffer(...)) initializer into caller-owned storage.
+/// The output is zero-filled to BufferSize as required by AML Buffer semantics.
+pub fn decode_named_buffer(aml:&[u8],namespace:&AmlNamespace,node_index:u16,output:&mut [u8])->Result<usize,BufferError>{
+    let node=namespace.nodes.get(node_index as usize).filter(|_|(node_index as usize)<namespace.count).ok_or(BufferError::InvalidNode)?;
+    if node.object_type!=AmlObjectType::Name{return Err(BufferError::InvalidNode)}
+    let start=node.body_start as usize;
+    let finish=start.checked_add(node.body_length as usize).filter(|end|*end<=aml.len()).ok_or(BufferError::Truncated)?;
+    if start>=finish||aml[start]!=0x11{return Err(BufferError::NotBuffer)}
+    let length_pos=start+1;
+    let lead=*aml.get(length_pos).ok_or(BufferError::Truncated)?;
+    let follow=(lead>>6) as usize;
+    if follow!=0&&lead&0x30!=0{return Err(BufferError::InvalidPackage)}
+    let mut package_length=(lead&0x0f) as usize;
+    for index in 0..follow {
+        let byte=*aml.get(length_pos+1+index).filter(|_|length_pos+1+index<finish).ok_or(BufferError::Truncated)?;
+        package_length|=(byte as usize)<<(4+8*index);
+    }
+    let package_end=length_pos.checked_add(package_length).filter(|end|*end==finish).ok_or(BufferError::InvalidPackage)?;
+    let mut cursor=length_pos+1+follow;
+    if cursor>package_end{return Err(BufferError::InvalidPackage)}
+    let declared=usize::try_from(integer(aml,&mut cursor,package_end)?).map_err(|_|BufferError::BufferTooLarge)?;
+    if declared>output.len(){return Err(BufferError::BufferTooLarge)}
+    let initializer_length=package_end-cursor;
+    if initializer_length>declared{return Err(BufferError::InitializerTooLong)}
+    output[..declared].fill(0);
+    output[..initializer_length].copy_from_slice(&aml[cursor..package_end]);
+    Ok(declared)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aml::load_definition_block;
+    #[test]
+    fn extracts_zero_padded_crs_buffer_from_namespace_name(){
+        // Name(_CRS, Buffer(4) { 0x79, 0x00 })
+        let aml=[0x08,b'_',b'C',b'R',b'S',0x11,0x05,0x0a,4,0x79,0x00];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"_CRS").unwrap();let mut out=[0xa5;8];
+        assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut out),Ok(4));
+        assert_eq!(&out[..4],&[0x79,0x00,0,0]);
+        assert_eq!(out[4],0xa5);
+    }
+    #[test]
+    fn rejects_non_buffer_and_oversized_buffer(){
+        let aml=[0x08,b'_',b'C',b'R',b'S',0x0a,1];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"_CRS").unwrap();
+        assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut [0;8]),Err(BufferError::NotBuffer));
+    }
+    #[test]
+    fn rejects_initializer_larger_than_declared_size(){
+        let aml=[0x08,b'_',b'C',b'R',b'S',0x11,0x05,0x0a,1,0xaa,0xbb];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"_CRS").unwrap();
+        assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut [0;8]),Err(BufferError::InvalidPackage));
+    }
+}
