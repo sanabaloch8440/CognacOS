@@ -18,6 +18,8 @@ impl<'a> Reader<'a>{
 }
 #[derive(Clone,Copy)]
 enum Target{Null,Local(usize),Arg(usize)}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum ExecFlow{Continue,Return(u64),Break,ContinueLoop}
 struct Machine{locals:[u64;8],args:[u64;7],steps:usize}
 impl Machine{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
@@ -69,41 +71,44 @@ impl Machine{
    _=>Err(ExecError::UnsupportedOpcode)
   }
  }
- fn execute(&mut self,r:&mut Reader<'_>,depth:u8)->Result<Option<u64>,ExecError>{
+ fn execute(&mut self,r:&mut Reader<'_>,depth:u8)->Result<ExecFlow,ExecError>{
   if depth>16{return Err(ExecError::LoopControl)}
   while r.pos<r.end{
    self.step()?;let op=r.byte()?;
    match op{
     0xa3=>{},
-    0xa4=>return Ok(Some(self.term(r)?)),
+    0xa4=>return Ok(ExecFlow::Return(self.term(r)?)),
     0x70=>{let v=self.term(r)?;let t=Self::target(r)?;self.store(t,v);},
     0xa0|0xa2=>{
      let end=r.pkg_end()?;let plen=1+((r.bytes[r.pos]>>6)as usize);let begin=r.pos+plen;
      if begin>end{return Err(ExecError::BadPackage)}
      let mut body=Reader{bytes:r.bytes,pos:begin,end};
      let mut predicate=true;
-     if op==0xa0{predicate=self.term(&mut body)?!=0;if predicate{if let Some(v)=self.execute(&mut body,depth+1)?{return Ok(Some(v));}}}
+     if op==0xa0{predicate=self.term(&mut body)?!=0;if predicate{let flow=self.execute(&mut body,depth+1)?;if flow!=ExecFlow::Continue{return Ok(flow);}}}
      else{
       let loop_start=body.pos;
       loop{self.step()?;let mut cond=Reader{bytes:body.bytes,pos:loop_start,end:body.end};if self.term(&mut cond)?==0{break}
-       let mut iteration=Reader{bytes:body.bytes,pos:cond.pos,end:body.end};if let Some(v)=self.execute(&mut iteration,depth+1)?{return Ok(Some(v))}
+       let mut iteration=Reader{bytes:body.bytes,pos:cond.pos,end:body.end};
+       let flow=self.execute(&mut iteration,depth+1)?;
        if iteration.pos<=loop_start{return Err(ExecError::LoopControl)}
+       match flow{ExecFlow::Continue=>{},ExecFlow::Return(v)=>return Ok(ExecFlow::Return(v)),ExecFlow::Break=>break,ExecFlow::ContinueLoop=>continue}
       }
      }
      r.pos=end;
      if op==0xa0 && r.pos<r.end && r.bytes[r.pos]==0xa1 {
       r.pos+=1;let else_end=r.pkg_end()?;let else_plen=1+((r.bytes[r.pos]>>6)as usize);let else_begin=r.pos+else_plen;
       if else_begin>else_end{return Err(ExecError::BadPackage)}
-      if !predicate{let mut alternate=Reader{bytes:r.bytes,pos:else_begin,end:else_end};if let Some(v)=self.execute(&mut alternate,depth+1)?{return Ok(Some(v));}}
+      if !predicate{let mut alternate=Reader{bytes:r.bytes,pos:else_begin,end:else_end};let flow=self.execute(&mut alternate,depth+1)?;if flow!=ExecFlow::Continue{return Ok(flow);}}
       r.pos=else_end;
      }
     }
     0xa1=>return Err(ExecError::UnsupportedOpcode),
-    0x9f|0xa5=>return Err(ExecError::LoopControl),
+    0x9f=>return Ok(ExecFlow::Break),
+    0xa5=>return Ok(ExecFlow::ContinueLoop),
     _=>{r.pos-=1;let _=self.term(r)?;}
    }
   }
-  Ok(None)
+  Ok(ExecFlow::Continue)
  }
 }
 
@@ -128,7 +133,7 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
  if end>aml.len(){return Err(ExecError::InvalidMethod)}
  let mut m=Machine{locals:[0;8],args:[0;7],steps:0};m.args[..args.len()].copy_from_slice(args);
- let mut r=Reader{bytes:aml,pos:start,end};let v=m.execute(&mut r,0)?.unwrap_or(0);Ok(AmlValue::Integer(v))
+ let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(AmlValue::Integer(value))
 }
 #[cfg(test)]
 mod tests{
