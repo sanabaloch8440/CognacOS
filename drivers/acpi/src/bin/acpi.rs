@@ -393,7 +393,14 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
     // arm and then clearing it at the end silently publishes zero children.
     let mut information = 0usize;
     let status = match unsafe { (*stack).minor_function } {
-        IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
+        // The ACPI bus FDO may start once its firmware namespace is ready.
+        // A child PDO must not be reported started until its selected _PRS
+        // configuration has been programmed through _SRS and the resulting
+        // _CRS has been verified. The typed-buffer AML path is not ready yet.
+        IRP_MN_START_DEVICE if device==unsafe{ACPI_BUS_DEVICE}
+            && STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
+        // Fail closed rather than falsely publishing an unprogrammed PDO.
+        IRP_MN_START_DEVICE if device!=unsafe{ACPI_BUS_DEVICE} => STATUS_NOT_SUPPORTED,
         IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
         IRP_MN_QUERY_DEVICE_RELATIONS => {
             let relation_type=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
