@@ -106,8 +106,10 @@ pub fn schedule_boot_drivers_with_initialized(
         if node.start_type>1{return Err(ScheduleError::InvalidStartType)}
         if nodes[..i].iter().any(|previous|eq(previous.name,node.name)){return Err(ScheduleError::DuplicateService)}
     }
+    let target=count-state[..count].iter().filter(|value|**value==1).count();
+    if output.len()<target{return Err(ScheduleError::BufferTooSmall)}
     let mut emitted=0;
-    while emitted<count{
+    while emitted<target{
         let mut best:Option<usize>=None;
         for i in 0..count{
             if state[i]!=0{continue}
