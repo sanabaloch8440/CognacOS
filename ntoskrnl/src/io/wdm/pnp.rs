@@ -179,6 +179,73 @@ const MAX_PNP_DEVICES:usize=128;
 impl PnpManagerState { const fn new()->Self{Self{relations:[PnpRelation::EMPTY;MAX_PNP_DEVICES],managed_irps:[ManagedPnpIrp::EMPTY;MAX_PNP_MANAGER_IRPS],enumerations:0}} }
 static PNP_MANAGER:IrqSpinLock<PnpManagerState>=IrqSpinLock::new(PnpManagerState::new());
 
+/// Driver AddDevice registration for bus-enumerated PDOs. This project-owned
+/// registration point lets loaded WDM function/filter drivers bind to children
+/// discovered after DriverEntry without relying on a private DRIVER_EXTENSION
+/// layout. Callbacks always run outside the PnP and WDM locks.
+const MAX_PNP_DEVICE_DRIVERS:usize=32;
+const MAX_PNP_DRIVER_BINDINGS:usize=MAX_PNP_DEVICES*4;
+pub type PnpAddDeviceRoutine=unsafe extern "win64" fn(*mut c_void,*mut DeviceObject)->i32;
+#[derive(Clone,Copy)]
+struct PnpDeviceDriver { used:bool, driver:*mut c_void, add_device:Option<PnpAddDeviceRoutine> }
+unsafe impl Send for PnpDeviceDriver {}
+impl PnpDeviceDriver { const EMPTY:Self=Self{used:false,driver:ptr::null_mut(),add_device:None}; }
+#[derive(Clone,Copy)]
+struct PnpDriverBinding { used:bool, pending:bool, driver:*mut c_void, pdo:*mut DeviceObject }
+unsafe impl Send for PnpDriverBinding {}
+impl PnpDriverBinding { const EMPTY:Self=Self{used:false,pending:false,driver:ptr::null_mut(),pdo:ptr::null_mut()}; }
+static PNP_DEVICE_DRIVERS:IrqSpinLock<[PnpDeviceDriver;MAX_PNP_DEVICE_DRIVERS]>=IrqSpinLock::new([PnpDeviceDriver::EMPTY;MAX_PNP_DEVICE_DRIVERS]);
+static PNP_DRIVER_BINDINGS:IrqSpinLock<[PnpDriverBinding;MAX_PNP_DRIVER_BINDINGS]>=IrqSpinLock::new([PnpDriverBinding::EMPTY;MAX_PNP_DRIVER_BINDINGS]);
+
+fn io_pnp_bind_driver(driver:*mut c_void,pdo:*mut DeviceObject,callback:PnpAddDeviceRoutine)->i32 {
+ if driver.is_null()||pdo.is_null(){return STATUS_INVALID_PARAMETER}
+ {
+  let mut bindings=PNP_DRIVER_BINDINGS.lock();
+  if bindings.iter().any(|b|b.used&&b.driver==driver&&b.pdo==pdo){return STATUS_SUCCESS}
+  let Some(slot)=bindings.iter_mut().find(|b|!b.used) else{return STATUS_INSUFFICIENT_RESOURCES};
+  *slot=PnpDriverBinding{used:true,pending:true,driver,pdo};
+ }
+ let status=unsafe{callback(driver,pdo)};
+ let mut bindings=PNP_DRIVER_BINDINGS.lock();
+ if let Some(slot)=bindings.iter_mut().find(|b|b.used&&b.driver==driver&&b.pdo==pdo&&b.pending) {
+  if status==STATUS_SUCCESS {slot.pending=false;} else {*slot=PnpDriverBinding::EMPTY;}
+ }
+ status
+}
+
+/// Register a WDM-style AddDevice callback for bus-enumerated children.
+/// The callback decides whether a PDO belongs to its hardware family and
+/// creates/attaches its FDO on a match. Existing children are considered
+/// immediately; future BusRelations updates trigger the same callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoPnPRegisterDeviceDriver(
+ driver:*mut c_void,add_device:Option<PnpAddDeviceRoutine>
+)->i32 {
+ if driver.is_null()||add_device.is_none(){return STATUS_INVALID_PARAMETER}
+ let callback=add_device.unwrap();
+ {
+  let mut drivers=PNP_DEVICE_DRIVERS.lock();
+  if let Some(slot)=drivers.iter_mut().find(|d|d.used&&d.driver==driver){slot.add_device=Some(callback);}
+  else if let Some(slot)=drivers.iter_mut().find(|d|!d.used){*slot=PnpDeviceDriver{used:true,driver,add_device:Some(callback)};}
+  else{return STATUS_INSUFFICIENT_RESOURCES}
+ }
+ let children={
+  let manager=PNP_MANAGER.lock();
+  let mut list=[ptr::null_mut::<DeviceObject>();MAX_PNP_DEVICES];
+  let mut n=0usize;
+  for relation in manager.relations.iter().filter(|r|r.used) {
+   if n<list.len()&&!list[..n].contains(&relation.child){list[n]=relation.child;n+=1;}
+  }
+  (list,n)
+ };
+ let mut result=STATUS_SUCCESS;
+ for pdo in children.0[..children.1].iter().copied(){
+  let status=io_pnp_bind_driver(driver,pdo,callback);
+  if status!=STATUS_SUCCESS&&status!=STATUS_NOT_SUPPORTED&&result==STATUS_SUCCESS{result=status;}
+ }
+ result
+}
+
 /// Publish bus relations after a successful IRP_MN_QUERY_DEVICE_RELATIONS
 /// completion. The relations object and every child pointer must be kernel-owned
 /// and readable; unknown/deleting objects are rejected before any state changes.
@@ -219,6 +286,23 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
  for child in removed[..removed_count].iter().copied(){
   let status=unsafe{IoPnPRemoveDevice(child)};
   crate::ntoskrnl::pnp::remove_pnp_device_object(child,status);
+  let mut bindings=PNP_DRIVER_BINDINGS.lock();
+  for binding in bindings.iter_mut().filter(|b|b.used&&b.pdo==child){*binding=PnpDriverBinding::EMPTY;}
+ }
+ // Bind newly published PDOs after releasing the relation and WDM locks.
+ let drivers={
+  let registered=PNP_DEVICE_DRIVERS.lock();
+  let mut list=[PnpDeviceDriver::EMPTY;MAX_PNP_DEVICE_DRIVERS];
+  let mut n=0usize;
+  for entry in registered.iter().filter(|d|d.used){list[n]=*entry;n+=1;}
+  (list,n)
+ };
+ for child in children[..count].iter().copied(){
+  for entry in drivers.0[..drivers.1].iter().copied(){
+   if let Some(callback)=entry.add_device {
+    let _=io_pnp_bind_driver(entry.driver,child,callback);
+   }
+  }
  }
  STATUS_SUCCESS
 }
