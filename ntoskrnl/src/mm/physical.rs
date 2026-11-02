@@ -329,9 +329,9 @@ fn drain_deferred_frees_locked() {
         if slot.state.compare_exchange(2, 1, core::sync::atomic::Ordering::Acquire,
             core::sync::atomic::Ordering::Relaxed).is_err() { continue; }
         let page = slot.page.load(core::sync::atomic::Ordering::Relaxed);
-        if free.1 == FREE_CAPACITY {
+        if free.1 == FREE_CAPACITY || release_pfn_owner(page).is_err() {
             slot.state.store(2, core::sync::atomic::Ordering::Release);
-            break;
+            continue;
         }
         free.0[free.1] = page;
         free.1 += 1;
