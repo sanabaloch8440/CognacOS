@@ -544,6 +544,26 @@ mod tests {
         assert_eq!(manager.execute_method(handle,&substituted,method,&[],&gate),Err(TableError::InvalidHandle));
     }
     #[test]
+    fn method_dispatch_returns_typed_resource_buffer_under_table_gate(){
+        let aml=[0x14,0x0d,b'_',b'C',b'R',b'S',0,0xa4,0x11,0x05,0x0a,4,0x79,0x00];
+        let dsdt=definition_table(*b"DSDT",&aml);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        let handle=manager.load_dsdt(&dsdt,&gate).unwrap();
+        let method=manager.namespace().find_child(0,*b"_CRS").unwrap();
+        let mut runtime=crate::acpi_device::IntegerMethodInvoker;
+        let value=manager.evaluate_method_value(handle,&dsdt,method,&gate,&mut runtime).unwrap();
+        match value{
+            AcpiMethodValue::Buffer{bytes,length}=>{
+                assert_eq!(length,4);
+                assert_eq!(&bytes[..4],&[0x79,0x00,0,0]);
+            }
+            _=>panic!("method result was not a typed AML Buffer"),
+        }
+        let blocked=TestGate{busy:core::sync::atomic::AtomicBool::new(true),entered:core::sync::atomic::AtomicBool::new(false)};
+        assert_eq!(manager.evaluate_method_value(handle,&dsdt,method,&blocked,&mut runtime),Err(TableError::ExecutionBusy));
+    }
+
+    #[test]
     fn execution_barrier_drains_active_methods_and_blocks_new_entries(){
         let barrier=AmlExecutionBarrier::new(8);
         assert_eq!(barrier.enter_method(),Ok(()));
