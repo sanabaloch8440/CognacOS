@@ -811,6 +811,44 @@ mod tests {
     }
 
     #[test]
+    fn copy_read_preserves_buffer_on_vdl_miss_and_accepts_zero_length() {
+        let _test_guard = TestGuard::acquire();
+        let mut file: FileObject = unsafe { core::mem::zeroed() };
+        let sizes = CcFileSizes {
+            allocation_size: 4096, file_size: 4096, valid_data_length: 4,
+        };
+        unsafe { cc_initialize_cache_map(&mut file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
+
+        let mut output = [0xA5u8; 2];
+        let mut iosb = IoStatusBlock {
+            status: crate::nt_abi::io::IO_STATUS_BLOCK_STATUS { status: 0x1234 },
+            information: 77,
+        };
+        let crossing_vdl = 3i64;
+        assert_eq!(unsafe {
+            cc_copy_read(&mut file, &crossing_vdl, 2, 1, output.as_mut_ptr().cast(), &mut iosb)
+        }, 0);
+        assert_eq!(output, [0xA5; 2], "a failed cache read must not partially modify the caller buffer");
+        assert_eq!(unsafe { core::ptr::read_unaligned(iosb.cast::<u8>().cast::<i32>()) }, 0x1234);
+        assert_eq!(iosb.information, 77);
+
+        let zero_offset = 0i64;
+        assert_eq!(unsafe {
+            cc_copy_read(&mut file, &zero_offset, 0, 1, core::ptr::null_mut(), &mut iosb)
+        }, 1);
+        assert_eq!(unsafe { core::ptr::read_unaligned(iosb.cast::<u8>().cast::<i32>()) }, STATUS_SUCCESS);
+        assert_eq!(iosb.information, 0);
+
+        let negative_offset = -1i64;
+        assert_eq!(unsafe {
+            cc_copy_read(&mut file, &negative_offset, 1, 1, output.as_mut_ptr().cast(), &mut iosb)
+        }, 0);
+        assert_eq!(output, [0xA5; 2]);
+
+        assert_eq!(unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()) }, 1);
+    }
+
+    #[test]
     fn set_file_sizes_clips_cached_pages_to_valid_data_length() {
         let _test_guard = TestGuard::acquire();
         let mut file: FileObject = unsafe { core::mem::zeroed() };
