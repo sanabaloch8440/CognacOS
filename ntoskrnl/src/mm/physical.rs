@@ -897,6 +897,22 @@ pub unsafe fn try_allocate_pages_in_range(
         } else { page as *mut u8 };
         unsafe { ptr::write_bytes(pointer, 0, PAGE_SIZE as usize); }
     }
+    for (index, page) in output[..count].iter().copied().enumerate() {
+        if super::pfn::register_allocation(page).is_err() {
+            for rollback in output[..count].iter().copied() {
+                if super::pfn::snapshot(rollback).is_some() {
+                    let _ = super::pfn::release_allocation(rollback);
+                }
+                let pages = if rollback >= PHYSICAL_LIMIT { &mut *high_free } else { &mut *low_free };
+                if pages.1 < FREE_CAPACITY {
+                    pages.0[pages.1] = rollback;
+                    pages.1 += 1;
+                }
+            }
+            let _ = index;
+            return Err(AllocError::OutOfMemory);
+        }
+    }
     if count == 0 { Err(AllocError::OutOfMemory) } else { Ok(count) }
 }
 
