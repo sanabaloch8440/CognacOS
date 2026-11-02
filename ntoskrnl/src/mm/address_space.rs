@@ -439,7 +439,18 @@ impl AddressSpace {
                     } else {
                         unsafe{leaf.write(0);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
                         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
-                        if unsafe{crate::memory::free_page(physical.1)}.is_err(){false}else{
+                        if super::pfn::release_mapping(physical.1).is_err() {
+                            unsafe{leaf.write(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+                            crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                            false
+                        } else if unsafe{crate::memory::free_page(physical.1)}.is_err() {
+                            // The allocation owner was not released. Restore its
+                            // mapping reference before republishing the old PTE.
+                            let _ = super::pfn::acquire_mapping(physical.1);
+                            unsafe{leaf.write(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+                            crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                            false
+                        } else {
                             pages[index].paged_out=true;pages[index].pagefile_slot=slot;pages[index].busy=false;
                             pages[index].age=WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed);
                             true
