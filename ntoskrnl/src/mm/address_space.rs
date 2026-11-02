@@ -964,11 +964,6 @@ impl AddressSpace {
             *page=WorkingSetPage::EMPTY;
         }
         crate::process::detach_address_space(self.root);
-        let metadata = take_vm_metadata_locked(self.root)?;
-        drop(_address_space_guard);
-        if !crate::ntoskrnl::rtl_runtime::pool_free_vm_tagged(metadata.cast::<u8>(), Some(0x4d4d_564d)) {
-            return Err(VmError::OutOfMemory);
-        }
         // The KUSER mapping owns a private low page-table path so that setting
         // USER on its ancestors cannot expose or mutate kernel identity leaves.
         // The process may have discarded its temporary AddressSpace wrapper;
@@ -983,8 +978,14 @@ impl AddressSpace {
             if table != 0 { unsafe { crate::memory::free_page(table) }.map_err(|_| VmError::OutOfMemory)?; }
         }
         self.kuser_tables = [0; 3];
-        unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
+        let old_root = self.root;
+        unsafe { crate::memory::free_page(old_root) }.map_err(|_| VmError::OutOfMemory)?;
+        let metadata = take_vm_metadata_locked(old_root)?;
         self.root = 0;
+        drop(_address_space_guard);
+        if !crate::ntoskrnl::rtl_runtime::pool_free_vm_tagged(metadata.cast::<u8>(), Some(0x4d4d_564d)) {
+            return Err(VmError::OutOfMemory);
+        }
         Ok(())
     }
 
