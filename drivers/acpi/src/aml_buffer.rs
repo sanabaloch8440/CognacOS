@@ -103,6 +103,24 @@ mod tests {
     }
 
     #[test]
+    fn decodes_buffer_returned_by_control_method(){
+        // Return(Buffer(4) { 0x79, 0x00 }) with an exact enclosing package.
+        let body=[0xa4,0x11,0x05,0x0a,4,0x79,0x00];
+        let mut output=[0xa5;8];
+        assert_eq!(decode_returned_buffer(&body,&mut output),Ok(4));
+        assert_eq!(&output[..4],&[0x79,0x00,0,0]);
+        assert_eq!(output[4],0xa5);
+    }
+    #[test]
+    fn rejects_malformed_or_oversized_method_buffer_results(){
+        assert_eq!(decode_returned_buffer(&[0xa4,0x11,0x05,0x0a,8,1,2],&mut [0;4]),
+            Err(BufferError::BufferTooLarge));
+        assert_eq!(decode_returned_buffer(&[0xa4,0x11,0x04,0x0a,1,1,2],&mut [0;4]),
+            Err(BufferError::InvalidPackage));
+        assert_eq!(decode_returned_buffer(&[0xa4,0x11,0x05,0x0a,1,1,2],&mut [0;4]),
+            Err(BufferError::InitializerTooLong));
+    }
+    #[test]
     fn rejects_non_buffer_and_oversized_buffer(){
         let aml=[0x08,b'_',b'C',b'R',b'S',0x0a,1];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
