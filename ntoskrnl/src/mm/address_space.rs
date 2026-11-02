@@ -893,9 +893,13 @@ impl AddressSpace {
                     let pt = (e2 & ADDR) as *const u64;
                     for d in 0..512usize {
                         let pte = unsafe { pt.add(d).read() };
-                        if pte & (PRESENT | USER) == (PRESENT | USER)
-                            && (pte & EXTERNAL_USER != 0 || crate::ntoskrnl::mm::runtime::is_page_locked(pte & ADDR)) {
-                            return Err(VmError::PermissionDenied);
+                        if pte & (PRESENT | USER) == (PRESENT | USER) {
+                            if pte & EXTERNAL_USER != 0 || crate::ntoskrnl::mm::runtime::is_page_locked(pte & ADDR) {
+                                return Err(VmError::PermissionDenied);
+                            }
+                            if let Some((_, mappings, _)) = super::pfn::snapshot(pte & ADDR) {
+                                if mappings == 0 { return Err(VmError::AddressSpaceBusy); }
+                            }
                         }
                     }
                 }
@@ -924,7 +928,17 @@ impl AddressSpace {
                         if pte & (PRESENT | USER) == (PRESENT | USER) {
                             if pte & EXTERNAL_USER == 0 {
                                 let physical = pte & ADDR;
-                                let _ = super::pfn::release_mapping(physical);
+                                // Clear this leaf and complete a global shootdown
+                                // before dropping its mapping reference or owner.
+                                unsafe { pte_slot.write(0); }
+                                let va = ((pml4_index as u64) << 39)
+                                    | ((a as u64) << 30) | ((b as u64) << 21) | ((d as u64) << 12);
+                                unsafe { asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags)); }
+                                crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                                match super::pfn::release_mapping(physical) {
+                                    Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
+                                    Err(_) => return Err(VmError::AddressSpaceBusy),
+                                }
                                 unsafe { crate::memory::free_page(physical) }.map_err(|_| VmError::OutOfMemory)?;
                             }
                         }
