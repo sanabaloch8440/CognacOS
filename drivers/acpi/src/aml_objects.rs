@@ -158,6 +158,15 @@ mod tests {
         let v=arena.get(id).unwrap();assert_eq!(end,6);assert_eq!(v.kind,AmlValueKind::Buffer);
         assert_eq!(v.byte_length,4);assert_eq!(&v.bytes[..4],&[0xaa,0xbb,0,0]);
     }
+    #[test] fn evaluates_computed_buffer_size_term_arguments(){
+        // Buffer(Add(ByteConst(2), ByteConst(2), NullTarget), { 0xaa, 0xbb }).
+        let bytes=[0x11,0x09,0x72,0x0a,2,0x0a,2,0x00,0xaa,0xbb];
+        let mut arena=AmlObjectArena::new();
+        let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
+        let value=arena.get(id).unwrap();
+        assert_eq!(end,bytes.len());assert_eq!(value.kind,AmlValueKind::Buffer);
+        assert_eq!(value.byte_length,4);assert_eq!(&value.bytes[..4],&[0xaa,0xbb,0,0]);
+    }
     #[test] fn decodes_nested_packages_by_arena_reference(){
         // Package(2) { One, Package(1) { ByteConst(9) } }
         let bytes=[0x12,0x08,2,0x01,0x12,0x04,1,0x0a,9];
