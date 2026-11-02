@@ -440,6 +440,31 @@ unsafe fn start_pci_device(
     STATUS_SUCCESS
 }
 
+unsafe extern "win64" fn query_pdo_ide_resources(
+    context:PVOID,
+    output:*mut cognacos_nt_abi::bus::PCI_IDE_RESOURCES,
+)->i32{
+    if context.is_null()||output.is_null(){return STATUS_INVALID_PARAMETER}
+    let ext=context.cast::<PciPdoExtension>();
+    if unsafe{(*ext).magic!=PCI_PDO_EXTENSION_MAGIC||(*ext).version!=1}{return STATUS_INVALID_PARAMETER}
+    if unsafe{(*ext).started==0||(*ext).ide_ports_valid==0}{return STATUS_DEVICE_NOT_READY}
+    let ports=unsafe{(*ext).ide_ports};
+    let result=cognacos_nt_abi::bus::PCI_IDE_RESOURCES{
+        primary:cognacos_nt_abi::bus::PCI_IDE_CHANNEL_RESOURCES{
+            command_base:ports.primary.command_base,control_base:ports.primary.control_base,
+            flags:ports.primary.native as u32,
+        },
+        secondary:cognacos_nt_abi::bus::PCI_IDE_CHANNEL_RESOURCES{
+            command_base:ports.secondary.command_base,control_base:ports.secondary.control_base,
+            flags:ports.secondary.native as u32,
+        },
+        bus_master_base:ports.bus_master_base.unwrap_or(0),
+        flags:(ports.bus_master_capable as u16)|((ports.bus_master_base.is_some() as u16)<<1),
+    };
+    unsafe{output.write(result)}
+    STATUS_SUCCESS
+}
+
 unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
@@ -521,6 +546,28 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
             let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut PCI_BUS_INTERFACE>()) };
             if guid.is_null() || output.is_null() {
                 STATUS_INVALID_PARAMETER
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_IDE_RESOURCE_INTERFACE {
+                if version as u32 != cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE_VERSION
+                    || (size as usize) < core::mem::size_of::<cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE>()
+                    || device.is_null() {
+                    STATUS_NOT_SUPPORTED
+                } else {
+                    let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
+                    if extension.is_null()||unsafe{(*extension).magic!=PCI_PDO_EXTENSION_MAGIC||(*extension).version!=1} {
+                        STATUS_NOT_SUPPORTED
+                    } else {
+                        let interface=cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE{
+                            header:cognacos_nt_abi::bus::INTERFACE_HEADER{
+                                size:core::mem::size_of::<cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE>() as u16,
+                                version:cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE_VERSION as u16,
+                                context:extension.cast(),interface_reference:None,interface_dereference:None,
+                            },
+                            query_resources:Some(query_pdo_ide_resources),
+                        };
+                        unsafe{core::ptr::write_unaligned(output.cast::<cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE>(),interface);}
+                        STATUS_SUCCESS
+                    }
+                }
             } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_DEVICE_INTERFACE {
                 if version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION
                     || (size as usize) < core::mem::size_of::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>()
