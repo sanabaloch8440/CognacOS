@@ -104,6 +104,8 @@ pub struct IrqOverride { pub bus: u8, pub source_irq: u8, pub gsi: u32, pub acti
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct LocalApicNmi { pub processor_uid:u8,pub flags:u16,pub lint:u8 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct MadtWakeupMailbox { pub address:u64 }
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct X2ApicNmi { pub processor_uid:u32,pub flags:u16,pub lint:u8 }
 pub struct MadtInfo {
     pub local_apic_address: u64,
@@ -116,9 +118,10 @@ pub struct MadtInfo {
     pub irq_override_count: usize,
     pub local_apic_nmis:[LocalApicNmi;16],pub local_apic_nmi_count:usize,
     pub x2apic_nmis:[X2ApicNmi;16],pub x2apic_nmi_count:usize,
+    pub wakeup_mailbox:Option<MadtWakeupMailbox>,
 }
 impl MadtInfo {
-    pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0 };
+    pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0,wakeup_mailbox:None };
 }
 fn u32le(b: &[u8], o: usize) -> Result<u32, AcpiError> {
     let s = b.get(o..o + 4).ok_or(AcpiError::Truncated)?;
@@ -180,6 +183,11 @@ pub fn parse_madt(bytes: &[u8]) -> Result<MadtInfo, AcpiError> {
                 let flags = u32le(e, 8)?;
                 out.cpus[out.cpu_count] = CpuEntry { processor_uid: u32le(e, 12)?, apic_id: u32le(e, 4)?, enabled: flags & 3 != 0, x2apic: true };
                 out.cpu_count += 1;
+            }
+            16 if size >= 16 => {
+                let address=u64::from_le_bytes(e[4..12].try_into().map_err(|_|AcpiError::Truncated)?);
+                if address==0||address&0x3f!=0{return Err(AcpiError::MalformedEntry)}
+                out.wakeup_mailbox=Some(MadtWakeupMailbox{address});
             }
             10 if size >= 12 => {
                 if out.x2apic_nmi_count==out.x2apic_nmis.len(){return Err(AcpiError::TooManyEntries)}
