@@ -97,6 +97,16 @@ mod tests {
     unsafe fn unused_write(_: usize, _: u32, _: *const u8) -> i32 { 0 }
 
     #[test]
+    fn paging_requests_reject_unaligned_buffers_before_provider_lookup() {
+        let mut bytes = [0u8; PAGE_SIZE + 1];
+        let unaligned = unsafe { bytes.as_mut_ptr().add(1) };
+        assert_eq!(unsafe { read_pagefile_page(0, unaligned) }, Err(PagingIoError::InvalidBuffer));
+        assert_eq!(unsafe { write_pagefile_page(0, unaligned.cast_const()) }, Err(PagingIoError::InvalidBuffer));
+        assert_eq!(unsafe { read_pagefile_page(0, core::ptr::null_mut()) }, Err(PagingIoError::InvalidBuffer));
+        assert_eq!(unsafe { write_pagefile_page(0, core::ptr::null()) }, Err(PagingIoError::InvalidBuffer));
+    }
+
+    #[test]
     fn backend_capacity_is_bounded_and_nonzero() {
         let valid = PagingBackend { context: 0, slot_count: 1, read_page: unused_read, write_page: unused_write };
         assert!(valid.validate().is_ok());

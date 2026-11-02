@@ -11,10 +11,10 @@ static mut BOOT_GROUP_DEPENDENCY_REFS: [[&[u16]; MAX_SERVICE_DEPENDENCIES]; MAX_
 static mut BOOT_DRIVER_OBJECTS: [core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>; MAX_BOOT_SERVICES] =
     [const { core::mem::MaybeUninit::uninit() }; MAX_BOOT_SERVICES];
 static mut BOOT_DRIVER_NAMES: [[u16; 128]; MAX_BOOT_SERVICES] = [[0; 128]; MAX_BOOT_SERVICES];
-static mut BOOT_DRIVER_RECORDS: [crate::ntoskrnl::io::driver_init::DriverInitRecord; MAX_BOOT_SERVICES] =
-    [crate::ntoskrnl::io::driver_init::DriverInitRecord {
+static mut BOOT_DRIVER_RECORDS: [crate::ntoskrnl::driver_init::DriverInitRecord; MAX_BOOT_SERVICES] =
+    [crate::ntoskrnl::driver_init::DriverInitRecord {
         service_index: usize::MAX, error_control: 0,
-        status: crate::ntoskrnl::io::driver_init::DriverInitStatus::NotRun,
+        status: crate::ntoskrnl::driver_init::DriverInitStatus::NotRun,
     }; MAX_BOOT_SERVICES];
 static mut BOOT_DRIVER_SCHEDULE: [usize; MAX_BOOT_SERVICES] = [0; MAX_BOOT_SERVICES];
 static mut BOOT_DRIVER_SCHEDULER_STATE: [u8; MAX_BOOT_SERVICES] = [0; MAX_BOOT_SERVICES];
@@ -28,9 +28,9 @@ static mut BOOT_DRIVER_IMAGE_BUFFER: [u8; 8 * 1024 * 1024] = [0; 8 * 1024 * 1024
 unsafe fn initialize_registry_boot_drivers(
     registry: &registry_init::SystemRegistryState,
     preinitialized: &[&[u16]],
-) -> Result<crate::ntoskrnl::io::driver_init::BootInitReport, crate::ntoskrnl::io::driver_init::DriverInitError> {
+) -> Result<crate::ntoskrnl::driver_init::BootInitReport, crate::ntoskrnl::driver_init::DriverInitError> {
     use crate::ntoskrnl::driver_order::{GroupTagOrder, ServiceNode};
-    use crate::ntoskrnl::io::driver_init::{self, DriverInitStatus};
+    use crate::ntoskrnl::driver_init::{self, DriverInitStatus};
     use crate::ntoskrnl::cm::hive::Hive;
 
     let service_names_snapshot: &'static [[u16; 128]] = registry.boot_driver_services;

@@ -312,6 +312,10 @@ impl AddressSpace {
     /// entry serializes simultaneous faults and trim/teardown for the same page.
     pub fn handle_page_fault(&mut self,address:u64,error_code:u64)->bool {
         const PF_PRESENT:u64=1; const PF_WRITE:u64=2; const PF_USER:u64=4; const PF_RESERVED:u64=8; const PF_INSTRUCTION:u64=16;
+        if error_code & (PF_PRESENT | PF_WRITE | PF_USER) == (PF_PRESENT | PF_WRITE | PF_USER)
+            && error_code & (PF_RESERVED | PF_INSTRUCTION) == 0 {
+            return crate::ntoskrnl::mm::section::handle_copy_on_write(self.root, address);
+        }
         if error_code&(PF_PRESENT|PF_USER)!=PF_USER || error_code&PF_RESERVED!=0 || !is_user_range(address,1) {return false}
         let page_va=address&!(PAGE_SIZE-1);
         let (area, restore_slot, ws_index)={
@@ -768,6 +772,39 @@ impl AddressSpace {
             let _ = unsafe { crate::memory::free_page(child) };
         }
         Ok(physical)
+    }
+
+
+    /// Atomically replace one present user leaf without tearing down its page-table
+    /// hierarchy. Used by copy-on-write so an allocation failure cannot leave a
+    /// previously valid shared mapping absent.
+    pub unsafe fn replace_user_page(
+        &mut self,
+        virtual_address: u64,
+        expected_physical: u64,
+        new_physical: u64,
+        writable: bool,
+        executable: bool,
+    ) -> Result<(), VmError> {
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        if !is_user_range(virtual_address, PAGE_SIZE)
+            || virtual_address & (PAGE_SIZE - 1) != 0
+            || expected_physical & (PAGE_SIZE - 1) != 0
+            || new_physical & (PAGE_SIZE - 1) != 0
+            || new_physical >= 0x1_0000_0000
+            || writable && executable
+        { return Err(VmError::InvalidAddress); }
+        let Some((leaf, entry)) = user_leaf(self.root, virtual_address) else { return Err(VmError::NotMapped); };
+        if entry & ADDR != expected_physical { return Err(VmError::AddressSpaceBusy); }
+        let mut flags = PRESENT | USER;
+        if writable { flags |= WRITE; }
+        if !executable { flags |= NX; }
+        unsafe {
+            leaf.write(new_physical | flags);
+            asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+        }
+        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+        Ok(())
     }
 
     /// Destroy this address space after switching CR3 away from it. Frees user

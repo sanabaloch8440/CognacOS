@@ -40,9 +40,11 @@ struct View {
     length: u64,
     first_page: usize,
     page_count: usize,
+    writable: bool,
+    private_pages: [u64; MAX_SECTION_PAGES],
 }
 impl View {
-    const EMPTY: Self = Self { live:false, section_slot:0, generation:0, root:0, base:0, length:0, first_page:0, page_count:0 };
+    const EMPTY: Self = Self { live:false, section_slot:0, generation:0, root:0, base:0, length:0, first_page:0, page_count:0, writable:false, private_pages:[0; MAX_SECTION_PAGES] };
 }
 struct RegistryLock(AtomicBool);
 impl RegistryLock {
@@ -149,12 +151,14 @@ pub fn map_view(handle: u64, root: u64, base: u64, offset: u64, length: u64, wri
     let mut space = unsafe { AddressSpace::attach_existing(root) }.map_err(status)?;
     for i in 0..pages {
         let va = base.checked_add(i as u64 * PAGE).ok_or(STATUS_INVALID_PARAMETER)?;
-        if let Err(e) = unsafe { space.map_user_page(va, section.pages[(offset / PAGE) as usize + i], writable, executable) } {
+        // Writable section views start read-only. The first write fault creates a
+        // private page for this view, preserving other mappings of the section.
+        if let Err(e) = unsafe { space.map_user_page(va, section.pages[(offset / PAGE) as usize + i], false, executable) } {
             for undo in (0..i).rev() { let _ = unsafe { space.unmap_user_page(base + undo as u64 * PAGE) }; }
             return Err(status(e));
         }
     }
-    views[view_slot] = View { live:true, section_slot:slot, generation, root, base, length, first_page:(offset/PAGE) as usize, page_count:pages };
+    views[view_slot] = View { live:true, section_slot:slot, generation, root, base, length, first_page:(offset/PAGE) as usize, page_count:pages, writable, private_pages:[0; MAX_SECTION_PAGES] };
     sections[slot].references = new_refs;
     Ok(base)
 }
@@ -171,6 +175,10 @@ pub fn unmap_view(root: u64, base: u64) -> i32 {
     // registered and can be diagnosed/retried instead of half-releasing refs.
     for i in 0..view.page_count {
         if space.translate_user(view.base + i as u64 * PAGE, false).is_err() { return STATUS_INVALID_PARAMETER; }
+        let private = view.private_pages[i];
+        if private != 0 && crate::ntoskrnl::mm::runtime::is_page_locked(private) {
+            return STATUS_INVALID_PARAMETER;
+        }
     }
     for i in (0..view.page_count).rev() {
         if unsafe { space.unmap_user_page(view.base + i as u64 * PAGE) }.is_err() { return STATUS_INVALID_PARAMETER; }
@@ -181,8 +189,56 @@ pub fn unmap_view(root: u64, base: u64) -> i32 {
     }
     let pages = maybe_destroy_locked(sections, views, view.section_slot);
     drop(_guard);
+    for page in view.private_pages.iter().copied().filter(|page| *page != 0) {
+        let _ = unsafe { super::physical::free_page(page) };
+    }
     if let Some(pages) = pages { unsafe { release_pages(&pages); } }
     STATUS_SUCCESS
+}
+
+
+/// Resolve a write-protection fault on a writable section view using
+/// per-view copy-on-write. The section's original backing page remains owned
+/// by the section; the new frame is owned by this view until it is unmapped.
+pub fn handle_copy_on_write(root: u64, address: u64) -> bool {
+    if root == 0 || !super::address_space::is_user_range(address, 1) { return false; }
+    let page_va = address & !(PAGE - 1);
+    let _guard = LOCK.lock();
+    let sections = unsafe { &*core::ptr::addr_of!(SECTIONS) };
+    let views = unsafe { &mut *core::ptr::addr_of_mut!(VIEWS) };
+    let Some(view_index) = views.iter().position(|view| {
+        view.live && view.writable && view.root == root
+            && page_va >= view.base && page_va < view.base.saturating_add(view.length)
+    }) else { return false; };
+    let view = views[view_index];
+    let page_index = ((page_va - view.base) / PAGE) as usize;
+    if page_index >= view.page_count || view.private_pages[page_index] != 0 { return false; }
+    let Some(section) = sections.get(view.section_slot)
+        .filter(|section| section.live && section.generation == view.generation) else { return false; };
+    let source = section.pages[view.first_page + page_index];
+    let destination = match unsafe { super::physical::allocate_page() } {
+        Ok(page) => page,
+        Err(_) => return false,
+    };
+    let Some(source_ptr) = super::physical::physical_access_pointer(source) else {
+        let _ = unsafe { super::physical::free_page(destination) };
+        return false;
+    };
+    let Some(destination_ptr) = super::physical::physical_access_pointer(destination) else {
+        let _ = unsafe { super::physical::free_page(destination) };
+        return false;
+    };
+    unsafe { core::ptr::copy_nonoverlapping(source_ptr, destination_ptr, PAGE as usize); }
+    let mut space = match unsafe { AddressSpace::attach_existing(root) } {
+        Ok(space) => space,
+        Err(_) => { let _ = unsafe { super::physical::free_page(destination) }; return false; }
+    };
+    if unsafe { space.replace_user_page(page_va, source, destination, true, false) }.is_err() {
+        let _ = unsafe { super::physical::free_page(destination) };
+        return false;
+    }
+    views[view_index].private_pages[page_index] = destination;
+    true
 }
 
 /// Copy bytes to/from section backing with bounds and overflow checks.
@@ -218,5 +274,7 @@ mod tests {
         assert_eq!(create(0, 1, &mut handle), STATUS_INVALID_PARAMETER);
         assert_eq!(reference(0,1), STATUS_INVALID_HANDLE);
         assert_eq!(dereference(0,1), STATUS_INVALID_HANDLE);
+        assert!(!handle_copy_on_write(0, 0x1000));
+        assert!(!handle_copy_on_write(1, 0));
     }
 }
