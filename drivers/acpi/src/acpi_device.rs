@@ -228,6 +228,14 @@ mod tests{
         let result=evaluate_device_identity(&ns,&aml,dev,&mut FixedMethods).unwrap();
         assert_eq!(result.sta,0x0b);assert_eq!(result.adr,Some(0x0002_0003));
     }
+    #[test]fn accepts_pci_address_identity_without_hid(){
+        let aml=[0x5b,0x82,0x0d,b'D',b'E',b'V',b'0',
+            0x08,b'_',b'A',b'D',b'R',0x0c,0x34,0x12,0,0];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let dev=ns.find_child(0,*b"DEV0").unwrap();
+        let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
+        assert!(!result.has_hid);assert_eq!(result.adr,Some(0x1234));
+    }
     struct TypedMethods;
     impl AcpiMethodInvoker for TypedMethods{
         fn evaluate_value(&mut self,ns:&AmlNamespace,_:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
