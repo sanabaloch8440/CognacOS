@@ -165,12 +165,17 @@ unsafe fn allocate_id_string(id:&acpi::acpi_device::AcpiId)->Result<usize,i32>{
     Ok(buffer as usize)
 }
 
-unsafe fn allocate_id_list(ids:&[acpi::acpi_device::AcpiId])->Result<usize,i32>{
+unsafe fn allocate_prefixed_id_list(ids:&[acpi::acpi_device::AcpiId])->Result<usize,i32>{
     if ids.is_empty(){return Err(STATUS_NOT_SUPPORTED);}
-    let mut units=1usize; // final second NUL for a MULTI_SZ
+    // ACPI enumerator IDs use the ACPI\\ namespace prefix; the wildcard
+    // form is also emitted to match the WDK/ReactOS ACPI bus ID convention.
+    let mut units=1usize;
     for id in ids {
-        if id.length==0{return Err(STATUS_INVALID_PARAMETER);}
-        units=units.checked_add(id.length as usize+1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        if id.length==0||id.as_bytes().iter().any(|b|*b<=0x20||*b>0x7f||*b==b','||*b==b'\\\\') {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        units=units.checked_add(5+id.length as usize+1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        units=units.checked_add(1+id.length as usize+1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     }
     let bytes=units.checked_mul(core::mem::size_of::<u16>()).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let buffer=unsafe{ExAllocatePoolWithTag(PAGED_POOL,bytes,ACPI_POOL_TAG)};
@@ -178,6 +183,14 @@ unsafe fn allocate_id_list(ids:&[acpi::acpi_device::AcpiId])->Result<usize,i32>{
     let output=buffer.cast::<u16>();
     let mut cursor=0usize;
     for id in ids {
+        for byte in b"ACPI\\".iter().chain(id.as_bytes().iter()) {
+            unsafe{output.add(cursor).write(*byte as u16);}
+            cursor+=1;
+        }
+        unsafe{output.add(cursor).write(0);}
+        cursor+=1;
+        unsafe{output.add(cursor).write(b'*' as u16);}
+        cursor+=1;
         for byte in id.as_bytes() {
             unsafe{output.add(cursor).write(*byte as u16);}
             cursor+=1;
@@ -186,6 +199,21 @@ unsafe fn allocate_id_list(ids:&[acpi::acpi_device::AcpiId])->Result<usize,i32>{
         cursor+=1;
     }
     unsafe{output.add(cursor).write(0);}
+    Ok(buffer as usize)
+}
+
+unsafe fn allocate_acpi_device_id(id:&acpi::acpi_device::AcpiId)->Result<usize,i32>{
+    if id.length==0||id.as_bytes().iter().any(|b|*b<=0x20||*b>0x7f||*b==b','||*b==b'\\\\') {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let units=5usize.checked_add(id.length as usize+1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    let buffer=unsafe{ExAllocatePoolWithTag(PAGED_POOL,units*2,ACPI_POOL_TAG)};
+    if buffer.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES);}
+    let output=buffer.cast::<u16>();
+    for (index,byte) in b"ACPI\\".iter().chain(id.as_bytes().iter()).enumerate(){
+        unsafe{output.add(index).write(*byte as u16);}
+    }
+    unsafe{output.add(5+id.length as usize).write(0);}
     Ok(buffer as usize)
 }
 
@@ -215,7 +243,7 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
     match id_type {
         BUS_QUERY_DEVICE_ID => {
             if !identity.has_hid{return Err(STATUS_NOT_SUPPORTED);}
-            unsafe{allocate_id_string(&identity.hid)}
+            unsafe{allocate_acpi_device_id(&identity.hid)}
         }
         BUS_QUERY_HARDWARE_IDS => {
             if !identity.has_hid{return Err(STATUS_NOT_SUPPORTED);}
@@ -224,13 +252,13 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
             let count=identity.compatible_id_count as usize;
             if count>acpi::acpi_device::MAX_COMPATIBLE_IDS{return Err(STATUS_INVALID_PARAMETER);}
             ids[1..1+count].copy_from_slice(&identity.compatible_ids[..count]);
-            unsafe{allocate_id_list(&ids[..count+1])}
+            unsafe{allocate_prefixed_id_list(&ids[..count+1])}
         }
         BUS_QUERY_COMPATIBLE_IDS => {
             let count=identity.compatible_id_count as usize;
             if count==0{return Err(STATUS_NOT_SUPPORTED);}
             if count>acpi::acpi_device::MAX_COMPATIBLE_IDS{return Err(STATUS_INVALID_PARAMETER);}
-            unsafe{allocate_id_list(&identity.compatible_ids[..count])}
+            unsafe{allocate_prefixed_id_list(&identity.compatible_ids[..count])}
         }
         BUS_QUERY_INSTANCE_ID => {
             let uid=identity.uid_string.unwrap_or_else(||decimal_uid(identity.uid.unwrap_or(extension.node as u64)));
