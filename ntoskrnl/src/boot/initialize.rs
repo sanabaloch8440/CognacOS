@@ -514,7 +514,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                     }
                 }
                 enumerated
-            } else { 0 };
+            };
             match firmware_madt {
                 Ok(firmware_madt) => {
                     let _ = platform_drivers::mark_ready(platform_drivers::Stage::Acpi);
