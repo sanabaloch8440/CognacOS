@@ -19,6 +19,8 @@ pub enum AmlObjectType { Root=0, Scope=1, Device=2, Method=3, Name=4, Processor=
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlNode {
     pub parent:u16, pub name:[u8;4], pub object_type:AmlObjectType,
+    /// AML definition block slot that supplied this namespace object.
+    pub source_table:u8,
     pub method_flags:u8, pub body_start:u32, pub body_length:u32,
     /// Canonical target for Alias objects; u16::MAX for non-alias nodes.
     pub alias_target:u16,
@@ -32,7 +34,7 @@ pub struct AmlNode {
     pub field_update_rule:u8,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize }
 impl AmlNamespace {
@@ -57,7 +59,7 @@ impl AmlNamespace {
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
         if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceFull)}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:0,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
         self.count+=1;Ok(i as u16)
     }
 }
