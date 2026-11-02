@@ -331,3 +331,18 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&bytes), Err(ResourceError::InvalidLength));
  }
 }
+
+
+#[cfg(test)] mod stability_27_dword_address_range {
+ use super::*;
+ #[test] fn parses_dword_memory_aperture_at_exact_boundaries() {
+  let mut bytes = [0u8; 28];
+  bytes[0] = 0x87; bytes[1] = 23;
+  bytes[10..14].copy_from_slice(&0x1000u32.to_le_bytes());
+  bytes[14..18].copy_from_slice(&0x1fffu32.to_le_bytes());
+  bytes[22..26].copy_from_slice(&0x1000u32.to_le_bytes());
+  bytes[26] = 0x79; bytes[27] = 0;
+  let parsed = parse_resource_template(&bytes).unwrap();
+  assert!(matches!(parsed.entries[0], Some(Resource::Memory { minimum: 0x1000, maximum: 0x1fff, length: 0x1000, kind: 1, .. })));
+ }
+}
