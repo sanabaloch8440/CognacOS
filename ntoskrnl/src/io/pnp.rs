@@ -682,6 +682,8 @@ pub fn transition_pnp_device(index: u32, next: u32, status: i32) -> Result<(), P
         node.last_status.store(status, Ordering::Relaxed);
         node.start_attempts.fetch_add(1, Ordering::Relaxed);
         node.state.store(PNP_DEVICE_FAILED, Ordering::Release);
+        drop(_guard);
+        let _ = crate::io::resource_arbiter::SYSTEM_RESOURCE_ARBITER.release_owner((index as u64)+1);
         return Ok(());
     }
     if current == PNP_DEVICE_RESOURCES_ASSIGNED && next == PNP_DEVICE_STARTED {
