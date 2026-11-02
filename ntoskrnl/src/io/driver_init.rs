@@ -120,7 +120,11 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
                 service_index, error_control: 1, status: DriverInitStatus::Failed(failure),
             };
             report.failed += 1;
-            continue;
+            // A dependency that was scheduled but did not initialize is a
+            // boot-phase failure. Continuing would allow later drivers to run
+            // against an incomplete kernel/device prerequisite graph.
+            report.fatal_service = Some(service_index);
+            break;
         }
         let error_control = match crate::ntoskrnl::cm::service_config::query_service_details(
             hive, node.name, path_buffer,
