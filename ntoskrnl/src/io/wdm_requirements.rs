@@ -310,7 +310,7 @@ pub fn reserve_wdm_requirements_with(
   let flags_offset=40+4;b[flags_offset..flags_offset+2].copy_from_slice(&INTERRUPT_LEVEL_SENSITIVE.to_le_bytes());
   assert!(parse_requirements(&b).is_ok());
   b[flags_offset..flags_offset+2].copy_from_slice(&0u16.to_le_bytes());
-  assert_eq!(parse_requirements(&b),Err(RequirementsError::UnsupportedDescriptor));
+  assert!(matches!(parse_requirements(&b),Err(RequirementsError::UnsupportedDescriptor)));
  }
  #[test]fn rejects_choice_group_class_mismatch(){
   let b=make_list(&[(0,TYPE_PORT,SHARE_EXCLUSIVE,0x300,0x300),(8,TYPE_MEMORY,SHARE_EXCLUSIVE,0x400,0x400)]);
