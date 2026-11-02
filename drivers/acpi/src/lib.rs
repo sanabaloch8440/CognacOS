@@ -100,7 +100,6 @@ pub struct CpuEntry { pub apic_id: u32, pub processor_uid: u32, pub enabled: boo
 pub struct IoApicEntry { pub id: u8, pub address: u32, pub gsi_base: u32 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IrqOverride { pub bus: u8, pub source_irq: u8, pub gsi: u32, pub active_low: bool, pub level_triggered: bool }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct LocalApicNmi { pub processor_uid:u8,pub flags:u16,pub lint:u8 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
