@@ -190,3 +190,47 @@ pub fn write_root_file_range<D: BlockDevice>(
         WriteError::PartialBlock => Error::InvalidGeometry,
     })
 }
+
+
+/// Build a resident logical-page to physical-filesystem-block map for a
+/// preallocated root-level pagefile.sys. This is an initialization-time
+/// operation: callers retain the returned map and must use raw volume I/O for
+/// paging, never call this function from a page-fault path.
+///
+/// For now the paging fast path deliberately requires 4 KiB ext4 blocks,
+/// a page-aligned file size, and every logical block to be initialized and
+/// physically allocated. Holes, unwritten extents, sparse files, and indirect
+/// fallback mappings are rejected rather than risking metadata I/O while paging.
+pub fn root_file_page_map<D: ReadOnlyBlockDevice>(
+    device: &mut D,
+    path: &[u8],
+    output: &mut [u64],
+) -> Result<(u64, usize), Error> {
+    let name = root_name(path)?;
+    let (superblock, raw_superblock) = read_superblock_with_raw(device)?;
+    if superblock.block_size != 4096 || !superblock.has_extents() {
+        return Err(Error::UnsupportedFormat);
+    }
+    let (inode_number, inode, inode_raw) =
+        lookup_root_file_inode(device, &superblock, &raw_superblock, name)?;
+    if !inode.is_regular_file || inode.size == 0 || inode.size % 4096 != 0 {
+        return Err(Error::UnsupportedFormat);
+    }
+    let pages = usize::try_from(inode.size / 4096).map_err(|_| Error::OutOfRange)?;
+    if pages > output.len() { return Err(Error::OutOfRange); }
+    let generation = u32_at(&inode_raw, 100)?;
+    let mut scratch = [0u8; 4096];
+    for (logical, entry) in output.iter_mut().take(pages).enumerate() {
+        let physical = map_extent_block_checked(
+            device, &superblock, &raw_superblock, inode_number, generation,
+            &inode_raw[40..100], logical as u32, &mut scratch,
+        )?.ok_or(Error::InvalidExtentTree)?;
+        // Read extent-tree result is a filesystem block number. Require the
+        // extent mapper to have validated it against filesystem geometry.
+        if physical >= superblock.blocks_count {
+            return Err(Error::OutOfRange);
+        }
+        *entry = physical;
+    }
+    Ok((inode.size, pages))
+}
