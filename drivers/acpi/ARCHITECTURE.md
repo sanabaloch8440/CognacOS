@@ -92,7 +92,7 @@ This is an implementation status record, not a compatibility claim.
 |---|---|---|
 | Firmware tables / MADT / MCFG / DMAR | HAL table query and parsers | Partial; table consumers and lifecycle need broader validation |
 | DSDT/SSDT namespace | AML table manager and namespace loading | Connected during ACPI DriverEntry |
-| AML execution | Bounded integer-oriented method executor; direct string/package fast paths in identity evaluation | Not a general AML interpreter; buffers, references, synchronization and operation regions are incomplete |
+| AML execution | Bounded integer-oriented method executor; typed data-object decoder; gated immutable Name(Buffer) extraction with bounded caller storage | Method-returned buffers, references, synchronization and full operation-region semantics remain incomplete |
 | Device identity | _HID, _CID, _UID, _STA, _ADR evaluator | Used to create initial ACPI PDO inventory; unsupported methods can suppress records |
 | ACPI PDO/PnP | Bus device, PDO creation, BusRelations response and kernel relation reference ownership; PDO QueryId returns ACPI-prefixed DeviceID, HardwareIDs, CompatibleIDs and instance IDs from paged pool; QueryCapabilities reports conservative D0/D3 and non-wake defaults | Partial; ContainerID, device text, bus information, TargetDeviceRelation, query-resources, query-resource-requirements and complete start/stop/remove behavior remain incomplete |
 | _CRS / _PRS / _SRS | Resource-template parser and resource-selection primitives | Not connected to live PDO resource IRPs or kernel arbiter |
@@ -135,7 +135,11 @@ on the child PDO:
 - QueryCapabilities advertises only conservative D0/D3 defaults; it does not
   claim unsupported wake, D1/D2 or globally unique instance-ID behavior.
 
-This is not resource-start integration. The PDO currently does not implement
-_QueryResources_, _QueryResourceRequirements_, _QueryBusInformation_, or the
-full query/remove/cancel lifecycle. Do not enable hardware drivers that require
+This is not resource-start integration. The AML table manager now exposes a gated, table-identity-validated read path
+for immutable Name(Buffer) objects such as static _CRS/_PRS templates. It checks
+package bounds, BufferSize, initializer length and caller capacity, and zero-fills
+the declared buffer tail. Control methods returning buffers are still unsupported.
+The PDO currently does not implement _QueryResources_,
+_QueryResourceRequirements_, _QueryBusInformation_, or the full
+query/remove/cancel lifecycle. Do not enable hardware drivers that require
 resources based on this milestone alone.
