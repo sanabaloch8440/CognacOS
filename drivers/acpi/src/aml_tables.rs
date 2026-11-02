@@ -78,6 +78,11 @@ impl AmlTableManager {
         Self{namespace:AmlNamespace::new(),records:[TableRecord::EMPTY;MAX_AML_TABLES],
             count:0,next_generation:1,dsdt_loaded:false}
     }
+    /// # Safety
+    /// The RSDP, root-table, FADT, DSDT, and SSDT physical ranges must be mapped
+    /// readable for the duration of this call; the bootstrap implementation
+    /// currently supports only addresses below 4 GiB.
+    ///
     /// Discover the DSDT through FADT.X_DSDT/DSDT and SSDTs through the
     /// RSDT/XSDT, then install the complete set transactionally. This uses the
     /// current bootstrap identity-map contract and therefore rejects firmware
@@ -323,6 +328,9 @@ mod tests {
         assert!(!gate.entered);
         manager.unload(handle,&mut gate).unwrap();
         assert!(!gate.entered);
+        let replacement=manager.load_dsdt(&dsdt,&mut gate).unwrap();
+        assert_ne!(handle.generation,replacement.generation);
+        assert_eq!(manager.table_info(handle),Err(TableError::InvalidHandle));
     }
 
     #[test]
