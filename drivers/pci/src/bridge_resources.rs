@@ -318,7 +318,12 @@ pub fn apply_hierarchy_atomic<C:ConfigAccess>(
     // remains disabled; the DMA/IOMMU subsystem owns that transition.
     for i in 0..configs.len(){
         if configs[i].write_u16(PCI_COMMAND,commands[i]&!PCI_COMMAND_BUS_MASTER).is_err(){
+            // Some earlier bridges may already have decode re-enabled. Disable
+            // every bridge before restoring any old forwarding-window image.
             let mut rollback_ok=true;
+            for j in 0..configs.len(){
+                if configs[j].write_u16(PCI_COMMAND,commands[j]&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER)).is_err(){rollback_ok=false}
+            }
             for j in (0..configs.len()).rev(){
                 for r in snapshots[j].registers.iter().take(snapshots[j].count).flatten(){
                     if configs[j].write_u32(r.offset,r.value).is_err(){rollback_ok=false}
@@ -327,7 +332,10 @@ pub fn apply_hierarchy_atomic<C:ConfigAccess>(
             if rollback_ok {
                 for j in 0..configs.len(){if configs[j].write_u16(PCI_COMMAND,commands[j]&!PCI_COMMAND_BUS_MASTER).is_err(){rollback_ok=false}}
             }
-            if !rollback_ok {let _=disable_all(configs);return Err(BridgeWindowError::InvalidEncoding)}
+            if !rollback_ok {
+                for j in 0..configs.len(){let _=configs[j].write_u16(PCI_COMMAND,commands[j]&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER));}
+                return Err(BridgeWindowError::InvalidEncoding)
+            }
             return Err(BridgeWindowError::Config)
         }
     }
