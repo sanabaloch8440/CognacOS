@@ -438,3 +438,29 @@ mod topology_window_tests {
   let n=intersect_path(&host,&bridge,&mut out).unwrap();assert_eq!(n,1);assert_eq!(out[0].kind,BarKind::Memory32);
  }
 }
+
+#[cfg(test)]
+mod bridge_encoding_tests {
+ use super::*;
+ struct Fake { regs:[u32;64] }
+ impl ConfigAccess for Fake {
+  fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{Ok((self.regs[o as usize/4]>>(if o&2==0{0}else{16}))as u16)}
+  fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{let i=o as usize/4;let shift=if o&2==0{0}else{16};self.regs[i]=(self.regs[i]&!(0xffff<<shift))|((v as u32)<<shift);Ok(())}
+  fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}
+  fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{self.regs[o as usize/4]=v;Ok(())}
+ }
+ #[test]
+ fn encode_decode_roundtrip_for_bridge_windows(){
+  let mut c=Fake{regs:[0;64]};
+  let w=BridgeWindows{io:Some(Aperture{start:0x2000,length:0x4000,kind:BarKind::Io,prefetchable:false}),memory:Some(Aperture{start:0x8000_0000,length:0x20_0000,kind:BarKind::Memory32,prefetchable:false}),prefetchable:Some(Aperture{start:0x9000_0000,length:0x20_0000,kind:BarKind::Memory32,prefetchable:true})};
+  let u=encode_bridge_windows(&mut c,&w).unwrap();for r in u.registers.iter().take(u.count).flatten(){c.write_u32(r.offset,r.value).unwrap();}
+  let d=decode_bridge_windows(&mut c).unwrap();assert_eq!(d.io,w.io);assert_eq!(d.memory,w.memory);assert_eq!(d.prefetchable,w.prefetchable);
+ }
+ #[test]
+ fn prefetchable_32bit_bar_intersects_64bit_bridge_window(){
+  let host=[Aperture{start:0x8000_0000,length:0x1000_0000,kind:BarKind::Memory32,prefetchable:true}];
+  let bridge=[BridgeWindows{prefetchable:Some(Aperture{start:0x8000_0000,length:0x1000_0000,kind:BarKind::Memory64,prefetchable:true}),..BridgeWindows::default()}];
+  let mut out=[Aperture{start:0,length:0,kind:BarKind::Io,prefetchable:false};4];
+  let n=intersect_path(&host,&bridge,&mut out).unwrap();assert_eq!(n,1);assert_eq!(out[0].kind,BarKind::Memory32);
+ }
+}
