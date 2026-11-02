@@ -396,7 +396,37 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
     let rsdp = crate::acpi::rsdp_address();
     if rsdp == 0 { return STATUS_NOT_FOUND; }
     let signature = signature.to_le_bytes();
-    match unsafe { crate::acpi::find_table(rsdp, signature, instance as usize) } {
+    // DSDT is referenced by FADT rather than listed in the RSDT/XSDT. Expose
+    // it through the same HAL table API after validating its complete SDT.
+    let located = if signature == *b"DSDT" {
+        if instance != 0 { return STATUS_NOT_FOUND; }
+        let fadt = match unsafe { crate::acpi::find_table(rsdp,*b"FACP",0) } {
+            Ok(bytes)=>bytes,Err(error)=>return match error {
+                crate::acpi::AcpiError::MissingRoot=>STATUS_NOT_FOUND,
+                _=>STATUS_INVALID_PARAMETER,
+            },
+        };
+        let info=match crate::acpi::parse_fadt(fadt){
+            Ok(value)=>value,Err(_)=>return STATUS_INVALID_PARAMETER,
+        };
+        let address=info.effective_dsdt();
+        const LOW_LIMIT:u64=0x1_0000_0000;
+        if address==0||address.checked_add(36).is_none_or(|end|end>LOW_LIMIT){
+            return STATUS_INVALID_PARAMETER;
+        }
+        let header=unsafe{core::slice::from_raw_parts(address as *const u8,36)};
+        let length=u32::from_le_bytes([header[4],header[5],header[6],header[7]]) as usize;
+        if !(36..=1024*1024).contains(&length)||address.checked_add(length as u64).is_none_or(|end|end>LOW_LIMIT){
+            return STATUS_INVALID_PARAMETER;
+        }
+        let bytes=unsafe{core::slice::from_raw_parts(address as *const u8,length)};
+        match crate::acpi::validate_sdt(bytes,Some(*b"DSDT")){
+            Ok(_)=>Ok(bytes),Err(_)=>return STATUS_INVALID_PARAMETER,
+        }
+    } else {
+        unsafe { crate::acpi::find_table(rsdp, signature, instance as usize) }
+    };
+    match located {
         Ok(bytes) => {
             let Ok(length) = u32::try_from(bytes.len()) else { return STATUS_INVALID_PARAMETER; };
             unsafe {
