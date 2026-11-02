@@ -65,7 +65,7 @@ impl AcpiMethodInvoker for IntegerMethodInvoker {
             if n+3!=body.len(){return Err(ExecError::InvalidMethod)}
             return Ok(AcpiMethodValue::String(AcpiId::from_bytes(&text[..n]).map_err(|_|ExecError::InvalidMethod)?));
         }
-        if body.first()==Some(&0xa4)&&matches!(body.get(1),Some(0x12|0x13)){
+        if body.first()==Some(&0xa4)&&body.get(1).is_some_and(|op|*op==0x12||*op==0x13){
             let (ids,count)=decode_package_ids(&body[1..]).map_err(|_|ExecError::InvalidMethod)?;
             return Ok(AcpiMethodValue::CompatibleIds{ids,count});
         }
