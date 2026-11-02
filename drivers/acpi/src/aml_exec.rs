@@ -36,7 +36,7 @@ impl Machine{
     let v=match op{0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),0x79=>a.wrapping_shl((b&63)as u32),0x7a=>a.wrapping_shr((b&63)as u32),0x7b=>a&b,0x7d=>a|b,_=>a^b};
     let t=Self::target(r)?;self.store(t,v);Ok(v)
    }
-   0x80=>{let v=!self.term(r)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},\n   0x92=>Ok((self.term(r)?==0)as u64),\n   0x93|0x94|0x95=>{let a=self.term(r)?;let b=self.term(r)?;Ok(match op{0x93=>(a==b)as u64,0x94=>(a>b)as u64,_=>(a<b)as u64})}
+   0x80=>{let v=!self.term(r)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},\n   0x90=>{let a=self.term(r)?;let b=self.term(r)?;Ok((a!=0&&b!=0)as u64)},\n   0x91=>{let a=self.term(r)?;let b=self.term(r)?;Ok((a!=0||b!=0)as u64)},\n   0x92=>Ok((self.term(r)?==0)as u64),\n   0x93|0x94|0x95=>{let a=self.term(r)?;let b=self.term(r)?;Ok(match op{0x93=>(a==b)as u64,0x94=>(a>b)as u64,_=>(a<b)as u64})}
    _=>Err(ExecError::UnsupportedOpcode)
   }
  }
