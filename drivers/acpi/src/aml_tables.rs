@@ -149,6 +149,7 @@ impl AmlTableManager {
         let dsdt_address=fadt_info.effective_dsdt();
         if dsdt_address==0{return Err(TableError::InvalidSdt(AcpiError::AddressOutOfRange))}
         let dsdt_header=mapper.map_physical(dsdt_address,SDT_HEADER_SIZE)?;
+        if dsdt_header.len()<SDT_HEADER_SIZE{return Err(TableError::InvalidSdt(AcpiError::Truncated))}
         let dsdt_length=u32::from_le_bytes(dsdt_header.get(4..8).ok_or(AcpiError::Truncated)?.try_into().map_err(|_|AcpiError::Truncated)?) as usize;
         if !(SDT_HEADER_SIZE..=1024*1024).contains(&dsdt_length){return Err(TableError::InvalidSdt(AcpiError::BadLength))}
         let dsdt=mapper.map_physical(dsdt_address,dsdt_length)?;
