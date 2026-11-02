@@ -372,6 +372,15 @@ pub fn find_table_with_mapper<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address
     Err(AcpiError::MissingRoot)
 }
 
+/// Discover and parse MADT through the platform mapper, without assuming a
+/// low identity mapping. The remembered RSDP is published only after success.
+pub fn discover_madt_with_mapper<M:AcpiPhysicalMapper>(mapper:&M,rsdp_address:u64)->Result<MadtInfo,AcpiError>{
+    let table=find_table_with_mapper(mapper,rsdp_address,*b"APIC",0)?;
+    let madt=parse_madt(table)?;
+    LAST_RSDP_ADDRESS.store(rsdp_address,core::sync::atomic::Ordering::Release);
+    Ok(madt)
+}
+
 /// Locate the Nth ACPI system-description table matching a four-byte signature.
 /// This validates the RSDP, root table, each candidate SDT length and checksum.
 /// The current bootstrap identity map is limited to 4 GiB; XSDT entries above
@@ -1146,6 +1155,45 @@ mod numa_table_tests {
     use super::*;
     use std::vec;
     fn finish(b:&mut [u8]){b[9]=0;let s=b.iter().fold(0u8,|a,v|a.wrapping_add(*v));b[9]=0u8.wrapping_sub(s);}
+    struct TestMapper<'a>{rsdp_address:u64,rsdp:&'a [u8],root_address:u64,root:&'a [u8],table_address:u64,table:&'a [u8]}
+    impl AcpiPhysicalMapper for TestMapper<'_>{
+        fn map_physical<'a>(&'a self,address:u64,length:usize)->Result<&'a [u8],AcpiError>{
+            let bytes=if address==self.rsdp_address{self.rsdp}
+                else if address==self.root_address{self.root}
+                else if address==self.table_address{self.table}
+                else{return Err(AcpiError::AddressOutOfRange)};
+            if length>bytes.len(){return Err(AcpiError::Truncated)}
+            Ok(&bytes[..length])
+        }
+    }
+    fn checksum_table(bytes:&mut [u8]){bytes[9]=0;bytes[9]=0u8.wrapping_sub(bytes.iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));}
+    #[test]
+    fn mapped_xsdt_finds_tables_above_four_gib(){
+        let mut table=[0u8;44];table[0..4].copy_from_slice(b"FACP");
+        table[4..8].copy_from_slice(&44u32.to_le_bytes());table[8]=6;checksum_table(&mut table);
+        let mut root=[0u8;44];root[0..4].copy_from_slice(b"XSDT");
+        root[4..8].copy_from_slice(&44u32.to_le_bytes());root[8]=1;
+        root[36..44].copy_from_slice(&0x1_0000_3000u64.to_le_bytes());checksum_table(&mut root);
+        let mut rsdp=[0u8;36];rsdp[0..8].copy_from_slice(b"RSD PTR ");
+        rsdp[15]=2;rsdp[20..24].copy_from_slice(&36u32.to_le_bytes());
+        rsdp[24..32].copy_from_slice(&0x1_0000_1000u64.to_le_bytes());
+        rsdp[8]=0u8.wrapping_sub(rsdp[..20].iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));
+        rsdp[32]=0u8.wrapping_sub(rsdp.iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));
+        let mapper=TestMapper{rsdp_address:0x1000,rsdp:&rsdp,root_address:0x1_0000_1000,root:&root,table_address:0x1_0000_3000,table:&table};
+        let found=find_table_with_mapper(&mapper,0x1000,*b"FACP",0).unwrap();
+        assert_eq!(found.as_ptr(),table.as_ptr());
+        assert_eq!(validate_sdt(found,Some(*b"FACP")).unwrap().revision,6);
+    }
+    #[test]
+    fn mapped_discovery_rejects_corrupt_root_checksum(){
+        let mut table=[0u8;44];table[0..4].copy_from_slice(b"FACP");table[4..8].copy_from_slice(&44u32.to_le_bytes());checksum_table(&mut table);
+        let mut root=[0u8;44];root[0..4].copy_from_slice(b"XSDT");root[4..8].copy_from_slice(&44u32.to_le_bytes());root[36..44].copy_from_slice(&0x1_0000_3000u64.to_le_bytes());checksum_table(&mut root);root[9]^=1;
+        let mut rsdp=[0u8;36];rsdp[0..8].copy_from_slice(b"RSD PTR ");rsdp[15]=2;rsdp[20..24].copy_from_slice(&36u32.to_le_bytes());rsdp[24..32].copy_from_slice(&0x1_0000_1000u64.to_le_bytes());
+        rsdp[8]=0u8.wrapping_sub(rsdp[..20].iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));rsdp[32]=0u8.wrapping_sub(rsdp.iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));
+        let mapper=TestMapper{rsdp_address:0x1000,rsdp:&rsdp,root_address:0x1_0000_1000,root:&root,table_address:0x1_0000_3000,table:&table};
+        assert_eq!(find_table_with_mapper(&mapper,0x1000,*b"FACP",0),Err(AcpiError::BadChecksum));
+    }
+
     #[test]
     fn parses_srat_x2apic_and_hotplug_nonvolatile_memory(){
         let mut b=vec![0u8;48+24+40];b[0..4].copy_from_slice(b"SRAT");
