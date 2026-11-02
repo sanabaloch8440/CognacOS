@@ -7,6 +7,7 @@
 //! This is still a clean-page cache: writes remain write-through until the
 //! filesystem stream-provider and dirty-page writeback stages are implemented.
 use core::ffi::c_void;
+#[cfg(not(target_os = "none"))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::io::{FileObject, IoStatusBlock};
@@ -59,16 +60,30 @@ struct CacheMap {
 unsafe impl Send for CacheMap {}
 
 static mut MAPS_HEAD: *mut CacheMap = core::ptr::null_mut();
+
+#[cfg(target_os = "none")]
+static LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
+#[cfg(not(target_os = "none"))]
 static LOCK: AtomicBool = AtomicBool::new(false);
-struct Guard;
+
+struct Guard {
+    #[cfg(target_os = "none")]
+    _guard: crate::hal::IrqSpinLockGuard<'static, ()>,
+}
 impl Guard {
     fn acquire() -> Self {
-        while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
+        #[cfg(target_os = "none")]
+        { Self { _guard: LOCK.lock() } }
+        #[cfg(not(target_os = "none"))]
+        {
+            while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                core::hint::spin_loop();
+            }
+            Self {}
         }
-        Self
     }
 }
+#[cfg(not(target_os = "none"))]
 impl Drop for Guard {
     fn drop(&mut self) { LOCK.store(false, Ordering::Release); }
 }
