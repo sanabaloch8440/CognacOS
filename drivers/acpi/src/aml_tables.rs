@@ -409,17 +409,24 @@ mod tests {
         b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|sum,x|sum.wrapping_add(*x)));
         b
     }
-    fn identity_dsdt()->std::vec::Vec<u8>{
-        let mut aml=std::vec::Vec::from([0x5b,0x82,0,b'D',b'E',b'V',b'0',
-            0x08,b'_',b'H',b'I',b'D',0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0,
-            0x08,b'_',b'S',b'T',b'A',0x0a,0x0f]);
-        aml[2]=(aml.len()-2) as u8;
+    fn definition_table(signature:[u8;4],aml:&[u8])->std::vec::Vec<u8>{
         let length=36+aml.len();let mut table=std::vec![0u8;length];
-        table[0..4].copy_from_slice(b"DSDT");table[4..8].copy_from_slice(&(length as u32).to_le_bytes());
+        table[0..4].copy_from_slice(&signature);table[4..8].copy_from_slice(&(length as u32).to_le_bytes());
         table[8]=2;table[10..16].copy_from_slice(b"COGNAC");table[16..24].copy_from_slice(b"AMLTEST ");
         table[24..28].copy_from_slice(&1u32.to_le_bytes());table[28..32].copy_from_slice(b"COGN");
-        table[32..36].copy_from_slice(&1u32.to_le_bytes());table[36..].copy_from_slice(&aml);
+        table[32..36].copy_from_slice(&1u32.to_le_bytes());table[36..].copy_from_slice(aml);
         table[9]=0u8.wrapping_sub(table.iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));table
+    }
+    fn identity_dsdt()->std::vec::Vec<u8>{
+        let mut aml=std::vec::Vec::from([0x5b,0x82,0,b'D',b'E',b'V',b'0',
+            0x08,b'_',b'H',b'I',b'D',0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0]);
+        aml[2]=(aml.len()-2) as u8;
+        definition_table(*b"DSDT",&aml)
+    }
+    fn identity_ssdt()->std::vec::Vec<u8>{
+        // Scope(DEV0) { Name(_STA, ByteConst(5)) } extends a DSDT device.
+        let aml=[0x10,0x0c,b'D',b'E',b'V',b'0',0x08,b'_',b'S',b'T',b'A',0x0a,5];
+        definition_table(*b"SSDT",&aml)
     }
     #[test]
     fn table_manager_evaluates_identity_with_table_ownership_and_method_gate(){
@@ -430,6 +437,21 @@ mod tests {
         let identity=manager.evaluate_device_identity(handle,&[dsdt.as_slice()],device,&gate,&mut methods).unwrap();
         assert!(identity.has_hid);assert_eq!(identity.hid.as_bytes(),b"ACME0001");
         assert_eq!(identity.sta,crate::acpi_device::DEVICE_STATUS_DEFAULT);
+    }
+
+    #[test]
+    fn device_identity_resolves_objects_from_multiple_definition_tables(){
+        let dsdt=identity_dsdt();let ssdt=identity_ssdt();let mut manager=AmlTableManager::new();let gate=gate();
+        let loaded=manager.load_firmware_tables(&dsdt,&[&ssdt],&gate).unwrap();
+        let device=manager.namespace().find_child(0,*b"DEV0").unwrap();
+        let sta=manager.namespace().find_child(device,*b"_STA").unwrap();
+        assert_eq!(manager.namespace().nodes[device as usize].source_table,0);
+        assert_eq!(manager.namespace().nodes[sta as usize].source_table,1);
+        let tables:[&[u8];2]=[&dsdt,&ssdt];
+        let mut methods=crate::acpi_device::IntegerMethodInvoker;
+        let identity=manager.evaluate_device_identity(loaded.dsdt,&tables,device,&gate,&mut methods).unwrap();
+        assert_eq!(identity.hid.as_bytes(),b"ACME0001");
+        assert_eq!(identity.sta,5);
     }
 
     #[test]
