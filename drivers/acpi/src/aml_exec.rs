@@ -49,9 +49,10 @@ impl Machine{
    0x78=>{
     let dividend=self.term(r)?;let divisor=self.term(r)?;
     if divisor==0{return Err(ExecError::DivideByZero)}
-    let quotient=dividend/divisor;let remainder=dividend%divisor;
-    let q=Self::target(r)?;let rem=Self::target(r)?;
-    self.store(q,quotient);self.store(rem,remainder);Ok(quotient)
+    let remainder=dividend%divisor;let quotient=dividend/divisor;
+    // AML Divide operand order is Dividend, Divisor, Remainder, Quotient.
+    let rem=Self::target(r)?;let q=Self::target(r)?;
+    self.store(rem,remainder);self.store(q,quotient);Ok(quotient)
    }
    0x80=>{let v=!self.term(r)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},
    0x90=>{let a=self.term(r)?;let b=self.term(r)?;Ok((a!=0&&b!=0)as u64)},
@@ -136,10 +137,11 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,id,&[0]).unwrap(),AmlValue::Integer(9));
  }
  #[test]fn executes_divide_and_stores_quotient_and_remainder(){
-  // Return(Divide(ByteConst(23), ByteConst(5), Local0, Local1))
-  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,23,0x0a,5,0x60,0x61];
+  // Divide stores remainder in Local0 and quotient in Local1; return their sum.
+  let aml=[0x14,0x12,b'T',b'E',b'S',b'T',0,0x78,0x0a,23,0x0a,5,0x60,0x61,
+           0xa4,0x72,0x60,0x61,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
-  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(4));
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(7));
  }
  #[test]fn rejects_divide_by_zero(){
   let aml=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x78,0x0a,1,0x00,0x60,0x61];
