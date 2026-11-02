@@ -28,6 +28,9 @@ pub unsafe fn serialize(r:&ResourceList,out:*mut u8,capacity:usize)->Result<usiz
  unsafe{w32(full,0,15);w32(full,4,0);w16(full,8,1);w16(full,10,1);w32(full,12,count as u32);}
  let p=unsafe{full.add(16)};let mut i=0usize;
  for item in r.entries[..r.count].iter().flatten(){match *item{
+ Resource::Io{minimum,maximum,length,decode_16_bit,..}=>{if minimum!=maximum{return Err(SerializeError::InvalidResourceList)}unsafe{desc(p,i,TYPE_PORT,SHARE_EXCLUSIVE,if decode_16_bit{PORT_IO}else{0},minimum,length,0);i+=1;}},
+ Resource::Memory{minimum,maximum,length,writeable,cacheable,..}=>{if minimum!=maximum{return Err(SerializeError::InvalidResourceList)}unsafe{desc(p,i,TYPE_MEMORY,SHARE_EXCLUSIVE,(if writeable{0}else{MEMORY_READ_ONLY})|(if cacheable{MEMORY_CACHEABLE}else{0}),minimum,length,0);i+=1;}},
+ Resource::BusNumber{minimum,maximum,length,..}=>{if minimum!=maximum{return Err(SerializeError::InvalidResourceList)}unsafe{desc(p,i,TYPE_BUS_NUMBER,SHARE_EXCLUSIVE,0,minimum,length,0);i+=1;}},
  Resource::Io{minimum,length,decode_16_bit,..}=>unsafe{desc(p,i,TYPE_PORT,SHARE_EXCLUSIVE,if decode_16_bit{PORT_IO}else{0},minimum,length,0);i+=1;},
  Resource::Memory{minimum,length,writeable,cacheable,..}=>unsafe{desc(p,i,TYPE_MEMORY,SHARE_EXCLUSIVE,(if writeable{0}else{MEMORY_READ_ONLY})|(if cacheable{MEMORY_CACHEABLE}else{0}),minimum,length,0);i+=1;},
  Resource::BusNumber{minimum,length,..}=>unsafe{desc(p,i,TYPE_BUS_NUMBER,SHARE_EXCLUSIVE,0,minimum,length,0);i+=1;},
@@ -41,5 +44,7 @@ pub unsafe fn serialize(r:&ResourceList,out:*mut u8,capacity:usize)->Result<usiz
 #[cfg(test)]extern crate std;
 #[cfg(test)]mod tests{use super::*;use crate::acpi_resources::Resource;
 #[test]fn serializes_io_memory_and_irq(){let mut r=ResourceList::EMPTY;r.entries[0]=Some(Resource::Io{minimum:0x3f8,maximum:0x3ff,alignment:1,length:8,decode_16_bit:true});r.entries[1]=Some(Resource::Memory{minimum:0xfed00000,maximum:0xfed00fff,alignment:0x1000,length:0x1000,writeable:true,cacheable:false,kind:8});r.entries[2]=Some(Resource::Irq{mask:1<<4,level_triggered:false,active_low:false,shared:true,wake_capable:false});r.entries[3]=Some(Resource::EndTag{checksum:0});r.count=4;let mut b=[0u8;68];assert_eq!(unsafe{serialize(&r,b.as_mut_ptr(),b.len())},Ok(68));assert_eq!(u32::from_le_bytes(b[0..4].try_into().unwrap()),1);assert_eq!(u32::from_le_bytes(b[16..20].try_into().unwrap()),15);assert_eq!(u32::from_le_bytes(b[28..32].try_into().unwrap()),3);assert_eq!(b[20],TYPE_PORT);assert_eq!(u64::from_le_bytes(b[24..32].try_into().unwrap()),0x3f8);assert_eq!(b[36],TYPE_MEMORY);assert_eq!(u64::from_le_bytes(b[40..48].try_into().unwrap()),0xfed00000);assert_eq!(b[52],TYPE_INTERRUPT);assert_eq!(b[53],SHARE_SHARED);}
+
+#[test]fn rejects_unassigned_address_ranges(){let mut r=ResourceList::EMPTY;r.entries[0]=Some(Resource::Io{minimum:0x100,maximum:0x1ff,alignment:1,length:8,decode_16_bit:true});r.count=1;let mut b=[0u8;36];assert_eq!(unsafe{serialize(&r,b.as_mut_ptr(),b.len())},Err(SerializeError::InvalidResourceList));}
 #[test]fn short_output_is_not_modified(){let mut r=ResourceList::EMPTY;r.entries[0]=Some(Resource::Io{minimum:1,maximum:1,alignment:1,length:1,decode_16_bit:true});r.count=1;let mut b=[0xa5;20];assert_eq!(unsafe{serialize(&r,b.as_mut_ptr(),b.len())},Err(SerializeError::OutputTooSmall));assert_eq!(b,[0xa5;20]);}
 }
