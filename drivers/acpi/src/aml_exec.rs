@@ -191,6 +191,13 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,1,&[]),Err(ExecError::InvalidMethod));
   assert_eq!(execute_method(&aml,&ns,u16::MAX,&[]),Err(ExecError::InvalidMethod));
  }
+ #[test]fn bounds_non_terminating_aml_while_loops(){
+  // While (One) { Noop } must stop at the interpreter step budget.
+  let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa2,0x03,0x01,0xa3];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::StepLimit));
+ }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
