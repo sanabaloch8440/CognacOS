@@ -878,7 +878,9 @@ impl AddressSpace {
                         let pte = unsafe { pte_slot.read() };
                         if pte & (PRESENT | USER) == (PRESENT | USER) {
                             if pte & EXTERNAL_USER == 0 {
-                                unsafe { crate::memory::free_page(pte & ADDR) }.map_err(|_| VmError::OutOfMemory)?;
+                                let physical = pte & ADDR;
+                                let _ = super::pfn::release_mapping(physical);
+                                unsafe { crate::memory::free_page(physical) }.map_err(|_| VmError::OutOfMemory)?;
                             }
                         }
                     }
