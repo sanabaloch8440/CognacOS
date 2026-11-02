@@ -186,6 +186,23 @@ mod tests{
     }
 
     #[test]
+    fn field_read_write_crosses_access_units_without_touching_neighbors(){
+        let aml=[
+            0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,16,
+            0x5b,0x81,0x0d,b'R',b'E',b'G',b'N',0,0x00,0x07,b'W',b'I',b'D',b'E',0x0a
+        ];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let id=ns.find_child(0,*b"WIDE").unwrap();
+        let mut mem=Memory{bytes:[0;32],locked:false};
+        mem.bytes[0]=0x80;mem.bytes[1]=0x55;mem.bytes[2]=0x81;
+        assert_eq!(read_field(&ns,id,&mut mem),Ok(0x2ab));
+        assert_eq!(write_field(&ns,id,0x155,&mut mem),Ok(()));
+        assert_eq!(mem.bytes[0],0x80);
+        assert_eq!(mem.bytes[1],0xaa);
+        assert_eq!(mem.bytes[2],0x80);
+    }
+
+    #[test]
     fn mutex_enforces_owner_recursion_and_sync_level(){
         let m=AmlMutex::new(3);let mut level=1;
         let a=m.acquire(11,&mut level,8).unwrap();assert_eq!(level,3);
@@ -211,6 +228,6 @@ mod tests{
         assert_eq!(read_field(&ns,id,&mut mem),Ok(0b10100));
         assert_eq!(write_field(&ns,id,0b00101,&mut mem),Ok(()));
         assert_eq!(mem.bytes[0]&0b11111,0b00101);
-        assert_eq!(mem.bytes[0]&0b1110_0000,0b1010_0000);
+        assert_eq!(mem.bytes[0]&0b1110_0000,0b1010_0000);\n        assert!(!mem.locked);
     }
 }
