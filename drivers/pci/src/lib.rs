@@ -695,3 +695,33 @@ mod bridge_range_decode_tests {
         assert_eq!(decode_bridge_range(2,2,3,0,0x0006_0702),Err(PciTopologyError::InvalidBridgeRange));
     }
 }
+
+
+/// A function-scoped configuration-space adapter for BAR/resource operations.
+/// The caller must hold the bus driver's exclusive configuration lock for the
+/// entire multi-register transaction (especially size_bars/program_assignments).
+pub struct EcamFunctionConfig<'a> {
+    pub window: &'a EcamWindow,
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+}
+impl resources::ConfigAccess for EcamFunctionConfig<'_> {
+    fn read_u16(&mut self, offset:u16)->Result<u16,resources::ResourceError>{
+        unsafe{self.window.read_u16(self.segment,self.bus,self.device,self.function,offset)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+    fn write_u16(&mut self,offset:u16,value:u16)->Result<(),resources::ResourceError>{
+        unsafe{self.window.write_u16(self.segment,self.bus,self.device,self.function,offset,value)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+    fn read_u32(&mut self,offset:u16)->Result<u32,resources::ResourceError>{
+        unsafe{self.window.read_u32(self.segment,self.bus,self.device,self.function,offset)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+    fn write_u32(&mut self,offset:u16,value:u32)->Result<(),resources::ResourceError>{
+        unsafe{self.window.write_u32(self.segment,self.bus,self.device,self.function,offset,value)}
+            .map_err(|_|resources::ResourceError::Config)
+    }
+}
