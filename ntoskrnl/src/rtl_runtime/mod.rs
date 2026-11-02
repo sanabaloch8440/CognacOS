@@ -65,6 +65,16 @@ pub use timezone::set_time_zone_bias_minutes;
 
 
 
+/// Kernel-internal large nonpaged allocation used for address-space-owned
+/// VM metadata. Unlike the small RTL arena this backend grows through kernel VM.
+pub(crate) fn pool_allocate_vm_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
+    pool_page::allocate_tagged(size, tag, zeroed)
+}
+
+pub(crate) fn pool_free_vm_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
+    pool_page::deallocate_tagged(ptr, expected_tag)
+}
+
 /// Kernel-internal tagged nonpaged allocation interface. This currently uses
 /// the bounded RTL arena; callers must handle allocation failure and must not
 /// assume that the pool can satisfy arbitrary-size requests.

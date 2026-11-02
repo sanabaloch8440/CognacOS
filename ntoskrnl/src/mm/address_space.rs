@@ -60,6 +60,10 @@ impl AddressSpace {
             entry &= !USER;
             unsafe { target.add(i).write(entry); }
         }
+        if let Err(error) = ensure_vm_metadata(root) {
+            let _ = unsafe { crate::memory::free_page(root) };
+            return Err(error);
+        }
         Ok(Self { root, kuser_tables: [0; 3] })
     }
 
@@ -73,6 +77,7 @@ impl AddressSpace {
     /// protected against process teardown until the wrapper is no longer used.
     pub unsafe fn attach_existing(root: u64) -> Result<Self, VmError> {
         if root == 0 || root & (PAGE_SIZE - 1) != 0 { return Err(VmError::InvalidAddress); }
+        ensure_vm_metadata(root)?;
         let tables = KUSER_PAGE_TABLE_TRACKING.lock().iter()
             .find(|entry| entry.root == root).map(|entry| entry.tables).unwrap_or([0; 3]);
         Ok(Self { root, kuser_tables: tables })
@@ -275,7 +280,15 @@ impl AddressSpace {
         }
         match super::pfn::acquire_mapping(physical_address) {
             Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
-            Err(_) => return Err(VmError::OutOfMemory),
+            Err(_) => {
+                // The leaf is still unpublished. Roll back every intermediate
+                // table allocated by this operation before returning.
+                for undo in (0..created).rev() {
+                    unsafe { created_slots[undo].write(0); }
+                    let _ = unsafe { crate::memory::free_page(created_pages[undo]) };
+                }
+                return Err(VmError::OutOfMemory);
+            }
         }
         let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
@@ -295,7 +308,7 @@ impl AddressSpace {
         if start & (PAGE_SIZE-1)!=0 || length==0 || length & (PAGE_SIZE-1)!=0 || !is_user_range(start,length) || writable&&executable { return Err(VmError::InvalidAddress); }
         let end=start.checked_add(length).ok_or(VmError::InvalidAddress)?;
         let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        let areas=unsafe{&mut *DEMAND_AREAS.0.get()};
+        let areas=vm_demand_areas_locked(self.root);
         if areas.iter().any(|a|a.live&&a.root==self.root&&start<a.end&&a.start<end){return Err(VmError::AlreadyMapped)}
         let slot=areas.iter_mut().find(|a|!a.live).ok_or(VmError::OutOfMemory)?;
         *slot=DemandArea{root:self.root,start,end,allocation_protect,current_protect:allocation_protect,writable,executable,committed:true,live:true}; Ok(())
@@ -307,7 +320,7 @@ impl AddressSpace {
         let Some(end) = start.checked_add(length) else { return true; };
         if length == 0 { return true; }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        unsafe { &*DEMAND_AREAS.0.get() }.iter().any(|area| {
+        vm_demand_areas_locked(self.root).iter().any(|area| {
             area.live && area.root == self.root && start < area.end && area.start < end
         })
     }
@@ -324,9 +337,9 @@ impl AddressSpace {
         let page_va=address&!(PAGE_SIZE-1);
         let (area, restore_slot, ws_index)={
             let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-            let area=unsafe{&*DEMAND_AREAS.0.get()}.iter().copied().find(|a|a.live&&a.committed&&a.root==self.root&&page_va>=a.start&&page_va<a.end);
+            let area=vm_demand_areas_locked(self.root).iter().copied().find(|a|a.live&&a.committed&&a.root==self.root&&page_va>=a.start&&page_va<a.end);
             let Some(area)=area else{return false};
-            let pages=unsafe{&mut *WORKING_SET.0.get()};
+            let pages=vm_working_set_locked(self.root);
             let index=if let Some(i)=pages.iter().position(|p|p.live&&p.root==self.root&&p.va==page_va){
                 if pages[i].busy {
                     drop(_g);
@@ -336,7 +349,7 @@ impl AddressSpace {
                     for _ in 0..1_000_000usize {
                         let busy={
                             let guard=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                            let still=unsafe{&*WORKING_SET.0.get()}.iter()
+                            let still=vm_working_set_locked(self.root).iter()
                                 .find(|p|p.live&&p.root==self.root&&p.va==page_va)
                                 .is_some_and(|p|p.busy);
                             drop(guard);still
@@ -357,13 +370,13 @@ impl AddressSpace {
             (area,slot,index)
         };
         if error_code&PF_WRITE!=0&&!area.writable || error_code&PF_INSTRUCTION!=0&&!area.executable {
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(vm_working_set_locked(self.root))[ws_index].busy=false;return false
         }
         if self.translate_user(address,error_code&PF_WRITE!=0).is_ok(){
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(vm_working_set_locked(self.root))[ws_index].busy=false;return false
         }
         let physical=match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>{
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(vm_working_set_locked(self.root))[ws_index].busy=false;return false
         }};
         let loaded=if let Some(slot)=restore_slot {
             unsafe{crate::ntoskrnl::mm::pagefile::read_page(slot,physical as *mut u8)}.is_ok()
@@ -372,11 +385,11 @@ impl AddressSpace {
         };
         if !loaded || unsafe{self.map_user_page(page_va,physical,area.writable,area.executable)}.is_err(){
             let _=unsafe{crate::memory::free_page(physical)};
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(vm_working_set_locked(self.root))[ws_index].busy=false;return false
         }
         {
             let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-            let pages=unsafe{&mut *WORKING_SET.0.get()};
+            let pages=vm_working_set_locked(self.root);
             let entry=&mut pages[ws_index];
             entry.paged_out=false;entry.busy=false;entry.pagefile_slot=0;
             entry.age=WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed);
@@ -393,7 +406,7 @@ impl AddressSpace {
         while trimmed<target {
             let candidate={
                 let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                let pages=unsafe{&mut *WORKING_SET.0.get()};
+                let pages=vm_working_set_locked(self.root);
                 let Some((index,_))=pages.iter().enumerate()
                     .filter(|(_,p)|p.live&&p.root==self.root&&!p.paged_out&&!p.busy)
                     .min_by_key(|(_,p)|p.age) else {break};
@@ -408,21 +421,21 @@ impl AddressSpace {
                         && !crate::ntoskrnl::mm::runtime::is_page_locked(entry&ADDR) =>
                         (leaf as usize,entry&ADDR),
                     _=>{
-                        (unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;
+                        (vm_working_set_locked(self.root))[index].busy=false;
                         continue
                     }
                 }
             };
             let slot=match crate::ntoskrnl::mm::pagefile::allocate_slot(){
-                Ok(s)=>s,Err(_)=>{let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;break}
+                Ok(s)=>s,Err(_)=>{let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(vm_working_set_locked(self.root))[index].busy=false;break}
             };
             if unsafe{crate::ntoskrnl::mm::pagefile::write_page(slot,physical.1 as *const u8)}.is_err(){
                 let _=crate::ntoskrnl::mm::pagefile::free_slot(slot);
-                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;break
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(vm_working_set_locked(self.root))[index].busy=false;break
             }
             let removed={
                 let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                let pages=unsafe{&mut *WORKING_SET.0.get()};
+                let pages=vm_working_set_locked(self.root);
                 if !pages[index].live||!pages[index].busy||pages[index].root!=self.root||pages[index].va!=va {
                     false
                 } else if let Some((leaf,entry))=user_leaf(self.root,va) {
@@ -431,7 +444,18 @@ impl AddressSpace {
                     } else {
                         unsafe{leaf.write(0);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
                         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
-                        if unsafe{crate::memory::free_page(physical.1)}.is_err(){false}else{
+                        if super::pfn::release_mapping(physical.1).is_err() {
+                            unsafe{leaf.write(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+                            crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                            false
+                        } else if unsafe{crate::memory::free_page(physical.1)}.is_err() {
+                            // The allocation owner was not released. Restore its
+                            // mapping reference before republishing the old PTE.
+                            let _ = super::pfn::acquire_mapping(physical.1);
+                            unsafe{leaf.write(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+                            crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                            false
+                        } else {
                             pages[index].paged_out=true;pages[index].pagefile_slot=slot;pages[index].busy=false;
                             pages[index].age=WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed);
                             true
@@ -441,7 +465,7 @@ impl AddressSpace {
             };
             if removed {trimmed+=1;} else {
                 let _=crate::ntoskrnl::mm::pagefile::free_slot(slot);
-                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(vm_working_set_locked(self.root))[index].busy=false;
             }
         }
         trimmed
@@ -450,16 +474,16 @@ impl AddressSpace {
     /// Number of tracked resident demand-zero pages in this address space.
     pub fn working_set_size(&self)->usize {
         let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        unsafe{(&*WORKING_SET.0.get()).iter().filter(|p|p.live&&!p.paged_out&&p.root==self.root).count()}
+        vm_working_set_locked(self.root).iter().filter(|p|p.live&&!p.paged_out&&p.root==self.root).count()
     }
 
     /// Remove a region's metadata only after its resident pages have been unmapped.
     pub fn unregister_demand_zero_region(&self,start:u64,length:u64)->Result<(),VmError>{
         let end=start.checked_add(length).ok_or(VmError::InvalidAddress)?;
         if start&(PAGE_SIZE-1)!=0||length==0||length&(PAGE_SIZE-1)!=0||!is_user_range(start,length){return Err(VmError::InvalidAddress)}
-        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock(); let areas=unsafe{&mut *DEMAND_AREAS.0.get()};
+        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock(); let areas=vm_demand_areas_locked(self.root);
         let index=areas.iter().position(|a|a.live&&a.root==self.root&&a.start==start&&a.end==end).ok_or(VmError::NotMapped)?;
-        if unsafe{&*WORKING_SET.0.get()}.iter().any(|p|p.live&&p.root==self.root&&p.va>=start&&p.va<end){return Err(VmError::AddressSpaceBusy)}
+        if vm_working_set_locked(self.root).iter().any(|p|p.live&&p.root==self.root&&p.va>=start&&p.va<end){return Err(VmError::AddressSpaceBusy)}
         areas[index]=DemandArea::EMPTY; Ok(())
     }
 
@@ -468,7 +492,7 @@ impl AddressSpace {
     pub fn query_region(&self, address: u64) -> Option<(u64, u64, u64, u32, u32, bool, bool, bool, bool)> {
         if !is_user_range(address, 1) { return None; }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        let areas = unsafe { &*DEMAND_AREAS.0.get() };
+        let areas = vm_demand_areas_locked(self.root);
         if let Some(a) = areas.iter().find(|a| a.live && a.root == self.root && address >= a.start && address < a.end) {
             return Some((a.start, a.end, a.start, a.allocation_protect, a.current_protect, a.writable, a.executable, true, a.committed));
         }
@@ -489,7 +513,7 @@ impl AddressSpace {
     pub fn demand_region_info(&self, address: u64) -> Option<(u64, u64, bool, bool)> {
         if !is_user_range(address, 1) { return None; }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        unsafe { &*DEMAND_AREAS.0.get() }.iter()
+        vm_demand_areas_locked(self.root).iter()
             .find(|a| a.live && a.root == self.root && address >= a.start && address < a.end)
             .map(|a| (a.start, a.end, a.writable, a.executable))
     }
@@ -504,7 +528,7 @@ impl AddressSpace {
         }
         let end = start.checked_add(length).ok_or(VmError::InvalidAddress)?;
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        let areas = unsafe { &mut *DEMAND_AREAS.0.get() };
+        let areas = vm_demand_areas_locked(self.root);
         let area = areas.iter_mut().find(|a| a.live && a.root == self.root && start >= a.start && end <= a.end)
             .ok_or(VmError::NotMapped)?;
         area.writable = writable;
@@ -523,11 +547,11 @@ impl AddressSpace {
         let end = start.checked_add(length).ok_or(VmError::InvalidAddress)?;
         {
             let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-            let areas = unsafe { &*DEMAND_AREAS.0.get() };
+            let areas = vm_demand_areas_locked(self.root);
             let area = areas.iter().find(|a| a.live && a.root == self.root && start >= a.start && end <= a.end).ok_or(VmError::NotMapped)?;
             if start != area.start || end != area.end { return Err(VmError::InvalidAddress); }
             if !release && !area.committed { return Err(VmError::NotMapped); }
-            let pages = unsafe { &mut *WORKING_SET.0.get() };
+            let pages = vm_working_set_locked(self.root);
             if pages.iter().any(|p| p.live && p.root == self.root && p.va >= start && p.va < end && p.busy) {
                 return Err(VmError::AddressSpaceBusy);
             }
@@ -543,21 +567,21 @@ impl AddressSpace {
         while va < end {
             let ws = {
                 let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                unsafe { &*WORKING_SET.0.get() }.iter().position(|p| p.live && p.root == self.root && p.va == va)
+                vm_working_set_locked(self.root).iter().position(|p| p.live && p.root == self.root && p.va == va)
             };
             if let Some(index) = ws {
                 let paged_out = {
                     let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                    (unsafe { &*WORKING_SET.0.get() })[index].paged_out
+                    (vm_working_set_locked(self.root))[index].paged_out
                 };
                 if paged_out {
                     let slot = {
                         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                        (unsafe { &*WORKING_SET.0.get() })[index].pagefile_slot
+                        (vm_working_set_locked(self.root))[index].pagefile_slot
                     };
                     if crate::ntoskrnl::mm::pagefile::free_slot(slot).is_err() {
                         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                        for p in unsafe { &mut *WORKING_SET.0.get() }.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
+                        for p in vm_working_set_locked(self.root).iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
                         return Err(VmError::OutOfMemory);
                     }
                 } else {
@@ -565,23 +589,23 @@ impl AddressSpace {
                         Ok(p) => p,
                         Err(e) => {
                             let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                            for p in unsafe { &mut *WORKING_SET.0.get() }.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
+                            for p in vm_working_set_locked(self.root).iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
                             return Err(e);
                         }
                     };
                     if unsafe { crate::memory::free_page(physical) }.is_err() {
                         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                        for p in unsafe { &mut *WORKING_SET.0.get() }.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
+                        for p in vm_working_set_locked(self.root).iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
                         return Err(VmError::OutOfMemory);
                     }
                 }
                 let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                (unsafe { &mut *WORKING_SET.0.get() })[index] = WorkingSetPage::EMPTY;
+                (vm_working_set_locked(self.root))[index] = WorkingSetPage::EMPTY;
             }
             va += PAGE_SIZE;
         }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        let areas = unsafe { &mut *DEMAND_AREAS.0.get() };
+        let areas = vm_demand_areas_locked(self.root);
         let index = areas.iter().position(|a| a.live && a.root == self.root && a.start == start && a.end == end).ok_or(VmError::NotMapped)?;
         if release { areas[index] = DemandArea::EMPTY; } else { areas[index].committed = false; }
         Ok(())
@@ -763,7 +787,20 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
-        let _ = super::pfn::release_mapping(physical);
+        match super::pfn::release_mapping(physical) {
+            Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
+            Err(_) => {
+                // Do not return a frame whose ownership accounting could not
+                // be discharged. Restore the translation before exposing an
+                // error to the caller.
+                unsafe {
+                    leaf.write(entry);
+                    asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+                }
+                crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                return Err(VmError::AddressSpaceBusy);
+            }
+        }
 
         // Reclaim empty PT/PD/PDPT tables bottom-up. A non-empty table is never
         // freed, and the PML4 root remains owned by AddressSpace.
@@ -813,7 +850,20 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
-        let _ = super::pfn::release_mapping(expected_physical);
+        match super::pfn::release_mapping(expected_physical) {
+            Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
+            Err(_) => {
+                // Roll back the PTE replacement if the old mapping reference
+                // cannot be released; neither frame may be recycled early.
+                unsafe {
+                    leaf.write(entry);
+                    asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+                }
+                crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                let _ = super::pfn::release_mapping(new_physical);
+                return Err(VmError::AddressSpaceBusy);
+            }
+        }
         Ok(())
     }
 
@@ -823,7 +873,7 @@ impl AddressSpace {
     pub unsafe fn destroy(&mut self) -> Result<(), VmError> {
         let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         if crate::process::address_space_has_references(self.root)
-            || unsafe{&*WORKING_SET.0.get()}.iter().any(|p|p.live&&p.root==self.root&&p.busy) {
+            || vm_working_set_locked(self.root).iter().any(|p|p.live&&p.root==self.root&&p.busy) {
             return Err(VmError::AddressSpaceBusy);
         }
         // The caller has switched away locally; flush every online CPU before
@@ -848,9 +898,13 @@ impl AddressSpace {
                     let pt = (e2 & ADDR) as *const u64;
                     for d in 0..512usize {
                         let pte = unsafe { pt.add(d).read() };
-                        if pte & (PRESENT | USER) == (PRESENT | USER)
-                            && (pte & EXTERNAL_USER != 0 || crate::ntoskrnl::mm::runtime::is_page_locked(pte & ADDR)) {
-                            return Err(VmError::PermissionDenied);
+                        if pte & (PRESENT | USER) == (PRESENT | USER) {
+                            if pte & EXTERNAL_USER != 0 || crate::ntoskrnl::mm::runtime::is_page_locked(pte & ADDR) {
+                                return Err(VmError::PermissionDenied);
+                            }
+                            if let Some((_, mappings, _)) = super::pfn::snapshot(pte & ADDR) {
+                                if mappings == 0 { return Err(VmError::AddressSpaceBusy); }
+                            }
                         }
                     }
                 }
@@ -879,7 +933,17 @@ impl AddressSpace {
                         if pte & (PRESENT | USER) == (PRESENT | USER) {
                             if pte & EXTERNAL_USER == 0 {
                                 let physical = pte & ADDR;
-                                let _ = super::pfn::release_mapping(physical);
+                                // Clear this leaf and complete a global shootdown
+                                // before dropping its mapping reference or owner.
+                                unsafe { pte_slot.write(0); }
+                                let va = ((pml4_index as u64) << 39)
+                                    | ((a as u64) << 30) | ((b as u64) << 21) | ((d as u64) << 12);
+                                unsafe { asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags)); }
+                                crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                                match super::pfn::release_mapping(physical) {
+                                    Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
+                                    Err(_) => return Err(VmError::AddressSpaceBusy),
+                                }
                                 unsafe { crate::memory::free_page(physical) }.map_err(|_| VmError::OutOfMemory)?;
                             }
                         }
@@ -893,8 +957,8 @@ impl AddressSpace {
             unsafe { crate::memory::free_page(pdpt as u64) }.map_err(|_| VmError::OutOfMemory)?;
             unsafe { top.write(0); }
         }
-        let areas=unsafe{&mut *DEMAND_AREAS.0.get()}; for area in areas.iter_mut().filter(|a|a.live&&a.root==self.root){*area=DemandArea::EMPTY;}
-        let ws=unsafe{&mut *WORKING_SET.0.get()};
+        let areas=vm_demand_areas_locked(self.root); for area in areas.iter_mut().filter(|a|a.live&&a.root==self.root){*area=DemandArea::EMPTY;}
+        let ws=vm_working_set_locked(self.root);
         for page in ws.iter_mut().filter(|p|p.live&&p.root==self.root){
             if page.paged_out { let _=crate::ntoskrnl::mm::pagefile::free_slot(page.pagefile_slot); }
             *page=WorkingSetPage::EMPTY;
@@ -914,8 +978,14 @@ impl AddressSpace {
             if table != 0 { unsafe { crate::memory::free_page(table) }.map_err(|_| VmError::OutOfMemory)?; }
         }
         self.kuser_tables = [0; 3];
-        unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
+        let old_root = self.root;
+        unsafe { crate::memory::free_page(old_root) }.map_err(|_| VmError::OutOfMemory)?;
+        let metadata = take_vm_metadata_locked(old_root)?;
         self.root = 0;
+        drop(_address_space_guard);
+        if !crate::ntoskrnl::rtl_runtime::pool_free_vm_tagged(metadata.cast::<u8>(), Some(0x4d4d_564d)) {
+            return Err(VmError::OutOfMemory);
+        }
         Ok(())
     }
 
@@ -934,16 +1004,88 @@ const MAX_WORKING_SET_PAGES: usize = 8192;
 #[derive(Clone, Copy)]
 struct DemandArea { root:u64, start:u64, end:u64, allocation_protect:u32, current_protect:u32, writable:bool, executable:bool, committed:bool, live:bool }
 impl DemandArea { const EMPTY: Self = Self { root:0,start:0,end:0,allocation_protect:0,current_protect:0,writable:false,executable:false,committed:false,live:false }; }
-struct DemandAreas(core::cell::UnsafeCell<[DemandArea; MAX_DEMAND_AREAS]>);
-unsafe impl Sync for DemandAreas {}
-static DEMAND_AREAS: DemandAreas = DemandAreas(core::cell::UnsafeCell::new([DemandArea::EMPTY; MAX_DEMAND_AREAS]));
 #[derive(Clone, Copy)]
 struct WorkingSetPage { root:u64, va:u64, age:u64, live:bool, paged_out:bool, busy:bool, pagefile_slot:u32 }
 impl WorkingSetPage { const EMPTY: Self = Self { root:0,va:0,age:0,live:false,paged_out:false,busy:false,pagefile_slot:0 }; }
-struct WorkingSet(core::cell::UnsafeCell<[WorkingSetPage; MAX_WORKING_SET_PAGES]>);
-unsafe impl Sync for WorkingSet {}
-static WORKING_SET: WorkingSet = WorkingSet(core::cell::UnsafeCell::new([WorkingSetPage::EMPTY; MAX_WORKING_SET_PAGES]));
+
+/// Dynamically allocated nonpaged VM metadata owned by one address-space root.
+/// Per-root capacity remains bounded, but unrelated processes no longer share
+/// one global demand-area and working-set quota.
+struct VmMetadata {
+    demand_areas: [DemandArea; MAX_DEMAND_AREAS],
+    working_set: [WorkingSetPage; MAX_WORKING_SET_PAGES],
+}
+#[derive(Clone, Copy)]
+struct VmMetadataRegistration { root: u64, metadata: *mut VmMetadata }
+impl VmMetadataRegistration { const EMPTY: Self = Self { root: 0, metadata: core::ptr::null_mut() }; }
+struct VmMetadataRegistry(core::cell::UnsafeCell<[VmMetadataRegistration; 64]>);
+unsafe impl Sync for VmMetadataRegistry {}
+static VM_METADATA_REGISTRY: VmMetadataRegistry =
+    VmMetadataRegistry(core::cell::UnsafeCell::new([VmMetadataRegistration::EMPTY; 64]));
 static WORKING_SET_CLOCK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// Ensure a process/address-space has its own metadata allocation. Allocation
+/// occurs outside the registry lock, followed by a second lookup to handle races.
+fn ensure_vm_metadata(root: u64) -> Result<(), VmError> {
+    if root == 0 { return Err(VmError::InvalidAddress); }
+    {
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        let entries = unsafe { &*VM_METADATA_REGISTRY.0.get() };
+        if entries.iter().any(|entry| entry.root == root && !entry.metadata.is_null()) {
+            return Ok(());
+        }
+    }
+    const TAG: u32 = 0x4d4d_564d;
+    let allocation = crate::ntoskrnl::rtl_runtime::pool_allocate_vm_tagged(
+        core::mem::size_of::<VmMetadata>(), TAG, true,
+    );
+    if allocation.is_null() { return Err(VmError::OutOfMemory); }
+    let metadata = allocation.cast::<VmMetadata>();
+    unsafe {
+        metadata.write(VmMetadata {
+            demand_areas: [DemandArea::EMPTY; MAX_DEMAND_AREAS],
+            working_set: [WorkingSetPage::EMPTY; MAX_WORKING_SET_PAGES],
+        });
+    }
+    let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let entries = unsafe { &mut *VM_METADATA_REGISTRY.0.get() };
+    if entries.iter().any(|entry| entry.root == root && !entry.metadata.is_null()) {
+        drop(_guard);
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_vm_tagged(allocation, Some(TAG));
+        return Ok(());
+    }
+    let Some(slot) = entries.iter_mut().find(|entry| entry.root == 0) else {
+        drop(_guard);
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_vm_tagged(allocation, Some(TAG));
+        return Err(VmError::OutOfMemory);
+    };
+    *slot = VmMetadataRegistration { root, metadata };
+    Ok(())
+}
+
+/// Caller must hold ADDRESS_SPACE_LIFETIME_LOCK and keep the root alive.
+fn vm_metadata_locked(root: u64) -> &'static mut VmMetadata {
+    let entries = unsafe { &*VM_METADATA_REGISTRY.0.get() };
+    let pointer = entries.iter().find(|entry| entry.root == root)
+        .map(|entry| entry.metadata).unwrap_or(core::ptr::null_mut());
+    assert!(!pointer.is_null(), "address-space VM metadata missing");
+    unsafe { &mut *pointer }
+}
+fn vm_demand_areas_locked(root: u64) -> &'static mut [DemandArea; MAX_DEMAND_AREAS] {
+    &mut vm_metadata_locked(root).demand_areas
+}
+fn vm_working_set_locked(root: u64) -> &'static mut [WorkingSetPage; MAX_WORKING_SET_PAGES] {
+    &mut vm_metadata_locked(root).working_set
+}
+fn take_vm_metadata_locked(root: u64) -> Result<*mut VmMetadata, VmError> {
+    let entries = unsafe { &mut *VM_METADATA_REGISTRY.0.get() };
+    let Some(index) = entries.iter().position(|entry| entry.root == root && !entry.metadata.is_null()) else {
+        return Err(VmError::InvalidAddress);
+    };
+    let pointer = entries[index].metadata;
+    entries[index] = VmMetadataRegistration::EMPTY;
+    Ok(pointer)
+}
 
 /// Locate a present user leaf without changing it. The address-space lifetime
 /// lock must be held by the caller.
@@ -976,7 +1118,7 @@ pub fn trim_current_working_set(target:usize)->usize {
     if process.is_null(){return 0}
     let root=unsafe{(*process).address_space_root};
     if root==0||root!=active_root_physical(){return 0}
-    let mut space=AddressSpace{root, kuser_tables:[0;3]};
+    let Ok(mut space) = (unsafe { AddressSpace::attach_existing(root) }) else { return 0; };
     space.trim_working_set(target)
 }
 
@@ -988,7 +1130,7 @@ pub fn handle_current_user_page_fault(address:u64,error_code:u64)->bool {
     // against the process registry rather than requiring a possibly stale PID.
     let root=active_root_physical();
     if root==0 || !crate::process::address_space_root_is_registered(root) { return false; }
-    let mut space=AddressSpace{root, kuser_tables:[0;3]};
+    let Ok(mut space) = (unsafe { AddressSpace::attach_existing(root) }) else { return false; };
     space.handle_page_fault(address,error_code)
 }
 
