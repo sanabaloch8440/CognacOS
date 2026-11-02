@@ -53,30 +53,37 @@ unsafe fn initialize_registry_boot_drivers(
             core::ptr::addr_of_mut!(BOOT_GROUP_DEPENDENCY_REFS)
                 .cast::<[&[u16]; MAX_SERVICE_DEPENDENCIES]>(), MAX_BOOT_SERVICES)
     };
+    let mut service_counts = [0usize; MAX_BOOT_SERVICES];
+    let mut group_counts = [0usize; MAX_BOOT_SERVICES];
+    for index in 0..count {
+        let metadata = &service_metadata_snapshot[index];
+        for dependency in crate::ntoskrnl::cm::service_config::MultiSzIter::new(
+            &metadata.service_dependencies[..metadata.service_dependencies_len]) {
+            let slot = service_counts[index];
+            if slot == MAX_SERVICE_DEPENDENCIES { return Err(driver_init::DriverInitError::BufferTooSmall); }
+            service_refs[index][slot] = dependency;
+            service_counts[index] += 1;
+        }
+        for dependency in crate::ntoskrnl::cm::service_config::MultiSzIter::new(
+            &metadata.group_dependencies[..metadata.group_dependencies_len]) {
+            let slot = group_counts[index];
+            if slot == MAX_SERVICE_DEPENDENCIES { return Err(driver_init::DriverInitError::BufferTooSmall); }
+            group_refs[index][slot] = dependency;
+            group_counts[index] += 1;
+        }
+    }
+    // Only after all reference rows are populated, borrow them immutably into
+    // the node graph. This keeps row borrows disjoint from later mutations.
     for index in 0..count {
         let name_len = service_names_snapshot[index].iter().position(|unit| *unit == 0).unwrap_or(128);
         let metadata = &service_metadata_snapshot[index];
-        let mut service_count = 0usize;
-        for dependency in crate::ntoskrnl::cm::service_config::MultiSzIter::new(
-            &metadata.service_dependencies[..metadata.service_dependencies_len]) {
-            if service_count == MAX_SERVICE_DEPENDENCIES { return Err(driver_init::DriverInitError::BufferTooSmall); }
-            service_refs[index][service_count] = dependency;
-            service_count += 1;
-        }
-        let mut group_count = 0usize;
-        for dependency in crate::ntoskrnl::cm::service_config::MultiSzIter::new(
-            &metadata.group_dependencies[..metadata.group_dependencies_len]) {
-            if group_count == MAX_SERVICE_DEPENDENCIES { return Err(driver_init::DriverInitError::BufferTooSmall); }
-            group_refs[index][group_count] = dependency;
-            group_count += 1;
-        }
         nodes[index] = ServiceNode {
             name: &service_names_snapshot[index][..name_len],
             group: &metadata.group[..metadata.group_len],
             tag: metadata.tag,
-            start_type: 0, // the manager revalidates the active registry entry before loading
-            service_dependencies: &service_refs[index][..service_count],
-            group_dependencies: &group_refs[index][..group_count],
+            start_type: 0, // the registry enumerator selected only Start=0/1 candidates
+            service_dependencies: &service_refs[index][..service_counts[index]],
+            group_dependencies: &group_refs[index][..group_counts[index]],
         };
     }
     // The registry enumerator already selected only Start=0/1 kernel and
