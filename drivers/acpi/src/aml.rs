@@ -28,7 +28,7 @@ pub struct AmlNode {
     pub field_update_rule:u8,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_access_type:0,field_lock_rule:0,field_update_rule:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize }
 impl AmlNamespace {
@@ -206,16 +206,16 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
 
 fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,flags:u8)->Result<(),AmlError>{
     let mut bit_offset=0usize;
-    let mut access_type=0u8;
+    let mut access_type=0u8;\n    let mut access_attribute=0u8;\n    let mut access_length=0u8;
     while c.pos<c.end{
         let op=c.byte()?;
         match op{
             0x00=>{ // ReservedField: advance by encoded bit length.
                 bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
             }
-            0x01=>{access_type=c.byte()?;let _attribute=c.byte()?;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // AccessField
+            0x01=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=0;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // AccessField
             0x02=>{skip_data_object(c)?;} // ConnectField
-            0x03=>{access_type=c.byte()?;let _attribute=c.byte()?;let _length=c.byte()?;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // ExtendedAccessField
+            0x03=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=c.byte()?;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // ExtendedAccessField
             _=>{
                 c.pos-=1;
                 let seg=c.take(4)?;
@@ -224,7 +224,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,flags:u
                 let bit_length=read_pkg_value(c)?;
                 let id=ns.insert(container,name,AmlObjectType::Field,0,bit_offset,bit_length)?;
                 ns.nodes[id as usize].field_region=container;
-                ns.nodes[id as usize].field_access_type=access_type;
+                ns.nodes[id as usize].field_access_type=access_type;\n                ns.nodes[id as usize].field_access_attribute=access_attribute;\n                ns.nodes[id as usize].field_access_length=access_length;
                 ns.nodes[id as usize].field_lock_rule=flags&1;
                 ns.nodes[id as usize].field_update_rule=(flags>>1)&3;
                 bit_offset=bit_offset.checked_add(bit_length).ok_or(AmlError::BadPackageLength)?;
