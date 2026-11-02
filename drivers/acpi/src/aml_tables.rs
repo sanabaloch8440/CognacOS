@@ -365,6 +365,24 @@ impl AmlTableManager {
         gate.leave_method();
         result
     }
+
+    /// Evaluate a resource method and copy its typed Buffer result into
+    /// caller-owned storage. Non-buffer results and undersized output fail
+    /// without truncation; method entry remains protected by the table gate.
+    pub fn read_method_buffer<G:AmlExecutionGate,I:AcpiMethodInvoker>(
+        &self,handle:TableHandle,bytes:&[u8],method_index:u16,gate:&G,
+        method_runtime:&mut I,output:&mut [u8]
+    )->Result<usize,TableError>{
+        match self.evaluate_method_value(handle,bytes,method_index,gate,method_runtime)?{
+            AcpiMethodValue::Buffer{bytes,length}=>{
+                let length=length as usize;
+                if length>output.len(){return Err(TableError::BufferRead(crate::aml_buffer::BufferError::BufferTooLarge))}
+                output[..length].copy_from_slice(&bytes[..length]);
+                Ok(length)
+            }
+            _=>Err(TableError::BufferRead(crate::aml_buffer::BufferError::NotBuffer)),
+        }
+    }
     /// Read an immutable Name(Buffer(...)) object while holding the AML execution gate.
     /// This is the safe bridge used by resource-query IRPs for static _CRS/_PRS
     /// templates. Dynamic resource methods use evaluate_method_value and must
