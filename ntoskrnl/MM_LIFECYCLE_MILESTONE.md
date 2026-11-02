@@ -12,17 +12,17 @@ This work is based on `main` at merge commit `b5d9a758abcf3ac7891806bb1452fa994a
 
 ## Current implementation status (2026-11-02)
 
-- [x] Added `ntoskrnl/src/mm/pfn.rs`: checked fixed-capacity PFN ownership records with separate allocation-owner, mapping, and pin references; overflow/underflow, duplicate registration, and premature owner release are rejected. Unit tests cover mapping/pin lifetime and invalid transitions.
+- [x] Added `ntoskrnl/src/mm/pfn.rs`: checked PFN ownership records with separate allocation-owner, mapping, and pin references; IRQ-safe serialization; overflow/underflow, duplicate registration, and premature owner release rejection. Unit tests cover mapping/pin lifetime and invalid transitions.
 - [x] Registered the PFN module in the MM subsystem.
-- [ ] Wire PFN registration into every allocator entry point, including single-page, contiguous, node/range, high-memory, and rollback/deferred-free paths.
-- [ ] Wire mapping references into all PTE install/replace/unmap and address-space teardown paths.
-- [ ] Replace or unify the current MDL locked-PFN registry with PFN pin references and make pin/unpin transactional.
+- [~] Integrated PFN registration and final-owner release into single-page, data-page, constrained-range, contiguous-run, and NUMA batch allocation/free paths. Remaining audit: boot-time/external allocators, page-table ownership, partial batch rollback, and every caller-specific contiguous free path must be proven by tests.
+- [~] Integrated mapping references into user PTE install/replace/unmap and address-space teardown. Remaining audit: KUSER_SHARED_DATA, kernel/system mappings, section/prototype transitions, and non-user mapping paths.
+- [~] MDL pin/unpin now acquires/releases PFN pin references transactionally while retaining the existing locked-PFN lookup table for compatibility. A full registry unification and exhaustive duplicate-PFN/rollback tests remain.
 - [ ] Move demand-area and working-set metadata into dynamically allocated process/address-space-owned structures.
 - [ ] Implement and register a real storage-stack paging provider.
 - [ ] Implement file-backed control areas, prototype PTEs, and file page-in.
 - [ ] Run host tests, kernel build, and QEMU acceptance tests.
 
-The PFN database is currently a foundational component, not yet an end-to-end enforcement mechanism. In particular, do not claim the PFN requirement complete until every allocation/free/mapping/MDL path above is wired and validated.
+The PFN database is now wired into the principal user-page and physical allocation paths, but it is not yet an end-to-end enforcement mechanism. The remaining audit items above and the required host/QEMU validation must pass before this requirement is complete.
 
 ## Implementation sequence
 
