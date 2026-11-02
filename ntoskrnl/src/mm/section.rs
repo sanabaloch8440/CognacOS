@@ -175,6 +175,10 @@ pub fn unmap_view(root: u64, base: u64) -> i32 {
     // registered and can be diagnosed/retried instead of half-releasing refs.
     for i in 0..view.page_count {
         if space.translate_user(view.base + i as u64 * PAGE, false).is_err() { return STATUS_INVALID_PARAMETER; }
+        let private = view.private_pages[i];
+        if private != 0 && crate::ntoskrnl::mm::runtime::is_page_locked(private) {
+            return STATUS_INVALID_PARAMETER;
+        }
     }
     for i in (0..view.page_count).rev() {
         if unsafe { space.unmap_user_page(view.base + i as u64 * PAGE) }.is_err() { return STATUS_INVALID_PARAMETER; }
