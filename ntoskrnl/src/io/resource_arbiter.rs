@@ -13,7 +13,7 @@ pub const MAX_REQUESTS_PER_ALTERNATIVE: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum ResourceKind { Port = 1, Memory = 2, Interrupt = 3, Dma = 4, BusNumber = 5 }
+pub enum ResourceKind { Port = 1, Memory = 2, Interrupt = 3, Dma = 4, BusNumber = 5, SharedInterrupt = 6 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceRequest {
@@ -92,7 +92,12 @@ impl ResourceArbiter {
         while candidate<=r.maximum{
             let end=candidate.checked_add(r.length).ok_or(ArbiterError::InvalidRange)?;
             let overlaps=|a:ResourceAssignment|->bool{
-                if a.kind!=r.kind{return false}
+                let shared_pair = a.kind==ResourceKind::SharedInterrupt
+                    && r.kind==ResourceKind::SharedInterrupt;
+                let interrupt_pair = matches!(a.kind,ResourceKind::Interrupt|ResourceKind::SharedInterrupt)
+                    && matches!(r.kind,ResourceKind::Interrupt|ResourceKind::SharedInterrupt);
+                if shared_pair { return false; }
+                if !interrupt_pair && a.kind!=r.kind { return false; }
                 let ae=a.start.saturating_add(a.length);
                 candidate<ae&&a.start<end
             };
