@@ -208,6 +208,11 @@ mod tests {
             assert_eq!(arena.get(*child).unwrap().kind,AmlValueKind::Uninitialized);
         }
     }
+    #[test] fn rejects_package_payload_after_declared_initializer_count(){
+        let bytes=[0x12,0x04,1,0x01,0x01];
+        let mut arena=AmlObjectArena::new();
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
+    }
     #[test] fn rejects_truncated_strings_and_oversized_packages(){
         let mut arena=AmlObjectArena::new();
         assert_eq!(decode_data_object(&[0x0d,b'x'],0,2,&mut arena),Err(ObjectError::Truncated));
