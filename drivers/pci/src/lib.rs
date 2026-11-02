@@ -6,6 +6,7 @@
 #![no_std]
 
 pub mod resources;
+pub mod resource_manager;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
