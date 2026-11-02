@@ -530,14 +530,14 @@ static mut PCI_BUS_FDO:*mut io::wdm::DeviceObject=core::ptr::null_mut();
 /// mappings, and let it create PDOs through the documented NTOSKRNL imports.
 /// Firmware discovery and MMIO mapping remain bootstrap responsibilities;
 /// PCI configuration-space enumeration is exclusively performed by PCI.sys.
-fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
+fn initialize_pci_driver(rsdp_address:u64)->bool {
  use core::sync::atomic::Ordering;
  use nt_abi::bus::{PCI_DRIVER_HANDOFF,PCI_ECAM_WINDOW,PCI_DRIVER_HANDOFF_MAGIC,PCI_DRIVER_HANDOFF_VERSION,PCI_DRIVER_HANDOFF_MAX_WINDOWS};
- if PCI_PE_IMAGE.is_empty()||rsdp_address==0{return 0;}
- if PCI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0;}
- let table=match unsafe{acpi::find_table(rsdp_address,*b"MCFG",0)}{Ok(t)=>t,Err(_)=>return 0};
+ if PCI_PE_IMAGE.is_empty()||rsdp_address==0{return false;}
+ if PCI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return false;}
+ let table=match unsafe{acpi::find_table(rsdp_address,*b"MCFG",0)}{Ok(t)=>t,Err(_)=>return false};
  let mcfg=match acpi::parse_mcfg(table){Ok(v)=>v,Err(_)=>return 0};
- if mcfg.count==0||mcfg.count>PCI_DRIVER_HANDOFF_MAX_WINDOWS{return 0;}
+ if mcfg.count==0||mcfg.count>PCI_DRIVER_HANDOFF_MAX_WINDOWS{return false;}
  let mut handoff=PCI_DRIVER_HANDOFF{
   magic:PCI_DRIVER_HANDOFF_MAGIC,size:core::mem::size_of::<PCI_DRIVER_HANDOFF>() as u32,
   version:PCI_DRIVER_HANDOFF_VERSION,window_count:mcfg.count as u32,reserved:0,
@@ -586,44 +586,61 @@ fn initialize_pci_bus_driver(rsdp_address:u64)->usize {
    &system_hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
    |image_path, output| resolve_builtin_driver_image(image_path, output),ntoskrnl::resolve);
   if loaded.is_err(){return 0;}
-  let mut bus=core::ptr::null_mut();
-  let status=io::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
-  if status!=nt_abi::ntstatus::STATUS_SUCCESS||bus.is_null(){return 0;}
-  let root_index=match ntoskrnl::pnp::register_root_device(){Ok(index)=>index,Err(_)=>{
-   let _=io::wdm::io_delete_device(bus);return 0
-  }};
-  if ntoskrnl::pnp::bind_pnp_device_object(root_index,bus).is_err(){
-   let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);
-   let _=io::wdm::io_delete_device(bus);return 0
-  }
-  PCI_BUS_FDO=bus;
-  let status=io::wdm::IoPnPEnumerateBus(bus);
-  if status!=nt_abi::ntstatus::STATUS_SUCCESS {
-   let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,status);
-   let _=io::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return 0;
-  }
-  // Transfer the validated PDO identities from the WDM BusRelations table
-  // into the kernel's registry-facing devnode database. No PCI config access
-  // occurs here; the data originates from pci.sys-created PDO extensions.
-  let mut count=0usize;
-  for child_index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES {
-   let mut child=core::ptr::null_mut();
-   let query=io::wdm::IoPnPQueryBusChild(bus,child_index as u32,&mut child);
-   if query!=nt_abi::ntstatus::STATUS_SUCCESS {break;}
-   if child.is_null(){continue;}
-   let extension=(*child).device_extension.cast::<io::wdm::PciPdoExtension>();
-   if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
-   if let Ok(index)=ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)){
-    if ntoskrnl::pnp::bind_pnp_device_object(index,child).is_ok(){count+=1;}
-    else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);}
-   }
-  }
-  let _=ntoskrnl::pnp::match_registry_services(&system_hive);
-  count
+  true
  }
 }
 
-/// Compatibility call site retained while resource assignment and xHCI start
+/// Enumerate PCI devices only after pci.sys has completed DriverEntry.
+/// The prerequisite phase must call initialize_pci_driver successfully first.
+fn enumerate_pci_bus_devices()->usize {
+ use core::sync::atomic::Ordering;
+ if !PCI_DRIVER_BINDING_STARTED.load(Ordering::Acquire) { return 0; }
+ unsafe {
+  let Some(system_bytes)=boot_hive_bytes("SYSTEM") else{return 0};
+  let system_hive=match ntoskrnl::cm::hive::Hive::open(system_bytes){Ok(h)=>h,Err(_)=>return 0};
+   let mut bus=core::ptr::null_mut();
+   let status=io::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
+   if status!=nt_abi::ntstatus::STATUS_SUCCESS||bus.is_null(){return 0;}
+   let root_index=match ntoskrnl::pnp::register_root_device(){Ok(index)=>index,Err(_)=>{
+    let _=io::wdm::io_delete_device(bus);return 0
+   }};
+   if ntoskrnl::pnp::bind_pnp_device_object(root_index,bus).is_err(){
+    let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);
+    let _=io::wdm::io_delete_device(bus);return 0
+   }
+   PCI_BUS_FDO=bus;
+   let status=io::wdm::IoPnPEnumerateBus(bus);
+   if status!=nt_abi::ntstatus::STATUS_SUCCESS {
+    let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,status);
+    let _=io::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return 0;
+   }
+   // Transfer the validated PDO identities from the WDM BusRelations table
+   // into the kernel's registry-facing devnode database. No PCI config access
+   // occurs here; the data originates from pci.sys-created PDO extensions.
+   let mut count=0usize;
+   for child_index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES {
+    let mut child=core::ptr::null_mut();
+    let query=io::wdm::IoPnPQueryBusChild(bus,child_index as u32,&mut child);
+    if query!=nt_abi::ntstatus::STATUS_SUCCESS {break;}
+    if child.is_null(){continue;}
+    let extension=(*child).device_extension.cast::<io::wdm::PciPdoExtension>();
+    if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
+    if let Ok(index)=ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)){
+     if ntoskrnl::pnp::bind_pnp_device_object(index,child).is_ok(){count+=1;}
+     else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);}
+    }
+   }
+   let _=ntoskrnl::pnp::match_registry_services(&system_hive);
+   count
+ }
+}
+
+/// Compatibility entry point; callers should use the explicit two-stage API.
+pub(crate) fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
+ if !initialize_pci_driver(rsdp_address) { return 0; }
+ enumerate_pci_bus_devices()
+}
+ while resource assignment and xHCI start
 /// are completed by the PnP/resource-arbitration stages.
 pub(crate) fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
  initialize_pci_bus_driver(rsdp_address)
