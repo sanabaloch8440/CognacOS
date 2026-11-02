@@ -287,17 +287,19 @@ pub fn apply_hierarchy_atomic<C:ConfigAccess>(
         }
     }
     let disable_all=|configs:&mut[C]|->bool{
+        let mut ok=true;
         for (i,c) in configs.iter_mut().enumerate(){
-            if c.write_u16(PCI_COMMAND,commands[i]&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER)).is_err(){return false}
+            if c.write_u16(PCI_COMMAND,commands[i]&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER)).is_err(){ok=false}
         }
-        true
+        ok
     };
     let mut disabled=0usize;
     for i in 0..configs.len(){
         if configs[i].write_u16(PCI_COMMAND,commands[i]&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER)).is_err(){
             let mut ok=true;
             for j in (0..disabled).rev(){if configs[j].write_u16(PCI_COMMAND,commands[j]&!PCI_COMMAND_BUS_MASTER).is_err(){ok=false}}
-            return Err(if ok{BridgeWindowError::Config}else{BridgeWindowError::InvalidEncoding})
+            if !ok {let _=disable_all(configs);return Err(BridgeWindowError::InvalidEncoding)}
+            return Err(BridgeWindowError::Config)
         }
         disabled+=1;
     }
