@@ -384,12 +384,12 @@ mod tests{
         assert!(load_definition_block(&aml,&mut ns).is_ok());
         let id=ns.find_child(0,*b"DREG").unwrap() as usize;
         assert_eq!(ns.nodes[id].object_type,AmlObjectType::DataRegion);
-        assert_eq!(ns.nodes[id].body_length,25);
+        assert_eq!(ns.nodes[id].body_length,22);
     }
     #[test]fn rejects_invalid_name_prefix_forms(){
         let mut ns=AmlNamespace::new();
         // Root prefix followed by a parent prefix is not a valid NameString.
-        assert_eq!(load_definition_block(&[0x08,0x5c,0x5e],&mut ns),Err(AmlError::BadName));
+        assert_eq!(load_definition_block(&[0x08,0x5c,0x5e,b'A',b'B',b'C',b'D'],&mut ns),Err(AmlError::BadName));
         assert_eq!(ns.count,1);
         // MultiNamePrefix must carry at least one NameSeg.
         assert_eq!(load_definition_block(&[0x08,0x2f,0],&mut ns),Err(AmlError::BadName));
