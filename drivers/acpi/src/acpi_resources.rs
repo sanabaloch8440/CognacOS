@@ -312,3 +312,11 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&[0x89, 5, 0, 0, 1, 1, 0, 0, 0x79, 0]), Err(ResourceError::InvalidLength));
  }
 }
+
+
+#[cfg(test)] mod stability_25_empty_extended_irq {
+ use super::*;
+ #[test] fn rejects_extended_irq_with_zero_interrupts() {
+  assert_eq!(parse_resource_template(&[0x89, 6, 0, 0, 0, 0, 0, 0, 0x79, 0]), Err(ResourceError::InvalidLength));
+ }
+}
