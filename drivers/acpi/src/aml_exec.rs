@@ -34,7 +34,7 @@ impl Machine{
    0x0e=>{let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
    0x60..=0x67=>Ok(self.locals[(op-0x60)as usize]),0x68..=0x6e=>Ok(self.args[(op-0x68)as usize]),
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
-    let a=self.term_depth(r,depth+1)?;let b=self.term(r)?;
+    let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
     let v=match op{
      0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),
      0x79=>if b>=64{0}else{a<<b},0x7a=>if b>=64{0}else{a>>b},
@@ -43,7 +43,7 @@ impl Machine{
     let t=Self::target(r)?;self.store(t,v);Ok(v)
    }
    0x81|0x82=>{
-    let value=self.term(r)?;
+    let value=self.term_depth(r,depth+1)?;
     let result=if value==0{0}else if op==0x81{64-value.leading_zeros() as u64}else{value.trailing_zeros() as u64+1};
     let t=Self::target(r)?;self.store(t,result);Ok(result)
    }
@@ -54,18 +54,18 @@ impl Machine{
     self.store(t,value);Ok(value)
    }
    0x78=>{
-    let dividend=self.term(r)?;let divisor=self.term(r)?;
+    let dividend=self.term_depth(r,depth+1)?;let divisor=self.term_depth(r,depth+1)?;
     if divisor==0{return Err(ExecError::DivideByZero)}
     let remainder=dividend%divisor;let quotient=dividend/divisor;
     // AML Divide operand order is Dividend, Divisor, Remainder, Quotient.
     let rem=Self::target(r)?;let q=Self::target(r)?;
     self.store(rem,remainder);self.store(q,quotient);Ok(quotient)
    }
-   0x80=>{let v=!self.term(r)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},
-   0x90=>{let a=self.term(r)?;let b=self.term(r)?;Ok((a!=0&&b!=0)as u64)},
-   0x91=>{let a=self.term(r)?;let b=self.term(r)?;Ok((a!=0||b!=0)as u64)},
-   0x92=>Ok((self.term(r)?==0)as u64),
-   0x93|0x94|0x95=>{let a=self.term(r)?;let b=self.term(r)?;Ok(match op{0x93=>(a==b)as u64,0x94=>(a>b)as u64,_=>(a<b)as u64})}
+   0x80=>{let v=!self.term_depth(r,depth+1)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},
+   0x90=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0&&b!=0)as u64)},
+   0x91=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0||b!=0)as u64)},
+   0x92=>Ok((self.term_depth(r,depth+1)?==0)as u64),
+   0x93|0x94|0x95=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok(match op{0x93=>(a==b)as u64,0x94=>(a>b)as u64,_=>(a<b)as u64})}
    _=>Err(ExecError::UnsupportedOpcode)
   }
  }
@@ -223,9 +223,9 @@ mod tests{
   let mut nested=std::vec![0x92;34];
   nested.push(0x01);
   assert_eq!(evaluate_term_argument(&nested),Err(ExecError::NestingLimit));
-  let mut allowed=std::vec![0x92;33];
+  let mut allowed=std::vec![0x92;32];
   allowed.push(0x01);
-  assert_eq!(evaluate_term_argument(&allowed),Ok((1,34)));
+  assert_eq!(evaluate_term_argument(&allowed),Ok((1,33)));
  }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
