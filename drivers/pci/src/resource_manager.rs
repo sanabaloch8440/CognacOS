@@ -47,8 +47,10 @@ pub fn allocate_all(
         let mut selected=None;
         for aperture in apertures.iter().copied(){
             let kind_compatible = aperture.kind == requirement.kind
-                || (requirement.kind == BarKind::Memory32 && requirement.prefetchable
-                    && aperture.kind == BarKind::Memory64 && aperture.prefetchable);
+                || (requirement.kind == BarKind::Memory32 && aperture.kind == BarKind::Memory64
+                    && aperture.prefetchable == requirement.prefetchable)
+                || (requirement.kind == BarKind::Memory64 && aperture.kind == BarKind::Memory32
+                    && !requirement.prefetchable && !aperture.prefetchable);
             if !kind_compatible || (requirement.kind != BarKind::Io && aperture.prefetchable != requirement.prefetchable) { continue }
             let end=aperture.start.checked_add(aperture.length).ok_or(ResourceError::AddressOverflow)?;
             let mut candidate=aperture.start.checked_add(requirement.alignment-1).ok_or(ResourceError::AddressOverflow)?&!(requirement.alignment-1);
@@ -249,3 +251,25 @@ pub fn probe_and_encode_requirements<C: ConfigAccess>(
     encode_requirements_list(core::slice::from_ref(&alternative), bus, output)
 }
 
+
+#[cfg(test)]
+mod memory_overlap_tests {
+ use super::*;
+ #[test]
+ fn memory32_and_memory64_assignments_share_one_conflict_domain(){
+  let reqs=[Some(BarRequirement{index:0,kind:BarKind::Memory32,length:0x1000,alignment:0x1000,prefetchable:false,assigned:0}),Some(BarRequirement{index:1,kind:BarKind::Memory64,length:0x1000,alignment:0x1000,prefetchable:false,assigned:0}),None,None,None,None];
+  let aperture=[Aperture{start:0x8000_0000,length:0x4000,kind:BarKind::Memory32,prefetchable:false},Aperture{start:0x8000_0000,length:0x4000,kind:BarKind::Memory64,prefetchable:false}];
+  let mut out=AllocationPlan::empty();allocate_all(&reqs,2,&aperture,&[],&mut out).unwrap();
+  assert_ne!(out.assignments[0].unwrap().base,out.assignments[1].unwrap().base);
+ }
+ #[test]
+ fn prefetchable_32bit_bar_can_use_a_64bit_window_only_below_four_gib(){
+  let reqs=[Some(BarRequirement{index:0,kind:BarKind::Memory32,length:0x1000,alignment:0x1000,prefetchable:true,assigned:0}),None,None,None,None,None];
+  let mut out=AllocationPlan::empty();
+  let high=[Aperture{start:0x1_0000_0000,length:0x2000,kind:BarKind::Memory64,prefetchable:true}];
+  assert_eq!(allocate_all(&reqs,1,&high,&[],&mut out),Err(ResourceError::NoSpace));
+  let low=[Aperture{start:0x9000_0000,length:0x2000,kind:BarKind::Memory64,prefetchable:true}];
+  allocate_all(&reqs,1,&low,&[],&mut out).unwrap();
+  assert!(out.assignments[0].unwrap().base<1u64<<32);
+ }
+}
