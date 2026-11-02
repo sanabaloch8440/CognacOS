@@ -54,7 +54,7 @@ pub trait AcpiMethodInvoker {
 pub struct IntegerMethodInvoker;
 impl AcpiMethodInvoker for IntegerMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
-        let node=namespace.nodes.get(method as usize).filter(|_|method as usize<namespace.count).ok_or(ExecError::InvalidMethod)?;
+        let node=namespace.nodes.get(method as usize).filter(|_|(method as usize)<namespace.count).ok_or(ExecError::InvalidMethod)?;
         let start=node.body_start as usize;
         let end=start.checked_add(node.body_length as usize).filter(|end|*end<=aml.len()).ok_or(ExecError::InvalidMethod)?;
         let body=&aml[start..end];
@@ -134,13 +134,13 @@ fn convert_data(value:DataValue<'_>)->Result<IdentityValue,IdentityError>{
     }
 }
 fn find_object(ns:&AmlNamespace,device:u16,name:[u8;4])->Result<Option<u16>,IdentityError>{
-    let node=ns.nodes.get(device as usize).filter(|_|device as usize<ns.count).ok_or(IdentityError::InvalidDevice)?;
+    let node=ns.nodes.get(device as usize).filter(|_|(device as usize)<ns.count).ok_or(IdentityError::InvalidDevice)?;
     if !matches!(node.object_type,AmlObjectType::Device|AmlObjectType::Processor|AmlObjectType::PowerResource|AmlObjectType::ThermalZone){return Err(IdentityError::InvalidDevice)}
     let Some(found)=ns.find_child(device,name) else{return Ok(None)};
     Ok(Some(ns.resolve_alias(found).map_err(|_|IdentityError::MalformedObject)?))
 }
 fn evaluate_object<'a>(ns:&AmlNamespace,aml:&'a [u8],node:u16,invoker:&mut impl AcpiMethodInvoker)->Result<IdentityValue,IdentityError>{
-    let object=ns.nodes.get(node as usize).filter(|_|node as usize<ns.count).ok_or(IdentityError::MalformedObject)?;
+    let object=ns.nodes.get(node as usize).filter(|_|(node as usize)<ns.count).ok_or(IdentityError::MalformedObject)?;
     match object.object_type{
         AmlObjectType::Name=>convert_data(data_value(aml,object)?),
         AmlObjectType::Method=>{match invoker.evaluate_value(ns,aml,node).map_err(IdentityError::Method)?{
