@@ -254,8 +254,10 @@ pub fn aggregate_descendant_ranges(
     };
     output.io=round(io,0x1000,BarKind::Io,false)?;
     if mem.is_some_and(|(_,hi)|hi>1u64<<32){return Err(BridgeWindowError::InvalidEncoding)}
+    if mem.is_some_and(|(_,hi)|hi>1u64<<32){return Err(BridgeWindowError::InvalidEncoding)}
     output.memory=round(mem,0x10_0000,BarKind::Memory32,false)?;
-    output.prefetchable=round(pref,0x10_0000,BarKind::Memory64,true)?;
+    let pref_kind=if pref.is_some_and(|(_,hi)|hi<=1u64<<32){BarKind::Memory32}else{BarKind::Memory64};
+    output.prefetchable=round(pref,0x10_0000,pref_kind,true)?;
     Ok(())
 }
 
