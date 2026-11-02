@@ -4,7 +4,7 @@
 #![no_std]
 
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
-use crate::aml_exec::{self,AmlValue,ExecError};
+use crate::aml_exec::{self,ExecError};
 
 pub const DEVICE_PRESENT:u32=1;
 pub const DEVICE_ENABLED:u32=2;
@@ -83,9 +83,9 @@ fn eisa_id(value:u64)->Result<AcpiId,IdentityError>{
     let c=((compressed>>16)&0x1f)as u8;
     if a==0||b==0||c==0{return Err(IdentityError::InvalidEisaId)}
     let digits=compressed&0xffff;
+    let hex=|n:u32|if n<10{b'0'+n as u8}else{b'A'+(n-10)as u8};
     let text=[b'A'+a-1,b'A'+b-1,b'A'+c-1,
-        b'0'+((digits>>12)&0xf)as u8,b'0'+((digits>>8)&0xf)as u8,
-        b'0'+((digits>>4)&0xf)as u8,b'0'+(digits&0xf)as u8];
+        hex((digits>>12)&0xf),hex((digits>>8)&0xf),hex((digits>>4)&0xf),hex(digits&0xf)];
     AcpiId::from_bytes(&text)
 }
 fn id_from_value(value:DataValue<'_>)->Result<AcpiId,IdentityError>{
@@ -132,7 +132,7 @@ fn package_ids(bytes:&[u8],out:&mut AcpiDeviceIdentity)->Result<(),IdentityError
 pub fn evaluate_device_identity(ns:&AmlNamespace,aml:&[u8],device:u16,invoker:&mut impl AcpiMethodInvoker)->Result<AcpiDeviceIdentity,IdentityError>{
     let mut out=AcpiDeviceIdentity::EMPTY;
     let hid=eval_optional(ns,aml,device,*b"_HID",invoker)?.ok_or(IdentityError::MissingHid)?;
-    out.hid=id_from_value(hid?);out.has_hid=true;
+    out.hid=id_from_value(hid?)?;out.has_hid=true;
     if let Some(cid)=eval_optional(ns,aml,device,*b"_CID",invoker)?{
         match cid?{
             DataValue::Package(bytes)=>package_ids(bytes,&mut out)?,
@@ -174,6 +174,39 @@ mod tests{
         assert_eq!(result.compatible_ids[0].as_bytes(),b"ACME0002");
         assert_eq!(result.uid,Some(3));assert_eq!(result.adr,Some(0x1234));
         assert_eq!(result.sta,DEVICE_STATUS_DEFAULT);
+    }
+    #[test]fn decodes_integer_eisa_hid_and_cid_package(){
+        // EISAID("PNP0A03") is encoded as the little-endian integer 0x030ad041.
+        let aml=[0x5b,0x82,0x1b,b'D',b'E',b'V',b'0',
+            0x08,b'_',b'H',b'I',b'D',0x0c,0x41,0xd0,0x0a,0x03,
+            0x08,b'_',b'C',b'I',b'D',0x12,0x08,2,0x0c,0x41,0xd0,0x0a,0x03,
+            0x0c,0x42,0xd0,0x0a,0x03];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let dev=ns.find_child(0,*b"DEV0").unwrap();
+        let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
+        assert_eq!(result.hid.as_bytes(),b"PNP0A03");
+        assert_eq!(result.compatible_id_count,2);
+        assert_eq!(result.compatible_ids[0].as_bytes(),b"PNP0A03");
+        assert_eq!(result.compatible_ids[1].as_bytes(),b"PNP0A04");
+    }
+    struct FixedMethods;
+    impl AcpiMethodInvoker for FixedMethods{
+        fn evaluate_integer(&mut self,ns:&AmlNamespace,_:&[u8],method:u16)->Result<u64,ExecError>{
+            let name=ns.nodes[method as usize].name;
+            Ok(if name==*b"_STA"{DEVICE_PRESENT as u64|DEVICE_ENABLED as u64|DEVICE_FUNCTIONING as u64}
+                else if name==*b"_ADR"{0x0002_0003}else{0})
+        }
+    }
+    #[test]fn evaluates_sta_and_adr_methods(){
+        // Device(DEV0) with _HID string and integer-returning _STA/_ADR methods.
+        let aml=[0x5b,0x82,0x1e,b'D',b'E',b'V',b'0',
+            0x08,b'_',b'H',b'I',b'D',0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0,
+            0x14,0x0a,b'_',b'S',b'T',b'A',0,0xa4,0x0a,0x0b,
+            0x14,0x0c,b'_',b'A',b'D',b'R',0,0xa4,0x0c,3,0,2,0];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let dev=ns.find_child(0,*b"DEV0").unwrap();
+        let result=evaluate_device_identity(&ns,&aml,dev,&mut FixedMethods).unwrap();
+        assert_eq!(result.sta,0x0b);assert_eq!(result.adr,Some(0x0002_0003));
     }
     #[test]fn rejects_device_without_hid(){
         let aml=[0x5b,0x82,0x05,b'D',b'E',b'V',b'0'];
