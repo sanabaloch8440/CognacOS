@@ -50,7 +50,7 @@ pub struct AssignedResource {
     pub kind: ResourceKind,
     /// Translated system physical address or I/O port address.
     pub start: u64,
-    pub length: u64,
+    pub length: u32,
     pub flags: u16,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +100,7 @@ pub fn parse_translated_resources(bytes: &[u8]) -> Result<IdeResourceSet, i32> {
                     if length == 0 || start.checked_add(length).is_none() { return Err(INVALID); }
                     Some(AssignedResource {
                         kind: if kind == CM_RESOURCE_PORT { ResourceKind::Port } else { ResourceKind::Memory },
-                        start, length, flags,
+                        start, length: length as u32, flags,
                     })
                 }
                 CM_RESOURCE_INTERRUPT => {
@@ -132,7 +132,7 @@ pub fn parse_translated_resources(bytes: &[u8]) -> Result<IdeResourceSet, i32> {
 fn overlaps(a: AssignedResource, b: AssignedResource) -> bool {
     if a.kind != b.kind { return false; }
     if matches!(a.kind, ResourceKind::Interrupt | ResourceKind::Dma) { return a.start == b.start; }
-    a.start < b.start.saturating_add(b.length) && b.start < a.start.saturating_add(a.length)
+    a.start < b.start.saturating_add(b.length as u64) && b.start < a.start.saturating_add(a.length as u64)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
