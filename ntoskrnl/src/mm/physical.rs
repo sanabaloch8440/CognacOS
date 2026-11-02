@@ -1,12 +1,12 @@
+//! Early physical-page allocator built only from UEFI EfiConventionalMemory ranges.
+//! Mutations are serialized with an interrupt-safe lock on the kernel target.
+//! Page-table frames stay below 4 GiB; data frames may use high RAM through the direct map.
+
 #[cfg(target_os = "none")]
 use super::pfn;
 #[cfg(not(target_os = "none"))]
 #[path = "pfn.rs"]
 mod pfn;
-
-//! Early physical-page allocator built only from UEFI EfiConventionalMemory ranges.
-//! Mutations are serialized with an interrupt-safe lock on the kernel target.
-//! Page-table frames stay below 4 GiB; data frames may use high RAM through the direct map.
 
 use core::ptr;
 
