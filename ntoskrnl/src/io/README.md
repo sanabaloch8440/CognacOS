@@ -24,13 +24,20 @@ the reservation database. Reservations are released by devnode owner during
 failed start and removal.
 
 The current PnP adapter exposes `assign_pnp_resource_alternative` for the
-kernel's existing indexed devnode table. That table is still PCI-oriented;
-the ACPI PDO relation database is not yet mapped to generic kernel devnodes.
-Consequently ACPI's published `IO_RESOURCE_REQUIREMENTS_LIST` is not yet
-consumed by this arbiter through a complete WDM start-device path. Do not
-claim ACPI _PRS-to-_SRS assignment is end-to-end until that bridge exists.
+kernel's indexed devnode table. That table is still PCI-oriented; the ACPI PDO
+relation database is not mapped to those devnodes. Consequently ACPI's
+published `IO_RESOURCE_REQUIREMENTS_LIST` is not consumed by this selection
+arbiter through a complete WDM start-device path.
 
-The arbiter is deliberately not a firmware interface: it never evaluates AML,
-writes PCI configuration space, programs interrupt controllers, or invokes
-ACPI _SRS. Bus drivers remain responsible for translating the selected
-assignment into their bus-specific firmware/hardware programming.
+There is also a distinct WDM start-IRP resource-claim table in
+`wdm/pnp.rs`. It validates and tentatively reserves the translated
+`CM_RESOURCE_LIST` supplied with START_DEVICE, then commits or rolls back
+claims at terminal IRP completion. It does **not** choose a configuration from
+`IO_RESOURCE_REQUIREMENTS_LIST`. These two stores are not yet unified; do not
+describe them as one end-to-end resource arbiter or claim that ACPI
+`_PRS`-to-`_SRS` assignment works.
+
+The selection arbiter is deliberately not a firmware interface: it never
+evaluates AML, writes PCI configuration space, programs interrupt controllers,
+or invokes ACPI `_SRS`. Bus drivers remain responsible for translating the
+selected assignment into their bus-specific firmware/hardware programming.
