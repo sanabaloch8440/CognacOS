@@ -11,7 +11,7 @@ const MAX_ACPI_PDOS:usize=64;
 const FILE_DEVICE_BUS_EXTENDER:u32=0x0000002a;
 const DEVICE_RELATIONS_BUS:u32=0;
 #[repr(C)]
-struct AcpiPdoExtension { signature:u64, node:u16, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity }
+struct AcpiPdoExtension { signature:u64, node:u16, devnode_index:u32, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity }
 const ACPI_PDO_SIGNATURE:u64=0x4143504950444f31;
 #[repr(C)]
 struct AcpiDeviceRelations { count:u32, objects:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS] }
@@ -589,7 +589,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         unsafe {
             let extension=(*pdo).device_extension.cast::<AcpiPdoExtension>();
             if extension.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
-            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,table:record.table,aml_bytes:record.aml_bytes.as_ptr(),aml_length:record.aml_bytes.len(),identity:record.identity});
+            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,devnode_index:u32::MAX,table:record.table,aml_bytes:record.aml_bytes.as_ptr(),aml_length:record.aml_bytes.len(),identity:record.identity});
         }
         let marked=unsafe{IoMarkBusEnumeratedPdo(pdo)};
         if marked!=STATUS_SUCCESS { return marked; }
@@ -604,6 +604,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             &mut devnode_index,
         )};
         if registered!=STATUS_SUCCESS{return registered;}
+        unsafe { (*(*pdo).device_extension.cast::<AcpiPdoExtension>()).devnode_index=devnode_index; }
         unsafe { ACPI_PDOS[pdo_count]=pdo; }
         pdo_count+=1;
     }
