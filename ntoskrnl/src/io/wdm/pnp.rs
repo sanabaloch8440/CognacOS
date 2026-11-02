@@ -254,40 +254,65 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
  if bus.is_null()||relations.is_null(){return STATUS_INVALID_PARAMETER}
  let count=unsafe{ptr::read_unaligned(ptr::addr_of!((*relations).count))} as usize;
  if count>MAX_PNP_RELATIONS{return STATUS_INVALID_PARAMETER}
+ // The PnP relation database owns one reference to every published child.
+ // Acquire candidate references before taking PNP_MANAGER: WDM reference
+ // acquisition takes the WDM lock, and the global lock order is WDM -> PnP.
  let mut children=[ptr::null_mut::<DeviceObject>();MAX_PNP_RELATIONS];
+ let mut referenced=0usize;
  for i in 0..count {
   let child=unsafe{ptr::read_unaligned(ptr::addr_of!((*relations).objects[i]))};
-  if child.is_null()||child==bus{return STATUS_INVALID_PARAMETER}
-  let valid={let state=WDM.lock();state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,child))};
-  if !valid{return STATUS_INVALID_PARAMETER}
-  if children[..i].contains(&child){return STATUS_INVALID_PARAMETER}
-  children[i]=child;
+  if child.is_null()||child==bus||children[..i].contains(&child){
+   for held in children[..referenced].iter().copied(){unsafe{io_dereference_device_object(held)}}
+   return STATUS_INVALID_PARAMETER
+  }
+  let held=unsafe{io_reference_device_object(child)};
+  if held.is_null(){
+   for prior in children[..referenced].iter().copied(){unsafe{io_dereference_device_object(prior)}}
+   return STATUS_DELETE_PENDING
+  }
+  let valid={let state=WDM.lock();state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,held))};
+  if !valid{
+   unsafe{io_dereference_device_object(held)};
+   for prior in children[..referenced].iter().copied(){unsafe{io_dereference_device_object(prior)}}
+   return STATUS_INVALID_PARAMETER
+  }
+  children[i]=held;
+  referenced+=1;
  }
  let mut removed=[ptr::null_mut::<DeviceObject>();MAX_PNP_DEVICES];
  let mut removed_count=0usize;
+ let mut duplicate_refs=[ptr::null_mut::<DeviceObject>();MAX_PNP_RELATIONS];
+ let mut duplicate_count=0usize;
  let mut manager=PNP_MANAGER.lock();
  let free=manager.relations.iter().filter(|r|!r.used||r.bus==bus).count();
- if free<count{return STATUS_INSUFFICIENT_RESOURCES}
+ if free<count{
+  drop(manager);
+  for held in children[..referenced].iter().copied(){unsafe{io_dereference_device_object(held)}}
+  return STATUS_INSUFFICIENT_RESOURCES
+ }
  for relation in manager.relations.iter().filter(|r|r.used&&r.bus==bus&&!children[..count].contains(&r.child)) {
   if removed_count<removed.len(){removed[removed_count]=relation.child;removed_count+=1;}
  }
  for relation in manager.relations.iter_mut().filter(|r|r.used&&r.bus==bus&&!children[..count].contains(&r.child)){*relation=PnpRelation::EMPTY;}
  for child in children[..count].iter().copied(){
-  if !manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==child){
-   if let Some(slot)=manager.relations.iter_mut().find(|r|!r.used||r.bus==bus&&!children[..count].contains(&r.child)){
-    *slot=PnpRelation{used:true,bus,child};
-   }
+  if manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==child){
+   duplicate_refs[duplicate_count]=child;duplicate_count+=1;
+  }else if let Some(slot)=manager.relations.iter_mut().find(|r|!r.used||r.bus==bus&&!children[..count].contains(&r.child)){
+   *slot=PnpRelation{used:true,bus,child};
   }
  }
  manager.enumerations=manager.enumerations.wrapping_add(1);
  drop(manager);
- // Children removed from BusRelations must go through real PnP teardown rather
- // than simply disappearing from the enumeration table.
+ // Existing relations retained their original reference; release the
+ // speculative reference acquired for this refresh.
+ for child in duplicate_refs[..duplicate_count].iter().copied(){unsafe{io_dereference_device_object(child)}}
+ // Removed children remain referenced until PnP teardown has completed.
  for child in removed[..removed_count].iter().copied(){
   let status=unsafe{IoPnPRemoveDevice(child)};
   crate::ntoskrnl::pnp::remove_pnp_device_object(child,status);
   let mut bindings=PNP_DRIVER_BINDINGS.lock();
   for binding in bindings.iter_mut().filter(|b|b.used&&b.pdo==child){*binding=PnpDriverBinding::EMPTY;}
+  unsafe{io_dereference_device_object(child)};
  }
  // Bind newly published PDOs after releasing the relation and WDM locks.
  let drivers={
@@ -306,7 +331,6 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
  }
  STATUS_SUCCESS
 }
-
 /// Dispatch one real IRP_MJ_PNP lifecycle request under PnP-manager ownership.
 /// START_DEVICE is validated/resourced by the normal Po/I/O dispatch path.
 /// Pending IRPs remain owned until terminal IoCompleteRequest.
