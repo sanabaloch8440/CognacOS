@@ -154,10 +154,69 @@ pub fn allocatable_memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> 
  let mut count=0usize;
  for range in s.0.iter().take(s.1).filter(|range|range.node==node&&!range.hot_pluggable) {
   if count==output.len() { break; }
-  output[count]=(range.start,range.end-range.start);
-  count+=1;
+  output[count]=(range.start,range.end-range.start);count+=1;
+ }
+ let online=unsafe{&*ONLINE_HOTPLUG.0.get()};
+ for range in online.0.iter().take(online.1).filter(|range|range.2==node) {
+  if count==output.len(){break}
+  output[count]=(range.0,range.1-range.0);count+=1;
+ }
+ // Keep the result ordered for interval intersection in the allocator.
+ output[..count].sort_unstable_by_key(|r|r.0);
+ count
+}
+
+
+
+// Runtime state for SRAT hot-pluggable ranges. A range is not allocator-visible
+// until the memory manager completes the online transaction.
+struct OnlineHotplug(core::cell::UnsafeCell<([(u64,u64,u32);MAX_RANGES],usize)>);
+unsafe impl Sync for OnlineHotplug {}
+static ONLINE_HOTPLUG:OnlineHotplug=OnlineHotplug(core::cell::UnsafeCell::new(([(0,0,u32::MAX);MAX_RANGES],0)));
+
+/// Enumerate SRAT hot-pluggable ranges for a proximity domain.
+pub fn hotplug_memory_ranges_for_node(node:u32,output:&mut [(u64,u64)])->usize {
+ if !is_ready(){return 0}
+ let s=unsafe{&*TOPOLOGY.0.get()};let mut count=0;
+ for r in s.0.iter().take(s.1).filter(|r|r.node==node&&r.hot_pluggable) {
+  if count==output.len(){break}
+  output[count]=(r.start,r.end-r.start);count+=1;
  }
  count
+}
+
+/// Validate that an entire aligned interval is firmware-designated hot-pluggable
+/// memory owned by exactly one SRAT proximity domain.
+pub fn hotplug_range_owner(start:u64,length:u64)->Option<u32> {
+ if !is_ready()||length==0||start&0xfff!=0||length&0xfff!=0{return None}
+ let end=start.checked_add(length)?;
+ let s=unsafe{&*TOPOLOGY.0.get()};
+ let mut owner=None;
+ for r in s.0.iter().take(s.1).filter(|r|start<r.end&&r.start<end) {
+  if !r.hot_pluggable||start<r.start||end>r.end||owner.is_some(){return None}
+  owner=Some(r.node);
+ }
+ owner
+}
+
+/// Publish or withdraw a hot-plug range after the physical allocator has
+/// completed the corresponding transaction. Callers serialize mutations.
+pub fn set_hotplug_range_online(start:u64,length:u64,online:bool)->Result<(),TopologyError> {
+ let node=hotplug_range_owner(start,length).ok_or(TopologyError::InvalidTable)?;
+ let end=start.checked_add(length).ok_or(TopologyError::InvalidTable)?;
+ let state=unsafe{&mut *ONLINE_HOTPLUG.0.get()};
+ if online {
+  if state.1==MAX_RANGES||state.0.iter().take(state.1).any(|r|start<r.1&&r.0<end) {
+   return Err(TopologyError::Capacity)
+  }
+  state.0[state.1]=(start,end,node);state.1+=1;
+ } else {
+  let Some(index)=state.0.iter().take(state.1).position(|r|r.0==start&&r.1==end&&r.2==node) else {
+   return Err(TopologyError::InvalidTable)
+  };
+  state.1-=1;state.0[index]=state.0[state.1];state.0[state.1]=(0,0,u32::MAX);
+ }
+ Ok(())
 }
 
 /// Query firmware attributes for a physical address. Returns None when SRAT
@@ -172,6 +231,42 @@ pub fn memory_attributes(address:u64)->Option<(u32,bool,bool)> {
  }
  found
 }
+
+/// Produce a deterministic locality order: preferred node first, then ascending
+/// SLIT distance. Missing SLIT entries sort last and use node-id order as a
+/// stable fallback rather than inventing locality.
+pub fn allocation_order(preferred:u32,output:&mut [u32])->usize {
+ if !is_ready()||output.is_empty(){return 0}
+ let s=unsafe{&*TOPOLOGY.0.get()};
+ let online=unsafe{&*ONLINE_HOTPLUG.0.get()};
+ let mut count=0usize;
+ for r in s.0.iter().take(s.1) {
+  let node=r.node;
+  let mut available=!r.hot_pluggable;
+  if !available { available=online.0.iter().take(online.1).any(|x|x.2==node); }
+  if !available||output[..count].contains(&node){continue}
+  if count==output.len(){break}
+  output[count]=node;count+=1;
+ }
+ let distance_key=|node:u32|->u16 {
+  if node==preferred {return 0}
+  let matrix=unsafe{&*TOPOLOGY.0.get()};
+  if preferred as usize<matrix.3&&node as usize<matrix.3 {
+   matrix.2[preferred as usize][node as usize] as u16+1
+  } else {u16::MAX}
+ };
+ for i in 1..count {
+  let value=output[i];let key=distance_key(value);let mut j=i;
+  while j>0 {
+   let previous=output[j-1];let previous_key=distance_key(previous);
+   if previous_key<key||(previous_key==key&&previous<value){break}
+   output[j]=previous;j-=1;
+  }
+  output[j]=value;
+ }
+ count
+}
+
 pub fn distance(from:u32,to:u32)->Option<u8>{let s=unsafe{&*TOPOLOGY.0.get()};if from as usize>=s.3||to as usize>=s.3{return None}Some(s.2[from as usize][to as usize])}
 #[cfg(test)]
 mod tests {

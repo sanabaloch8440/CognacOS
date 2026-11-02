@@ -443,38 +443,6 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                 Err(_) => {}
             }
         }
-        let region_count = match unsafe {
-            memory::initialize_with_reserved_ranges(
-                info.memory_map.cast::<u8>(),
-                info.memory_map_entries,
-                info.memory_descriptor_size,
-                &rmrr_ranges[..rmrr_count],
-            )
-        } {
-            Ok(count) => count,
-            Err(_) => {
-                serial_write(b"FATAL: invalid physical memory map or unsafe RMRR reservation.\\r\\n");
-                halt();
-            }
-        };
-        // The final UEFI map can still describe PE image backing as
-        // conventional RAM on some firmware/QEMU combinations. Keep every
-        // kernel section out of the physical allocators before any subsystem
-        // can obtain a PFN for page tables, DMA, or ordinary data.
-        if info.kernel_physical_section_count == 0
-            || info.kernel_physical_section_count > info.kernel_physical_sections.len()
-            || info.kernel_physical_sections[..info.kernel_physical_section_count]
-                .iter().any(|(start, end)| *start == 0 || *start >= *end) {
-            serial_write(b"FATAL: invalid PE section physical-backing metadata.\\r\\n");
-            halt();
-        }
-        for &(start, end) in info.kernel_physical_sections[..info.kernel_physical_section_count].iter() {
-            if unsafe { memory::reserve_range(start, end) }.is_err() {
-                serial_write(b"FATAL: cannot reserve kernel image backing from physical allocator.\\r\\n");
-                halt();
-            }
-        }
-
         // Discover NUMA memory proximity domains from firmware before any
         // driver allocation can request node-local pages. ACPI table parsing is
         // bounded to the validated firmware mapping; absence of SRAT remains a
@@ -509,7 +477,10 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                         serial_write(b"WARNING: ACPI SLIT exists but SRAT is unavailable; NUMA ownership remains unknown.\r\n");
                     } else {
                         let mut ranges = [(0u64, 0u64); ntoskrnl::mm::topology::MAX_RANGES];
-                        let count = memory::physical_memory_ranges(&mut ranges);
+                        let count = memory::physical_memory_ranges_from_map(
+                            info.memory_map.cast::<u8>(), info.memory_map_entries,
+                            info.memory_descriptor_size, &mut ranges,
+                        );
                         match ntoskrnl::mm::topology::initialize_single_node(&ranges[..count]) {
                             Ok(accepted) => {
                                 serial_write(b"ACPI SRAT/SLIT absent; Windows-compatible UMA node 0 initialized, ranges: ");
@@ -522,6 +493,39 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                 },
             }
         }
+
+        let region_count = match unsafe {
+            memory::initialize_with_reserved_ranges(
+                info.memory_map.cast::<u8>(),
+                info.memory_map_entries,
+                info.memory_descriptor_size,
+                &rmrr_ranges[..rmrr_count],
+            )
+        } {
+            Ok(count) => count,
+            Err(_) => {
+                serial_write(b"FATAL: invalid physical memory map or unsafe RMRR reservation.\\r\\n");
+                halt();
+            }
+        };
+        // The final UEFI map can still describe PE image backing as
+        // conventional RAM on some firmware/QEMU combinations. Keep every
+        // kernel section out of the physical allocators before any subsystem
+        // can obtain a PFN for page tables, DMA, or ordinary data.
+        if info.kernel_physical_section_count == 0
+            || info.kernel_physical_section_count > info.kernel_physical_sections.len()
+            || info.kernel_physical_sections[..info.kernel_physical_section_count]
+                .iter().any(|(start, end)| *start == 0 || *start >= *end) {
+            serial_write(b"FATAL: invalid PE section physical-backing metadata.\\r\\n");
+            halt();
+        }
+        for &(start, end) in info.kernel_physical_sections[..info.kernel_physical_section_count].iter() {
+            if unsafe { memory::reserve_range(start, end) }.is_err() {
+                serial_write(b"FATAL: cannot reserve kernel image backing from physical allocator.\\r\\n");
+                halt();
+            }
+        }
+
         // Publish direct-map W^X policy before any high-RAM probe can fault in
         // a leaf. An uninitialized policy intentionally defaults to read-only.
         memory::set_direct_map_readonly_ranges([

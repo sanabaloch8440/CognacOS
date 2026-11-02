@@ -186,6 +186,42 @@ pub fn physical_access_pointer(physical_address: u64) -> Option<*mut u8> {
 
 /// Enumerate RAM-like firmware descriptors as sorted, merged (base, length)
 /// ranges. The caller supplies bounded storage; the result never exceeds it.
+/// Enumerate RAM-like ranges directly from the final UEFI map before the
+/// allocator is initialized. Boot uses this to establish UMA fallback topology
+/// before any allocator can publish hot-pluggable SRAT ranges.
+pub fn physical_memory_ranges_from_map(
+    map:*const u8,entries:usize,stride:usize,output:&mut [(u64,u64)],
+)->usize {
+    if (entries!=0&&map.is_null())||stride<core::mem::size_of::<MemoryDescriptor>()||output.is_empty(){return 0}
+    let mut count=0usize;
+    for i in 0..entries {
+        let Some(offset)=i.checked_mul(stride) else{break};
+        let Some(address)=(map as usize).checked_add(offset) else{break};
+        let d=unsafe{ptr::read_unaligned(address as *const MemoryDescriptor)};
+        if !matches!(d.kind,1..=7|9|10|14)||d.number_of_pages==0{continue}
+        let Some(length)=d.number_of_pages.checked_mul(PAGE_SIZE) else{continue};
+        let start=d.physical_start&!(PAGE_SIZE-1);
+        let Some(end)=d.physical_start.checked_add(length) else{continue};
+        if end<=start||count==output.len(){continue}
+        output[count]=(start,end-start);count+=1;
+    }
+    for i in 1..count {
+        let item=output[i];let mut j=i;
+        while j>0&&output[j-1].0>item.0 {output[j]=output[j-1];j-=1}
+        output[j]=item;
+    }
+    let mut merged=0usize;
+    for i in 0..count {
+        let (start,length)=output[i];let Some(end)=start.checked_add(length) else{continue};
+        if merged!=0 {
+            let previous=output[merged-1];let previous_end=previous.0.saturating_add(previous.1);
+            if start<=previous_end {output[merged-1].1=previous_end.max(end).saturating_sub(previous.0);continue}
+        }
+        output[merged]=(start,end-start);merged+=1;
+    }
+    merged
+}
+
 pub fn physical_memory_ranges(output: &mut [(u64, u64)]) -> usize {
     let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
     let entries = FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
@@ -512,6 +548,20 @@ pub unsafe fn initialize_with_reserved_ranges(
         }
         subtract_reserved_range(&mut staged, &mut count, raw_start, raw_end)?;
         subtract_reserved_range(&mut staged_high, &mut high_count, raw_start, raw_end)?;
+    }
+    // Hot-pluggable SRAT ranges are reserved from every generic allocator
+    // until an explicit online transaction publishes them.
+    if crate::ntoskrnl::mm::topology::is_ready() {
+        let nodes=crate::ntoskrnl::mm::topology::memory_node_count();
+        let mut hotplug=[(0u64,0u64);crate::ntoskrnl::mm::topology::MAX_RANGES];
+        for node in 0..nodes as u32 {
+            let n=crate::ntoskrnl::mm::topology::hotplug_memory_ranges_for_node(node,&mut hotplug);
+            for &(start,length) in &hotplug[..n] {
+                let end=start.checked_add(length).ok_or(AllocError::InvalidMap)?;
+                subtract_reserved_range(&mut staged,&mut count,start,end)?;
+                subtract_reserved_range(&mut staged_high,&mut high_count,start,end)?;
+            }
+        }
     }
     let regions = unsafe { &mut *REGIONS.0.get() };
     regions.copy_from_slice(&staged);
@@ -1460,6 +1510,173 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     regions[count] = Region { next: base, end };
     REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
     Ok(())
+}
+
+
+
+/// Count allocator-owned free pages for one NUMA node. Counts include returned
+/// PFNs and uncarved extents, but exclude hot-plug memory until it is online.
+pub fn free_pages_for_node(node:u32)->u64 {
+    let _guard=MemoryGuard::acquire();
+    if !crate::ntoskrnl::mm::topology::is_ready(){return 0}
+    let mut total=0u64;
+    let low=unsafe{&*FREE_PAGES.0.get()};
+    let high=unsafe{&*HIGH_FREE_PAGES.0.get()};
+    for page in low.0.iter().take(low.1).chain(high.0.iter().take(high.1)) {
+        if crate::ntoskrnl::mm::topology::node_for_range(*page,PAGE_SIZE)==Some(node) {
+            total=total.saturating_add(1);
+        }
+    }
+    let mut ranges=[(0u64,0u64);crate::ntoskrnl::mm::topology::MAX_RANGES];
+    let n=crate::ntoskrnl::mm::topology::allocatable_memory_ranges_for_node(node,&mut ranges);
+    for (store,count) in [(&REGIONS,&REGION_COUNT),(&HIGH_REGIONS,&HIGH_REGION_COUNT)] {
+        let regions=unsafe{&*store.0.get()};
+        for region in regions.iter().take(count.load(core::sync::atomic::Ordering::Acquire)) {
+            for &(start,length) in &ranges[..n] {
+                let Some(end)=start.checked_add(length) else{continue};
+                let lo=region.next.max(start);let hi=region.end.min(end);
+                if lo<hi {total=total.saturating_add((hi-lo)/PAGE_SIZE);}
+            }
+        }
+    }
+    total
+}
+
+/// Fill a caller-owned array with current free-page totals for each NUMA node.
+pub fn free_pages_by_node(output:&mut [u64])->usize {
+    let count=output.len().min(crate::ntoskrnl::mm::topology::MAX_NODES);
+    for (node,value) in output.iter_mut().take(count).enumerate() {
+        *value=free_pages_for_node(node as u32);
+    }
+    count
+}
+
+fn count_available_in_interval(
+    start:u64,end:u64,free:&([u64;FREE_CAPACITY],usize),
+    regions:&[Region;MAX_REGIONS],region_count:usize,
+)->u64 {
+    let cached=free.0.iter().take(free.1).filter(|p|**p>=start&&**p<end).count() as u64;
+    let extents=regions.iter().take(region_count).map(|r| {
+        let lo=r.next.max(start);let hi=r.end.min(end);
+        if lo<hi {(hi-lo)/PAGE_SIZE}else{0}
+    }).sum::<u64>();
+    cached.saturating_add(extents)
+}
+
+fn remove_interval_from_regions(
+    regions:&mut [Region;MAX_REGIONS],count:&mut usize,start:u64,end:u64,
+)->Result<(),AllocError> {
+    subtract_reserved_range(regions,count,start,end)
+}
+
+/// Online a firmware-designated hot-pluggable SRAT interval. The UEFI map must
+/// describe the complete interval as RAM; the range is added atomically to the
+/// appropriate low/high free-region set and then exposed to NUMA allocation.
+pub unsafe fn online_hotplug_memory(start:u64,length:u64)->Result<u32,AllocError> {
+    if length==0||start<LOW_RESERVED_END||start&(PAGE_SIZE-1)!=0
+        ||length&(PAGE_SIZE-1)!=0 {return Err(AllocError::InvalidPage)}
+    let end=start.checked_add(length).filter(|e|*e<=DIRECT_MAP_PHYSICAL_LIMIT)
+        .ok_or(AllocError::InvalidPage)?;
+    let node=crate::ntoskrnl::mm::topology::hotplug_range_owner(start,length)
+        .ok_or(AllocError::InvalidPage)?;
+    let _guard=MemoryGuard::acquire();
+    let map=FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire) as *const u8;
+    let entries=FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
+    let stride=FIRMWARE_MAP_STRIDE.load(core::sync::atomic::Ordering::Acquire);
+    if map.is_null()||!firmware_map_covers_ram(map,entries,stride,start,end) {
+        return Err(AllocError::InvalidMap);
+    }
+    let low_free=unsafe{&*FREE_PAGES.0.get()};
+    let high_free=unsafe{&*HIGH_FREE_PAGES.0.get()};
+    let low_regions=unsafe{&*REGIONS.0.get()};
+    let high_regions=unsafe{&*HIGH_REGIONS.0.get()};
+    if count_available_in_interval(start,end,low_free,low_regions,REGION_COUNT.load(core::sync::atomic::Ordering::Acquire))!=0
+        ||count_available_in_interval(start,end,high_free,high_regions,HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire))!=0 {
+        return Err(AllocError::InvalidPage);
+    }
+    let mut low_staged=*low_regions;
+    let mut high_staged=*high_regions;
+    let mut low_count=REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let mut high_count=HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let low_end=end.min(PHYSICAL_LIMIT);
+    if start<low_end {
+        if low_count==MAX_REGIONS{return Err(AllocError::TooManyRegions)}
+        low_staged[low_count]=Region{next:start,end:low_end};low_count+=1;
+    }
+    let high_start=start.max(PHYSICAL_LIMIT);
+    if high_start<end {
+        if high_count==MAX_REGIONS{return Err(AllocError::TooManyRegions)}
+        high_staged[high_count]=Region{next:high_start,end};high_count+=1;
+    }
+    crate::ntoskrnl::mm::topology::set_hotplug_range_online(start,length,true)
+        .map_err(|_|AllocError::InvalidPage)?;
+    unsafe{*REGIONS.0.get()=low_staged;*HIGH_REGIONS.0.get()=high_staged;}
+    REGION_COUNT.store(low_count,core::sync::atomic::Ordering::Release);
+    HIGH_REGION_COUNT.store(high_count,core::sync::atomic::Ordering::Release);
+    Ok(node)
+}
+
+/// Offline a previously onlined hot-plug interval. The operation is refused
+/// unless every page is currently free, so allocated, pinned, or DMA-owned
+/// frames can never be withdrawn underneath a consumer.
+pub unsafe fn offline_hotplug_memory(start:u64,length:u64)->Result<(),AllocError> {
+    if length==0||start<LOW_RESERVED_END||start&(PAGE_SIZE-1)!=0
+        ||length&(PAGE_SIZE-1)!=0{return Err(AllocError::InvalidPage)}
+    let end=start.checked_add(length).filter(|e|*e<=DIRECT_MAP_PHYSICAL_LIMIT)
+        .ok_or(AllocError::InvalidPage)?;
+    if crate::ntoskrnl::mm::topology::hotplug_range_owner(start,length).is_none() {
+        return Err(AllocError::InvalidPage);
+    }
+    let _guard=MemoryGuard::acquire();
+    let low_free=unsafe{&mut *FREE_PAGES.0.get()};
+    let high_free=unsafe{&mut *HIGH_FREE_PAGES.0.get()};
+    let low_regions=unsafe{&*REGIONS.0.get()};
+    let high_regions=unsafe{&*HIGH_REGIONS.0.get()};
+    let low_count=REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let high_count=HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let available=count_available_in_interval(start,end,low_free,low_regions,low_count)
+        .saturating_add(count_available_in_interval(start,end,high_free,high_regions,high_count));
+    if available!=(length/PAGE_SIZE){return Err(AllocError::Busy)}
+    let mut low_staged=*low_regions;let mut high_staged=*high_regions;
+    let mut low_n=low_count;let mut high_n=high_count;
+    remove_interval_from_regions(&mut low_staged,&mut low_n,start,end)?;
+    remove_interval_from_regions(&mut high_staged,&mut high_n,start,end)?;
+    crate::ntoskrnl::mm::topology::set_hotplug_range_online(start,length,false)
+        .map_err(|_|AllocError::InvalidPage)?;
+    let mut i=0usize;
+    while i<low_free.1 {
+        if low_free.0[i]>=start&&low_free.0[i]<end {
+            low_free.1-=1;low_free.0[i]=low_free.0[low_free.1];
+        } else {i+=1}
+    }
+    i=0;
+    while i<high_free.1 {
+        if high_free.0[i]>=start&&high_free.0[i]<end {
+            high_free.1-=1;high_free.0[i]=high_free.0[high_free.1];
+        } else {i+=1}
+    }
+    unsafe{*REGIONS.0.get()=low_staged;*HIGH_REGIONS.0.get()=high_staged;}
+    REGION_COUNT.store(low_n,core::sync::atomic::Ordering::Release);
+    HIGH_REGION_COUNT.store(high_n,core::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+/// Allocate from the preferred NUMA node, then fall back to the nearest online
+/// nodes in SLIT order. Unknown SLIT distances sort last deterministically.
+#[cfg(target_os = "none")]
+pub unsafe fn allocate_pages_with_slit_fallback(
+    output:&mut [u64],preferred_node:u32,low:u64,high:u64,require_all:bool,
+)->Result<usize,AllocError> {
+    let mut order=[u32::MAX;crate::ntoskrnl::mm::topology::MAX_NODES];
+    let count=crate::ntoskrnl::mm::topology::allocation_order(preferred_node,&mut order);
+    if count==0{return Err(AllocError::InvalidPage)}
+    let mut last=AllocError::OutOfMemory;
+    for &node in &order[..count] {
+        match unsafe{allocate_pages_in_node_range_mode(output,node,low,high,require_all,false)} {
+            Ok(n)=>return Ok(n),Err(e)=>last=e,
+        }
+    }
+    Err(last)
 }
 
 pub fn region_count() -> usize {
