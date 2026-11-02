@@ -1337,6 +1337,13 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
 
 /// Return a contiguous allocation to the physical free-page stack atomically.
 /// No pages are released if the free stack cannot hold the entire run.
+fn release_pfn_range_owner(base: u64, pages: usize) -> Result<(), AllocError> {
+    if super::pfn::snapshot(base).is_none() {
+        return Ok(());
+    }
+    super::pfn::release_allocation_range(base, pages).map_err(|_| AllocError::InvalidPage)
+}
+
 pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), AllocError> {
     if pages == 0 || base < LOW_RESERVED_END || base & (PAGE_SIZE - 1) != 0 {
         return Err(AllocError::InvalidPage);
@@ -1351,6 +1358,7 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if pages <= FREE_CAPACITY - free.1 {
+        release_pfn_range_owner(base, pages)?;
         let mut page = base;
         while page < end {
             free.0[free.1] = page;
@@ -1366,15 +1374,18 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
     for region in regions.iter_mut().take(count) {
         if end == region.next {
+            release_pfn_range_owner(base, pages)?;
             region.next = base;
             return Ok(());
         }
         if base == region.end {
+            release_pfn_range_owner(base, pages)?;
             region.end = end;
             return Ok(());
         }
     }
     if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+    release_pfn_range_owner(base, pages)?;
     regions[count] = Region { next: base, end };
     REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
     Ok(())
