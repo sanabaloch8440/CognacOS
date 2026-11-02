@@ -28,6 +28,7 @@ pub enum TableError {
     NamespaceChanged,
     ExecutionBusy,
     MethodExecution(ExecError),
+    DeviceIdentity(IdentityError),
 }
 impl From<AcpiError> for TableError {fn from(e:AcpiError)->Self{Self::InvalidSdt(e)}}
 impl From<AmlError> for TableError {fn from(e:AmlError)->Self{Self::Parse(e)}}
@@ -301,7 +302,7 @@ impl AmlTableManager {
         acpi_device::evaluate_device_identity(&self.namespace,aml,device,&mut invoker)
             .map_err(|error|match error{
                 IdentityError::Method(method)=>TableError::MethodExecution(method),
-                _=>TableError::InvalidHandle,
+                other=>TableError::DeviceIdentity(other),
             })
     }
     /// Execute a method only when its namespace node belongs to this table.
