@@ -46,17 +46,21 @@ impl AcpiDeviceIdentity {
 /// Method dispatch boundary. The ACPI runtime owns execution gating, method
 /// serialization, argument objects and interpreter state; this trait keeps
 /// device enumeration independent of firmware execution mechanics.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum AcpiMethodValue { Integer(u64), String(AcpiId), CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8} }
 pub trait AcpiMethodInvoker {
-    fn evaluate_integer(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<u64,ExecError>;
+    fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>;
 }
 pub struct IntegerMethodInvoker;
 impl AcpiMethodInvoker for IntegerMethodInvoker {
-    fn evaluate_integer(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<u64,ExecError>{
-        Ok(aml_exec::execute_method(aml,namespace,method,&[])?.integer())
+    fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
+        Ok(AcpiMethodValue::Integer(aml_exec::execute_method(aml,namespace,method,&[])?.integer()))
     }
 }
 
 enum DataValue<'a>{Integer(u64),String(&'a [u8]),Package(&'a [u8])}
+#[derive(Clone,Copy)]
+enum IdentityValue{Integer(u64),String(AcpiId),CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8}}
 fn read_integer(bytes:&[u8],pos:&mut usize)->Result<u64,IdentityError>{
     let op=*bytes.get(*pos).ok_or(IdentityError::MalformedObject)?;*pos+=1;
     let width=match op{0x00=>return Ok(0),0x01=>return Ok(1),0xff=>return Ok(u64::MAX),0x0a=>1,0x0b=>2,0x0c=>4,0x0e=>8,_=>return Err(IdentityError::UnsupportedObject)};
@@ -81,15 +85,38 @@ fn eisa_id(value:u64)->Result<AcpiId,IdentityError>{
     let a=((compressed>>26)&0x1f)as u8;
     let b=((compressed>>21)&0x1f)as u8;
     let c=((compressed>>16)&0x1f)as u8;
-    if a==0||b==0||c==0{return Err(IdentityError::InvalidEisaId)}
+    if a==0||b==0||c==0||a>26||b>26||c>26{return Err(IdentityError::InvalidEisaId)}
     let digits=compressed&0xffff;
     let hex=|n:u32|if n<10{b'0'+n as u8}else{b'A'+(n-10)as u8};
     let text=[b'A'+a-1,b'A'+b-1,b'A'+c-1,
         hex((digits>>12)&0xf),hex((digits>>8)&0xf),hex((digits>>4)&0xf),hex(digits&0xf)];
     AcpiId::from_bytes(&text)
 }
-fn id_from_value(value:DataValue<'_>)->Result<AcpiId,IdentityError>{
-    match value{DataValue::String(s)=>AcpiId::from_bytes(s),DataValue::Integer(v)=>eisa_id(v),_=>Err(IdentityError::UnsupportedObject)}
+fn id_from_value(value:IdentityValue)->Result<AcpiId,IdentityError>{
+    match value{IdentityValue::String(s)=>Ok(s),IdentityValue::Integer(v)=>eisa_id(v),_=>Err(IdentityError::UnsupportedObject)}
+}
+fn decode_package_ids(bytes:&[u8])->Result<([AcpiId;MAX_COMPATIBLE_IDS],u8),IdentityError>{
+    let (_,end)=decode_package_length(bytes,1,bytes.len()).map_err(|_|IdentityError::MalformedObject)?;
+    let plen=1+((bytes[1]>>6)as usize);let mut pos=1+plen;
+    let count=*bytes.get(pos).ok_or(IdentityError::MalformedObject)? as usize;pos+=1;
+    if count>MAX_COMPATIBLE_IDS{return Err(IdentityError::TooManyCompatibleIds)}
+    let mut ids=[AcpiId::EMPTY;MAX_COMPATIBLE_IDS];
+    for index in 0..count{
+        ids[index]=if bytes.get(pos)==Some(&0x0d){
+            pos+=1;let tail=bytes.get(pos..end).ok_or(IdentityError::MalformedObject)?;
+            let n=tail.iter().position(|b|*b==0).ok_or(IdentityError::MalformedObject)?;
+            let id=AcpiId::from_bytes(&tail[..n])?;pos+=n+1;id
+        }else{eisa_id(read_integer(bytes,&mut pos)?)?};
+    }
+    if pos!=end{return Err(IdentityError::MalformedObject)}
+    Ok((ids,count as u8))
+}
+fn convert_data(value:DataValue<'_>)->Result<IdentityValue,IdentityError>{
+    match value{
+        DataValue::Integer(v)=>Ok(IdentityValue::Integer(v)),
+        DataValue::String(s)=>Ok(IdentityValue::String(AcpiId::from_bytes(s)?)),
+        DataValue::Package(bytes)=>{let(ids,count)=decode_package_ids(bytes)?;Ok(IdentityValue::CompatibleIds{ids,count})}
+    }
 }
 fn find_object(ns:&AmlNamespace,device:u16,name:[u8;4])->Result<Option<u16>,IdentityError>{
     let node=ns.nodes.get(device as usize).filter(|_|device as usize<ns.count).ok_or(IdentityError::InvalidDevice)?;
@@ -97,15 +124,19 @@ fn find_object(ns:&AmlNamespace,device:u16,name:[u8;4])->Result<Option<u16>,Iden
     let Some(found)=ns.find_child(device,name) else{return Ok(None)};
     Ok(Some(ns.resolve_alias(found).map_err(|_|IdentityError::MalformedObject)?))
 }
-fn evaluate_object<'a>(ns:&AmlNamespace,aml:&'a [u8],node:u16,invoker:&mut impl AcpiMethodInvoker)->Result<DataValue<'a>,IdentityError>{
+fn evaluate_object<'a>(ns:&AmlNamespace,aml:&'a [u8],node:u16,invoker:&mut impl AcpiMethodInvoker)->Result<IdentityValue,IdentityError>{
     let object=ns.nodes.get(node as usize).filter(|_|node as usize<ns.count).ok_or(IdentityError::MalformedObject)?;
     match object.object_type{
-        AmlObjectType::Name=>data_value(aml,object),
-        AmlObjectType::Method=>{let value=invoker.evaluate_integer(ns,aml,node).map_err(IdentityError::Method)?;Ok(DataValue::Integer(value))},
+        AmlObjectType::Name=>convert_data(data_value(aml,object)?),
+        AmlObjectType::Method=>{match invoker.evaluate_value(ns,aml,node).map_err(IdentityError::Method)?{
+            AcpiMethodValue::Integer(v)=>Ok(IdentityValue::Integer(v)),
+            AcpiMethodValue::String(v)=>Ok(IdentityValue::String(v)),
+            AcpiMethodValue::CompatibleIds{ids,count}=>{if count as usize>MAX_COMPATIBLE_IDS{return Err(IdentityError::TooManyCompatibleIds)}Ok(IdentityValue::CompatibleIds{ids,count})}
+        }},
         _=>Err(IdentityError::UnsupportedObject),
     }
 }
-fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<DataValue<'a>>,IdentityError>{
+fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<IdentityValue>,IdentityError>{
     match find_object(ns,device,name)?{Some(id)=>Ok(Some(evaluate_object(ns,aml,id,invoker)?)),None=>Ok(None)}
 }
 fn package_ids(bytes:&[u8],out:&mut AcpiDeviceIdentity)->Result<(),IdentityError>{
@@ -135,18 +166,18 @@ pub fn evaluate_device_identity(ns:&AmlNamespace,aml:&[u8],device:u16,invoker:&m
     out.hid=id_from_value(hid?)?;out.has_hid=true;
     if let Some(cid)=eval_optional(ns,aml,device,*b"_CID",invoker)?{
         match cid?{
-            DataValue::Package(bytes)=>package_ids(bytes,&mut out)?,
+            IdentityValue::CompatibleIds{ids,count}=>{out.compatible_ids=ids;out.compatible_id_count=count;},
             value=>{out.compatible_ids[0]=id_from_value(value)?;out.compatible_id_count=1;}
         }
     }
     if let Some(uid)=eval_optional(ns,aml,device,*b"_UID",invoker)?{
-        match uid?{DataValue::Integer(v)=>out.uid=Some(v),DataValue::String(s)=>out.uid_string=Some(AcpiId::from_bytes(s)?),_=>return Err(IdentityError::UnsupportedObject)}
+        match uid?{IdentityValue::Integer(v)=>out.uid=Some(v),IdentityValue::String(s)=>out.uid_string=Some(s),_=>return Err(IdentityError::UnsupportedObject)}
     }else{out.uid=Some(0);}
     if let Some(adr)=eval_optional(ns,aml,device,*b"_ADR",invoker)?{
-        match adr?{DataValue::Integer(v)=>out.adr=Some(v),_=>return Err(IdentityError::UnsupportedObject)}
+        match adr?{IdentityValue::Integer(v)=>out.adr=Some(v),_=>return Err(IdentityError::UnsupportedObject)}
     }
     if let Some(sta)=eval_optional(ns,aml,device,*b"_STA",invoker)?{
-        match sta?{DataValue::Integer(v)=>out.sta=v as u32,_=>return Err(IdentityError::UnsupportedObject)}
+        match sta?{IdentityValue::Integer(v)=>out.sta=v as u32,_=>return Err(IdentityError::UnsupportedObject)}
     }
     Ok(out)
 }
@@ -191,10 +222,10 @@ mod tests{
     }
     struct FixedMethods;
     impl AcpiMethodInvoker for FixedMethods{
-        fn evaluate_integer(&mut self,ns:&AmlNamespace,_:&[u8],method:u16)->Result<u64,ExecError>{
+        fn evaluate_value(&mut self,ns:&AmlNamespace,_:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
             let name=ns.nodes[method as usize].name;
-            Ok(if name==*b"_STA"{DEVICE_PRESENT as u64|DEVICE_ENABLED as u64|DEVICE_FUNCTIONING as u64}
-                else if name==*b"_ADR"{0x0002_0003}else{0})
+            Ok(AcpiMethodValue::Integer(if name==*b"_STA"{DEVICE_PRESENT as u64|DEVICE_ENABLED as u64|DEVICE_FUNCTIONING as u64}
+                else if name==*b"_ADR"{0x0002_0003}else{0}))
         }
     }
     #[test]fn evaluates_sta_and_adr_methods(){
