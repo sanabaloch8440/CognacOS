@@ -273,6 +273,6 @@ mod tests {
                 status: DriverInitStatus::Loaded(loaded) },
             DriverInitRecord::EMPTY,
         ];
-        assert!(dependencies_initialized(1, &nodes, &records));
+        assert!(dependencies_initialized(1, &nodes, &records, &[]));
     }
 }
