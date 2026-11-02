@@ -13,7 +13,7 @@ unsafe extern "win64" {
         device_type: u32, characteristics: u32, exclusive: u8,
         device_object: *mut *mut DEVICE_OBJECT,
     ) -> i32;
-    fn IoDeleteDevice(device: *mut DEVICE_OBJECT);
+    fn IoDeleteDevice(device: *mut DEVICE_OBJECT);\n    fn ExAllocatePoolWithTag(pool_type: u32, number_of_bytes: usize, tag: u32) -> PVOID;\n    fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
 }
 
 // These are ordinary PE import thunks. The PE conversion step turns the
@@ -119,7 +119,7 @@ const IRP_MN_START_DEVICE: u8 = 0x00;
 const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
-const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
+const IRP_MN_QUERY_INTERFACE: u8 = 0x08;\nconst IRP_MN_QUERY_RESOURCE_REQUIREMENTS: u8 = 0x0b;\nconst IO_RESOURCE_REQUIREMENTS_MAX_SIZE: usize = 32 + 8 + 6 * pci::resource_manager::IO_RESOURCE_DESCRIPTOR_SIZE;\nconst PCI_REQUIREMENTS_POOL_TAG: u32 = u32::from_le_bytes(*b"PciR");
 
 /// Enumerate the PCI configuration inventory at the bus PnP discovery
 /// point, not during DriverEntry. PDO creation is deferred until BusRelations
@@ -204,6 +204,40 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                         STATUS_SUCCESS
                     }
                     Err(status) => status,
+                }
+            }
+        },
+        IRP_MN_QUERY_RESOURCE_REQUIREMENTS => {
+            if device.is_null() {
+                STATUS_INVALID_PARAMETER
+            } else {
+                let extension = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+                if extension.is_null()
+                    || unsafe { (*extension).magic != PCI_PDO_EXTENSION_MAGIC || (*extension).version != 1 } {
+                    STATUS_INVALID_PARAMETER
+                } else {
+                    let bytes = unsafe { ExAllocatePoolWithTag(1, IO_RESOURCE_REQUIREMENTS_MAX_SIZE, PCI_REQUIREMENTS_POOL_TAG) };
+                    if bytes.is_null() {
+                        STATUS_INSUFFICIENT_RESOURCES
+                    } else {
+                        let status = unsafe {
+                            CognacPciQueryResourceRequirements(
+                                HANDOFF.load(Ordering::Acquire) as PVOID,
+                                (*extension).function_index,
+                                bytes.cast::<u8>(),
+                                IO_RESOURCE_REQUIREMENTS_MAX_SIZE,
+                                &mut (*irp).io_status.information,
+                            )
+                        };
+                        if status == STATUS_SUCCESS {
+                            STATUS_SUCCESS
+                        } else {
+                            // Pool ownership remains local unless a complete
+                            // requirements list is returned to the PnP manager.
+                            unsafe { ExFreePoolWithTag(bytes, PCI_REQUIREMENTS_POOL_TAG); }
+                            status
+                        }
+                    }
                 }
             }
         },
