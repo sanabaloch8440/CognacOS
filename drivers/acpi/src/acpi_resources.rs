@@ -346,3 +346,17 @@ mod dependent_requirement_tests {
   assert!(matches!(parsed.entries[0], Some(Resource::Memory { minimum: 0x1000, maximum: 0x1fff, length: 0x1000, kind: 1, .. })));
  }
 }
+
+
+#[cfg(test)] mod stability_28_qword_overflow {
+ use super::*;
+ #[test] fn rejects_qword_range_whose_end_wraps() {
+  let mut bytes = [0u8; 48];
+  bytes[0] = 0x8a; bytes[1] = 43;
+  bytes[14..22].copy_from_slice(&(u64::MAX - 1).to_le_bytes());
+  bytes[22..30].copy_from_slice(&u64::MAX.to_le_bytes());
+  bytes[38..46].copy_from_slice(&4u64.to_le_bytes());
+  bytes[46] = 0x79; bytes[47] = 0;
+  assert_eq!(parse_resource_template(&bytes), Err(ResourceError::InvalidDescriptor));
+ }
+}
