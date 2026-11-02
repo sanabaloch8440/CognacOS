@@ -761,13 +761,13 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                 }
             }
         } else {
-            serial_write(b"WARNING: no firmware ACPI RSDP handoff; SMP discovery skipped.\\r\\n");
+            serial_write(b"WARNING: no firmware ACPI RSDP handoff; SMP discovery skipped.\r\n");
             // Registry-selected boot/system drivers still run without ACPI.
             // ACPI.sys and PCI.sys are not falsely marked preinitialized.
             let boot_driver_report = match initialize_registry_boot_drivers(&system_registry, &[]) {
                 Ok(report) => report,
                 Err(_) => {
-                    serial_write(b"FATAL: boot-driver dependency scheduling or ErrorControl policy failed; boot cannot continue.\\r\\n");
+                    serial_write(b"FATAL: boot-driver dependency scheduling or ErrorControl policy failed; boot cannot continue.\r\n");
                     halt();
                 }
             };
