@@ -288,3 +288,11 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&[0x79, 1]), Err(ResourceError::InvalidDescriptor));
  }
 }
+
+
+#[cfg(test)] mod stability_22_unknown_small_descriptor {
+ use super::*;
+ #[test] fn rejects_unknown_small_descriptor_without_skipping_it() {
+  assert_eq!(parse_resource_template(&[0x30, 0x79, 0]), Err(ResourceError::UnsupportedDescriptor));
+ }
+}
