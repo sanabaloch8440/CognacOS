@@ -336,8 +336,8 @@ mod tests{
     }
     #[test]fn rejects_reserved_package_length_bits(){
         let mut ns=AmlNamespace::new();
-        assert_eq!(decode_package_length(&[0x51,0x00],0,2),Err(AmlError::BadPackageLength));
-        assert_eq!(load_definition_block(&[0x10,0x51,0x00],&mut ns),Err(AmlError::BadPackageLength));
+        assert_eq!(decode_package_length(&[0x61,0x00],0,2),Err(AmlError::BadPackageLength));
+        assert_eq!(load_definition_block(&[0x10,0x61,0x00],&mut ns),Err(AmlError::BadPackageLength));
     }
     #[test]fn validates_nested_package_data_objects(){
         // Name(PKG0, Package(2) { ByteConst(1), Package(1) { Ones } })
