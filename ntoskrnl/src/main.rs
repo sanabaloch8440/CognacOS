@@ -55,8 +55,9 @@ use core::panic::PanicInfo;
 mod platform_devices;
 #[path = "io/driver_self_test.rs"]
 mod driver_self_test;
-pub(crate) use driver_self_test::{beep_test_worker, run_beep_runtime_test};
+pub(crate) use driver_self_test::{beep_test_worker, run_beep_runtime_test, BEEP_TEST_STACK};
 pub use platform_devices::{dequeue_keyboard_event, keyboard_event_drop_count, KeyboardEvent};
+pub(crate) use platform_devices::xhci_set_bus_master;
 
 #[path = "ke/self_test.rs"]
 mod ke_self_test;
@@ -72,6 +73,7 @@ pub(crate) use boot_handoff::{
     boot_beep_bytes, boot_hive_bytes, boot_kernel_digest, boot_kernel_signature_verified,
     boot_nls_bytes, boot_ntdll_bytes, boot_secure_boot_enabled, boot_security_flags,
     boot_system_dll_bytes, boot_tpm_kernel_measurement_recorded, BootInfo, BOOT_INFO_MAGIC,
+    BOOT_SECURITY_FLAGS, BOOT_KERNEL_DIGEST,
     __bss_end, __bss_phys_end, __bss_phys_start, __bss_start, __data_end,
     __data_phys_end, __data_phys_start, __data_start, __rodata_end,
     __rodata_phys_end, __rodata_phys_start, __rodata_start, __text_end,
