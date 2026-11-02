@@ -37,6 +37,9 @@ branch:
   `min(FileSize, ValidDataLength)`, removes pages beyond VDL, and drops pages
   whose remaining valid interval is empty. A regression test covers VDL shrink
   while EOF remains unchanged.
+- Clean cache population is now bounded to the map's current
+  `min(FileSize, ValidDataLength)`; a regression test verifies that a read
+  buffer extending beyond VDL does not make the zero-filled tail cache-valid.
 - `CcCopyRead` regression coverage checks VDL-crossing misses do not modify the
   caller buffer or IOSB, accepts zero-length reads, and rejects negative offsets.
 - The user-range host-test harness now imports the relocated
