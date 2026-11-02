@@ -515,4 +515,19 @@ mod tests{
         assert_eq!(ns.resolve_alias(a),Err(AmlError::BadDefinitionBlock));
     }
 
+
+    #[test]fn validates_modulo_and_find_set_bit_inside_buffer_size_terms(){
+        // Name(BUF0, Buffer(Mod(23, 5, NullName)) { 0xaa })
+        let modulo=[0x08,b'B',b'U',b'F',b'0',0x11,0x08,
+            0x85,0x0a,23,0x0a,5,0x00,0xaa];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&modulo,&mut ns).is_ok());
+
+        // Name(BUF1, Buffer(FindSetLeftBit(DWordConst(0x8000), NullName)) { 0xaa })
+        let bit_scan=[0x08,b'B',b'U',b'F',b'1',0x11,0x09,
+            0x81,0x0c,0x00,0x80,0x00,0x00,0x00,0xaa];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&bit_scan,&mut ns).is_ok());
+    }
+
 }
