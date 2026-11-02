@@ -529,7 +529,7 @@ pub unsafe extern "win64" fn CognacPciQueryResourceRequirements(
             unsafe { bytes_written.write(size); }
             STATUS_SUCCESS
         }
-        Err(pci::resources::ResourceError::Capacity) => STATUS_BUFFER_TOO_SMALL,
+        Err(pci::resources::ResourceError::Capacity) => STATUS_INSUFFICIENT_RESOURCES,
         Err(pci::resources::ResourceError::Config) => STATUS_DEVICE_CONFIGURATION_ERROR,
         Err(_) => STATUS_NOT_SUPPORTED,
     }
