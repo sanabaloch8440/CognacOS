@@ -213,6 +213,10 @@ mod tests{
   assert_eq!(evaluate_term_argument(&[0x7d,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
   assert_eq!(evaluate_term_argument(&[0x77,0x0a,7,0x0a,6,0x00]),Ok((42,6)));
  }
+ #[test]fn term_argument_decoder_reports_truncation_and_unsupported_names(){
+  assert_eq!(evaluate_term_argument(&[0x0c,0x11,0x22]),Err(ExecError::Truncated));
+  assert_eq!(evaluate_term_argument(&[b'V',b'A',b'L',b'0']),Err(ExecError::UnsupportedOpcode));
+ }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
