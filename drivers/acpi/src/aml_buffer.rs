@@ -52,6 +52,32 @@ pub fn decode_named_buffer(aml:&[u8],namespace:&AmlNamespace,node_index:u16,outp
     Ok(declared)
 }
 
+
+/// Decode a method body whose complete result is Return(Buffer(...)).
+/// The package length must cover the exact Buffer object; BufferSize is
+/// currently restricted to AML integer constants, while the initializer is
+/// copied as opaque bytes and zero-padded to the declared size.
+pub fn decode_returned_buffer(method_body:&[u8],output:&mut [u8])->Result<usize,BufferError>{
+    if method_body.get(0)!=Some(&0xa4)||method_body.get(1)!=Some(&0x11){
+        return Err(BufferError::NotBuffer);
+    }
+    let (_,package_end)=crate::aml::decode_package_length(method_body,2,method_body.len())
+        .map_err(|_|BufferError::InvalidPackage)?;
+    if package_end!=method_body.len(){return Err(BufferError::InvalidPackage)}
+    let lead=*method_body.get(2).ok_or(BufferError::Truncated)?;
+    let length_bytes=1+((lead>>6) as usize);
+    let mut cursor=2usize.checked_add(length_bytes).ok_or(BufferError::InvalidPackage)?;
+    if cursor>package_end{return Err(BufferError::InvalidPackage)}
+    let declared=usize::try_from(integer(method_body,&mut cursor,package_end)?)
+        .map_err(|_|BufferError::BufferTooLarge)?;
+    if declared>output.len(){return Err(BufferError::BufferTooLarge)}
+    let initializer_length=package_end-cursor;
+    if initializer_length>declared{return Err(BufferError::InitializerTooLong)}
+    output[..declared].fill(0);
+    output[..initializer_length].copy_from_slice(&method_body[cursor..package_end]);
+    Ok(declared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
