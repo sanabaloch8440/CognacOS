@@ -490,9 +490,18 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             // ACPI.sys validates firmware tables as a native boot-start
             // driver before PCI.sys receives the MCFG-derived ECAM windows.
             let acpi_driver_ready=platform_devices::initialize_acpi_driver(info.rsdp_address);
-            let _pnp_enumerated=if acpi_driver_ready {
-                // DriverEntry succeeded through the registry-backed native
-                // driver loader; publish BootDrivers only after that success.
+            if !acpi_driver_ready {
+                serial_write(b"FATAL: ACPI boot driver initialization failed; PCI enumeration is blocked.\\r\\n");
+                halt();
+            }
+            // PCI.sys DriverEntry is a prerequisite, not part of enumeration.
+            // Do not publish the boot-driver phase until both platform drivers
+            // have successfully initialized.
+            if !platform_devices::initialize_pci_driver_for_boot(info.rsdp_address) {
+                serial_write(b"FATAL: PCI boot driver initialization failed; device enumeration is blocked.\\r\\n");
+                halt();
+            }
+            let _pnp_enumerated={
                 if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
                     serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\\r\\n");
                     halt();
