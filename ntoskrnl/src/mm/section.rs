@@ -229,20 +229,7 @@ pub fn handle_copy_on_write(root: u64, address: u64) -> bool {
         Ok(space) => space,
         Err(_) => { let _ = unsafe { super::physical::free_page(destination) }; return false; }
     };
-    let removed = match unsafe { space.unmap_user_page(page_va) } {
-        Ok(physical) if physical == source => true,
-        Ok(physical) => {
-            let _ = unsafe { space.map_user_page(page_va, physical, false, false) };
-            let _ = unsafe { super::physical::free_page(destination) };
-            return false;
-        }
-        Err(_) => {
-            let _ = unsafe { super::physical::free_page(destination) };
-            return false;
-        }
-    };
-    if !removed || unsafe { space.map_user_page(page_va, destination, true, false) }.is_err() {
-        let _ = unsafe { space.map_user_page(page_va, source, false, false) };
+    if unsafe { space.replace_user_page(page_va, source, destination, true, false) }.is_err() {
         let _ = unsafe { super::physical::free_page(destination) };
         return false;
     }
