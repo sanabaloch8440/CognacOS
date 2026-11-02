@@ -461,7 +461,7 @@ jobs:
               pub fn debug_trace_store_write(_: u64, _: &[u8]) -> bool { false }
           }
           mod debug {
-              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/kernel/debug.rs"));
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/dbg/debugger.rs"));
           }
           RS
           rustc --edition=2024 --test /tmp/cognacos-ntoskrnl-debug-tests.rs -o /tmp/cognacos-ntoskrnl-debug-tests
@@ -485,7 +485,7 @@ jobs:
               }
           }
           mod debug_console {
-              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/kernel/debug_console.rs"));
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/dbg/console.rs"));
           }
           RS
           rustc --edition=2024 --test /tmp/cognacos-debug-console-tests.rs -o /tmp/cognacos-debug-console-tests
@@ -493,18 +493,18 @@ jobs:
       - name: Test legacy kernel diagnostic trace publication and wraparound
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test ntoskrnl/src/kernel/ke/diagnostics.rs -o /tmp/cognacos-kernel-diagnostics-tests
+          rustc --edition=2024 --test ntoskrnl/src/ke/diagnostics.rs -o /tmp/cognacos-kernel-diagnostics-tests
           /tmp/cognacos-kernel-diagnostics-tests
       - name: Test bounded ALPC transport core
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test ntoskrnl/src/kernel/alpc.rs -o /tmp/cognacos-alpc-tests
+          rustc --edition=2024 --test ntoskrnl/src/alpc/mod.rs -o /tmp/cognacos-alpc-tests
           /tmp/cognacos-alpc-tests
       - name: Test ALPC section/security/completion resource core
         shell: bash
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test ntoskrnl/src/kernel/alpc_resources.rs -o /tmp/cognacos-alpc-resource-tests
+          rustc --edition=2024 --test ntoskrnl/src/alpc/resources.rs -o /tmp/cognacos-alpc-resource-tests
           /tmp/cognacos-alpc-resource-tests
       - name: Test Rust-native build and PE tooling
         run: cargo test --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml
