@@ -18,7 +18,7 @@ pub const PROGIF_BUS_MASTER: u8 = 1 << 7;
 pub const CM_RESOURCE_PORT: u8 = 1;
 pub const CM_RESOURCE_INTERRUPT: u8 = 2;
 pub const CM_RESOURCE_MEMORY: u8 = 3;
-pub const MAX_IDE_RESOURCES: usize = 32;
+pub const MAX_IDE_RESOURCES: usize = 16;
 pub const MAX_FULL_DESCRIPTORS: usize = 16;
 pub const MAX_PARTIAL_DESCRIPTORS: usize = 64;
 
@@ -214,6 +214,10 @@ mod tests {
         b[24..32].copy_from_slice(&start.to_le_bytes());
         b[32..36].copy_from_slice(&length.to_le_bytes());
         b
+    }
+    #[test]
+    fn controller_state_fits_the_wdm_device_extension_budget() {
+        assert!(core::mem::size_of::<PciIdeController>() <= 448);
     }
     #[test]
     fn matches_only_pci_ide_class() {
