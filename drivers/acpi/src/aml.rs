@@ -53,7 +53,7 @@ impl AmlNamespace {
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
         if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceFull)}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX};
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_access_type:0,field_lock_rule:0,field_update_rule:0};
         self.count+=1;Ok(i as u16)
     }
 }
@@ -223,6 +223,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,flags:u
                 let mut name=[0;4];name.copy_from_slice(seg);
                 let bit_length=read_pkg_value(c)?;
                 let id=ns.insert(container,name,AmlObjectType::Field,0,bit_offset,bit_length)?;
+                ns.nodes[id as usize].field_region=container;
                 ns.nodes[id as usize].field_access_type=access_type;
                 ns.nodes[id as usize].field_lock_rule=flags&1;
                 ns.nodes[id as usize].field_update_rule=(flags>>1)&3;
@@ -286,10 +287,8 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         if ext==0x87{let _=parse_name(&mut sub)?;skip_data_object(&mut sub)?;}
                         let flags=sub.byte()?;
                         let region_node=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
-                        let node=resolve_path(ns,parent,&region,true,if ext==0x81{AmlObjectType::Field}else if ext==0x86{AmlObjectType::IndexField}else{AmlObjectType::BankField},0,0,0)?;
-                        ns.nodes[node as usize].field_region=region_node;
-                        ns.nodes[node as usize].method_flags=flags;
-                        parse_field_list(&mut sub,ns,node,flags)?;
+                        if ns.nodes[region_node as usize].object_type!=AmlObjectType::OperationRegion{return Err(AmlError::InvalidParent)}
+                        parse_field_list(&mut sub,ns,region_node,flags)?;
                         c.pos=end;
                     }
                     0x88=>{
