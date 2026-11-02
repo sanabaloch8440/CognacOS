@@ -68,8 +68,10 @@ pub fn decode_returned_buffer(method_body:&[u8],output:&mut [u8])->Result<usize,
     let length_bytes=1+((lead>>6) as usize);
     let mut cursor=2usize.checked_add(length_bytes).ok_or(BufferError::InvalidPackage)?;
     if cursor>package_end{return Err(BufferError::InvalidPackage)}
-    let declared=usize::try_from(integer(method_body,&mut cursor,package_end)?)
-        .map_err(|_|BufferError::BufferTooLarge)?;
+    let (size,consumed)=crate::aml_exec::evaluate_term_argument(&method_body[cursor..package_end])
+        .map_err(|_|BufferError::InvalidPackage)?;
+    cursor=cursor.checked_add(consumed).filter(|end|*end<=package_end).ok_or(BufferError::InvalidPackage)?;
+    let declared=usize::try_from(size).map_err(|_|BufferError::BufferTooLarge)?;
     if declared>output.len(){return Err(BufferError::BufferTooLarge)}
     let initializer_length=package_end-cursor;
     if initializer_length>declared{return Err(BufferError::InitializerTooLong)}
@@ -110,6 +112,14 @@ mod tests {
         assert_eq!(decode_returned_buffer(&body,&mut output),Ok(4));
         assert_eq!(&output[..4],&[0x79,0x00,0,0]);
         assert_eq!(output[4],0xa5);
+    }
+    #[test]
+    fn evaluates_computed_buffer_size_termarg(){
+        // Return(Buffer(Add(ByteConst(2), ByteConst(2), NullName)) { 0x79 })
+        let body=[0xa4,0x11,0x08,0x72,0x0a,2,0x0a,2,0x00,0x79];
+        let mut output=[0xa5;8];
+        assert_eq!(decode_returned_buffer(&body,&mut output),Ok(4));
+        assert_eq!(&output[..4],&[0x79,0,0,0]);
     }
     #[test]
     fn rejects_malformed_or_oversized_method_buffer_results(){
