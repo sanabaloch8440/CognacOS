@@ -1,0 +1,197 @@
+//! End-to-end planning for PCI endpoint BARs across a complete bridge hierarchy.
+//!
+//! The planner consumes only firmware/bridge windows already discovered by ACPI
+//! and PCI. It allocates endpoints against the intersection of every ancestor,
+//! shares one occupied-range ledger across the whole bus tree, and stages the
+//! forwarding windows required by each bridge. Hardware writes are a separate
+//! atomic commit performed by bridge_resources::apply_hierarchy_atomic.
+#![no_std]
+
+use crate::resources::{BarKind, BarRequirement, ResourceError};
+use crate::resource_manager::{self, AllocationPlan, Aperture, OccupiedRange};
+use crate::bridge_resources::{self, BridgeWindows, BridgeWindowError};
+
+pub const MAX_HIERARCHY_ENDPOINTS: usize = 64;
+pub const MAX_HIERARCHY_BRIDGES: usize = bridge_resources::MAX_REBALANCE_BRIDGES;
+pub const MAX_HIERARCHY_OCCUPIED: usize = 512;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndpointRequest {
+    /// Bridge indices in root-to-leaf order. The last bridge is the immediate
+    /// parent of the endpoint. A zero-length path denotes a root-bus endpoint.
+    pub bridge_path: [u8; 8],
+    pub bridge_path_len: u8,
+    pub requirements: [Option<BarRequirement>; resource_manager::MAX_ASSIGNMENTS],
+    pub requirement_count: usize,
+}
+impl EndpointRequest {
+    pub const EMPTY: Self = Self {
+        bridge_path: [0; 8], bridge_path_len: 0,
+        requirements: [None; resource_manager::MAX_ASSIGNMENTS], requirement_count: 0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndpointAllocation {
+    pub plan: AllocationPlan,
+}
+impl EndpointAllocation { pub const EMPTY: Self = Self { plan: AllocationPlan::empty() }; }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HierarchyPlan {
+    pub endpoints: [Option<EndpointAllocation>; MAX_HIERARCHY_ENDPOINTS],
+    pub endpoint_count: usize,
+    /// Minimal forwarding apertures required by each bridge's descendants.
+    pub bridge_windows: [Option<BridgeWindows>; MAX_HIERARCHY_BRIDGES],
+    pub bridge_count: usize,
+}
+impl HierarchyPlan {
+    pub const fn empty() -> Self {
+        Self { endpoints: [None; MAX_HIERARCHY_ENDPOINTS], endpoint_count: 0,
+            bridge_windows: [None; MAX_HIERARCHY_BRIDGES], bridge_count: 0 }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HierarchyError {
+    Capacity, InvalidPath, InvalidRequirement, Bridge(BridgeWindowError), Resource(ResourceError),
+}
+impl From<ResourceError> for HierarchyError { fn from(e: ResourceError) -> Self { Self::Resource(e) } }
+impl From<BridgeWindowError> for HierarchyError { fn from(e: BridgeWindowError) -> Self { Self::Bridge(e) } }
+
+/// Allocate all endpoint BARs as one scratch transaction. No caller-visible
+/// plan changes on failure. Existing ranges include firmware reservations and
+/// resources owned by devices outside this rebalance operation.
+pub fn plan_hierarchy(
+    host_apertures: &[Aperture],
+    bridge_windows: &[BridgeWindows],
+    requests: &[EndpointRequest],
+    existing: &[OccupiedRange],
+    output: &mut HierarchyPlan,
+) -> Result<(), HierarchyError> {
+    if bridge_windows.len() > MAX_HIERARCHY_BRIDGES
+        || requests.len() > MAX_HIERARCHY_ENDPOINTS
+        || existing.len() > MAX_HIERARCHY_OCCUPIED {
+        return Err(HierarchyError::Capacity);
+    }
+    let mut staged = HierarchyPlan::empty();
+    staged.bridge_count = bridge_windows.len();
+    let mut occupied = [OccupiedRange { start: 0, length: 0, kind: BarKind::Io }; MAX_HIERARCHY_OCCUPIED];
+    let mut occupied_count = existing.len();
+    occupied[..existing.len()].copy_from_slice(existing);
+
+    for (endpoint_index, request) in requests.iter().enumerate() {
+        let path_len = request.bridge_path_len as usize;
+        if path_len > request.bridge_path.len() || request.requirement_count > resource_manager::MAX_ASSIGNMENTS {
+            return Err(HierarchyError::InvalidPath);
+        }
+        let mut ancestors = [BridgeWindows::default(); 8];
+        for (depth, bridge_index) in request.bridge_path[..path_len].iter().copied().enumerate() {
+            let index = bridge_index as usize;
+            if index >= bridge_windows.len() { return Err(HierarchyError::InvalidPath); }
+            // A path cannot revisit a bridge.
+            if request.bridge_path[..depth].contains(&bridge_index) { return Err(HierarchyError::InvalidPath); }
+            ancestors[depth] = bridge_windows[index];
+        }
+        let mut allowed = [Aperture { start: 0, length: 0, kind: BarKind::Io, prefetchable: false }; 64];
+        let allowed_count = bridge_resources::intersect_path(
+            host_apertures, &ancestors[..path_len], &mut allowed,
+        )?;
+        let mut requirements = request.requirements;
+        let mut plan = AllocationPlan::empty();
+        resource_manager::allocate_all(
+            &requirements, request.requirement_count,
+            &allowed[..allowed_count], &occupied[..occupied_count], &mut plan,
+        )?;
+        for assignment in plan.assignments[..plan.count].iter().flatten() {
+            if occupied_count == occupied.len() { return Err(HierarchyError::Capacity); }
+            occupied[occupied_count] = OccupiedRange {
+                start: assignment.base, length: assignment.length, kind: assignment.kind,
+            };
+            occupied_count += 1;
+        }
+        staged.endpoints[endpoint_index] = Some(EndpointAllocation { plan });
+        staged.endpoint_count += 1;
+    }
+
+    // Derive each bridge's forwarding windows from every descendant BAR. This
+    // avoids independently allocating overlapping windows for sibling devices.
+    for bridge_index in 0..bridge_windows.len() {
+        let mut descendants = [resource_manager::BarAssignment {
+            index: 0, kind: BarKind::Io, base: 0, length: 0, prefetchable: false,
+        }; MAX_HIERARCHY_ENDPOINTS * resource_manager::MAX_ASSIGNMENTS];
+        let mut n = 0usize;
+        for (request, allocation) in requests.iter().zip(staged.endpoints.iter()).take(staged.endpoint_count) {
+            if !request.bridge_path[..request.bridge_path_len as usize].contains(&(bridge_index as u8)) { continue; }
+            let Some(allocation) = allocation else { return Err(HierarchyError::InvalidPath); };
+            for a in allocation.plan.assignments[..allocation.plan.count].iter().flatten() {
+                if n == descendants.len() { return Err(HierarchyError::Capacity); }
+                descendants[n] = *a; n += 1;
+            }
+        }
+        let mut windows = BridgeWindows::default();
+        bridge_resources::aggregate_descendant_ranges(&descendants[..n], &mut windows)?;
+        staged.bridge_windows[bridge_index] = Some(windows);
+    }
+    *output = staged;
+    Ok(())
+}
+
+/// Ensure the computed forwarding windows fit inside the supplied host and
+/// parent-bridge windows before any bridge register is changed.
+pub fn validate_forwarding_path(
+    host_apertures: &[Aperture],
+    ancestors: &[BridgeWindows],
+    required: &BridgeWindows,
+) -> Result<(), HierarchyError> {
+    let mut allowed = [Aperture { start: 0, length: 0, kind: BarKind::Io, prefetchable: false }; 64];
+    let n = bridge_resources::intersect_path(host_apertures, ancestors, &mut allowed)?;
+    for need in [required.io, required.memory, required.prefetchable].into_iter().flatten() {
+        let end = need.start.checked_add(need.length).ok_or(HierarchyError::InvalidRequirement)?;
+        if !allowed[..n].iter().any(|a| {
+            a.kind == need.kind && a.prefetchable == need.prefetchable
+                && a.start <= need.start
+                && a.start.checked_add(a.length).is_some_and(|limit| end <= limit)
+        }) { return Err(HierarchyError::InvalidRequirement); }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn req(index:u8, kind:BarKind, length:u64)->Option<BarRequirement>{
+        Some(BarRequirement{index,kind,length,alignment:length,prefetchable:false,assigned:0})
+    }
+    #[test]
+    fn siblings_share_one_global_allocation_ledger_and_bridge_window(){
+        let host=[Aperture{start:0x8000_0000,length:0x0100_0000,kind:BarKind::Memory32,prefetchable:false}];
+        let bridge=[BridgeWindows{memory:Some(host[0]),..BridgeWindows::default()}];
+        let mut a=EndpointRequest::EMPTY;a.bridge_path_len=1;a.bridge_path[0]=0;a.requirement_count=1;a.requirements[0]=req(0,BarKind::Memory32,0x1000);
+        let mut b=a;b.requirements[0]=req(0,BarKind::Memory32,0x2000);
+        let mut out=HierarchyPlan::empty();
+        plan_hierarchy(&host,&bridge,&[a,b],&[],&mut out).unwrap();
+        let first=out.endpoints[0].unwrap().plan.assignments[0].unwrap();
+        let second=out.endpoints[1].unwrap().plan.assignments[0].unwrap();
+        assert_ne!(first.base,second.base);
+        let window=out.bridge_windows[0].unwrap().memory.unwrap();
+        assert!(window.start<=first.base && window.start<=second.base);
+        assert!(window.start+window.length>=second.base+second.length);
+    }
+    #[test]
+    fn failed_endpoint_does_not_modify_previous_output(){
+        let host=[Aperture{start:0x8000_0000,length:0x1000,kind:BarKind::Memory32,prefetchable:false}];
+        let mut request=EndpointRequest::EMPTY;request.requirement_count=1;request.requirements[0]=req(0,BarKind::Memory32,0x2000);
+        let mut out=HierarchyPlan::empty();out.endpoint_count=17;let old=out;
+        assert!(plan_hierarchy(&host,&[],&[request],&[],&mut out).is_err());
+        assert_eq!(out,old);
+    }
+    #[test]
+    fn rejects_bad_or_repeated_bridge_paths(){
+        let host=[Aperture{start:0x8000_0000,length:0x1000,kind:BarKind::Memory32,prefetchable:false}];
+        let bridges=[BridgeWindows{memory:Some(host[0]),..BridgeWindows::default()}];
+        let mut request=EndpointRequest::EMPTY;request.bridge_path_len=2;request.bridge_path[..2].copy_from_slice(&[0,0]);
+        let mut out=HierarchyPlan::empty();
+        assert_eq!(plan_hierarchy(&host,&bridges,&[request],&[],&mut out),Err(HierarchyError::InvalidPath));
+    }
+}
