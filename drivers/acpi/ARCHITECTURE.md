@@ -1,0 +1,118 @@
+# ACPI driver architecture and ownership boundaries
+
+This document is the design guardrail for the native ACPI bus driver. It records
+which layer owns each operation so ACPI work does not silently migrate into
+the HAL, PCI driver, or kernel executive.
+
+## Reference architecture
+
+Microsoft Windows driver documentation is the primary behavioral reference:
+
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/acpi-driver
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/device-stacks-for-an-acpi-device
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/irp-mn-query-resource-requirements
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/irp-mn-query-resources
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/mapping-bus-relative-addresses-to-virtual-addresses
+
+ReactOS is an implementation reference, not a substitute for the WDK contract:
+
+- https://github.com/reactos/reactos/tree/master/drivers/bus/acpi
+- https://github.com/reactos/reactos/blob/master/drivers/bus/acpi/main.c
+- https://github.com/reactos/reactos/blob/master/drivers/bus/acpi/buspdo.c
+- https://doxygen.reactos.org/df/d5f/drivers_2bus_2acpi_2pnp_8c_source.html
+
+## Ownership boundaries
+
+| Layer | Owns | Must not absorb |
+|---|---|---|
+| ACPI bus driver | Firmware-table interpretation through the firmware-table interface; AML namespace and method evaluation; ACPI device identities; _CRS, _PRS, _SRS, _PRT, _PRW, _PSx, GPE/Notify policy; ACPI PDO/filter behavior | PCI configuration-space enumeration, BAR probing/programming, global interrupt-controller programming, kernel device-object lifetime, global resource conflict arbitration |
+| Kernel PnP/I/O manager | DEVICE_OBJECT/IRP lifetime, relation publication and PDO references, driver binding, start/stop/remove sequencing, device-stack dispatch, pool ownership and interface lifetime | AML parsing, firmware namespace policy, PCI BAR discovery |
+| Resource arbiter | Global resource conflict detection, assignment, translated-resource validation, reservation commit/rollback and release | Firmware AML interpretation or device-specific hardware programming |
+| PCI bus driver | PCI segment/bus/function discovery, configuration space, BAR sizing, bridge windows/topology, PCI PDOs, PCI resource requirements and BAR programming | AML interpreter, ACPI namespace ownership, GPE handling, generic ACPI power policy |
+| HAL | Processor/platform abstraction, interrupt-controller primitives, GSI/vector translation, low-level MMIO/port access, firmware-table access and architecture-specific services | AML method execution, ACPI child enumeration, device resource policy, PCI PnP lifecycle |
+| Power manager | System sleep/wake policy and global device power sequencing | Firmware namespace parsing or direct ownership of ACPI methods |
+| Device function drivers | Device-specific hardware operation using translated resources and interfaces | Direct AML interpretation or assumptions about the presence of an ACPI filter |
+
+### Device-stack rule
+
+Windows distinguishes ACPI namespace devices enumerated as ACPI PDOs from
+devices already enumerated by another bus. For a namespace-described
+system-board device, ACPI can act as a bus filter above the existing bus PDO;
+for a device not already represented by another bus, ACPI creates the PDO.
+ACPI is transparent to function drivers. Do not create a duplicate PDO for a
+PCI function that the PCI bus driver owns.
+
+The HAL provides the platform entry point and low-level mechanisms. It does
+not become the AML interpreter or the ACPI bus enumerator.
+
+### PnP resource contract
+
+The bus driver answers IRP_MN_QUERY_RESOURCE_REQUIREMENTS for child devices
+that need resources. The bus driver answers IRP_MN_QUERY_RESOURCES for boot
+configuration resources. These are different requests:
+
+- _PRS describes possible resource configurations and feeds requirements
+  generation and arbitration.
+- _CRS describes the current resource configuration and must be represented
+  as the device's boot/current resources where applicable.
+- _SRS is invoked by the ACPI driver only when the OS has selected a
+  configuration that firmware must program.
+- The resource arbiter owns conflict resolution and the kernel PnP manager
+  owns start sequencing. ACPI must not independently reserve global ranges.
+- The PCI driver owns PCI BAR sizing/programming and bridge-window allocation.
+  ACPI host-bridge _CRS apertures are input to PCI/resource-window discovery,
+  not permission for ACPI to probe or program PCI BARs.
+
+The kernel must preserve the WDM ownership contract for returned resource
+buffers and device relations. Returned PDOs must remain valid through PnP
+publication; the PnP relation database owns references after publication.
+
+### Interrupt routing contract
+
+ACPI evaluates _PRT and resolves link-device methods/resources (for example
+_PRS / _CRS / _SRS) to determine the firmware-described route. The HAL owns
+the actual GSI-to-vector/controller operation and interrupt-controller
+programming. ACPI must not write IOAPIC registers itself. PCI bus policy
+consumes the resolved route through kernel/HAL interrupt interfaces.
+
+### Power and hotplug contract
+
+ACPI evaluates device-specific power and wake methods, GPE methods and
+Notify events. The power manager owns global system/device power policy and
+the kernel PnP manager owns device transition and removal sequencing. ACPI
+requests those transitions through kernel interfaces; it must not maintain a
+competing authoritative PDO lifecycle. A PDO cannot be destroyed until PnP
+removal and outstanding references/rundown have completed.
+
+## Current CognacOS integration snapshot
+
+This is an implementation status record, not a compatibility claim.
+
+| Area | Present in source | End-to-end integration status |
+|---|---|---|
+| Firmware tables / MADT / MCFG / DMAR | HAL table query and parsers | Partial; table consumers and lifecycle need broader validation |
+| DSDT/SSDT namespace | AML table manager and namespace loading | Connected during ACPI DriverEntry |
+| AML execution | Bounded integer-oriented method executor; direct string/package fast paths in identity evaluation | Not a general AML interpreter; buffers, references, synchronization and operation regions are incomplete |
+| Device identity | _HID, _CID, _UID, _STA, _ADR evaluator | Used to create initial ACPI PDO inventory; unsupported methods can suppress records |
+| ACPI PDO/PnP | Bus device, PDO creation, BusRelations response and kernel relation reference ownership | Partial; PDO query-ID, query-resources, query-resource-requirements and full start/remove behavior remain incomplete |
+| _CRS / _PRS / _SRS | Resource-template parser and resource-selection primitives | Not connected to live PDO resource IRPs or kernel arbiter |
+| _PRT | Typed route parser and link-device resolver interface | No complete AML-to-link-device-to-HAL route path |
+| Power / wake | State and _PRW data primitives | No complete kernel power-manager dispatch path |
+| GPE / Notify / eject | Queue and lifecycle primitives | Not connected end-to-end to GPE dispatch, PnP invalidation and removal rundown |
+| ACPI 5.x / 6.x | Several revision-aware table and descriptor parsers | Do not infer full specification or Windows 11 compatibility from parser coverage |
+
+## Integration rules for future changes
+
+1. Before adding a kernel or HAL API, prove that the operation belongs to that
+   layer and that an existing Windows-compatible contract cannot be reused.
+2. ACPI may request a kernel operation; it must not reach into private kernel
+   state or duplicate the kernel's lifecycle/resource database.
+3. PCI configuration and BAR operations stay in the PCI bus driver. ACPI
+   contributes host-bridge firmware windows and interrupt-routing information.
+4. Interrupt-controller register access stays in HAL. ACPI supplies firmware
+   topology, polarity, trigger mode and route policy through typed interfaces.
+5. A parser unit test proves only parsing. A module test proves only the
+   module. A feature is integrated only after its real IRP/interface path,
+   lifetime rules, rollback and QEMU/CI behavior are exercised.
+6. Do not claim Windows 11 x64 compatibility or ACPI 6.x completion until the
+   corresponding end-to-end contracts and tests pass.
