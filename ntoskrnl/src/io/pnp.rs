@@ -390,11 +390,18 @@ pub unsafe extern "win64" fn IoPnPRegisterBusDevice(
                 unsafe{output_index.write(index as u32);}
                 return STATUS_SUCCESS;
             }
-            return STATUS_OBJECT_NAME_COLLISION;
+            return STATUS_DEVICE_BUSY;
         }
     }
     let index={
         let _guard=lock_pnp_table();
+        if PNP_DEVICES.iter().any(|node|
+            node.state.load(Ordering::Acquire)!=PNP_DEVICE_EMPTY
+            &&node.state.load(Ordering::Relaxed)!=PNP_DEVICE_REMOVED
+            &&node.enumerator_id.load(Ordering::Relaxed)==enumerator_id
+            &&node.identity_hash.load(Ordering::Relaxed)==identity_hash){
+            return STATUS_DEVICE_BUSY;
+        }
         let Some((index,node))=PNP_DEVICES.iter().enumerate().find(|(_,node)|{
             matches!(node.state.load(Ordering::Acquire),PNP_DEVICE_EMPTY|PNP_DEVICE_REMOVED)
         }) else{return STATUS_INSUFFICIENT_RESOURCES};
