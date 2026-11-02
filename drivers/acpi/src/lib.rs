@@ -10,6 +10,7 @@ pub mod aml_region;
 pub mod aml_field;
 pub mod aml_tables;
 pub mod acpi_device;
+pub mod acpi_resources;
 
 
 /// Common 36-byte ACPI System Description Table header.
