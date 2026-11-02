@@ -28,6 +28,7 @@ pub enum TableError {
     NamespaceChanged,
     ExecutionBusy,
     MethodExecution(ExecError),
+    BufferRead(crate::aml_buffer::BufferError),
     DeviceIdentity(IdentityError),
 }
 impl From<AcpiError> for TableError {fn from(e:AcpiError)->Self{Self::InvalidSdt(e)}}
@@ -352,7 +353,7 @@ impl AmlTableManager {
                 ||fingerprint(&bytes[..header.length as usize])!=info.content_fingerprint{return Err(TableError::InvalidHandle)}
             if node_index<info.namespace_start||node_index>=info.namespace_end{return Err(TableError::InvalidHandle)}
             crate::aml_buffer::decode_named_buffer(&bytes[SDT_HEADER_SIZE..info.length as usize],&self.namespace,node_index,output)
-                .map_err(|_|TableError::MethodExecution(ExecError::UnsupportedOpcode))
+                .map_err(TableError::BufferRead)
         })();
         gate.leave_method();
         result
