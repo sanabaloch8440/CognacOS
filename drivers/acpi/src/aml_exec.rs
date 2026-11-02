@@ -241,6 +241,15 @@ mod tests{
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
  }
+ #[test]fn continue_rechecks_while_predicate_after_advancing_state(){
+  let aml=[0x14,0x14,b'T',b'E',b'S',b'T',0,
+   0x70,0x0a,2,0x60,
+   0xa2,0x07,0x94,0x60,0x00,0x76,0x60,0xa5,
+   0xa4,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
+ }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
