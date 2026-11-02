@@ -106,6 +106,7 @@ pub struct LocalApicNmi { pub processor_uid:u8,pub flags:u16,pub lint:u8 }
 pub struct MadtWakeupMailbox { pub address:u64 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct X2ApicNmi { pub processor_uid:u32,pub flags:u16,pub lint:u8 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MadtInfo {
     pub local_apic_address: u64,
     pub flags: u32,
@@ -973,6 +974,7 @@ fn push_root_aperture(out:&mut PciRootResources,a:PciRootAperture)->Result<(),Ac
 #[cfg(test)]
 mod pci_root_crs_tests {
     use super::*;
+    use std::vec;
     #[test]
     fn parses_qword_memory_and_io_ranges(){
         // QWord address descriptor: memory, min=0x80000000,
@@ -1004,6 +1006,8 @@ mod pci_root_crs_tests {
 #[cfg(test)]
 mod acpi_5_6_revision_tests {
     use super::*;
+    use std::vec;
+    use std::vec::Vec;
     fn checksum(table:&mut [u8]) {
         table[9]=0;
         let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));
@@ -1078,6 +1082,7 @@ mod acpi_5_6_revision_tests {
 #[cfg(test)]
 mod numa_table_tests {
     use super::*;
+    use std::vec;
     fn finish(b:&mut [u8]){b[9]=0;let s=b.iter().fold(0u8,|a,v|a.wrapping_add(*v));b[9]=0u8.wrapping_sub(s);}
     #[test]
     fn parses_srat_x2apic_and_hotplug_nonvolatile_memory(){
