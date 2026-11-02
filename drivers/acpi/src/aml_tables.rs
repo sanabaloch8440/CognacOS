@@ -15,8 +15,8 @@ const SDT_HEADER_SIZE:usize=36;
 pub enum TableError {
     InvalidSdt(AcpiError),
     UnsupportedSignature,
-    DsdTAlreadyLoaded,
-    DsdTRequired,
+    DsdtAlreadyLoaded,
+    DsdtRequired,
     DuplicateTable,
     TableLimit,
     NamespaceCapacity,
@@ -36,6 +36,8 @@ pub struct TableHandle {slot:u8,generation:u32}
 pub struct AmlTableInfo {
     pub signature:[u8;4],
     pub revision:u8,
+    pub checksum:u8,
+    pub content_fingerprint:u64,
     pub oem_id:[u8;6],
     pub oem_table_id:[u8;8],
     pub oem_revision:u32,
@@ -49,7 +51,7 @@ pub struct AmlTableInfo {
 struct TableRecord {active:bool,generation:u32,info:AmlTableInfo}
 impl TableRecord {
     const EMPTY:Self=Self{active:false,generation:0,info:AmlTableInfo{
-        signature:[0;4],revision:0,oem_id:[0;6],oem_table_id:[0;8],
+        signature:[0;4],revision:0,checksum:0,content_fingerprint:0,oem_id:[0;6],oem_table_id:[0;8],
         oem_revision:0,creator_id:0,creator_revision:0,length:0,
         namespace_start:0,namespace_end:0,
     }};
@@ -106,7 +108,7 @@ impl AmlTableManager {
         let length=header.length as usize;
         if length<SDT_HEADER_SIZE||length>bytes.len(){return Err(TableError::InvalidSdt(AcpiError::BadLength))}
         let info=AmlTableInfo{
-            signature:header.signature,revision:header.revision,oem_id:header.oem_id,
+            signature:header.signature,revision:header.revision,checksum:header.checksum,content_fingerprint:fingerprint(&bytes[..length]),oem_id:header.oem_id,
             oem_table_id:header.oem_table_id,oem_revision:header.oem_revision,
             creator_id:header.creator_id,creator_revision:header.creator_revision,
             length:header.length,namespace_start:self.namespace.count as u16,
@@ -138,8 +140,8 @@ impl AmlTableManager {
     pub fn execute_method(&self,handle:TableHandle,bytes:&[u8],method_index:u16,args:&[u64])->Result<AmlValue,TableError>{
         let info=self.table_info(handle)?;
         let header=parse_sdt_header(bytes)?;
-        if !same_identity(info,AmlTableInfo{signature:header.signature,revision:header.revision,
-            oem_id:header.oem_id,oem_table_id:header.oem_table_id,oem_revision:header.oem_revision,
+        if !same_identity(info,AmlTableInfo{signature:header.signature,revision:header.revision,checksum:header.checksum,
+            content_fingerprint:fingerprint(&bytes[..header.length as usize]),oem_id:header.oem_id,oem_table_id:header.oem_table_id,oem_revision:header.oem_revision,
             creator_id:header.creator_id,creator_revision:header.creator_revision,length:header.length,
             namespace_start:0,namespace_end:0})||header.length!=info.length{
             return Err(TableError::InvalidHandle)
@@ -152,7 +154,7 @@ impl AmlTableManager {
     }
     /// Only the most recently installed table may be removed. This preserves
     /// namespace indices and prevents unloading definitions underneath later
-    /// SSDTs. A caller must also quiesce AML method execution before unloading.
+    /// SSDTs. The execution gate must stop new method entry and drain active calls.
     pub fn unload<G:AmlExecutionGate>(&mut self,handle:TableHandle,gate:&mut G)->Result<AmlTableInfo,TableError>{
         self.with_quiescence(gate,|manager|manager.unload_quiesced(handle))
     }
@@ -171,8 +173,14 @@ impl AmlTableManager {
 }
 impl Default for AmlTableManager {fn default()->Self{Self::new()}}
 
+fn fingerprint(bytes:&[u8])->u64{
+    // Detect stale or substituted table buffers across method dispatch. This
+    // is an integrity fingerprint, not a cryptographic authentication scheme.
+    bytes.iter().fold(0xcbf29ce484222325u64,|h,b|(h^(*b as u64)).wrapping_mul(0x100000001b3))
+}
 fn same_identity(a:AmlTableInfo,b:AmlTableInfo)->bool{
     a.signature==b.signature&&a.oem_id==b.oem_id&&a.oem_table_id==b.oem_table_id
+        &&a.revision==b.revision&&a.checksum==b.checksum&&a.content_fingerprint==b.content_fingerprint
         &&a.oem_revision==b.oem_revision&&a.creator_id==b.creator_id
         &&a.creator_revision==b.creator_revision
 }
@@ -239,7 +247,7 @@ mod tests {
         let dsdt=table(*b"DSDT",*b"BASE",1);
         let ssdt=table(*b"SSDT",*b"EXTR",2);
         let mut manager=AmlTableManager::new();let mut gate=gate();
-        assert_eq!(manager.load_ssdt(&ssdt,&mut gate),Err(TableError::DsdTRequired));
+        assert_eq!(manager.load_ssdt(&ssdt,&mut gate),Err(TableError::DsdtRequired));
         let base=manager.load_dsdt(&dsdt,&mut gate).unwrap();
         let extra=manager.load_ssdt(&ssdt,&mut gate).unwrap();
         assert_eq!(manager.table_count(),2);
