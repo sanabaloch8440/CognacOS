@@ -173,6 +173,11 @@ mod tests {
         assert_eq!(end,bytes.len());assert_eq!(value.kind,AmlValueKind::Buffer);
         assert_eq!(value.byte_length,4);assert_eq!(&value.bytes[..4],&[0xaa,0xbb,0,0]);
     }
+    #[test] fn rejects_buffer_initializer_bytes_beyond_declared_size(){
+        let bytes=[0x11,0x05,0x0a,1,0xaa,0xbb];
+        let mut arena=AmlObjectArena::new();
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
+    }
     #[test] fn decodes_nested_packages_by_arena_reference(){
         // Package(2) { One, Package(1) { ByteConst(9) } }
         let bytes=[0x12,0x08,2,0x01,0x12,0x04,1,0x0a,9];
