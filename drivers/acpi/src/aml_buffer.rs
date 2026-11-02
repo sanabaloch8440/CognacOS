@@ -78,6 +78,6 @@ mod tests {
         let aml=[0x08,b'_',b'C',b'R',b'S',0x11,0x05,0x0a,1,0xaa,0xbb];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"_CRS").unwrap();
-        assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut [0;8]),Err(BufferError::InvalidPackage));
+        assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut [0;8]),Err(BufferError::InitializerTooLong));
     }
 }
