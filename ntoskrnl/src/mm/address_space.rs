@@ -964,7 +964,11 @@ impl AddressSpace {
             *page=WorkingSetPage::EMPTY;
         }
         crate::process::detach_address_space(self.root);
-        release_vm_metadata(self.root)?;
+        let metadata = take_vm_metadata_locked(self.root)?;
+        drop(_address_space_guard);
+        if !crate::ntoskrnl::rtl_runtime::pool_free_vm_tagged(metadata.cast::<u8>(), Some(0x4d4d_564d)) {
+            return Err(VmError::OutOfMemory);
+        }
         // The KUSER mapping owns a private low page-table path so that setting
         // USER on its ancestors cannot expose or mutate kernel identity leaves.
         // The process may have discarded its temporary AddressSpace wrapper;
@@ -1072,20 +1076,14 @@ fn vm_demand_areas_locked(root: u64) -> &'static mut [DemandArea; MAX_DEMAND_ARE
 fn vm_working_set_locked(root: u64) -> &'static mut [WorkingSetPage; MAX_WORKING_SET_PAGES] {
     &mut vm_metadata_locked(root).working_set
 }
-fn release_vm_metadata(root: u64) -> Result<(), VmError> {
-    const TAG: u32 = 0x4d4d_564d;
-    let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+fn take_vm_metadata_locked(root: u64) -> Result<*mut VmMetadata, VmError> {
     let entries = unsafe { &mut *VM_METADATA_REGISTRY.0.get() };
     let Some(index) = entries.iter().position(|entry| entry.root == root && !entry.metadata.is_null()) else {
         return Err(VmError::InvalidAddress);
     };
     let pointer = entries[index].metadata;
     entries[index] = VmMetadataRegistration::EMPTY;
-    drop(_guard);
-    if !crate::ntoskrnl::rtl_runtime::pool_free_vm_tagged(pointer.cast::<u8>(), Some(TAG)) {
-        return Err(VmError::OutOfMemory);
-    }
-    Ok(())
+    Ok(pointer)
 }
 
 /// Locate a present user leaf without changing it. The address-space lifetime
