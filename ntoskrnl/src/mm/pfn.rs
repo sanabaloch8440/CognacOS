@@ -91,7 +91,7 @@ pub fn register_allocation(page: u64) -> Result<(), PfnError> {
 /// Acquire a reference owned by a valid hardware mapping.
 pub fn acquire_mapping(page: u64) -> Result<(), PfnError> {
     let mut entries = DATABASE.lock();
-    let index = find(entries, page).ok_or(PfnError::NotTracked)?;
+    let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
     let entry = &mut entries[index];
     entry.references = entry.references.checked_add(1).ok_or(PfnError::ReferenceOverflow)?;
     entry.mappings = match entry.mappings.checked_add(1) {
@@ -103,9 +103,8 @@ pub fn acquire_mapping(page: u64) -> Result<(), PfnError> {
 
 /// Drop a mapping reference only after its PTE has been invalidated and TLBs flushed.
 pub fn release_mapping(page: u64) -> Result<(), PfnError> {
-    let _guard = Guard::acquire();
-    let entries = unsafe { &mut *DATABASE.entries.get() };
-    let index = find(entries, page).ok_or(PfnError::NotTracked)?;
+    let mut entries = DATABASE.lock();
+    let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
     let entry = &mut entries[index];
     if entry.mappings == 0 { return Err(PfnError::MappingUnderflow); }
     if entry.references <= 1 { return Err(PfnError::ReferenceUnderflow); }
@@ -116,9 +115,8 @@ pub fn release_mapping(page: u64) -> Result<(), PfnError> {
 
 /// Acquire an MDL/I/O pin reference. Pins prevent final owner release.
 pub fn pin_page(page: u64) -> Result<(), PfnError> {
-    let _guard = Guard::acquire();
-    let entries = unsafe { &mut *DATABASE.entries.get() };
-    let index = find(entries, page).ok_or(PfnError::NotTracked)?;
+    let mut entries = DATABASE.lock();
+    let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
     let entry = &mut entries[index];
     entry.references = entry.references.checked_add(1).ok_or(PfnError::ReferenceOverflow)?;
     entry.pins = match entry.pins.checked_add(1) {
@@ -129,9 +127,8 @@ pub fn pin_page(page: u64) -> Result<(), PfnError> {
 }
 
 pub fn unpin_page(page: u64) -> Result<(), PfnError> {
-    let _guard = Guard::acquire();
-    let entries = unsafe { &mut *DATABASE.entries.get() };
-    let index = find(entries, page).ok_or(PfnError::NotTracked)?;
+    let mut entries = DATABASE.lock();
+    let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
     let entry = &mut entries[index];
     if entry.pins == 0 { return Err(PfnError::PinUnderflow); }
     if entry.references <= 1 { return Err(PfnError::ReferenceUnderflow); }
@@ -143,9 +140,8 @@ pub fn unpin_page(page: u64) -> Result<(), PfnError> {
 /// Release the original allocation-owner reference. A live mapping or MDL pin
 /// makes this fail; the allocator must not put the frame back on a free list.
 pub fn release_allocation(page: u64) -> Result<(), PfnError> {
-    let _guard = Guard::acquire();
-    let entries = unsafe { &mut *DATABASE.entries.get() };
-    let index = find(entries, page).ok_or(PfnError::NotTracked)?;
+    let mut entries = DATABASE.lock();
+    let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
     let entry = &mut entries[index];
     if entry.references != 1 || entry.mappings != 0 || entry.pins != 0 {
         return Err(PfnError::StillReferenced);
@@ -156,7 +152,7 @@ pub fn release_allocation(page: u64) -> Result<(), PfnError> {
 
 pub fn snapshot(page: u64) -> Option<(u32, u32, u32)> {
     let entries = DATABASE.lock();
-    find(entries, page).map(|index| {
+    find(&entries, page).map(|index| {
         let entry = entries[index];
         (entry.references, entry.mappings, entry.pins)
     })
