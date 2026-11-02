@@ -88,6 +88,74 @@ pub fn register_allocation(page: u64) -> Result<(), PfnError> {
     }
 }
 
+/// Register every frame in a contiguous allocation as one transaction.
+pub fn register_allocation_range(base: u64, pages: usize) -> Result<(), PfnError> {
+    if base == 0 || base & 0xfff != 0 || pages == 0 {
+        return Err(PfnError::InvalidPage);
+    }
+    let bytes = (pages as u64).checked_mul(4096).ok_or(PfnError::InvalidPage)?;
+    base.checked_add(bytes).ok_or(PfnError::InvalidPage)?;
+    let mut entries = DATABASE.lock();
+    let mut reusable = 0usize;
+    let mut live = 0usize;
+    for entry in entries.iter() {
+        match entry.state {
+            LIVE => live += 1,
+            EMPTY | TOMBSTONE => reusable += 1,
+            _ => {},
+        }
+    }
+    if reusable < pages || live.checked_add(pages).is_none_or(|count| count > CAPACITY) {
+        return Err(PfnError::DatabaseFull);
+    }
+    for offset in 0..pages {
+        let page = base + offset as u64 * 4096;
+        if find(&entries, page).is_some() { return Err(PfnError::AlreadyRegistered); }
+    }
+    for offset in 0..pages {
+        let page = base + offset as u64 * 4096;
+        let start = hash(page);
+        let mut tombstone = None;
+        for probe in 0..CAPACITY {
+            let index = (start + probe) & (CAPACITY - 1);
+            if entries[index].state == TOMBSTONE && tombstone.is_none() {
+                tombstone = Some(index);
+            }
+            if entries[index].state == EMPTY {
+                let target = tombstone.unwrap_or(index);
+                entries[target] = Entry { page, references: 1, mappings: 0, pins: 0, state: LIVE };
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Release a contiguous allocation only if every frame has its sole owner reference.
+pub fn release_allocation_range(base: u64, pages: usize) -> Result<(), PfnError> {
+    if base == 0 || base & 0xfff != 0 || pages == 0 {
+        return Err(PfnError::InvalidPage);
+    }
+    let bytes = (pages as u64).checked_mul(4096).ok_or(PfnError::InvalidPage)?;
+    base.checked_add(bytes).ok_or(PfnError::InvalidPage)?;
+    let mut entries = DATABASE.lock();
+    let mut indexes = [usize::MAX; 256];
+    if pages > indexes.len() { return Err(PfnError::DatabaseFull); }
+    for offset in 0..pages {
+        let page = base + offset as u64 * 4096;
+        let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
+        let entry = entries[index];
+        if entry.references != 1 || entry.mappings != 0 || entry.pins != 0 {
+            return Err(PfnError::StillReferenced);
+        }
+        indexes[offset] = index;
+    }
+    for index in indexes.iter().take(pages).copied() {
+        entries[index] = Entry { state: TOMBSTONE, ..Entry::EMPTY };
+    }
+    Ok(())
+}
+
 /// Acquire a reference owned by a valid hardware mapping.
 pub fn acquire_mapping(page: u64) -> Result<(), PfnError> {
     let mut entries = DATABASE.lock();
