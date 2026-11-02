@@ -131,7 +131,7 @@ mod multiple_alternative_tests{
   assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()),2);
   assert_eq!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()),1);
   assert_eq!(u32::from_le_bytes(bytes[76..80].try_into().unwrap()),1);
-  assert_eq!(u32::from_le_bytes(bytes[56..60].try_into().unwrap()),1);
+  assert_eq!(u32::from_le_bytes(bytes[48..52].try_into().unwrap()),1);
   assert_eq!(u32::from_le_bytes(bytes[88..92].try_into().unwrap()),4);
  }
  #[test]fn rejects_empty_alternative_set(){assert_eq!(required_size_alternatives(&ResourceAlternatives::EMPTY),Err(RequirementsError::InvalidResourceList));}
