@@ -829,7 +829,7 @@ mod tests {
             cc_copy_read(&mut file, &crossing_vdl, 2, 1, output.as_mut_ptr().cast(), &mut iosb)
         }, 0);
         assert_eq!(output, [0xA5; 2], "a failed cache read must not partially modify the caller buffer");
-        assert_eq!(unsafe { core::ptr::read_unaligned(iosb.cast::<u8>().cast::<i32>()) }, 0x1234);
+        assert_eq!(unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(iosb).cast::<i32>()) }, 0x1234);
         assert_eq!(iosb.information, 77);
 
         let zero_offset = 0i64;
