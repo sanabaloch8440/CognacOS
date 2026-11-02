@@ -239,6 +239,33 @@ mod tests{
         let result=evaluate_device_identity(&ns,&aml,dev,&mut FixedMethods).unwrap();
         assert_eq!(result.sta,0x0b);assert_eq!(result.adr,Some(0x0002_0003));
     }
+    struct TypedMethods;
+    impl AcpiMethodInvoker for TypedMethods{
+        fn evaluate_value(&mut self,_:&AmlNamespace,_:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
+            Ok(match method{
+                1=>AcpiMethodValue::String(AcpiId::from_bytes(b"ACME0001").unwrap()),
+                2=>{let mut ids=[AcpiId::EMPTY;MAX_COMPATIBLE_IDS];ids[0]=AcpiId::from_bytes(b"ACME0002").unwrap();AcpiMethodValue::CompatibleIds{ids,count:1}},
+                3=>AcpiMethodValue::String(AcpiId::from_bytes(b"SERIAL-7").unwrap()),
+                4=>AcpiMethodValue::Integer(DEVICE_STATUS_DEFAULT as u64),
+                _=>AcpiMethodValue::Integer(0x10002),
+            })
+        }
+    }
+    #[test]fn evaluates_string_and_package_results_from_identity_methods(){
+        let mut aml=std::vec::Vec::new();aml.extend_from_slice(&[0x5b,0x82,0,b'D',b'E',b'V',b'0']);
+        for name in [*b"_HID",*b"_CID",*b"_UID",*b"_STA",*b"_ADR"]{
+            aml.extend_from_slice(&[0x14,0x08]);aml.extend_from_slice(&name);aml.extend_from_slice(&[0,0xa4,0]);
+        }
+        aml[2]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let dev=ns.find_child(0,*b"DEV0").unwrap();
+        let result=evaluate_device_identity(&ns,&aml,dev,&mut TypedMethods).unwrap();
+        assert_eq!(result.hid.as_bytes(),b"ACME0001");
+        assert_eq!(result.compatible_ids[0].as_bytes(),b"ACME0002");
+        assert_eq!(result.uid_string.unwrap().as_bytes(),b"SERIAL-7");
+        assert_eq!(result.sta,DEVICE_STATUS_DEFAULT);
+        assert_eq!(result.adr,Some(0x10002));
+    }
     #[test]fn rejects_device_without_hid(){
         let aml=[0x5b,0x82,0x05,b'D',b'E',b'V',b'0'];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
