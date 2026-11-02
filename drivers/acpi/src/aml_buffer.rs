@@ -35,7 +35,7 @@ pub fn decode_named_buffer(aml:&[u8],namespace:&AmlNamespace,node_index:u16,outp
     let lead=*aml.get(length_pos).ok_or(BufferError::Truncated)?;
     let follow=(lead>>6) as usize;
     if follow!=0&&lead&0x30!=0{return Err(BufferError::InvalidPackage)}
-    let mut package_length=(lead&0x0f) as usize;
+    let mut package_length=(if follow==0{lead&0x3f}else{lead&0x0f}) as usize;
     for index in 0..follow {
         let byte=*aml.get(length_pos+1+index).filter(|_|length_pos+1+index<finish).ok_or(BufferError::Truncated)?;
         package_length|=(byte as usize)<<(4+8*index);
@@ -66,6 +66,16 @@ mod tests {
         assert_eq!(&out[..4],&[0x79,0x00,0,0]);
         assert_eq!(out[4],0xa5);
     }
+    #[test]
+    fn decodes_single_byte_package_lengths_above_nibble_range(){
+        let mut aml=std::vec::Vec::from([0x08,b'_',b'C',b'R',b'S',0x11,0x17,0x0a,20]);
+        aml.extend_from_slice(&[0x5a;20]);
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"_CRS").unwrap();let mut output=[0u8;20];
+        assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut output),Ok(20));
+        assert_eq!(output,[0x5a;20]);
+    }
+
     #[test]
     fn rejects_non_buffer_and_oversized_buffer(){
         let aml=[0x08,b'_',b'C',b'R',b'S',0x0a,1];
