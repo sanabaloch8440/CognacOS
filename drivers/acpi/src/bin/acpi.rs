@@ -86,8 +86,8 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
     let status = match unsafe { (*stack).minor_function } {
         IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
         IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
-        // A full ACPI namespace/AML interpreter and PDO publication path is
-        // required before this bus driver can truthfully return BusRelations.
+        // ACPI-1 identity evaluation is active, but ACPI-4 PDO publication
+        // and a complete BusRelations lifetime remain separate milestones.
         IRP_MN_QUERY_DEVICE_RELATIONS => STATUS_NOT_SUPPORTED,
         IRP_MN_QUERY_INTERFACE => {
             let parameters = unsafe { &(*stack).parameters };
@@ -135,17 +135,18 @@ fn collect_device_identities(
                 records[*count]=AcpiDeviceRecord{table:Some(handle),node:index,identity};
                 *count+=1;
             }
-            Err(acpi::acpi_device::IdentityError::MissingHid)=>{},
-            Err(_)=>return Err(STATUS_INVALID_PARAMETER),
+            // An unsupported AML method/value suppresses this device's
+            // identity record, not the entire ACPI bus driver. Later AML
+            // runtime milestones can retry it with a richer evaluator.
+            Err(_)=>{},
         }
     }
     Ok(())
 }
 
-/// DriverEntry validates firmware and builds the ACPI-1 device identity catalogue.
-/// PDO publication and BusRelations remain ACPI-4 work. Device objects,
-/// ACPI namespace PDOs, AML evaluation, and per-device resources belong to the
-/// later PnP/ACPI namespace integration path, not to DriverEntry.
+/// DriverEntry validates firmware, loads DSDT/SSDT namespace definitions, and
+/// builds the ACPI-1 device identity catalogue. PDO publication and BusRelations
+/// remain ACPI-4 work.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -> i32 {
     if driver.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -186,9 +187,9 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let dsdt=match unsafe{query_hal_table(*b"DSDT",0)}{Ok(bytes)=>bytes,Err(status)=>return status};
     let mut ssdt_tables:[&'static [u8];acpi::aml_tables::MAX_AML_TABLES-1]=[&[];acpi::aml_tables::MAX_AML_TABLES-1];
     let mut ssdt_count=0usize;
-    for instance in 0..acpi::aml_tables::MAX_AML_TABLES-1{
+    for instance in 0..acpi::aml_tables::MAX_AML_TABLES{
         match unsafe{query_hal_table(*b"SSDT",instance as u32)}{
-            Ok(bytes)=>{ssdt_tables[ssdt_count]=bytes;ssdt_count+=1;},
+            Ok(bytes)=>{if ssdt_count==ssdt_tables.len(){return STATUS_INSUFFICIENT_RESOURCES;}ssdt_tables[ssdt_count]=bytes;ssdt_count+=1;},
             Err(STATUS_NOT_FOUND)=>break,
             Err(status)=>return status,
         }
@@ -205,7 +206,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let mut identity_count=0usize;
     if collect_device_identities(manager,loaded.dsdt,dsdt,gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
     for index in 0..loaded.ssdt_count{
-        let handle=loaded.ssdts[index].ok_or(STATUS_INVALID_PARAMETER).unwrap();
+        let handle=match loaded.ssdts[index]{Some(handle)=>handle,None=>return STATUS_INVALID_PARAMETER};
         if collect_device_identities(manager,handle,ssdt_tables[index],gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
     }
     STATE.device_count.store(identity_count,Ordering::Release);
