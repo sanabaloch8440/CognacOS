@@ -60,7 +60,7 @@ fn dependencies_initialized(
         let Some(dep_index) = nodes.iter().position(|candidate| name_eq(candidate.name, dependency)) else {
             return false;
         };
-        if !matches!(records[dep_index].status, DriverInitStatus::Loaded(_)) {
+        if !matches!(records[dep_index].status, DriverInitStatus::Loaded(_) | DriverInitStatus::AlreadyInitialized) {
             return false;
         }
     }
