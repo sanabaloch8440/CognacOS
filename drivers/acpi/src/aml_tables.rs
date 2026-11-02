@@ -85,13 +85,13 @@ impl AmlTableManager {
     }
     pub fn load_dsdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&mut G)->Result<TableHandle,TableError>{
         self.with_quiescence(gate,|manager|{
-            if manager.dsdt_loaded||manager.count!=0{return Err(TableError::DsdTAlreadyLoaded)}
+            if manager.dsdt_loaded||manager.count!=0{return Err(TableError::DsdtAlreadyLoaded)}
             manager.load(bytes,*b"DSDT")
         })
     }
     pub fn load_ssdt<G:AmlExecutionGate>(&mut self,bytes:&[u8],gate:&mut G)->Result<TableHandle,TableError>{
         self.with_quiescence(gate,|manager|{
-            if !manager.dsdt_loaded{return Err(TableError::DsdTRequired)}
+            if !manager.dsdt_loaded{return Err(TableError::DsdtRequired)}
             manager.load(bytes,*b"SSDT")
         })
     }
@@ -143,7 +143,8 @@ impl AmlTableManager {
         if !same_identity(info,AmlTableInfo{signature:header.signature,revision:header.revision,checksum:header.checksum,
             content_fingerprint:fingerprint(&bytes[..header.length as usize]),oem_id:header.oem_id,oem_table_id:header.oem_table_id,oem_revision:header.oem_revision,
             creator_id:header.creator_id,creator_revision:header.creator_revision,length:header.length,
-            namespace_start:0,namespace_end:0})||header.length!=info.length{
+            namespace_start:0,namespace_end:0})||header.length!=info.length
+            ||info.checksum!=header.checksum||info.content_fingerprint!=fingerprint(&bytes[..header.length as usize]){
             return Err(TableError::InvalidHandle)
         }
         if method_index<info.namespace_start||method_index>=info.namespace_end{
@@ -180,8 +181,7 @@ fn fingerprint(bytes:&[u8])->u64{
 }
 fn same_identity(a:AmlTableInfo,b:AmlTableInfo)->bool{
     a.signature==b.signature&&a.oem_id==b.oem_id&&a.oem_table_id==b.oem_table_id
-        &&a.revision==b.revision&&a.checksum==b.checksum&&a.content_fingerprint==b.content_fingerprint
-        &&a.oem_revision==b.oem_revision&&a.creator_id==b.creator_id
+        &&a.revision==b.revision&&a.oem_revision==b.oem_revision&&a.creator_id==b.creator_id
         &&a.creator_revision==b.creator_revision
 }
 
