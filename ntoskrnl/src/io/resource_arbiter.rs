@@ -96,7 +96,7 @@ impl ResourceArbiter {
                     && r.kind==ResourceKind::SharedInterrupt;
                 let interrupt_pair = matches!(a.kind,ResourceKind::Interrupt|ResourceKind::SharedInterrupt)
                     && matches!(r.kind,ResourceKind::Interrupt|ResourceKind::SharedInterrupt);
-                if shared_pair { return false; }
+                if shared_pair && candidate==a.start { return false; }
                 if !interrupt_pair && a.kind!=r.kind { return false; }
                 let ae=a.start.saturating_add(a.length);
                 candidate<ae&&a.start<end
