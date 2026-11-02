@@ -40,7 +40,11 @@ impl Machine{
     };
     let t=Self::target(r)?;self.store(t,v);Ok(v)
    }
-   0x81|0x82=>{\n    let value=self.term(r)?;\n    let result=if value==0{0}else if op==0x81{64-value.leading_zeros() as u64}else{value.trailing_zeros() as u64+1};\n    let t=Self::target(r)?;self.store(t,result);Ok(result)\n   }\n   0x75|0x76=>{
+   0x81|0x82=>{
+    let value=self.term(r)?;
+    let result=if value==0{0}else if op==0x81{64-value.leading_zeros() as u64}else{value.trailing_zeros() as u64+1};
+    let t=Self::target(r)?;self.store(t,result);Ok(result)
+   }\n   0x75|0x76=>{
     let t=Self::target(r)?;
     let current=match t{Target::Null=>0,Target::Local(i)=>self.locals[i],Target::Arg(i)=>self.args[i]};
     let value=if op==0x75{current.wrapping_add(1)}else{current.wrapping_sub(1)};
