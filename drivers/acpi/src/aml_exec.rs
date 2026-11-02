@@ -31,12 +31,12 @@ impl Machine{
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
    0x60..=0x67=>Ok(self.locals[(op-0x60)as usize]),0x68..=0x6e=>Ok(self.args[(op-0x68)as usize]),
-   0x72|0x74|0x77|0x79|0x7a|0x7b|0x7d|0x7f|0x93|0x94|0x95=>{
+   0x72|0x74|0x77|0x79|0x7a|0x7b|0x7d|0x7f=>{
     let a=self.term(r)?;let b=self.term(r)?;
-    let v=match op{0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),0x79=>a.wrapping_shl((b&63)as u32),0x7a=>a.wrapping_shr((b&63)as u32),0x7b=>a&b,0x7d=>a|b,0x7f=>a^b,0x93=>(a==b)as u64,0x94=>(a>b)as u64,_=>(a<b)as u64};
+    let v=match op{0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),0x79=>a.wrapping_shl((b&63)as u32),0x7a=>a.wrapping_shr((b&63)as u32),0x7b=>a&b,0x7d=>a|b,_=>a^b};
     let t=Self::target(r)?;self.store(t,v);Ok(v)
    }
-   0x80=>{let v=!self.term(r)?;let t=Self::target(r)?;self.store(t,v);Ok(v)}
+   0x80=>{let v=!self.term(r)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},\n   0x92=>Ok((self.term(r)?==0)as u64),\n   0x93|0x94|0x95=>{let a=self.term(r)?;let b=self.term(r)?;Ok(match op{0x93=>(a==b)as u64,0x94=>(a>b)as u64,_=>(a<b)as u64})}
    _=>Err(ExecError::UnsupportedOpcode)
   }
  }
@@ -52,7 +52,8 @@ impl Machine{
      let end=r.pkg_end()?;let plen=1+((r.bytes[r.pos]>>6)as usize);let begin=r.pos+plen;
      if begin>end{return Err(ExecError::BadPackage)}
      let mut body=Reader{bytes:r.bytes,pos:begin,end};
-     if op==0xa0{if self.term(&mut body)?!=0{if let Some(v)=self.execute(&mut body,depth+1)?{return Ok(Some(v));}}}
+     let mut predicate=true;
+     if op==0xa0{predicate=self.term(&mut body)?!=0;if predicate{if let Some(v)=self.execute(&mut body,depth+1)?{return Ok(Some(v));}}}
      else{
       let loop_start=body.pos;
       loop{self.step()?;let mut cond=Reader{bytes:body.bytes,pos:loop_start,end:body.end};if self.term(&mut cond)?==0{break}
@@ -61,6 +62,12 @@ impl Machine{
       }
      }
      r.pos=end;
+     if op==0xa0 && r.pos<r.end && r.bytes[r.pos]==0xa1 {
+      r.pos+=1;let else_end=r.pkg_end()?;let else_plen=1+((r.bytes[r.pos]>>6)as usize);let else_begin=r.pos+else_plen;
+      if else_begin>else_end{return Err(ExecError::BadPackage)}
+      if !predicate{let mut alternate=Reader{bytes:r.bytes,pos:else_begin,end:else_end};if let Some(v)=self.execute(&mut alternate,depth+1)?{return Ok(Some(v));}}
+      r.pos=else_end;
+     }
     }
     0xa1=>return Err(ExecError::UnsupportedOpcode),
     0x9f|0xa5=>return Err(ExecError::LoopControl),
