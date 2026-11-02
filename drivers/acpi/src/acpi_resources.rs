@@ -34,7 +34,9 @@ fn u16le(b:&[u8],o:usize)->Result<u16,ResourceError>{let s=slice(b,o,2)?;Ok(u16:
 fn u32le(b:&[u8],o:usize)->Result<u32,ResourceError>{let s=slice(b,o,4)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
 fn u64le(b:&[u8],o:usize)->Result<u64,ResourceError>{let s=slice(b,o,8)?;Ok(u64::from_le_bytes(s.try_into().map_err(|_|ResourceError::Truncated)?))}
 fn validate_range(min:u64,max:u64,len:u64)->Result<(),ResourceError>{
-    if len==0||min>max||min.checked_add(len-1).filter(|end|*end<=max).is_none(){return Err(ResourceError::InvalidDescriptor)} Ok(())
+    // AML address descriptors encode a range of permitted base addresses;
+    // Length is the span at each candidate base, not an upper bound for the base.
+    if len==0||min>max||min.checked_add(len-1).is_none(){return Err(ResourceError::InvalidDescriptor)} Ok(())
 }
 fn address_space(p:&[u8],width:u8)->Result<Resource,ResourceError>{
     let expected=match width{2=>13,4=>23,8=>43,_=>return Err(ResourceError::UnsupportedDescriptor)};
@@ -111,7 +113,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
 #[cfg(test)] extern crate std;
 #[cfg(test)] mod tests{
  use super::*;
- #[test]fn parses_io_irq_and_end_tag(){let data=[0x47,0x01,0x00,0x01,0x01,0x08,0x0b,0x22,0x00];let r=parse_resource_template(&data).unwrap();
+ #[test]fn parses_io_irq_and_end_tag(){let data=[0x47,0x01,0x00,0x01,0x00,0x01,0x08,0x79,0x00];let r=parse_resource_template(&data).unwrap();
   assert_eq!(r.count,3);assert!(matches!(r.entries[0],Some(Resource::Io{minimum:0x100,maximum:0x100,length:8,..})));
   assert!(matches!(r.entries[1],Some(Resource::Irq{mask:0x0b,..})));}
  #[test]fn parses_fixed_io_descriptor(){let parsed=parse_resource_template(&[0x4b,0x78,0x03,0x03,0x79,0]);assert!(matches!(parsed.unwrap().entries[0],Some(Resource::Io{minimum:0x378,maximum:0x378,length:3,..})));}
