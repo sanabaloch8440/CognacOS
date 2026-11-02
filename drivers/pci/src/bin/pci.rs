@@ -263,13 +263,16 @@ unsafe fn start_pci_device(
     // by a CM_PARTIAL_RESOURCE_LIST and 16-byte CM_PARTIAL_RESOURCE_DESCRIPTORs.
     let full_count = unsafe { core::ptr::read_unaligned(raw.cast::<u32>()) };
     if full_count != 1 { return STATUS_NOT_SUPPORTED; }
-    let partial_count = unsafe { core::ptr::read_unaligned(raw.add(16).cast::<u16>()) };
-    let raw_count = unsafe { core::ptr::read_unaligned(raw.add(14).cast::<u16>()) };
+    let raw_version = unsafe { core::ptr::read_unaligned(raw.add(12).cast::<u16>()) };
+    let raw_revision = unsafe { core::ptr::read_unaligned(raw.add(14).cast::<u16>()) };
     let raw_n = unsafe { core::ptr::read_unaligned(raw.add(16).cast::<u32>()) } as usize;
-    if raw_count != partial_count || raw_n > 64 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    if raw_version == 0 || raw_revision == 0 || raw_n > 64 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
     let raw_desc = unsafe { raw.add(20) };
     let trans_count = unsafe { core::ptr::read_unaligned(translated.cast::<u32>()) };
     if trans_count != 1 { return STATUS_NOT_SUPPORTED; }
+    let trans_version = unsafe { core::ptr::read_unaligned(translated.add(12).cast::<u16>()) };
+    let trans_revision = unsafe { core::ptr::read_unaligned(translated.add(14).cast::<u16>()) };
+    if trans_version == 0 || trans_revision == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
     let trans_n = unsafe { core::ptr::read_unaligned(translated.add(16).cast::<u32>()) } as usize;
     if trans_n != raw_n { return STATUS_DEVICE_CONFIGURATION_ERROR; }
     let trans_desc = unsafe { translated.add(20) };
