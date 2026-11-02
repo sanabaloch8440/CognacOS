@@ -163,7 +163,7 @@ pub unsafe extern "win64" fn io_create_device(
 /// Mark a live device created by a bus driver as a physical device object.
 /// The object remains owned by its creating driver and participates in the
 /// normal PnP relations/rundown path.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoMarkBusEnumeratedPdo")]
 pub unsafe extern "win64" fn io_mark_bus_enumerated_pdo(device:*mut DeviceObject)->i32{
  if device.is_null(){return STATUS_INVALID_PARAMETER}
  let mut state=WDM.lock();
