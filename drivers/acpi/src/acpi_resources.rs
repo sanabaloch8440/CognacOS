@@ -69,6 +69,8 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                 0x05 if len==2=>Resource::Dma{channels:p[0],transfer_size:p[1]&3,bus_master:p[1]&4!=0},
                 0x08 if len==7=>{let min=u16le(p,1)? as u64;let max=u16le(p,3)? as u64;let align=p[5] as u64;let size=p[6] as u64;
                     validate_range(min,max,size)?;Resource::Io{minimum:min,maximum:max,alignment:align,length:size,decode_16_bit:p[0]&1!=0}},
+                0x09 if len==3=>{let base=u16le(p,0)? as u64;let size=p[2] as u64;
+                    validate_range(base,base,size)?;Resource::Io{minimum:base,maximum:base,alignment:1,length:size,decode_16_bit:p[2]&1!=0}},
                 0x0f if len==1=>{out.push(Resource::EndTag{checksum:p[0]})?;pos=end;ended=true;if pos!=bytes.len(){return Err(ResourceError::InvalidLength)}
                     if p[0]!=0 && bytes.iter().fold(0u8,|sum,b|sum.wrapping_add(*b))!=0{return Err(ResourceError::InvalidDescriptor)} break;},
                 _=>return Err(ResourceError::UnsupportedDescriptor),
@@ -112,6 +114,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
  #[test]fn parses_io_irq_and_end_tag(){let data=[0x47,0x01,0x00,0x01,0x01,0x08,0x0b,0x22,0x00];let r=parse_resource_template(&data).unwrap();
   assert_eq!(r.count,3);assert!(matches!(r.entries[0],Some(Resource::Io{minimum:0x100,maximum:0x100,length:8,..})));
   assert!(matches!(r.entries[1],Some(Resource::Irq{mask:0x0b,..})));}
+ #[test]fn parses_fixed_io_descriptor(){let parsed=parse_resource_template(&[0x4b,0x78,0x03,0x01,0x79,0]);assert!(matches!(parsed.unwrap().entries[0],Some(Resource::Io{minimum:0x378,maximum:0x378,length:3,..})));}
  #[test]fn rejects_missing_end_tag(){assert_eq!(parse_resource_template(&[0x47,1,0,1,1,8,0]),Err(ResourceError::MissingEndTag));}
  #[test]fn rejects_truncated_descriptor(){assert_eq!(parse_resource_template(&[0x47,1]),Err(ResourceError::Truncated));}
  #[test]fn rejects_zero_length_range(){assert_eq!(parse_resource_template(&[0x47,1,0,1,1,0,0x79,0]),Err(ResourceError::InvalidDescriptor));}
