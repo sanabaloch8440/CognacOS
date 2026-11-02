@@ -1,3 +1,4 @@
+pub mod aml;
 //! Bounded ACPI table parsing primitives for platform discovery.
 //! Callers must pass a readable, mapped byte slice obtained from firmware data.
 #![no_std]
