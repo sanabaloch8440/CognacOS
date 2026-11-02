@@ -54,7 +54,9 @@ jobs:
           set -euo pipefail
           python_files="$(find . -type f -name '*.py' -not -path './.git/*' -print)"
           if [[ -n "$python_files" ]]; then
-            printf 'Python tooling remains in the repository:\n%s\n' "$python_files" >&2
+            printf 'Python tooling remains in the repository:
+%s
+' "$python_files" >&2
             exit 1
           fi
           echo "No Python source files remain; repository tooling is Rust-native."
@@ -136,7 +138,8 @@ jobs:
           dll_path="target/x86_64-pc-windows-gnu/release/bcrypt.dll"
           if [[ ! -s "$dll_path" ]]; then
             echo "Expected bcrypt cdylib was not produced at $dll_path."
-            find target/x86_64-pc-windows-gnu/release -maxdepth 2 -type f -printf '%p\n' | sort
+            find target/x86_64-pc-windows-gnu/release -maxdepth 2 -type f -printf '%p
+' | sort
             exit 1
           fi
           cp "$dll_path" build/bcrypt/bcrypt.dll
@@ -360,7 +363,10 @@ jobs:
               names.append(name)
           if len(names) < 2000 or len(names) != len(set(names)):
               raise SystemExit(f"unexpected Windows NTDLL inventory: {len(names)} unique={len(set(names))}")
-          Path("build/ntdll/ntdll-rust.def").write_text("LIBRARY ntdll\nEXPORTS\n" + "".join(f"    {name}\n" for name in names))
+          Path("build/ntdll/ntdll-rust.def").write_text("LIBRARY ntdll
+EXPORTS
+" + "".join(f"    {name}
+" for name in names))
           print(f"Generated Rust NTDLL definition with {len(names)} Windows 11 exports")
           PY
           sysroot="$(rustc --print sysroot)"
@@ -987,17 +993,23 @@ jobs:
           condition 1 $rdi == 14
           commands 1
             silent
-            printf "\n===== GDB FIRST PAGE-FAULT EXCEPTION (ANY CPL) =====\n"
-            printf "vector=%#lx error=%#lx frame=%#lx\n", $rdi, $rsi, $rdx
-            printf "RIP=%#lx CS=%#lx RFLAGS=%#lx RSP=%#lx SS=%#lx\n", *(unsigned long long *)($rdx + 136), *(unsigned long long *)($rdx + 144), *(unsigned long long *)($rdx + 152), *(unsigned long long *)($rdx + 160), *(unsigned long long *)($rdx + 168)
+            printf "
+===== GDB FIRST PAGE-FAULT EXCEPTION (ANY CPL) =====
+"
+            printf "vector=%#lx error=%#lx frame=%#lx
+", $rdi, $rsi, $rdx
+            printf "RIP=%#lx CS=%#lx RFLAGS=%#lx RSP=%#lx SS=%#lx
+", *(unsigned long long *)($rdx + 136), *(unsigned long long *)($rdx + 144), *(unsigned long long *)($rdx + 152), *(unsigned long long *)($rdx + 160), *(unsigned long long *)($rdx + 168)
             info registers cr2 cr3
             x/22gx $rdx
             set $fault_rip = *(unsigned long long *)($rdx + 136)
-            printf "===== FAULTING INSTRUCTIONS (kernel or user; runtime-generated stub or PE image) =====\n"
+            printf "===== FAULTING INSTRUCTIONS (kernel or user; runtime-generated stub or PE image) =====
+"
             x/24i $fault_rip-24
             info symbol $fault_rip
             info line *$fault_rip
-            printf "===== END GDB FIRST RING-3 EXCEPTION =====\n"
+            printf "===== END GDB FIRST RING-3 EXCEPTION =====
+"
             continue
           end
           continue
@@ -1050,12 +1062,14 @@ jobs:
                   data.extend(chunk)
               return data.decode("utf-8", "replace")
           read_prompt()
-          monitor.sendall(b"info qtree\n")
+          monitor.sendall(b"info qtree
+")
           tree = read_prompt()
           monitor.close()
           for expected in ("qemu-xhci", "usb-kbd", "piix3-ide", "osdisk"):
               if expected not in tree:
-                  raise SystemExit(f"QEMU device topology missing {expected}:\n{tree}")
+                  raise SystemExit(f"QEMU device topology missing {expected}:
+{tree}")
           print("QEMU topology verified: xHCI + USB keyboard + PIIX3 primary-channel ATA disks.")
           if "intel-iommu" not in tree:
               raise SystemExit("QEMU IOMMU device missing from guest topology")
@@ -1115,21 +1129,27 @@ jobs:
             target remote 127.0.0.1:12345
             source tools/gdb/cognacos-forensics.gdb
             cognacos-forensics
-            echo \\n===== LIVE CPU / SOURCE LOCATION =====\\n
+            echo \
+===== LIVE CPU / SOURCE LOCATION =====\
+
             info registers
             info variables XHCI_PCI_DEVICE
             info variables PCI_BUS_FDO
             info variables VT_D_REQUESTER_OWNER
             info variables XHCI_INTERRUPT_VECTOR
             info variables XHCI_DRIVER_BINDING_STARTED
-            echo \\n===== PCI / VT-d / xHCI static state =====\\n
+            echo \
+===== PCI / VT-d / xHCI static state =====\
+
             x/gx &cognacos_kernel::PCI_BUS_FDO
             x/bx &cognacos_kernel::PCI_DRIVER_BINDING_STARTED
             x/16gx &cognacos_kernel::ntoskrnl::pnp::XHCI_PCI_DEVICE
             x/wx &cognacos_kernel::VT_D_REQUESTER_OWNER
             x/wx &cognacos_kernel::ntoskrnl::pnp::XHCI_INTERRUPT_VECTOR
             x/bx &cognacos_kernel::XHCI_DRIVER_BINDING_STARTED
-            echo \\n===== PCI.sys inventory state (PE base 0xffff8000e0000000) =====\\n
+            echo \
+===== PCI.sys inventory state (PE base 0xffff8000e0000000) =====\
+
             # The PCI image may have section-level mappings that leave one of
             # these optional inventory addresses inaccessible. A failed GDB
             # memory read must not abort the remaining CPU/stack/backtrace capture.
@@ -1149,13 +1169,19 @@ jobs:
             info symbol $rip
             x/32i $rip-32
             x/32gx $rsp
-            echo \\n===== KERNEL BACKTRACE WITH SOURCE LINES =====\\n
+            echo \
+===== KERNEL BACKTRACE WITH SOURCE LINES =====\
+
             thread apply all bt full
-            echo \\n===== HAL SYMBOL COMPANION =====\\n
+            echo \
+===== HAL SYMBOL COMPANION =====\
+
             add-symbol-file target/driver-hal/x86_64-unknown-none/release/hal
             info symbol $rip
             info line *$rip
-            echo \\n===== NTDLL SYMBOL/EXPORT CHECK =====\\n
+            echo \
+===== NTDLL SYMBOL/EXPORT CHECK =====\
+
             info sharedlibrary
             maintenance info sections
             detach
