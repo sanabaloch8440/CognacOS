@@ -115,10 +115,41 @@ fn parse_name(c:&mut Cursor<'_>)->Result<AmlName,AmlError>{
     }
     n.count=count as u8;Ok(n)
 }
+/// Parse one AML NameString at `offset`, returning its decoded path and the
+/// first byte after it. This is shared by namespace lookup and method execution.
+pub fn parse_name_string(bytes:&[u8],offset:usize,limit:usize)->Result<(AmlName,usize),AmlError>{
+    if offset>limit||limit>bytes.len(){return Err(AmlError::Truncated)}
+    let mut cursor=Cursor{bytes,pos:offset,end:limit};
+    let name=parse_name(&mut cursor)?;
+    Ok((name,cursor.pos))
+}
+
 fn resolve_parent(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
     let mut p=if n.rooted{0}else{current};
-    for _ in 0..n.parents{p=ns.nodes.get(p as usize).ok_or(AmlError::InvalidParent)?.parent;}
+    for _ in 0..n.parents{
+        if p==0||p as usize>=ns.count{return Err(AmlError::InvalidParent)}
+        p=ns.nodes[p as usize].parent;
+    }
     Ok(p)
+}
+
+/// Resolve a NameString using AML namespace search rules. Rooted and explicit
+/// parent paths are exact; unprefixed paths search successive ancestor scopes.
+pub fn resolve_name_string(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
+    if current as usize>=ns.count{return Err(AmlError::InvalidParent)}
+    if n.count==0{return Ok(resolve_parent(ns,current,n)?)}
+    let mut candidate=resolve_parent(ns,current,n)?;
+    let explicit=n.rooted||n.parents!=0;
+    loop {
+        if let Some(mut found)=ns.find_child(candidate,n.segments[0]) {
+            for segment in n.segments.iter().take(n.count as usize).skip(1){
+                found=ns.find_child(found,*segment).ok_or(AmlError::InvalidParent)?;
+            }
+            return Ok(found);
+        }
+        if explicit||candidate==0{return Err(AmlError::InvalidParent)}
+        candidate=ns.nodes.get(candidate as usize).ok_or(AmlError::InvalidParent)?.parent;
+    }
 }
 
 fn lookup_path(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
@@ -399,6 +430,16 @@ mod tests{
         assert_eq!(decode_package_length(&[0x41,0x01,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,17),Ok((17,17)));
         assert_eq!(decode_package_length(&[0x80,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,16),Ok((16,16)));
     }
+    #[test]fn parses_root_parent_dual_and_multi_name_strings(){
+        let (rooted,end)=parse_name_string(&[0x5c,b'_',b'S',b'B',b'_',b'P',b'C',b'I',b'0'],0,9).unwrap();
+        assert!(rooted.rooted);assert_eq!(rooted.count,2);assert_eq!(end,9);
+        let (parent,end)=parse_name_string(&[0x5e,b'P',b'C',b'I',b'0'],0,5).unwrap();
+        assert_eq!(parent.parents,1);assert_eq!(parent.segments[0],*b"PCI0");assert_eq!(end,5);
+        let (dual,end)=parse_name_string(&[0x2e,b'P',b'C',b'I',b'0',b'D',b'E',b'V',b'0'],0,9).unwrap();
+        assert_eq!(dual.count,2);assert_eq!(end,9);
+        let (multi,end)=parse_name_string(&[0x2f,2,b'P',b'C',b'I',b'0',b'D',b'E',b'V',b'0'],0,10).unwrap();
+        assert_eq!(multi.count,2);assert_eq!(end,10);
+    }
     #[test]fn loads_device_and_name_namespace(){
         // Device(PCI0) { Name(_HID, EisaId("PNP0A08")) } -- the name value
         // is deliberately a simple AML string in this initial parser slice.
@@ -408,6 +449,14 @@ mod tests{
         assert!(load_definition_block(&aml,&mut ns).is_ok());
         assert_eq!(ns.find_child(0,*b"PCI0"),Some(1));
         assert_eq!(ns.find_child(1,*b"_HID"),Some(2));
+    }
+    #[test]fn resolves_unprefixed_names_through_ancestor_scopes(){
+        let aml=[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
+                 0x10,0x0b,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let parent=ns.find_child(0,*b"PAR0").unwrap();let child=ns.find_child(parent,*b"CHD0").unwrap();
+        let name=AmlName{segments:[*b"VAL0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:0};
+        assert_eq!(resolve_name_string(&ns,child,&name),Ok(ns.find_child(parent,*b"VAL0").unwrap()));
     }
     #[test]fn loads_operation_region_and_named_field(){
         let aml=[
@@ -505,6 +554,21 @@ mod tests{
     }
 
 
+    #[test]fn rejects_parent_prefixes_that_walk_above_namespace_root(){
+        let ns=AmlNamespace::new();
+        let name=AmlName{segments:[[0;4];MAX_NAME_SEGMENTS],count:0,rooted:false,parents:1};
+        assert_eq!(resolve_name_string(&ns,0,&name),Err(AmlError::InvalidParent));
+    }
+    #[test]fn explicit_root_and_parent_paths_do_not_search_other_ancestors(){
+        let aml=[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
+                 0x10,0x0b,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let child=ns.find_child(ns.find_child(0,*b"PAR0").unwrap(),*b"CHD0").unwrap();
+        let rooted=AmlName{segments:[*b"PAR0",*b"VAL0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:2,rooted:true,parents:0};
+        assert_eq!(resolve_name_string(&ns,child,&rooted),Ok(ns.find_child(ns.find_child(0,*b"PAR0").unwrap(),*b"VAL0").unwrap()));
+        let missing=AmlName{segments:[*b"MISS",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:1};
+        assert_eq!(resolve_name_string(&ns,child,&missing),Err(AmlError::InvalidParent));
+    }
     #[test]fn alias_resolves_to_existing_canonical_object(){
         // Name(VAL0, One); Alias(VAL0, ALI0)
         let aml=[0x08,b'V',b'A',b'L',b'0',0x01,
