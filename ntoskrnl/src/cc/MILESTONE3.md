@@ -19,9 +19,10 @@ branch:
 - A host stress test exercises 160 simultaneous maps and 12 page descriptors
   on one map.
 
-This removes those two Cache Manager-local array ceilings. It does **not**
-remove the underlying Executive pool's current bounded allocation-table/slab
-capacity, nor does it establish complete Windows stream identity.
+This removes those two Cache Manager-local array ceilings. The underlying
+Executive pool still has bounded allocation-table/slab capacity, and stream
+sharing is implemented only at the SECTION_OBJECT_POINTERS attachment level;
+full stream rundown and stale-identity protection remain outstanding.
 
 ## Remaining audited gaps
 
@@ -31,8 +32,9 @@ cache, not a full Cache Manager:
 - Cache maps are now keyed by the SECTION_OBJECT_POINTERS address when present,
   with a per-FILE_OBJECT fallback when it is absent. A dynamically allocated
   attachment list lets multiple FILE_OBJECTs for one stream share the same map.
-  Uninitializing one attachment preserves the map until the final attachment is
-  removed. This is a first stream-sharing step, not yet a full Windows stream
+  Tests verify that cached page contents remain readable through the second
+  FILE_OBJECT after the first attachment is uninitialized. Uninitializing one
+  attachment preserves the map until the final attachment is removed. This is a first stream-sharing step, not yet a full Windows stream
   rundown protocol: callers must still obey file-object close/uninitialize
   ordering, and mapped views/MDLs/in-flight I/O need explicit rundown pins.
 - `CcCopyWrite` always falls back.
