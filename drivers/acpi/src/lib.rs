@@ -114,6 +114,8 @@ pub struct MadtInfo {
     pub io_apic_count: usize,
     pub irq_overrides: [IrqOverride; 16],
     pub irq_override_count: usize,
+    pub local_apic_nmis:[LocalApicNmi;16],pub local_apic_nmi_count:usize,
+    pub x2apic_nmis:[X2ApicNmi;16],pub x2apic_nmi_count:usize,
 }
 impl MadtInfo {
     pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0 };
