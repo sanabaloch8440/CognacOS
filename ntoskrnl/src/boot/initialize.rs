@@ -97,12 +97,14 @@ unsafe fn initialize_registry_boot_drivers(
     let bytes = crate::boot_handoff::boot_hive_bytes("SYSTEM")
         .ok_or(driver_init::DriverInitError::BufferTooSmall)?;
     let hive = Hive::open(bytes).map_err(|_| driver_init::DriverInitError::BufferTooSmall)?;
+    let object_ptr = core::ptr::addr_of_mut!(BOOT_DRIVER_OBJECTS)
+        .cast::<ntoskrnl::driver_loader::DriverObject>();
+    for index in 0..MAX_BOOT_SERVICES {
+        unsafe { object_ptr.add(index).write(core::mem::zeroed()); }
+    }
     let objects = unsafe {
-        core::slice::from_raw_parts_mut(
-            core::ptr::addr_of_mut!(BOOT_DRIVER_OBJECTS).cast::<ntoskrnl::driver_loader::DriverObject>(),
-            MAX_BOOT_SERVICES)
+        core::slice::from_raw_parts_mut(object_ptr, MAX_BOOT_SERVICES)
     };
-    for object in objects.iter_mut() { *object = unsafe { core::mem::zeroed() }; }
     let names = unsafe {
         core::slice::from_raw_parts_mut(
             core::ptr::addr_of_mut!(BOOT_DRIVER_NAMES).cast::<[u16; 128]>(), MAX_BOOT_SERVICES)
