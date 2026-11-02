@@ -33,6 +33,16 @@ IoCreateDevice:
 IoDeleteDevice:
     jmp QWORD PTR [rip + __imp_ntoskrnl_IoDeleteDevice]
 .size IoDeleteDevice, .-IoDeleteDevice
+.global ExAllocatePoolWithTag
+.type ExAllocatePoolWithTag,@function
+ExAllocatePoolWithTag:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_ExAllocatePoolWithTag]
+.size ExAllocatePoolWithTag, .-ExAllocatePoolWithTag
+.global ExFreePoolWithTag
+.type ExFreePoolWithTag,@function
+ExFreePoolWithTag:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_ExFreePoolWithTag]
+.size ExFreePoolWithTag, .-ExFreePoolWithTag
 
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -44,6 +54,14 @@ __imp_ntoskrnl_IoCreateDevice: .quad 0
 .type __imp_ntoskrnl_IoDeleteDevice,@object
 __imp_ntoskrnl_IoDeleteDevice: .quad 0
 .size __imp_ntoskrnl_IoDeleteDevice,8
+.global __imp_ntoskrnl_ExAllocatePoolWithTag
+.type __imp_ntoskrnl_ExAllocatePoolWithTag,@object
+__imp_ntoskrnl_ExAllocatePoolWithTag: .quad 0
+.size __imp_ntoskrnl_ExAllocatePoolWithTag,8
+.global __imp_ntoskrnl_ExFreePoolWithTag
+.type __imp_ntoskrnl_ExFreePoolWithTag,@object
+__imp_ntoskrnl_ExFreePoolWithTag: .quad 0
+.size __imp_ntoskrnl_ExFreePoolWithTag,8
 "#);
 
 const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
@@ -246,15 +264,15 @@ unsafe fn start_pci_device(
     let full_count = unsafe { core::ptr::read_unaligned(raw.cast::<u32>()) };
     if full_count != 1 { return STATUS_NOT_SUPPORTED; }
     let partial_count = unsafe { core::ptr::read_unaligned(raw.add(16).cast::<u16>()) };
-    let raw_count = unsafe { core::ptr::read_unaligned(raw.add(18).cast::<u16>()) };
-    let raw_n = unsafe { core::ptr::read_unaligned(raw.add(20).cast::<u32>()) } as usize;
+    let raw_count = unsafe { core::ptr::read_unaligned(raw.add(14).cast::<u16>()) };
+    let raw_n = unsafe { core::ptr::read_unaligned(raw.add(16).cast::<u32>()) } as usize;
     if raw_count != partial_count || raw_n > 64 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
-    let raw_desc = unsafe { raw.add(24) };
+    let raw_desc = unsafe { raw.add(20) };
     let trans_count = unsafe { core::ptr::read_unaligned(translated.cast::<u32>()) };
     if trans_count != 1 { return STATUS_NOT_SUPPORTED; }
-    let trans_n = unsafe { core::ptr::read_unaligned(translated.add(20).cast::<u32>()) } as usize;
+    let trans_n = unsafe { core::ptr::read_unaligned(translated.add(16).cast::<u32>()) } as usize;
     if trans_n != raw_n { return STATUS_DEVICE_CONFIGURATION_ERROR; }
-    let trans_desc = unsafe { translated.add(24) };
+    let trans_desc = unsafe { translated.add(20) };
 
     let mut plan = pci::resource_manager::AllocationPlan::empty();
     let mut resource_index = 0usize;
