@@ -138,3 +138,145 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
  }
  #[test]fn rejects_trailing_data_after_end_tag(){assert_eq!(parse_resource_template(&[0x79,0,0]),Err(ResourceError::InvalidLength));}
 }
+
+
+/// Maximum number of complete configurations represented by one _PRS template.
+pub const MAX_RESOURCE_ALTERNATIVES: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceAlternatives {
+    pub entries: [ResourceList; MAX_RESOURCE_ALTERNATIVES],
+    pub count: usize,
+}
+impl ResourceAlternatives {
+    pub const EMPTY: Self = Self {
+        entries: [ResourceList::EMPTY; MAX_RESOURCE_ALTERNATIVES],
+        count: 0,
+    };
+    fn push(&mut self, list: ResourceList) -> Result<(), ResourceError> {
+        if self.count == MAX_RESOURCE_ALTERNATIVES {
+            return Err(ResourceError::TooManyResources);
+        }
+        self.entries[self.count] = list;
+        self.count += 1;
+        Ok(())
+    }
+}
+
+/// Decode a single ordinary descriptor by appending a synthetic EndTag.
+/// Keeping the existing descriptor decoder as the sole source of semantics
+/// prevents _CRS and _PRS from drifting apart.
+fn parse_one_requirement_descriptor(bytes: &[u8]) -> Result<Resource, ResourceError> {
+    if bytes.len() > 62 { return Err(ResourceError::UnsupportedDescriptor); }
+    let mut bounded = [0u8; 64];
+    bounded[..bytes.len()].copy_from_slice(bytes);
+    bounded[bytes.len()] = 0x79;
+    bounded[bytes.len() + 1] = 0;
+    let parsed = parse_resource_template(&bounded[..bytes.len() + 2])?;
+    if parsed.count != 2 { return Err(ResourceError::InvalidDescriptor); }
+    parsed.entries[0].ok_or(ResourceError::InvalidDescriptor)
+}
+
+/// Parse _PRS including StartDependentFn/EndDependentFn groups.
+///
+/// Resources outside dependent-function groups are common to every
+/// configuration. Each complete dependent-function group contributes one
+/// alternative, in firmware order. A template without dependent groups
+/// produces one alternative containing all ordinary resources.
+pub fn parse_resource_requirements_template(bytes: &[u8]) -> Result<ResourceAlternatives, ResourceError> {
+    let mut common = ResourceList::EMPTY;
+    let mut alternatives = ResourceAlternatives::EMPTY;
+    let mut dependent = ResourceList::EMPTY;
+    let mut in_dependent = false;
+    let mut pos = 0usize;
+    let mut ended = false;
+
+    while pos < bytes.len() {
+        let start = pos;
+        let tag = bytes[pos];
+        pos += 1;
+        let (kind, length, header_length) = if tag & 0x80 == 0 {
+            (((tag >> 3) & 0x0f), (tag & 7) as usize, 1usize)
+        } else {
+            let length = u16le(bytes, pos)? as usize;
+            pos = pos.checked_add(2).ok_or(ResourceError::IntegerOverflow)?;
+            ((tag & 0x7f), length, 3usize)
+        };
+        let payload = slice(bytes, pos, length)?;
+        pos = pos.checked_add(length).ok_or(ResourceError::IntegerOverflow)?;
+        let descriptor = &bytes[start..pos];
+
+        if header_length == 1 && kind == 0x06 {
+            if in_dependent || length > 1 { return Err(ResourceError::InvalidDescriptor); }
+            in_dependent = true;
+            dependent = ResourceList::EMPTY;
+            continue;
+        }
+        if header_length == 1 && kind == 0x07 {
+            if !in_dependent || length != 0 || dependent.count == 0 {
+                return Err(ResourceError::InvalidDescriptor);
+            }
+            alternatives.push(dependent)?;
+            in_dependent = false;
+            dependent = ResourceList::EMPTY;
+            continue;
+        }
+        if header_length == 1 && kind == 0x0f {
+            if length != 1 || in_dependent || pos != bytes.len() {
+                return Err(ResourceError::InvalidLength);
+            }
+            if payload[0] != 0 && bytes.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)) != 0 {
+                return Err(ResourceError::InvalidDescriptor);
+            }
+            ended = true;
+            break;
+        }
+
+        let resource = parse_one_requirement_descriptor(descriptor)?;
+        if matches!(resource, Resource::EndTag { .. }) {
+            return Err(ResourceError::InvalidDescriptor);
+        }
+        if in_dependent { dependent.push(resource)?; } else { common.push(resource)?; }
+    }
+
+    if !ended { return Err(ResourceError::MissingEndTag); }
+    if in_dependent { return Err(ResourceError::InvalidDescriptor); }
+
+    if alternatives.count == 0 {
+        alternatives.push(common)?;
+    } else {
+        for index in 0..alternatives.count {
+            let dependent_list = alternatives.entries[index];
+            let mut combined = ResourceList::EMPTY;
+            for item in common.entries[..common.count].iter().flatten() { combined.push(*item)?; }
+            for item in dependent_list.entries[..dependent_list.count].iter().flatten() { combined.push(*item)?; }
+            alternatives.entries[index] = combined;
+        }
+    }
+    Ok(alternatives)
+}
+
+#[cfg(test)]
+mod dependent_requirement_tests {
+    use super::*;
+
+    #[test]
+    fn dependent_groups_become_full_alternatives_with_common_resources() {
+        // A common IRQ plus two dependent DMA choices, each with priority 1.
+        let bytes = [0x23, 0x10, 0x01, 0x31, 0x01, 0x2a, 0x01, 0x00,
+                     0x38, 0x31, 0x01, 0x2a, 0x04, 0x00, 0x38, 0x79, 0x00];
+        let parsed = parse_resource_requirements_template(&bytes).unwrap();
+        assert_eq!(parsed.count, 2);
+        assert_eq!(parsed.entries[0].count, 2);
+        assert_eq!(parsed.entries[1].count, 2);
+        assert!(matches!(parsed.entries[0].entries[0], Some(Resource::Irq { mask: 0x10, .. })));
+        assert!(matches!(parsed.entries[0].entries[1], Some(Resource::Dma { channels: 1, .. })));
+        assert!(matches!(parsed.entries[1].entries[1], Some(Resource::Dma { channels: 4, .. })));
+    }
+
+    #[test]
+    fn rejects_unbalanced_dependent_groups() {
+        assert_eq!(parse_resource_requirements_template(&[0x38, 0x79, 0]), Err(ResourceError::InvalidDescriptor));
+        assert_eq!(parse_resource_requirements_template(&[0x31, 1, 0x79, 0]), Err(ResourceError::InvalidDescriptor));
+    }
+}
