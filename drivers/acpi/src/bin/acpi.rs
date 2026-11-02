@@ -118,7 +118,7 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
 fn collect_device_identities(
     manager:&acpi::aml_tables::AmlTableManager,
     handle:acpi::aml_tables::TableHandle,
-    table:&[u8],
+    table_sources:&[&[u8]],
     gate:&acpi::aml_tables::AmlExecutionBarrier,
     records:&mut [AcpiDeviceRecord;MAX_ACPI_DEVICES],
     count:&mut usize,
@@ -129,7 +129,7 @@ fn collect_device_identities(
         let node=&namespace.nodes[index as usize];
         if !matches!(node.object_type,acpi::aml::AmlObjectType::Device|acpi::aml::AmlObjectType::Processor|acpi::aml::AmlObjectType::PowerResource|acpi::aml::AmlObjectType::ThermalZone){continue}
         let mut methods=acpi::acpi_device::IntegerMethodInvoker;
-        match manager.evaluate_device_identity(handle,table,index,gate,&mut methods){
+        match manager.evaluate_device_identity(handle,table_sources,index,gate,&mut methods){
             Ok(identity)=>{
                 if *count>=records.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
                 records[*count]=AcpiDeviceRecord{table:Some(handle),node:index,identity};
@@ -194,6 +194,9 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             Err(status)=>return status,
         }
     }
+    let mut table_sources:[&[u8];acpi::aml_tables::MAX_AML_TABLES]=[&[];acpi::aml_tables::MAX_AML_TABLES];
+    table_sources[0]=dsdt;
+    for index in 0..ssdt_count{table_sources[index+1]=ssdt_tables[index];}
     let manager=unsafe{(*STATE.aml_manager.get()).assume_init_mut()};
     let barrier=unsafe{&mut *STATE.aml_barrier.get()};
     let loaded=match manager.load_firmware_tables(dsdt,&ssdt_tables[..ssdt_count],barrier){
@@ -204,10 +207,10 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let gate=unsafe{&*STATE.aml_barrier.get()};
     let records=unsafe{(*STATE.device_records.get()).assume_init_mut()};
     let mut identity_count=0usize;
-    if collect_device_identities(manager,loaded.dsdt,dsdt,gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
+    if collect_device_identities(manager,loaded.dsdt,&table_sources[..ssdt_count+1],gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
     for index in 0..loaded.ssdt_count{
         let handle=match loaded.ssdts[index]{Some(handle)=>handle,None=>return STATUS_INVALID_PARAMETER};
-        if collect_device_identities(manager,handle,ssdt_tables[index],gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
+        if collect_device_identities(manager,handle,&table_sources[..ssdt_count+1],gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
     }
     STATE.device_count.store(identity_count,Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
