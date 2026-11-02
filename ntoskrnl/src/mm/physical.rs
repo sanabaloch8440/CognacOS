@@ -600,7 +600,13 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
         }
     };
     if let Some(page) = high_page {
-        let pointer = direct_map_address(page).ok_or(AllocError::InvalidMap)?;
+        let pointer = match direct_map_address(page) {
+            Some(pointer) => pointer,
+            None => {
+                let _ = unsafe { free_page(page) };
+                return Err(AllocError::InvalidMap);
+            }
+        };
         // Install the direct-map leaf before touching it. This keeps the
         // allocator's zeroing path out of the exception dispatcher and avoids
         // recursive page faults while a page-in operation owns VM locks.
