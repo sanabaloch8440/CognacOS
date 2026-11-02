@@ -150,6 +150,27 @@ unsafe fn free_file_link(link: *mut CacheFileLink) {
     }
 }
 
+// A single valid interval cannot represent disjoint cached fragments. Merge
+// only overlapping or adjacent ranges; otherwise leave the new fragment uncached.
+fn can_extend_valid_range(page: &CachePage, start: usize, end: usize) -> bool {
+    start <= page.valid_end as usize && end >= page.valid_start as usize
+}
+
+fn extend_valid_range(page: &mut CachePage, start: usize, end: usize) {
+    page.valid_start = page.valid_start.min(start as u16);
+    page.valid_end = page.valid_end.max(end as u16);
+}
+
+unsafe fn set_section_cache_map(file: *mut FileObject, map: *mut CacheMap) {
+    if file.is_null() { return; }
+    let section = unsafe {
+        (*file).section_object_pointer.cast::<crate::nt_abi::io::SECTION_OBJECT_POINTERS>()
+    };
+    if !section.is_null() {
+        unsafe { (*section).shared_cache_map = map.cast(); }
+    }
+}
+
 unsafe fn read_sizes(ptr: *const CcFileSizes) -> Option<CcFileSizes> {
     if ptr.is_null() { return None; }
     let s = unsafe { ptr.read_unaligned() };
@@ -246,10 +267,7 @@ pub unsafe extern "win64" fn cc_initialize_cache_map(
                 } else {
                     discard_link = true;
                 }
-                let section = (*file).section_object_pointer.cast::<u8>();
-                if !section.is_null() {
-                    core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), existing.cast());
-                }
+                set_section_cache_map(file, existing);
             }
             discard_map = true;
         } else {
@@ -258,10 +276,7 @@ pub unsafe extern "win64" fn cc_initialize_cache_map(
                 (*candidate).next = MAPS_HEAD;
                 MAPS_HEAD = candidate;
                 (*file).private_cache_map = candidate.cast();
-                let section = (*file).section_object_pointer.cast::<u8>();
-                if !section.is_null() {
-                    core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), candidate.cast());
-                }
+                set_section_cache_map(file, candidate);
             }
         }
     }
@@ -307,10 +322,9 @@ pub unsafe extern "win64" fn cc_uninitialize_cache_map(
         if last_file {
             unsafe {
                 *map_link = (*map).next;
-                let section = (*file).section_object_pointer.cast::<u8>();
-                if !section.is_null()
-                    && core::ptr::read_unaligned(section.add(8).cast::<*mut c_void>()) == map.cast() {
-                    core::ptr::write_unaligned(section.add(8).cast::<*mut c_void>(), core::ptr::null_mut());
+                let section = (*file).section_object_pointer.cast::<crate::nt_abi::io::SECTION_OBJECT_POINTERS>();
+                if !section.is_null() && (*section).shared_cache_map == map.cast() {
+                    (*section).shared_cache_map = core::ptr::null_mut();
                 }
             }
             (map, found_link)
@@ -483,10 +497,13 @@ pub(crate) fn cache_insert_clean(file: *mut FileObject, offset: u64, data: &[u8]
             }
             if !page.is_null() {
                 unsafe {
-                    core::ptr::copy_nonoverlapping(chunk.as_ptr(), (*page).data.add(within), amount);
-                    (*page).valid_start = (*page).valid_start.min(within as u16);
-                    (*page).valid_end = (*page).valid_end.max((within + amount) as u16);
+                    if can_extend_valid_range(&*page, within, within + amount) {
+                        core::ptr::copy_nonoverlapping(chunk.as_ptr(), (*page).data.add(within), amount);
+                        extend_valid_range(&mut *page, within, within + amount);
+                    }
                 }
+                // This descriptor tracks one contiguous interval. A disjoint
+                // fragment is left uncached rather than making the gap valid.
                 done += amount;
                 continue;
             }
@@ -517,9 +534,10 @@ pub(crate) fn cache_insert_clean(file: *mut FileObject, offset: u64, data: &[u8]
                     true
                 } else {
                     unsafe {
-                        core::ptr::copy_nonoverlapping(chunk.as_ptr(), (*page).data.add(within), amount);
-                        (*page).valid_start = (*page).valid_start.min(within as u16);
-                        (*page).valid_end = (*page).valid_end.max((within + amount) as u16);
+                        if can_extend_valid_range(&*page, within, within + amount) {
+                            core::ptr::copy_nonoverlapping(chunk.as_ptr(), (*page).data.add(within), amount);
+                            extend_valid_range(&mut *page, within, within + amount);
+                        }
                     }
                     false
                 }
@@ -775,6 +793,21 @@ mod tests {
             assert_eq!(unsafe { cc_uninitialize_cache_map(file, core::ptr::null(), core::ptr::null_mut()) }, 1);
         }
         assert_eq!(cache_map_count(), baseline);
+    }
+
+    #[test]
+    fn valid_interval_never_bridges_a_hole() {
+        let mut page = CachePage {
+            next: core::ptr::null_mut(), file_offset: 0,
+            data: core::ptr::null_mut(), valid_start: 100, valid_end: 200,
+        };
+        assert!(can_extend_valid_range(&page, 200, 240));
+        assert!(can_extend_valid_range(&page, 60, 100));
+        assert!(!can_extend_valid_range(&page, 240, 260));
+        assert!(!can_extend_valid_range(&page, 40, 60));
+        extend_valid_range(&mut page, 200, 240);
+        assert_eq!(page.valid_start, 100);
+        assert_eq!(page.valid_end, 240);
     }
 
     #[test]
