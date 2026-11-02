@@ -1087,7 +1087,7 @@ mod numa_table_tests {
     #[test]
     fn parses_srat_x2apic_and_hotplug_nonvolatile_memory(){
         let mut b=vec![0u8;48+24+40];b[0..4].copy_from_slice(b"SRAT");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());b[8]=3;
+        let table_length=b.len() as u32;b[4..8].copy_from_slice(&table_length.to_le_bytes());b[8]=3;
         b[48..72].copy_from_slice(&[2,24,0,0,3,0,0,0,0x44,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0]);
         b[72]=1;b[73]=40;b[74..78].copy_from_slice(&2u32.to_le_bytes());
         b[80..88].copy_from_slice(&0x1_0000_0000u64.to_le_bytes());
