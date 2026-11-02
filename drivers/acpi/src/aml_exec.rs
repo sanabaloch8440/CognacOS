@@ -74,7 +74,7 @@ impl<'a> Machine<'a>{
     r.pos=next;
     let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;
-    let entry=self.namespace.nodes.get(canonical as usize).filter(|_|canonical as usize<self.namespace.count).ok_or(ExecError::NameNotFound)?;
+    let entry=*self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::NameNotFound)?;
     match entry.object_type {
      AmlObjectType::Method=>{
       let count=(entry.method_flags&7) as usize;
