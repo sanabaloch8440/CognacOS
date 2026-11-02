@@ -1,3 +1,5 @@
+#[path = "resource_arbiter.rs"]
+pub(crate) mod resource_arbiter;
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
 //! Entries describe export names/ordinals only; they are not all implemented APIs.
 #[path = "wdm.rs"]
