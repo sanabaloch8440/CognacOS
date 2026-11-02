@@ -93,10 +93,11 @@ pub fn plan_hierarchy(
             if request.bridge_path[..depth].contains(&bridge_index) { return Err(HierarchyError::InvalidPath); }
             ancestors[depth] = bridge_windows[index];
         }
+        // Rebalance plans from the root apertures, not from the currently
+        // programmed leaf windows. Those leaf windows may be precisely what
+        // is too small; the newly aggregated windows are validated below.
         let mut allowed = [Aperture { start: 0, length: 0, kind: BarKind::Io, prefetchable: false }; 64];
-        let allowed_count = bridge_resources::intersect_path(
-            host_apertures, &ancestors[..path_len], &mut allowed,
-        )?;
+        let allowed_count = bridge_resources::intersect_path(host_apertures, &[], &mut allowed)?;
         let mut requirements = request.requirements;
         let mut plan = AllocationPlan::empty();
         resource_manager::allocate_all(
@@ -132,6 +133,21 @@ pub fn plan_hierarchy(
         let mut windows = BridgeWindows::default();
         bridge_resources::aggregate_descendant_ranges(&descendants[..n], &mut windows)?;
         staged.bridge_windows[bridge_index] = Some(windows);
+    }
+    // Every new bridge window must fit inside the newly computed windows of
+    // its ancestors (or the firmware host aperture for a root bridge).
+    for request in requests {
+        let path_len=request.bridge_path_len as usize;
+        for depth in 0..path_len {
+            let bridge_index=request.bridge_path[depth] as usize;
+            let required=staged.bridge_windows[bridge_index].ok_or(HierarchyError::InvalidPath)?;
+            let mut parents=[BridgeWindows::default();8];
+            for parent_depth in 0..depth {
+                let parent_index=request.bridge_path[parent_depth] as usize;
+                parents[parent_depth]=staged.bridge_windows[parent_index].ok_or(HierarchyError::InvalidPath)?;
+            }
+            validate_forwarding_path(host_apertures,&parents[..depth],&required)?;
+        }
     }
     *output = staged;
     Ok(())
