@@ -42,9 +42,13 @@ interrupt variants fail closed. Expansion is capped at eight complete
 candidates and sixteen resource groups per list. Unsupported descriptor types,
 malformed lengths and oversized lists are rejected.
 
-The indexed devnode table remains PCI-oriented; the ACPI PDO relation database
-is not mapped to those devnodes. This is a kernel API milestone, not a complete
-ACPI WDM start-device path.
+The kernel now exposes `IoPnPRegisterBusDevice` for non-PCI bus enumerators.
+ACPI calls it for each created PDO using its namespace-node identity. The
+kernel retains a PDO reference in the generic devnode table while the WDM
+relation database retains its separate publication reference. This bridges
+ACPI PDO identity and kernel devnode lifetime without duplicating PCI functions.
+The devnode's bus-specific identity remains opaque; resource assignment is not
+yet connected to the ACPI start-device path.
 
 There is also a distinct WDM start-IRP resource-claim table in
 `wdm/pnp.rs`. It validates and tentatively reserves the translated
