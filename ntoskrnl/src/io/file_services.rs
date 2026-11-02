@@ -543,6 +543,13 @@ fn unpin_handle(file_object: *mut FILE_OBJECT) {
 /// Open a registered path and issue a real IRP_MJ_CREATE against the provider device.
 pub fn open(path: &[u8]) -> Result<usize, i32> { open_for_process(ob::current_owner() as u64, path) }
 pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
+    // pagefile.sys has a raw extent-based paging path and must not be opened
+    // through ordinary cached FILE_OBJECT I/O, which could alias stale cache pages.
+    if path.len() == 13
+        && path[0] == b'\\'
+        && path[1..].eq_ignore_ascii_case(b"pagefile.sys") {
+        return Err(STATUS_INVALID_DEVICE_REQUEST);
+    }
     if path.is_empty() || path.len() > MAX_PATH_BYTES { return Err(STATUS_INVALID_PARAMETER); }
     mount_boot_system_files();
     let registered={let state=STATE.lock();state.files.iter().position(|f|f.used&&path_equal(&f.path[..f.path_len],path))};
