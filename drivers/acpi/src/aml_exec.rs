@@ -232,6 +232,15 @@ mod tests{
   allowed.push(0x01);
   assert_eq!(evaluate_term_argument(&allowed),Ok((1,33)));
  }
+ #[test]fn break_exits_the_nearest_while_loop(){
+  let aml=[0x14,0x0f,b'T',b'E',b'S',b'T',0,
+   0x70,0x01,0x60,
+   0xa2,0x03,0x01,0x9f,
+   0xa4,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
+ }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
