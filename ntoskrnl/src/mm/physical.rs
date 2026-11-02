@@ -696,11 +696,13 @@ unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, tr
                 let pointer = if high_memory {
                     match direct_map_address(candidate) { Some(v) => v as *mut u8, None => return Err(AllocError::InvalidMap) }
                 } else { candidate as *mut u8 };
+                if candidate != original.next && count == MAX_REGIONS {
+                    return Err(AllocError::TooManyRegions);
+                }
                 super::pfn::register_allocation(candidate).map_err(|_| AllocError::OutOfMemory)?;
                 if candidate == original.next {
                     regions[i].next = candidate + PAGE;
                 } else {
-                    if count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
                     regions[i] = Region { next: original.next, end: candidate };
                     regions[count] = Region { next: candidate + PAGE, end: original.end };
                     count += 1;
@@ -817,11 +819,13 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
             let pointer = if high_memory {
                 match direct_map_address(candidate) { Some(v) => v as *mut u8, None => return Err(AllocError::InvalidMap) }
             } else { candidate as *mut u8 };
+            if candidate != original.next && count == MAX_REGIONS {
+                return Err(AllocError::TooManyRegions);
+            }
             super::pfn::register_allocation_range(candidate, pages).map_err(|_| AllocError::OutOfMemory)?;
             if candidate == original.next {
                 regions[i].next = end;
             } else {
-                if count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
                 regions[i] = Region { next: original.next, end: candidate };
                 regions[count] = Region { next: end, end: original.end };
                 count += 1;
