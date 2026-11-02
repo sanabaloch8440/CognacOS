@@ -184,14 +184,14 @@ pub fn unmap_view(root: u64, base: u64) -> i32 {
         if unsafe { space.unmap_user_page(view.base + i as u64 * PAGE) }.is_err() { return STATUS_INVALID_PARAMETER; }
     }
     views[index] = View::EMPTY;
-    for page in view.private_pages.iter().copied().filter(|page| *page != 0) {
-        if unsafe { super::physical::free_page(page) }.is_err() { return STATUS_INVALID_PARAMETER; }
-    }
     if let Some(section) = sections.get_mut(view.section_slot).filter(|s| s.live && s.generation == view.generation) {
         section.references = section.references.saturating_sub(1);
     }
     let pages = maybe_destroy_locked(sections, views, view.section_slot);
     drop(_guard);
+    for page in view.private_pages.iter().copied().filter(|page| *page != 0) {
+        let _ = unsafe { super::physical::free_page(page) };
+    }
     if let Some(pages) = pages { unsafe { release_pages(&pages); } }
     STATUS_SUCCESS
 }
