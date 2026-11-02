@@ -39,7 +39,8 @@ fn field_node(ns:&AmlNamespace,id:u16)->Result<&crate::aml::AmlNode,FieldError>{
 }
 
 fn read_unlocked<I:FieldIo>(n:&crate::aml::AmlNode,io:&mut I)->Result<u64,FieldError>{
-    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}\n    let width=access_bytes(n.field_access_type)?;
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
+    let width=access_bytes(n.field_access_type)?;
     let unit_bits=width as u64*8;
     let start=n.body_start as u64;
     let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
@@ -60,6 +61,7 @@ fn read_unlocked<I:FieldIo>(n:&crate::aml::AmlNode,io:&mut I)->Result<u64,FieldE
 }
 
 fn write_unlocked<I:FieldIo>(n:&crate::aml::AmlNode,value:u64,io:&mut I)->Result<(),FieldError>{
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
     let width=access_bytes(n.field_access_type)?;
     let unit_bits=width as u64*8;
     let start=n.body_start as u64;
