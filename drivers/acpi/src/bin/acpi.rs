@@ -7,6 +7,45 @@ use cognacos_nt_abi::{bus::{ACPI_FIRMWARE_INTERFACE, INTERFACE_HEADER, ACPI_FIRM
 
 
 const MAX_ACPI_DEVICES:usize=256;
+const MAX_ACPI_PDOS:usize=64;
+const FILE_DEVICE_BUS_EXTENDER:u32=0x0000002a;
+const DEVICE_RELATIONS_BUS:u32=0;
+#[repr(C)]
+struct AcpiPdoExtension { signature:u64, node:u16, source_table:u16, identity:acpi::acpi_device::AcpiDeviceIdentity }
+const ACPI_PDO_SIGNATURE:u64=0x4143504950444f31;
+#[repr(C)]
+struct AcpiDeviceRelations { count:u32, objects:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS] }
+unsafe impl Sync for AcpiDeviceRelations {}
+static PDO_RELATIONS_LOCK:AtomicBool=AtomicBool::new(false);
+static mut ACPI_BUS_DEVICE:*mut cognacos_nt_abi::io::DEVICE_OBJECT=core::ptr::null_mut();
+static mut ACPI_PDOS:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS]=[core::ptr::null_mut();MAX_ACPI_PDOS];
+static mut ACPI_PDO_COUNT:usize=0;
+static mut ACPI_BUS_RELATIONS:AcpiDeviceRelations=AcpiDeviceRelations{count:0,objects:[core::ptr::null_mut();MAX_ACPI_PDOS]};
+unsafe extern "win64" {
+ fn IoCreateDevice(driver:*mut DRIVER_OBJECT,extension_size:u32,device_name:*mut cognacos_nt_abi::object::UNICODE_STRING,device_type:u32,characteristics:u32,exclusive:u8,output:*mut *mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
+ fn IoMarkBusEnumeratedPdo(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
+}
+core::arch::global_asm!(r#"
+.intel_syntax noprefix
+.section .text.import_thunks,"ax",@progbits
+.global IoCreateDevice
+.type IoCreateDevice,@function
+IoCreateDevice:
+ jmp QWORD PTR [rip + __imp_io_IoCreateDevice]
+.size IoCreateDevice, .-IoCreateDevice
+.global IoMarkBusEnumeratedPdo
+.type IoMarkBusEnumeratedPdo,@function
+IoMarkBusEnumeratedPdo:
+ jmp QWORD PTR [rip + __imp_io_IoMarkBusEnumeratedPdo]
+.size IoMarkBusEnumeratedPdo, .-IoMarkBusEnumeratedPdo
+.section .data.imports.io,"aw",@progbits
+.p2align 3
+.global __imp_io_IoCreateDevice
+__imp_io_IoCreateDevice: .quad 0
+.global __imp_io_IoMarkBusEnumeratedPdo
+__imp_io_IoMarkBusEnumeratedPdo: .quad 0
+"#);
+
 #[derive(Clone,Copy)]
 struct AcpiDeviceRecord { table:Option<acpi::aml_tables::TableHandle>,node:u16,identity:acpi::acpi_device::AcpiDeviceIdentity }
 impl AcpiDeviceRecord {
@@ -79,16 +118,31 @@ const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
 const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
 
-unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
     let status = match unsafe { (*stack).minor_function } {
         IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
         IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
-        // ACPI-1 identity evaluation is active, but ACPI-4 PDO publication
-        // and a complete BusRelations lifetime remain separate milestones.
-        IRP_MN_QUERY_DEVICE_RELATIONS => STATUS_NOT_SUPPORTED,
+        IRP_MN_QUERY_DEVICE_RELATIONS => {
+            let relation_type=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
+            if relation_type!=DEVICE_RELATIONS_BUS || device!=unsafe{ACPI_BUS_DEVICE} {
+                STATUS_NOT_SUPPORTED
+            } else {
+                while PDO_RELATIONS_LOCK.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err() {
+                    core::hint::spin_loop();
+                }
+                let relations=core::ptr::addr_of_mut!(ACPI_BUS_RELATIONS);
+                unsafe {
+                    (*relations).count=ACPI_PDO_COUNT as u32;
+                    for i in 0..MAX_ACPI_PDOS { (*relations).objects[i]=ACPI_PDOS[i]; }
+                    (*irp).io_status.information=relations as usize;
+                }
+                PDO_RELATIONS_LOCK.store(false,Ordering::Release);
+                STATUS_SUCCESS
+            }
+        },
         IRP_MN_QUERY_INTERFACE => {
             let parameters = unsafe { &(*stack).parameters };
             let guid = unsafe { core::ptr::read_unaligned(parameters.as_ptr().cast::<*const cognacos_nt_abi::bus::GUID>()) };
@@ -212,9 +266,40 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         let handle=match loaded.ssdts[index]{Some(handle)=>handle,None=>return STATUS_INVALID_PARAMETER};
         if let Err(status)=collect_device_identities(manager,handle,&table_sources[..ssdt_count+1],gate,records,&mut identity_count){return status;}
     }
+    // Create an ACPI bus device and real WDM PDOs for firmware devices
+    // reported present and enabled. Each PDO owns an immutable identity copy.
+    if identity_count>MAX_ACPI_PDOS { return STATUS_INSUFFICIENT_RESOURCES; }
+    let mut bus_device=core::ptr::null_mut();
+    let create_bus=unsafe{IoCreateDevice(object,0,core::ptr::null_mut(),FILE_DEVICE_BUS_EXTENDER,0,0,&mut bus_device)};
+    if create_bus!=STATUS_SUCCESS || bus_device.is_null() { return if create_bus==STATUS_SUCCESS {STATUS_INSUFFICIENT_RESOURCES} else {create_bus}; }
+    unsafe { ACPI_BUS_DEVICE=bus_device; }
+    let mut pdo_count=0usize;
+    for record in records[..identity_count].iter() {
+        let status=record.identity.sta;
+        if status&(acpi::acpi_device::DEVICE_PRESENT|acpi::acpi_device::DEVICE_ENABLED)
+            !=(acpi::acpi_device::DEVICE_PRESENT|acpi::acpi_device::DEVICE_ENABLED) { continue; }
+        let mut pdo=core::ptr::null_mut();
+        let create=unsafe{IoCreateDevice(object,core::mem::size_of::<AcpiPdoExtension>() as u32,
+            core::ptr::null_mut(),FILE_DEVICE_BUS_EXTENDER,0,0,&mut pdo)};
+        if create!=STATUS_SUCCESS || pdo.is_null() { return if create==STATUS_SUCCESS {STATUS_INSUFFICIENT_RESOURCES} else {create}; }
+        unsafe {
+            let extension=(*pdo).device_extension.cast::<AcpiPdoExtension>();
+            if extension.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,source_table:0,identity:record.identity});
+        }
+        let marked=unsafe{IoMarkBusEnumeratedPdo(pdo)};
+        if marked!=STATUS_SUCCESS { return marked; }
+        unsafe { ACPI_PDOS[pdo_count]=pdo; }
+        pdo_count+=1;
+    }
+    unsafe {
+        ACPI_PDO_COUNT=pdo_count;
+        ACPI_BUS_RELATIONS.count=pdo_count as u32;
+        for i in 0..MAX_ACPI_PDOS { ACPI_BUS_RELATIONS.objects[i]=ACPI_PDOS[i]; }
+    }
     STATE.device_count.store(identity_count,Ordering::Release);
-    STATE.ready.store(true, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+    STATE.ready.store(true, Ordering::Release);
     object.driver_unload = Some(driver_unload);
     STATUS_SUCCESS
 }
