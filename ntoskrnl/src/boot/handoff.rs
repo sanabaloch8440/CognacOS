@@ -17,8 +17,8 @@ static BOOT_SYSTEM_DLL_LENGTH:[core::sync::atomic::AtomicU64;4]=[const{core::syn
 const BOOT_SYSTEM_DLL_NAMES:[&str;4]=["kernel32.dll","kernelbase.dll","shell32.dll","msvcrt.dll"];
 static BOOT_BEEP_ADDRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_BEEP_LENGTH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
-static BOOT_SECURITY_FLAGS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
-static BOOT_KERNEL_DIGEST:[core::sync::atomic::AtomicU8;32]=[const{core::sync::atomic::AtomicU8::new(0)};32];
+pub(crate) static BOOT_SECURITY_FLAGS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+pub(crate) static BOOT_KERNEL_DIGEST:[core::sync::atomic::AtomicU8;32]=[const{core::sync::atomic::AtomicU8::new(0)};32];
 
 /// Security properties attested by the bootloader before transferring control.
 pub fn boot_security_flags()->u64{BOOT_SECURITY_FLAGS.load(core::sync::atomic::Ordering::Acquire)}
