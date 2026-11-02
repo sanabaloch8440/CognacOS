@@ -180,7 +180,7 @@ mod tests {
         let duplicate=table(*b"SSDT",*b"BASE",1);
         let ssdt=table(*b"SSDT",*b"EXTR",2);
         manager.load_ssdt(&ssdt).unwrap();
-        assert_eq!(manager.load_ssdt(&duplicate),Ok(TableHandle{slot:2,generation:3}));
+        assert_eq!(manager.load_ssdt(&duplicate),Err(TableError::DuplicateTable));
         assert!(manager.unload(base).is_err());
     }
     #[test]
