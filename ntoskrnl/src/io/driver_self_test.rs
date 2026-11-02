@@ -3,7 +3,7 @@
 use crate::*;
 use core::arch::asm;
 
-static mut BEEP_TEST_STACK: [u8; 8192] = [0; 8192];
+pub(crate) static mut BEEP_TEST_STACK: [u8; 8192] = [0; 8192];
 
 pub(crate) extern "C" fn beep_test_worker(_argument: *mut core::ffi::c_void) {
     unsafe { serial_write(b"Runtime beep.sys test started on scheduler-owned kernel thread.\r\n"); }
