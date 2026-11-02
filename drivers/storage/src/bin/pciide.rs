@@ -14,10 +14,10 @@ use cognacos_nt_abi::{
     ntstatus::*,
     types::PVOID,
 };
-use cognacos_storage::pciidex::{
+use cognacos_storage::{ide::{Channel, RegisterIo, MAX_LBA28}, pciidex::{
     parse_translated_resources, ControllerState, IdeResourceSet,
-    PciIdeController, PciIdeIdentity,
-};
+    PciIdeController, PciIdeIdentity, ResourceKind,
+}};
 
 const IRP_MJ_MAXIMUM_FUNCTION: usize = 27;
 const IRP_MJ_PNP: u8 = 0x1b;
@@ -35,6 +35,8 @@ struct PciIdeFdoExtension {
     physical_device: *mut DEVICE_OBJECT,
     controller: PciIdeController,
     previous_state: ControllerState,
+    active_channels: u8,
+    present_drives: u8,
 }
 
 unsafe extern "win64" {
@@ -130,6 +132,81 @@ unsafe fn read_start_resources(stack: *mut IO_STACK_LOCATION) -> Result<IdeResou
     Ok(translated_set)
 }
 
+/// x86 port-I/O backend. The caller may construct channels only from
+/// ranges present in the translated PnP resource list; no hard-coded port
+/// is touched unless the bus has assigned that range to this controller.
+struct X86PortIo;
+impl RegisterIo for X86PortIo {
+    fn read8(&mut self, port: u16) -> Result<u8, cognacos_storage::StorageError> {
+        let value: u8;
+        unsafe { core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags)); }
+        Ok(value)
+    }
+    fn write8(&mut self, port: u16, value: u8) -> Result<(), cognacos_storage::StorageError> {
+        unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
+        Ok(())
+    }
+    fn read16(&mut self, port: u16) -> Result<u16, cognacos_storage::StorageError> {
+        let value: u16;
+        unsafe { core::arch::asm!("in ax, dx", in("dx") port, out("ax") value, options(nomem, nostack, preserves_flags)); }
+        Ok(value)
+    }
+    fn write16(&mut self, port: u16, value: u16) -> Result<(), cognacos_storage::StorageError> {
+        unsafe { core::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack, preserves_flags)); }
+        Ok(())
+    }
+    fn delay_400ns(&mut self, alternate_status: u16) -> Result<(), cognacos_storage::StorageError> {
+        for _ in 0..4 { let _ = self.read8(alternate_status)?; }
+        Ok(())
+    }
+}
+
+fn assigned_port_range(resources: &IdeResourceSet, start: u64, length: u64) -> bool {
+    resources.entries[..resources.count].iter().flatten().any(|resource| {
+        resource.kind == ResourceKind::Port
+            && resource.start <= start
+            && resource.start.checked_add(resource.length).is_some_and(|end| end >= start.saturating_add(length))
+    })
+}
+
+/// Initialize legacy compatibility channels only when PnP has explicitly
+/// assigned every register range. Native-mode BAR decoding is deliberately
+/// rejected until PCI BAR resource descriptors can be mapped unambiguously.
+fn initialize_compatibility_channels(extension: &mut PciIdeFdoExtension) -> i32 {
+    let identity = extension.controller.identity;
+    if identity.primary_native() || identity.secondary_native() {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let resources = &extension.controller.resources;
+    let channels = [
+        (0x1f0u16, 0x3f6u16, 0x1f0u64, 8u64, 0x3f4u64, 4u64),
+        (0x170u16, 0x376u16, 0x170u64, 8u64, 0x374u64, 4u64),
+    ];
+    let mut active = 0u8;
+    let mut drives = 0u8;
+    let mut io = X86PortIo;
+    for (index, (command, control, command_resource, command_len, control_resource, control_len)) in channels.iter().copied().enumerate() {
+        if !assigned_port_range(resources, command_resource, command_len)
+            || !assigned_port_range(resources, control_resource, control_len) {
+            continue;
+        }
+        active |= 1 << index;
+        for device in 0..2u8 {
+            let channel = Channel { command_base: command, control, device, sectors: MAX_LBA28, poll_budget: 1_000_000 };
+            let status = match io.read8(command + 7) { Ok(value) => value, Err(_) => continue };
+            if status == 0 || status == 0xff { continue; }
+            let mut probe = channel;
+            if probe.identify(&mut io).is_ok() {
+                drives |= 1 << (index * 2 + device as usize);
+            }
+        }
+    }
+    if active == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    extension.active_channels = active;
+    extension.present_drives = drives;
+    STATUS_SUCCESS
+}
+
 unsafe extern "win64" fn pnp_complete(
     _lower_device: *mut DEVICE_OBJECT, irp: *mut IRP, context: PVOID,
 ) -> i32 {
@@ -144,10 +221,17 @@ unsafe extern "win64" fn pnp_complete(
     let minor = if stack.is_null() { 0xff } else { unsafe { (*stack).minor_function } };
     match minor {
         IRP_MN_START_DEVICE => {
-            if status == STATUS_SUCCESS {
+            let hardware_status = if status == STATUS_SUCCESS {
+                let ext = unsafe { &mut *extension };
+                initialize_compatibility_channels(ext)
+            } else { status };
+            if hardware_status == STATUS_SUCCESS {
                 let _ = unsafe { (*extension).controller.start_succeeded() };
             } else {
-                unsafe { (*extension).controller.start_failed((*extension).previous_state); }
+                unsafe {
+                    (*irp).io_status.status.status = hardware_status;
+                    (*extension).controller.start_failed((*extension).previous_state);
+                }
             }
         }
         IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL => {
@@ -252,6 +336,8 @@ unsafe extern "win64" fn add_device(driver: *mut c_void, pdo: *mut DEVICE_OBJECT
             magic: FDO_EXTENSION_MAGIC, lower_device: lower,
             physical_device: pdo, controller,
             previous_state: ControllerState::Created,
+            active_channels: 0,
+            present_drives: 0,
         });
         (*fdo).flags = ((*fdo).flags & !0x80) | ((*lower).flags & (0x02 | 0x04));
     }
