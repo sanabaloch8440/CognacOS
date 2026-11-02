@@ -206,6 +206,13 @@ mod tests{
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::Truncated));
  }
+ #[test]fn evaluates_remaining_scalar_bitwise_and_shift_operations(){
+  assert_eq!(evaluate_term_argument(&[0x7f,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
+  assert_eq!(evaluate_term_argument(&[0x7a,0x0a,0x80,0x0a,4,0x00]),Ok((8,6)));
+  assert_eq!(evaluate_term_argument(&[0x7b,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0,6)));
+  assert_eq!(evaluate_term_argument(&[0x7d,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
+  assert_eq!(evaluate_term_argument(&[0x77,0x0a,7,0x0a,6,0x00]),Ok((42,6)));
+ }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
