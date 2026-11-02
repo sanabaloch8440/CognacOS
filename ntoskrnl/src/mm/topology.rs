@@ -242,7 +242,7 @@ fn sort_allocation_nodes(
 ) {
  let distance_key=|node:u32|->u16 {
   if node==preferred{return 0}
-  if preferred as usize<matrix_nodes&&node as usize<matrix_nodes {
+  if (preferred as usize)<matrix_nodes&&(node as usize)<matrix_nodes {
    matrix[preferred as usize][node as usize] as u16+1
   } else {u16::MAX}
  };
