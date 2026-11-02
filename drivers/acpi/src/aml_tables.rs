@@ -78,6 +78,42 @@ impl AmlTableManager {
         Self{namespace:AmlNamespace::new(),records:[TableRecord::EMPTY;MAX_AML_TABLES],
             count:0,next_generation:1,dsdt_loaded:false}
     }
+    /// Discover the DSDT through FADT.X_DSDT/DSDT and SSDTs through the
+    /// RSDT/XSDT, then install the complete set transactionally. This uses the
+    /// current bootstrap identity-map contract and therefore rejects firmware
+    /// table addresses outside the first 4 GiB. The caller must invoke this
+    /// only while those physical ranges are mapped and readable.
+    pub unsafe fn load_from_rsdp<G:AmlExecutionGate>(&mut self,rsdp_address:u64,gate:&mut G)->Result<LoadedTableSet,TableError>{
+        const IDENTITY_LIMIT:u64=0x1_0000_0000;
+        const MAX_TABLE_LENGTH:usize=1024*1024;
+        let fadt=unsafe{crate::find_table(rsdp_address,*b"FACP",0)}?;
+        let fadt_info=crate::parse_fadt(fadt)?;
+        let dsdt_address=fadt_info.effective_dsdt();
+        if dsdt_address==0||dsdt_address.checked_add(36).is_none_or(|end|end>IDENTITY_LIMIT){
+            return Err(TableError::InvalidSdt(AcpiError::AddressOutOfRange))
+        }
+        let dsdt_header=unsafe{core::slice::from_raw_parts(dsdt_address as *const u8,SDT_HEADER_SIZE)};
+        let dsdt_length=u32::from_le_bytes(dsdt_header[4..8].try_into().map_err(|_|AcpiError::Truncated)?) as usize;
+        if !(SDT_HEADER_SIZE..=MAX_TABLE_LENGTH).contains(&dsdt_length)
+            ||dsdt_address.checked_add(dsdt_length as u64).is_none_or(|end|end>IDENTITY_LIMIT){
+            return Err(TableError::InvalidSdt(AcpiError::BadLength))
+        }
+        let dsdt=unsafe{core::slice::from_raw_parts(dsdt_address as *const u8,dsdt_length)};
+        crate::validate_sdt(dsdt,Some(*b"DSDT"))?;
+        let mut ssdts:[&[u8];MAX_AML_TABLES-1]=[&[];MAX_AML_TABLES-1];
+        let mut ssdt_count=0usize;
+        for instance in 0..=MAX_AML_TABLES-1{
+            match unsafe{crate::find_table(rsdp_address,*b"SSDT",instance)}{
+                Ok(table)=>{
+                    if instance==MAX_AML_TABLES-1{return Err(TableError::TableLimit)}
+                    ssdts[ssdt_count]=table;ssdt_count+=1;
+                }
+                Err(AcpiError::MissingRoot)=>break,
+                Err(error)=>return Err(TableError::InvalidSdt(error)),
+            }
+        }
+        self.load_firmware_tables(dsdt,&ssdts[..ssdt_count],gate)
+    }
     pub fn namespace(&self)->&AmlNamespace{&self.namespace}
     pub fn table_count(&self)->usize{self.count}
     pub fn dsdt_loaded(&self)->bool{self.dsdt_loaded}
