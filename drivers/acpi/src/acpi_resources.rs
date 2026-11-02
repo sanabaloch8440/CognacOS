@@ -36,7 +36,7 @@ fn u64le(b:&[u8],o:usize)->Result<u64,ResourceError>{let s=slice(b,o,8)?;Ok(u64:
 fn validate_range(min:u64,max:u64,len:u64)->Result<(),ResourceError>{
     // AML address descriptors encode a range of permitted base addresses;
     // Length is the span at each candidate base, not an upper bound for the base.
-    if len==0||min>max||min.checked_add(len-1).is_none(){return Err(ResourceError::InvalidDescriptor)} Ok(())
+    if len==0||min>max||min.checked_add(len-1).is_none()||max.checked_add(len-1).is_none(){return Err(ResourceError::InvalidDescriptor)} Ok(())
 }
 fn address_space(p:&[u8],width:u8)->Result<Resource,ResourceError>{
     let expected=match width{2=>13,4=>23,8=>43,_=>return Err(ResourceError::UnsupportedDescriptor)};
