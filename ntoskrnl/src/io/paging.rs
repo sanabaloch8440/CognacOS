@@ -100,13 +100,13 @@ mod tests {
     fn backend_capacity_is_bounded_and_nonzero() {
         let valid = PagingBackend { context: 0, slot_count: 1, read_page: unused_read, write_page: unused_write };
         assert!(valid.validate().is_ok());
-        assert_eq!(
+        assert!(matches!(
             PagingBackend { slot_count: 0, ..valid }.validate(),
             Err(PagingIoError::InvalidBackend)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             PagingBackend { slot_count: 32769, ..valid }.validate(),
             Err(PagingIoError::InvalidBackend)
-        );
+        ));
     }
 }
