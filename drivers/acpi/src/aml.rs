@@ -20,9 +20,11 @@ pub enum AmlObjectType { Root=0, Scope=1, Device=2, Method=3, Name=4, Processor=
 pub struct AmlNode {
     pub parent:u16, pub name:[u8;4], pub object_type:AmlObjectType,
     pub method_flags:u8, pub body_start:u32, pub body_length:u32,
+    /// Canonical target for Alias objects; u16::MAX for non-alias nodes.
+    pub alias_target:u16,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize }
 impl AmlNamespace {
@@ -31,11 +33,23 @@ impl AmlNamespace {
         self.nodes.iter().take(self.count).enumerate().skip(1)
             .find(|(_,n)|n.parent==parent&&n.name==name).map(|(i,_)|i as u16)
     }
+
+    /// Follow Alias objects to their canonical namespace object. Cycles and
+    /// invalid targets are rejected rather than recursing indefinitely.
+    pub fn resolve_alias(&self,mut index:u16)->Result<u16,AmlError>{
+        for _ in 0..self.count {
+            let node=self.nodes.get(index as usize).filter(|_|(index as usize)<self.count).ok_or(AmlError::InvalidParent)?;
+            if node.object_type!=AmlObjectType::Alias{return Ok(index)}
+            if node.alias_target==u16::MAX{return Err(AmlError::InvalidParent)}
+            index=node.alias_target;
+        }
+        Err(AmlError::BadDefinitionBlock)
+    }
     fn insert(&mut self,parent:u16,name:[u8;4],kind:AmlObjectType,flags:u8,start:usize,len:usize)->Result<u16,AmlError>{
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
         if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceFull)}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?};
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX};
         self.count+=1;Ok(i as u16)
     }
 }
@@ -96,7 +110,17 @@ fn resolve_parent(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>
     for _ in 0..n.parents{p=ns.nodes.get(p as usize).ok_or(AmlError::InvalidParent)?.parent;}
     Ok(p)
 }
-fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:bool,kind:AmlObjectType,body_start:usize,body_len:usize,flags:u8)->Result<u16,AmlError>{
+
+fn lookup_path(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
+    if n.count==0{return Ok(if n.rooted{0}else{current})}
+    let start=resolve_parent(ns,current,n)?;
+    let mut p=start;
+    for i in 0..n.count as usize{
+        p=ns.find_child(p,n.segments[i]).ok_or(AmlError::InvalidParent)?;
+    }
+    Ok(p)
+}
+\nfn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:bool,kind:AmlObjectType,body_start:usize,body_len:usize,flags:u8)->Result<u16,AmlError>{
     if n.count==0{return Ok(if n.rooted{0}else{current})}
     let mut p=resolve_parent(ns,current,n)?;
     for i in 0..n.count as usize{
@@ -228,8 +252,11 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
             }
             0x06=>{
                 let source=parse_name(c)?;let alias=parse_name(c)?;
-                let _=resolve_path(ns,parent,&source,true,AmlObjectType::Alias,0,0,0)?;
-                resolve_path(ns,parent,&alias,true,AmlObjectType::Alias,0,0,0)?;
+                // Alias source must already resolve; never manufacture a
+                // placeholder object for a misspelled source NameString.
+                let target=lookup_path(ns,parent,&source)?;
+                let alias_index=resolve_path(ns,parent,&alias,true,AmlObjectType::Alias,0,0,0)?;
+                ns.nodes[alias_index as usize].alias_target=target;
             }
             0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;}
             0x5b=>{
@@ -393,6 +420,32 @@ mod tests{
         assert_eq!(ns.count,1);
         // MultiNamePrefix must carry at least one NameSeg.
         assert_eq!(load_definition_block(&[0x08,0x2f,0],&mut ns),Err(AmlError::BadName));
+    }
+
+
+    #[test]fn alias_resolves_to_existing_canonical_object(){
+        // Name(VAL0, One); Alias(VAL0, ALI0)
+        let aml=[0x08,b'V',b'A',b'L',b'0',0x01,
+                 0x06,b'V',b'A',b'L',b'0',b'A',b'L',b'I',b'0'];
+        let mut ns=AmlNamespace::new();
+        load_definition_block(&aml,&mut ns).unwrap();
+        let alias=ns.find_child(0,*b"ALI0").unwrap();
+        let target=ns.find_child(0,*b"VAL0").unwrap();
+        assert_eq!(ns.resolve_alias(alias),Ok(target));
+        assert_eq!(ns.nodes[alias as usize].alias_target,target);
+    }
+    #[test]fn alias_rejects_missing_source_without_mutating_namespace(){
+        let aml=[0x06,b'M',b'I',b'S',b'S',b'A',b'L',b'I',b'0'];
+        let mut ns=AmlNamespace::new();
+        assert_eq!(load_definition_block(&aml,&mut ns),Err(AmlError::InvalidParent));
+        assert_eq!(ns.count,1);
+    }
+    #[test]fn alias_cycle_is_rejected(){
+        let mut ns=AmlNamespace::new();
+        let a=ns.insert(0,*b"ALIA",AmlObjectType::Alias,0,0,0).unwrap();
+        let b=ns.insert(0,*b"ALIB",AmlObjectType::Alias,0,0,0).unwrap();
+        ns.nodes[a as usize].alias_target=b;ns.nodes[b as usize].alias_target=a;
+        assert_eq!(ns.resolve_alias(a),Err(AmlError::BadDefinitionBlock));
     }
 
 }
