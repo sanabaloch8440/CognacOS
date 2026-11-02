@@ -3,7 +3,7 @@
 //! are delegated to an explicitly installed platform handler (ACPI.sys layer).
 #![no_std]
 
-use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
+use crate::aml::{AmlNamespace,AmlObjectType};
 
 pub const MAX_OPERATION_REGIONS:usize=128;
 
@@ -66,7 +66,7 @@ fn decode_integer(bytes:&[u8],pos:&mut usize,end:usize)->Result<u64,RegionError>
 /// TermArgs (base and length) in body_start/body_length.
 pub fn decode_operation_region(aml:&[u8],namespace:&AmlNamespace,node:u16)
     ->Result<OperationRegion,RegionError>{
-    let n=namespace.nodes.get(node as usize).filter(|_|node as usize<namespace.count)
+    let n=namespace.nodes.get(node as usize).filter(|_|(node as usize)<namespace.count)
         .ok_or(RegionError::InvalidNode)?;
     if n.object_type!=AmlObjectType::OperationRegion{return Err(RegionError::NotOperationRegion)}
     let start=n.body_start as usize;
