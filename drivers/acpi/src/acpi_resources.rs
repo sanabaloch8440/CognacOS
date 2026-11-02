@@ -280,3 +280,102 @@ mod dependent_requirement_tests {
         assert_eq!(parse_resource_requirements_template(&[0x31, 1, 0x79, 0]), Err(ResourceError::InvalidDescriptor));
     }
 }
+
+
+#[cfg(test)] mod stability_21_end_tag_checksum {
+ use super::*;
+ #[test] fn rejects_bad_nonzero_end_tag_checksum() {
+  assert_eq!(parse_resource_template(&[0x79, 1]), Err(ResourceError::InvalidDescriptor));
+ }
+}
+
+
+#[cfg(test)] mod stability_22_unknown_small_descriptor {
+ use super::*;
+ #[test] fn rejects_unknown_small_descriptor_without_skipping_it() {
+  assert_eq!(parse_resource_template(&[0x30, 0x79, 0]), Err(ResourceError::UnsupportedDescriptor));
+ }
+}
+
+
+#[cfg(test)] mod stability_23_truncated_large_header {
+ use super::*;
+ #[test] fn rejects_large_header_missing_length_byte() {
+  assert_eq!(parse_resource_template(&[0x8a, 0x2b]), Err(ResourceError::Truncated));
+ }
+}
+
+
+#[cfg(test)] mod stability_24_extended_irq_length {
+ use super::*;
+ #[test] fn rejects_extended_irq_count_that_exceeds_payload() {
+  assert_eq!(parse_resource_template(&[0x89, 7, 0, 0, 1, 1, 0, 0, 0, 0x79, 0]), Err(ResourceError::InvalidLength));
+ }
+}
+
+
+#[cfg(test)] mod stability_25_empty_extended_irq {
+ use super::*;
+ #[test] fn rejects_extended_irq_with_zero_interrupts() {
+  assert_eq!(parse_resource_template(&[0x89, 6, 0, 0, 0, 0, 0, 0, 0x79, 0]), Err(ResourceError::InvalidLength));
+ }
+}
+
+
+#[cfg(test)] mod stability_26_extended_irq_bound {
+ use super::*;
+ #[test] fn rejects_more_than_eight_extended_interrupts() {
+  let mut bytes = std::vec![0x89, 38, 0, 0, 9];
+  bytes.extend_from_slice(&[0; 36]);
+  bytes.extend_from_slice(&[0x79, 0]);
+  assert_eq!(parse_resource_template(&bytes), Err(ResourceError::InvalidLength));
+ }
+}
+
+
+#[cfg(test)] mod stability_27_dword_address_range {
+ use super::*;
+ #[test] fn parses_dword_memory_aperture_at_exact_boundaries() {
+  let mut bytes = [0u8; 28];
+  bytes[0] = 0x87; bytes[1] = 23;
+  bytes[10..14].copy_from_slice(&0x1000u32.to_le_bytes());
+  bytes[14..18].copy_from_slice(&0x1fffu32.to_le_bytes());
+  bytes[22..26].copy_from_slice(&0x1000u32.to_le_bytes());
+  bytes[26] = 0x79; bytes[27] = 0;
+  let parsed = parse_resource_template(&bytes).unwrap();
+  assert!(matches!(parsed.entries[0], Some(Resource::Memory { minimum: 0x1000, maximum: 0x1fff, length: 0x1000, kind: 1, .. })));
+ }
+}
+
+
+#[cfg(test)] mod stability_28_qword_overflow {
+ use super::*;
+ #[test] fn rejects_qword_range_whose_end_wraps() {
+  let mut bytes = [0u8; 48];
+  bytes[0] = 0x8a; bytes[1] = 43;
+  bytes[14..22].copy_from_slice(&(u64::MAX - 1).to_le_bytes());
+  bytes[22..30].copy_from_slice(&u64::MAX.to_le_bytes());
+  bytes[38..46].copy_from_slice(&4u64.to_le_bytes());
+  bytes[46] = 0x79; bytes[47] = 0;
+  assert_eq!(parse_resource_template(&bytes), Err(ResourceError::InvalidDescriptor));
+ }
+}
+
+
+#[cfg(test)] mod stability_29_resource_capacity {
+ use super::*;
+ #[test] fn rejects_more_than_max_resources() {
+  let mut bytes = std::vec::Vec::new();
+  for _ in 0..=MAX_RESOURCES { bytes.extend_from_slice(&[0x4b, 0x78, 0x03, 3]); }
+  bytes.extend_from_slice(&[0x79, 0]);
+  assert_eq!(parse_resource_template(&bytes), Err(ResourceError::TooManyResources));
+ }
+}
+
+
+#[cfg(test)] mod stability_30_end_tag_trailing_data {
+ use super::*;
+ #[test] fn rejects_bytes_after_end_tag_even_when_checksum_is_zero() {
+  assert_eq!(parse_resource_template(&[0x79, 0, 0]), Err(ResourceError::InvalidLength));
+ }
+}
