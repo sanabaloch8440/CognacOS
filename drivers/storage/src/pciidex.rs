@@ -18,7 +18,7 @@ pub const PROGIF_BUS_MASTER: u8 = 1 << 7;
 pub const CM_RESOURCE_PORT: u8 = 1;
 pub const CM_RESOURCE_INTERRUPT: u8 = 2;
 pub const CM_RESOURCE_MEMORY: u8 = 3;
-pub const MAX_IDE_RESOURCES: usize = 16;
+pub const MAX_IDE_RESOURCES: usize = 8;
 pub const MAX_FULL_DESCRIPTORS: usize = 16;
 pub const MAX_PARTIAL_DESCRIPTORS: usize = 64;
 
