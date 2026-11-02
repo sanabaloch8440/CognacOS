@@ -198,6 +198,14 @@ mod tests{
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::StepLimit));
  }
+ #[test]fn rejects_truncated_term_arguments_at_runtime(){
+  // The parser retains method bodies, so the executor must reject a
+  // truncated DWordConst when the method is invoked.
+  let aml=[0x14,0x0a,b'T',b'E',b'S',b'T',0,0xa4,0x0c,0x11,0x22];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::Truncated));
+ }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
