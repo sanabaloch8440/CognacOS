@@ -3,6 +3,7 @@
 //! occurs here. Package elements reference other arena entries by index.
 #![no_std]
 use crate::aml::{decode_package_length,AmlError,AmlNamespace,AmlObjectType};
+use crate::aml_exec::evaluate_term_argument;
 
 pub const MAX_AML_VALUES:usize=128;
 pub const MAX_AML_BYTES:usize=256;
@@ -24,7 +25,7 @@ impl AmlRuntimeValue {
     pub const EMPTY:Self=Self{kind:AmlValueKind::Empty,integer:0,bytes:[0;MAX_AML_BYTES],byte_length:0,elements:[0;MAX_PACKAGE_ELEMENTS],element_count:0};
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ObjectError { Truncated,BadPackageLength,UnsupportedOpcode,ValueArenaFull,ValueTooLarge,TooManyElements,MalformedObject }
+pub enum ObjectError { Truncated,BadPackageLength,UnsupportedOpcode,InvalidTermArgument,ValueArenaFull,ValueTooLarge,TooManyElements,MalformedObject }
 impl From<AmlError> for ObjectError { fn from(e:AmlError)->Self { match e { AmlError::Truncated=>Self::Truncated,_=>Self::BadPackageLength } } }
 
 pub struct AmlObjectArena { pub values:[AmlRuntimeValue;MAX_AML_VALUES],pub count:usize }
@@ -65,9 +66,21 @@ fn package_end(bytes:&[u8],pos:usize,end:usize)->Result<(usize,usize),ObjectErro
     Ok((pos+1+((lead>>6) as usize),finish))
 }
 
-/// Decode one AML DataRefObject and return its arena index and byte offset after
-/// the object. Nested packages are bounded by both the package end and arena.
+/// Maximum nested Buffer/Package depth accepted by the fixed-stack decoder.
+pub const MAX_DATA_OBJECT_DEPTH:u8=32;
+
+/// Decode one AML DataRefObject transactionally. If any nested initializer is
+/// malformed, arena allocations made by this decode are rolled back.
 pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObjectArena)->Result<(u16,usize),ObjectError>{
+    let checkpoint=arena.count;
+    match decode_data_object_depth(bytes,offset,limit,arena,0){
+        Ok(result)=>Ok(result),
+        Err(error)=>{arena.count=checkpoint;Err(error)}
+    }
+}
+
+fn decode_data_object_depth(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObjectArena,depth:u8)->Result<(u16,usize),ObjectError>{
+    if depth>MAX_DATA_OBJECT_DEPTH{return Err(ObjectError::MalformedObject)}
     if offset>limit||limit>bytes.len(){return Err(ObjectError::Truncated)}
     let mut pos=offset;
     let opcode=byte(bytes,&mut pos,limit)?;
@@ -87,15 +100,23 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
         }
         0x11=>{
             let (body,end)=package_end(bytes,pos,limit)?;pos=body;
-            let declared=integer_term(bytes,&mut pos,end)? as usize;
+            let (declared,consumed)=evaluate_term_argument(&bytes[pos..end]).map_err(|_|ObjectError::InvalidTermArgument)?;
+            pos=pos.checked_add(consumed).ok_or(ObjectError::Truncated)?;
+            let declared=usize::try_from(declared).map_err(|_|ObjectError::ValueTooLarge)?;
             if declared>MAX_AML_BYTES{return Err(ObjectError::ValueTooLarge)}
-            let available=end.saturating_sub(pos);let copy=core::cmp::min(declared,available);
+            let available=end.saturating_sub(pos);
+            if available>declared{return Err(ObjectError::MalformedObject)}
+            let copy=available;
             value.kind=AmlValueKind::Buffer;value.bytes[..copy].copy_from_slice(&bytes[pos..pos+copy]);
             value.byte_length=declared as u16;pos=end;
         }
         0x12|0x13=>{
             let (body,end)=package_end(bytes,pos,limit)?;pos=body;
-            let count=if opcode==0x12{byte(bytes,&mut pos,end)? as usize}else{integer_term(bytes,&mut pos,end)? as usize};
+            let count=if opcode==0x12{byte(bytes,&mut pos,end)? as usize}else{
+                let (count,consumed)=evaluate_term_argument(&bytes[pos..end]).map_err(|_|ObjectError::InvalidTermArgument)?;
+                pos=pos.checked_add(consumed).ok_or(ObjectError::Truncated)?;
+                usize::try_from(count).map_err(|_|ObjectError::TooManyElements)?
+            };
             if count>MAX_PACKAGE_ELEMENTS{return Err(ObjectError::TooManyElements)}
             value.kind=AmlValueKind::Package;
             for _ in 0..count {
@@ -103,9 +124,10 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
                     let missing=arena.push({let mut z=AmlRuntimeValue::EMPTY;z.kind=AmlValueKind::Uninitialized;z})?;
                     value.elements[value.element_count as usize]=missing;value.element_count+=1;continue
                 }
-                let (child,next)=decode_data_object(bytes,pos,end,arena)?;
+                let (child,next)=decode_data_object_depth(bytes,pos,end,arena,depth+1)?;
                 value.elements[value.element_count as usize]=child;value.element_count+=1;pos=next;
             }
+            if pos!=end{return Err(ObjectError::MalformedObject)}
             pos=end;
         }
         _=>return Err(ObjectError::UnsupportedOpcode)
@@ -155,6 +177,20 @@ mod tests {
         let v=arena.get(id).unwrap();assert_eq!(end,6);assert_eq!(v.kind,AmlValueKind::Buffer);
         assert_eq!(v.byte_length,4);assert_eq!(&v.bytes[..4],&[0xaa,0xbb,0,0]);
     }
+    #[test] fn evaluates_computed_buffer_size_term_arguments(){
+        // Buffer(Add(ByteConst(2), ByteConst(2), NullTarget), { 0xaa, 0xbb }).
+        let bytes=[0x11,0x09,0x72,0x0a,2,0x0a,2,0x00,0xaa,0xbb];
+        let mut arena=AmlObjectArena::new();
+        let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
+        let value=arena.get(id).unwrap();
+        assert_eq!(end,bytes.len());assert_eq!(value.kind,AmlValueKind::Buffer);
+        assert_eq!(value.byte_length,4);assert_eq!(&value.bytes[..4],&[0xaa,0xbb,0,0]);
+    }
+    #[test] fn rejects_buffer_initializer_bytes_beyond_declared_size(){
+        let bytes=[0x11,0x05,0x0a,1,0xaa,0xbb];
+        let mut arena=AmlObjectArena::new();
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
+    }
     #[test] fn decodes_nested_packages_by_arena_reference(){
         // Package(2) { One, Package(1) { ByteConst(9) } }
         let bytes=[0x12,0x08,2,0x01,0x12,0x04,1,0x0a,9];
@@ -163,6 +199,16 @@ mod tests {
         assert_eq!(end,bytes.len());let outer=arena.get(id).unwrap();assert_eq!(outer.element_count,2);
         let inner=arena.get(outer.elements[1]).unwrap();assert_eq!(inner.kind,AmlValueKind::Package);
         let nine=arena.get(inner.elements[0]).unwrap();assert_eq!(nine.integer,9);
+    }
+    #[test] fn evaluates_varpackage_element_count_expression(){
+        // VarPackage(Add(One, One, NullTarget), { One, ByteConst(9) }).
+        let bytes=[0x13,0x08,0x72,0x01,0x01,0x00,0x01,0x0a,9];
+        let mut arena=AmlObjectArena::new();
+        let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
+        let package=arena.get(id).unwrap();assert_eq!(end,bytes.len());
+        assert_eq!(package.kind,AmlValueKind::Package);assert_eq!(package.element_count,2);
+        assert_eq!(arena.get(package.elements[0]).unwrap().integer,1);
+        assert_eq!(arena.get(package.elements[1]).unwrap().integer,9);
     }
     #[test] fn leaves_omitted_package_slots_uninitialized(){
         let mut arena=AmlObjectArena::new();
@@ -173,6 +219,25 @@ mod tests {
         for child in package.elements.iter().take(2) {
             assert_eq!(arena.get(*child).unwrap().kind,AmlValueKind::Uninitialized);
         }
+    }
+    #[test] fn rejects_excessive_package_depth_without_leaking_arena_entries(){
+        let mut bytes=std::vec![0x01];
+        for _ in 0..(MAX_DATA_OBJECT_DEPTH as usize+2){
+            let body_length=1+bytes.len();
+            let short_length=1+body_length;
+            let mut package=std::vec![0x12];
+            if short_length<64{package.push(short_length as u8);}
+            else{let length=2+body_length;package.push(0x40|((length&0x0f)as u8));package.push((length>>4)as u8);}
+            package.push(1);package.extend_from_slice(&bytes);bytes=package;
+        }
+        let mut arena=AmlObjectArena::new();
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
+        assert_eq!(arena.count,0);
+    }
+    #[test] fn rejects_package_payload_after_declared_initializer_count(){
+        let bytes=[0x12,0x04,1,0x01,0x01];
+        let mut arena=AmlObjectArena::new();
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
     }
     #[test] fn rejects_truncated_strings_and_oversized_packages(){
         let mut arena=AmlObjectArena::new();
