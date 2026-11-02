@@ -424,7 +424,7 @@ mod tests {
         definition_table(*b"DSDT",&aml)
     }
     fn identity_ssdt()->std::vec::Vec<u8>{
-        // Scope(DEV0) { Name(_STA, ByteConst(5)) } extends a DSDT device.
+        // Scope(DEV0) { Method(_STA) { Return(ByteConst(5)) } } extends a DSDT device.
         let aml=[0x10,0x0f,b'D',b'E',b'V',b'0',0x14,0x09,b'_',b'S',b'T',b'A',0,0xa4,0x0a,5];
         definition_table(*b"SSDT",&aml)
     }
