@@ -516,6 +516,22 @@ mod tests{
     }
 
 
+    #[test]fn validates_not_and_dereference_terms_inside_buffer_sizes(){
+        // Buffer(Not(ByteConst(0), NullName)) { 0xaa }
+        let aml=[0x08,b'B',b'U',b'F',b'2',0x11,0x06,
+            0x80,0x0a,0,0x00,0xaa];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&aml,&mut ns).is_ok());
+        assert_eq!(ns.find_child(0,*b"BUF2"),Some(1));
+
+        // DerefOf(NullName) is structurally parsed but remains unsupported
+        // by the scalar executor until reference semantics are implemented.
+        let deref=[0x08,b'B',b'U',b'F',b'3',0x11,0x06,
+            0x83,0x00,0xaa,0,0];
+        let mut ns=AmlNamespace::new();
+        assert!(load_definition_block(&deref,&mut ns).is_ok());
+    }
+
     #[test]fn validates_modulo_and_find_set_bit_inside_buffer_size_terms(){
         // Name(BUF0, Buffer(Mod(23, 5, NullName)) { 0xaa })
         let modulo=[0x08,b'B',b'U',b'F',b'0',0x11,0x08,
