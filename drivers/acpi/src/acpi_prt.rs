@@ -70,7 +70,7 @@ pub fn resolve_route<R: LinkDeviceResolver>(table: &PrtTable, address: u32, pin:
     #[test] fn builds_direct_and_link_routes() {
         let entries = [
             EvaluatedPrtElement { address: 0x0002_ffff, pin: 0, source_path: None, source_index: 17 },
-            EvaluatedPrtElement { address: 0x0003_0000, pin: 1, source_path: Some(b"\\\\_SB.PCI0.LNKA"), source_index: 0 },
+            EvaluatedPrtElement { address: 0x0003_0000, pin: 1, source_path: Some(b"\\_SB.PCI0.LNKA"), source_index: 0 },
         ];
         let table = build_prt_table(&entries).unwrap(); assert_eq!(table.count, 2);
         assert!(matches!(table.find(0x0002_0001, 0).unwrap().source, InterruptSource::DirectGsi { gsi: 17 }));
@@ -87,11 +87,11 @@ pub fn resolve_route<R: LinkDeviceResolver>(table: &PrtTable, address: u32, pin:
     struct Resolver;
     impl LinkDeviceResolver for Resolver {
         fn resolve_gsi(&self, path: &[u8], index: u32) -> Result<u32, PrtError> {
-            if path == b"\\\\_SB.PCI0.LNKA" && index == 0 { Ok(23) } else { Err(PrtError::LinkResolutionFailed) }
+            if path == b"\\_SB.PCI0.LNKA" && index == 0 { Ok(23) } else { Err(PrtError::LinkResolutionFailed) }
         }
     }
     #[test] fn resolves_link_device_through_platform_contract() {
-        let entries = [EvaluatedPrtElement { address: 0x0003_0000, pin: 1, source_path: Some(b"\\\\_SB.PCI0.LNKA"), source_index: 0 }];
+        let entries = [EvaluatedPrtElement { address: 0x0003_0000, pin: 1, source_path: Some(b"\\_SB.PCI0.LNKA"), source_index: 0 }];
         let table = build_prt_table(&entries).unwrap();
         assert_eq!(resolve_route(&table, 0x0003_0000, 1, &Resolver), Ok(23));
     }
