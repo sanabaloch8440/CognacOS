@@ -269,6 +269,8 @@ struct PnpDeviceNode {
     start_attempts: AtomicU32,
     is_root: AtomicBool,
     device_object: AtomicUsize,
+    enumerator_id: AtomicU32,
+    identity_hash: core::sync::atomic::AtomicU64,
     service_name: UnsafeCell<[u16;128]>,
     service_name_len: AtomicUsize,
 }
@@ -286,6 +288,8 @@ impl PnpDeviceNode {
             start_attempts: AtomicU32::new(0),
             is_root: AtomicBool::new(false),
             device_object: AtomicUsize::new(0),
+            enumerator_id: AtomicU32::new(0),
+            identity_hash: core::sync::atomic::AtomicU64::new(0),
             service_name: UnsafeCell::new([0;128]),
             service_name_len: AtomicUsize::new(0),
         }
@@ -357,6 +361,69 @@ pub fn remove_pnp_device_object(device: *mut crate::io::DeviceObject, status: i3
     if let Some(index) = index {
         let _ = transition_pnp_device(index, PNP_DEVICE_REMOVED, status);
     }
+}
+
+/// Register a non-PCI bus-enumerated PDO in the generic kernel devnode
+/// table. The bus driver owns identity construction; the kernel owns the PDO
+/// reference and lifecycle. identity_hash must be stable and unique within
+/// enumerator_id (ACPI uses its namespace-node identity).
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoPnPRegisterBusDevice(
+    enumerator_id:u32,
+    identity_hash:u64,
+    device:*mut crate::io::DeviceObject,
+    output_index:*mut u32,
+)->i32 {
+    use crate::nt_abi::ntstatus::*;
+    if enumerator_id==0||identity_hash==0||device.is_null()||output_index.is_null(){
+        return STATUS_INVALID_PARAMETER;
+    }
+    {
+        let _guard=lock_pnp_table();
+        if let Some((index,node))=PNP_DEVICES.iter().enumerate().find(|(_,node)|
+            node.state.load(Ordering::Acquire)!=PNP_DEVICE_EMPTY
+            &&node.state.load(Ordering::Relaxed)!=PNP_DEVICE_REMOVED
+            &&node.enumerator_id.load(Ordering::Relaxed)==enumerator_id
+            &&node.identity_hash.load(Ordering::Relaxed)==identity_hash)
+        {
+            if node.device_object.load(Ordering::Acquire)==device as usize {
+                unsafe{output_index.write(index as u32);}
+                return STATUS_SUCCESS;
+            }
+            return STATUS_OBJECT_NAME_COLLISION;
+        }
+    }
+    let index={
+        let _guard=lock_pnp_table();
+        let Some((index,node))=PNP_DEVICES.iter().enumerate().find(|(_,node)|{
+            matches!(node.state.load(Ordering::Acquire),PNP_DEVICE_EMPTY|PNP_DEVICE_REMOVED)
+        }) else{return STATUS_INSUFFICIENT_RESOURCES};
+        node.parent.store(PNP_NO_PARENT,Ordering::Relaxed);
+        node.segment.store(0,Ordering::Relaxed);
+        node.bus.store(0,Ordering::Relaxed);
+        node.device.store(0,Ordering::Relaxed);
+        node.function.store(0,Ordering::Relaxed);
+        node.vendor_id.store(0,Ordering::Relaxed);
+        node.device_id.store(0,Ordering::Relaxed);
+        node.class_code.store(0,Ordering::Relaxed);
+        node.subclass.store(0,Ordering::Relaxed);
+        node.programming_interface.store(0,Ordering::Relaxed);
+        node.last_status.store(0,Ordering::Relaxed);
+        node.start_attempts.store(0,Ordering::Relaxed);
+        node.is_root.store(false,Ordering::Relaxed);
+        node.device_object.store(0,Ordering::Relaxed);
+        node.service_name_len.store(0,Ordering::Relaxed);
+        node.enumerator_id.store(enumerator_id,Ordering::Relaxed);
+        node.identity_hash.store(identity_hash,Ordering::Relaxed);
+        node.state.store(PNP_DEVICE_ENUMERATED,Ordering::Release);
+        index as u32
+    };
+    if bind_pnp_device_object(index,device).is_err(){
+        let _=transition_pnp_device(index,PNP_DEVICE_REMOVED,STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe{output_index.write(index);}
+    STATUS_SUCCESS
 }
 
 /// Copy the registry-selected service name for one devnode. A zero-length
