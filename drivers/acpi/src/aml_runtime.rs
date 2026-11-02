@@ -30,7 +30,7 @@ impl AmlBindings {
     pub const fn new()->Self{Self{values:[0;MAX_NAMESPACE_NODES],bound:[false;MAX_NAMESPACE_NODES]}}
     pub fn bind(&mut self,namespace:&AmlNamespace,node:u16,value:u16)->Result<(),RuntimeError>{
         let canonical=namespace.resolve_alias(node).map_err(|_|RuntimeError::InvalidNode)?;
-        let entry=namespace.nodes.get(canonical as usize).filter(|_|canonical as usize<namespace.count)
+        let entry=namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<namespace.count)
             .ok_or(RuntimeError::InvalidNode)?;
         if entry.object_type!=AmlObjectType::Name{return Err(RuntimeError::TypeMismatch)}
         if canonical as usize>=MAX_NAMESPACE_NODES{return Err(RuntimeError::InvalidNode)}
