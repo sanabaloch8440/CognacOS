@@ -130,6 +130,11 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
+    // IRP_MN_QUERY_DEVICE_RELATIONS returns a caller-consumed
+    // DEVICE_RELATIONS pointer in IoStatus.Information. Keep it local until
+    // the common completion write below; writing Information in the match
+    // arm and then clearing it at the end silently publishes zero children.
+    let mut information = 0usize;
     let status = match unsafe { (*stack).minor_function } {
         IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
         IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
@@ -145,7 +150,7 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                 unsafe {
                     (*relations).count=ACPI_PDO_COUNT as u32;
                     for i in 0..MAX_ACPI_PDOS { (*relations).objects[i]=ACPI_PDOS[i]; }
-                    (*irp).io_status.information=relations as usize;
+                    information=relations as usize;
                 }
                 PDO_RELATIONS_LOCK.store(false,Ordering::Release);
                 STATUS_SUCCESS
@@ -170,7 +175,10 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
         _ => STATUS_INVALID_DEVICE_REQUEST,
     };
-    unsafe { (*irp).io_status.status.status = status; (*irp).io_status.information = 0; }
+    unsafe {
+        (*irp).io_status.status.status = status;
+        (*irp).io_status.information = if status == STATUS_SUCCESS { information } else { 0 };
+    }
     status
 }
 unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
