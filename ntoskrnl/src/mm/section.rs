@@ -283,5 +283,7 @@ mod tests {
         assert_eq!(create(0, 1, &mut handle), STATUS_INVALID_PARAMETER);
         assert_eq!(reference(0,1), STATUS_INVALID_HANDLE);
         assert_eq!(dereference(0,1), STATUS_INVALID_HANDLE);
+        assert!(!handle_copy_on_write(0, 0x1000));
+        assert!(!handle_copy_on_write(1, 0));
     }
 }
