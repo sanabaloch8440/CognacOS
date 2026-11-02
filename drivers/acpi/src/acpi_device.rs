@@ -60,7 +60,7 @@ enum DataValue<'a>{Integer(u64),String(&'a [u8]),Package(&'a [u8])}
 fn read_integer(bytes:&[u8],pos:&mut usize)->Result<u64,IdentityError>{
     let op=*bytes.get(*pos).ok_or(IdentityError::MalformedObject)?;*pos+=1;
     let width=match op{0x00=>return Ok(0),0x01=>return Ok(1),0xff=>return Ok(u64::MAX),0x0a=>1,0x0b=>2,0x0c=>4,0x0e=>8,_=>return Err(IdentityError::UnsupportedObject)};
-    let end=pos.checked_add(width).ok_or(IdentityError::MalformedObject)?;
+    let end=(*pos).checked_add(width).ok_or(IdentityError::MalformedObject)?;
     let data=bytes.get(*pos..end).ok_or(IdentityError::MalformedObject)?;
     let mut out=0u64;for (i,b) in data.iter().enumerate(){out|=(*b as u64)<<(i*8);}*pos=end;Ok(out)
 }
@@ -97,7 +97,7 @@ fn find_object(ns:&AmlNamespace,device:u16,name:[u8;4])->Result<Option<u16>,Iden
     let Some(found)=ns.find_child(device,name) else{return Ok(None)};
     Ok(Some(ns.resolve_alias(found).map_err(|_|IdentityError::MalformedObject)?))
 }
-fn evaluate_object(ns:&AmlNamespace,aml:&[u8],node:u16,invoker:&mut impl AcpiMethodInvoker)->Result<DataValue<'_>,IdentityError>{
+fn evaluate_object<'a>(ns:&AmlNamespace,aml:&'a [u8],node:u16,invoker:&mut impl AcpiMethodInvoker)->Result<DataValue<'a>,IdentityError>{
     let object=ns.nodes.get(node as usize).filter(|_|node as usize<ns.count).ok_or(IdentityError::MalformedObject)?;
     match object.object_type{
         AmlObjectType::Name=>data_value(aml,object),
@@ -105,7 +105,7 @@ fn evaluate_object(ns:&AmlNamespace,aml:&[u8],node:u16,invoker:&mut impl AcpiMet
         _=>Err(IdentityError::UnsupportedObject),
     }
 }
-fn eval_optional(ns:&AmlNamespace,aml:&[u8],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<DataValue<'_>>,IdentityError>{
+fn eval_optional<'a>(ns:&AmlNamespace,aml:&'a [u8],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<DataValue<'a>>,IdentityError>{
     match find_object(ns,device,name)?{Some(id)=>Ok(Some(evaluate_object(ns,aml,id,invoker)?)),None=>Ok(None)}
 }
 fn package_ids(bytes:&[u8],out:&mut AcpiDeviceIdentity)->Result<(),IdentityError>{
@@ -160,13 +160,13 @@ mod tests{
     }
     #[test]fn evaluates_standard_device_identity_and_optional_defaults(){
         let mut aml=std::vec::Vec::new();
-        aml.extend_from_slice(&[0x5b,0x82,0x2a,b'D',b'E',b'V',b'0']);
+        aml.extend_from_slice(&[0x5b,0x82,0,b'D',b'E',b'V',b'0']);
         add_string(&mut aml,*b"_HID",b"ACME0001");
         add_string(&mut aml,*b"_CID",b"ACME0002");
-        aml.extend_from_slice(&[0x08,b'_ ',b'U',b'I',b'D',0x0a,3]);
-        aml.extend_from_slice(&[0x08,b'_ ',b'A',b'D',b'R',0x0c,0x34,0x12,0,0]);
-        // Repair leading underscore byte literals for the AML NameSeg.
-        aml[aml.len()-16]=b'_';aml[aml.len()-10]=b'_';
+        aml.extend_from_slice(&[0x08,b'_',b'U',b'I',b'D',0x0a,3]);
+        aml.extend_from_slice(&[0x08,b'_',b'A',b'D',b'R',0x0c,0x34,0x12,0,0]);
+        let package_length=(aml.len()-2) as u8;
+        aml[2]=package_length;
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
         let result=evaluate_device_identity(&ns,&aml,dev,&mut IntegerMethodInvoker).unwrap();
