@@ -346,7 +346,9 @@ pub fn query_group_tag_order(hive:&Hive<'_>,group:&[u16],out:&mut[u32])->Result<
         if n==control.len(){return Err(ExtendedConfigError::BufferTooSmall)}control[n]=c;n+=1;
     }
     let key=hive.find_path(&control[..n])?;
-    let value=key.find_value(group)?;
+    // GroupOrderList is sparse by design: a group without an explicit tag
+    // list uses stable registry enumeration order, not a registry failure.
+    let value=match key.find_value(group){Ok(value)=>value,Err(HiveError::NotFound)=>return Ok(0),Err(error)=>return Err(error.into())};
     if value.kind!=3||value.data_len<4||value.data_len as usize>4+out.len()*4{return Err(ExtendedConfigError::InvalidRegistryType)}
     let mut raw=[0u8;1024];let bytes=value.data_len as usize;
     if bytes>raw.len(){return Err(ExtendedConfigError::BufferTooSmall)}
