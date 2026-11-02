@@ -273,6 +273,11 @@ impl AddressSpace {
             }
             return Err(VmError::AlreadyMapped);
         }
+        let tracked_mapping = match super::pfn::acquire_mapping(physical_address) {
+            Ok(()) => true,
+            Err(super::pfn::PfnError::NotTracked) => false,
+            Err(_) => return Err(VmError::OutOfMemory),
+        };
         let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
         if !executable { flags |= NX; }
@@ -759,6 +764,7 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+        let _ = super::pfn::release_mapping(physical);
 
         // Reclaim empty PT/PD/PDPT tables bottom-up. A non-empty table is never
         // freed, and the PML4 root remains owned by AddressSpace.
@@ -796,6 +802,11 @@ impl AddressSpace {
         { return Err(VmError::InvalidAddress); }
         let Some((leaf, entry)) = user_leaf(self.root, virtual_address) else { return Err(VmError::NotMapped); };
         if entry & ADDR != expected_physical { return Err(VmError::AddressSpaceBusy); }
+        let new_tracked = match super::pfn::acquire_mapping(new_physical) {
+            Ok(()) => true,
+            Err(super::pfn::PfnError::NotTracked) => false,
+            Err(_) => return Err(VmError::OutOfMemory),
+        };
         let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
         if !executable { flags |= NX; }
@@ -804,6 +815,8 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+        let _ = super::pfn::release_mapping(expected_physical);
+        let _ = new_tracked;
         Ok(())
     }
 
