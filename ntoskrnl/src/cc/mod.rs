@@ -486,6 +486,55 @@ fn cache_page_count(file: *mut FileObject) -> usize {
 mod tests {
     use super::*;
 
+    #[repr(align(4096))]
+    struct TestCachePage([u8; CACHE_PAGE_SIZE]);
+    static mut TEST_CACHE_PAGE: TestCachePage = TestCachePage([0; CACHE_PAGE_SIZE]);
+
+    #[test]
+    fn copy_read_hits_a_dynamically_described_cache_page() {
+        let mut file: FileObject = unsafe { core::mem::zeroed() };
+        let sizes = CcFileSizes { allocation_size: 4096, file_size: 4096, valid_data_length: 4096 };
+        unsafe { cc_initialize_cache_map(&mut file, &sizes, 0, core::ptr::null(), core::ptr::null_mut()); }
+        let expected = b"cached-data";
+        let page_data = core::ptr::addr_of_mut!(TEST_CACHE_PAGE.0).cast::<u8>();
+        unsafe { core::ptr::copy_nonoverlapping(expected.as_ptr(), page_data.add(32), expected.len()); }
+        let descriptor = unsafe {
+            allocate_page_descriptor(0, page_data, 32, 32 + expected.len())
+        };
+        assert!(!descriptor.is_null());
+        {
+            let _guard = Guard::acquire();
+            let map = unsafe { find_map(&mut file) };
+            assert!(!map.is_null());
+            unsafe { (*map).pages = descriptor; }
+        }
+
+        let offset = 32i64;
+        let mut output = [0u8; 11];
+        let mut iosb = IoStatusBlock {
+            status: crate::nt_abi::io::IO_STATUS_BLOCK_STATUS { status: 0 },
+            information: 0,
+        };
+        assert_eq!(unsafe {
+            cc_copy_read(&mut file, &offset, output.len() as u32, 1,
+                output.as_mut_ptr().cast(), &mut iosb)
+        }, 1);
+        assert_eq!(&output, expected);
+        assert_eq!(iosb.information, expected.len());
+
+        // The backing bytes are static test storage, not MM-owned pages.
+        // Detach the descriptor before uninitializing the map.
+        {
+            let _guard = Guard::acquire();
+            let map = unsafe { find_map(&mut file) };
+            unsafe { (*map).pages = core::ptr::null_mut(); }
+        }
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            descriptor.cast(), Some(CACHE_PAGE_TAG),
+        );
+        unsafe { cc_uninitialize_cache_map(&mut file, core::ptr::null(), core::ptr::null_mut()); }
+    }
+
     #[test]
     fn cache_map_lifecycle_uses_dynamically_owned_metadata() {
         let baseline = cache_map_count();
