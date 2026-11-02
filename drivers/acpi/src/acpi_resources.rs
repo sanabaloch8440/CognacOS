@@ -371,3 +371,11 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&bytes), Err(ResourceError::TooManyResources));
  }
 }
+
+
+#[cfg(test)] mod stability_30_end_tag_trailing_data {
+ use super::*;
+ #[test] fn rejects_bytes_after_end_tag_even_when_checksum_is_zero() {
+  assert_eq!(parse_resource_template(&[0x79, 0, 0]), Err(ResourceError::InvalidLength));
+ }
+}
