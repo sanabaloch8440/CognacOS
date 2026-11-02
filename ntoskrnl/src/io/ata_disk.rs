@@ -97,6 +97,12 @@ unsafe impl Sync for PagefileBlockMap {}
 static PAGEFILE_BLOCK_MAP: PagefileBlockMap =
     PagefileBlockMap(core::cell::UnsafeCell::new([0; PAGEFILE_MAX_SLOTS]));
 static PAGEFILE_SLOT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[repr(align(4096))]
+struct PagefileTestPage(core::cell::UnsafeCell<[u8; 4096]>);
+unsafe impl Sync for PagefileTestPage {}
+static PAGEFILE_TEST_PAGE: PagefileTestPage =
+    PagefileTestPage(core::cell::UnsafeCell::new([0; 4096]));
 impl AtaPrimaryMaster {
     fn initialize() -> Result<Self, AtaError> {
         unsafe { out8(DRIVE, 0xa0); }
@@ -430,6 +436,27 @@ unsafe fn paging_file_write(context: usize, slot: u32, source: *const u8) -> i32
     }
 }
 
+fn verify_volume_pagefile_io(context: usize) -> bool {
+    let buffer = unsafe { (*PAGEFILE_TEST_PAGE.0.get()).as_mut_ptr() };
+    unsafe {
+        for index in 0..4096 {
+            buffer.add(index).write((index as u8).wrapping_mul(37).wrapping_add(0x5a));
+        }
+    }
+    if unsafe { paging_file_write(context, 0, buffer) } != 0 {
+        unsafe { core::ptr::write_bytes(buffer, 0, 4096); }
+        return false;
+    }
+    unsafe { core::ptr::write_bytes(buffer, 0, 4096); }
+    let read_status = unsafe { paging_file_read(context, 0, buffer) };
+    let matched = read_status == 0 && (0..4096).all(|index| unsafe {
+        buffer.add(index).read() == (index as u8).wrapping_mul(37).wrapping_add(0x5a)
+    });
+    unsafe { core::ptr::write_bytes(buffer, 0, 4096); }
+    let cleared = unsafe { paging_file_write(context, 0, buffer) } == 0;
+    matched && cleared
+}
+
 /// Register root:\pagefile.sys on the mounted ext4 volume. The file must already
 /// exist, be fully allocated, use initialized extents, and have 4 KiB blocks.
 /// Extents are pinned in a resident map before the backend is published.
@@ -450,9 +477,15 @@ fn try_register_volume_pagefile(partition_device: *mut DeviceObject) -> bool {
     if slots == 0 || slots > PAGEFILE_MAX_SLOTS || bytes != (slots as u64) * 4096 {
         return false;
     }
+    let context = PARTITION_START.load(Ordering::Acquire) as usize;
     PAGEFILE_SLOT_COUNT.store(slots as u64, Ordering::Release);
+    // Publish the provider only after a sector-level write/read/clear cycle succeeds.
+    if !verify_volume_pagefile_io(context) {
+        PAGEFILE_SLOT_COUNT.store(0, Ordering::Release);
+        return false;
+    }
     let backend = crate::ntoskrnl::io::paging::PagingBackend {
-        context: PARTITION_START.load(Ordering::Acquire) as usize,
+        context,
         slot_count: slots as u32,
         read_page: paging_file_read,
         write_page: paging_file_write,
