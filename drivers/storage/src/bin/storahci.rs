@@ -532,8 +532,12 @@ unsafe extern "win64" fn ahci_read_write_dispatch(
     }
     let length = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>()) } as usize;
     let offset = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<i64>()) };
+    // This miniport entry point currently accepts only kernel-mode system
+    // buffers. User buffers and unmapped MDLs must be pinned/mapped by the
+    // I/O manager before they can be accepted here.
     let buffer = unsafe { (*irp).user_buffer.cast::<u8>() };
-    let status = if offset < 0 || buffer.is_null() || length == 0 || length > AHCI_MAX_TRANSFER
+    let unsafe_user_buffer = unsafe { (*irp).requestor_mode != 0 || !(*irp).mdl_address.is_null() };
+    let status = if unsafe_user_buffer || offset < 0 || buffer.is_null() || length == 0 || length > AHCI_MAX_TRANSFER
         || length % AHCI_SECTOR_BYTES != 0 || offset as u64 % AHCI_SECTOR_BYTES as u64 != 0 {
         STATUS_INVALID_PARAMETER
     } else {
