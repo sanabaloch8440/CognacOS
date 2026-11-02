@@ -301,7 +301,8 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         let flags=sub.byte()?;
                         if flags&0xf8!=0||((flags>>1)&3)==3{return Err(AmlError::UnsupportedOpcode)}
                         let (region_node,mode)=if ext==0x81{
-                            let id=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
+                            let found=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
+                            let id=ns.resolve_alias(found)?;
                             if ns.nodes[id as usize].object_type!=AmlObjectType::OperationRegion{return Err(AmlError::InvalidParent)}
                             (id,0)
                         }else{(u16::MAX,if ext==0x86{1}else{2})};
