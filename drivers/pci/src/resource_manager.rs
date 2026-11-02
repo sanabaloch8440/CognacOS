@@ -120,9 +120,10 @@ pub fn program_assignments<C:ConfigAccess>(config:&mut C,header_type:u8,plan:&Al
         for a in plan.assignments[..plan.count].iter().flatten(){
             let i=a.index as usize;if i>=bars{return Err(ResourceError::InvalidBar)}
             let old=saved[i];
+            let end=a.base.checked_add(a.length).ok_or(ResourceError::AddressOverflow)?;
             let low=match a.kind{
-                BarKind::Io=>(a.base as u32&!3)|(old&3),
-                BarKind::Memory32=>{if a.base>u32::MAX as u64{return Err(ResourceError::AddressOverflow)}(a.base as u32&!0xf)|(old&0xf)},
+                BarKind::Io=>{if end>0x1_0000{return Err(ResourceError::AddressOverflow)}(a.base as u32&!3)|(old&3)},
+                BarKind::Memory32=>{if end>(1u64<<32){return Err(ResourceError::AddressOverflow)}(a.base as u32&!0xf)|(old&0xf)},
                 BarKind::Memory64=>(a.base as u32&!0xf)|(old&0xf),
             };
             config.write_u32(PCI_BAR0+i as u16*4,low)?;
@@ -138,7 +139,7 @@ pub fn program_assignments<C:ConfigAccess>(config:&mut C,header_type:u8,plan:&Al
     }
     let mut io=false;let mut memory=false;
     for a in plan.assignments[..plan.count].iter().flatten(){if a.kind==BarKind::Io{io=true}else{memory=true}}
-    let mut next=command&!PCI_COMMAND_BUS_MASTER;if io{next|=PCI_COMMAND_IO}if memory{next|=PCI_COMMAND_MEMORY}
+    let mut next=command&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER);if io{next|=PCI_COMMAND_IO}if memory{next|=PCI_COMMAND_MEMORY}
     if config.write_u16(PCI_COMMAND,next).is_err(){
         let mut failed=false;for i in(0..bars).rev(){if touched[i]&&config.write_u32(PCI_BAR0+i as u16*4,saved[i]).is_err(){failed=true}}
         let safe=command&!(PCI_COMMAND_IO|PCI_COMMAND_MEMORY|PCI_COMMAND_BUS_MASTER);
@@ -217,5 +218,7 @@ mod tests{
  fn r(i:u8,k:BarKind,l:u64,p:bool)->Option<BarRequirement>{Some(BarRequirement{index:i,kind:k,length:l,alignment:l,prefetchable:p,assigned:0})}
  #[test]fn allocation_is_atomic_and_obeys_apertures(){let req=[r(0,BarKind::Memory32,0x1000,false),r(1,BarKind::Io,0x100,false),None,None,None,None];let windows=[Aperture{start:0x8000_0000,length:0x3000,kind:BarKind::Memory32,prefetchable:false},Aperture{start:0xc000,length:0x400,kind:BarKind::Io,prefetchable:false}];let occupied=[OccupiedRange{start:0x8000_0000,length:0x1000,kind:BarKind::Memory32}];let mut plan=AllocationPlan::empty();allocate_all(&req,2,&windows,&occupied,&mut plan).unwrap();assert_eq!(plan.assignments[0].unwrap().base,0x8000_1000);assert_eq!(plan.assignments[1].unwrap().base,0xc000);let old=plan;let big=[r(0,BarKind::Memory32,0x8000,false),None,None,None,None,None];assert_eq!(allocate_all(&big,1,&windows,&occupied,&mut plan),Err(ResourceError::NoSpace));assert_eq!(plan,old)}
  #[test]fn translation_checks_full_range(){let plan=AllocationPlan{assignments:[Some(BarAssignment{index:0,kind:BarKind::Memory32,base:0x9000,length:0x1000,prefetchable:false}),None,None,None,None,None],count:1};let windows=[AddressTranslation{bus_start:0x8000,system_start:0xf000_0000,length:0x2000}];let mut out=[None;MAX_ASSIGNMENTS];translate_plan(&plan,&windows,&mut out).unwrap();assert_eq!(out[0].unwrap().translated_start,0xf000_1000);let short=[AddressTranslation{bus_start:0x9000,system_start:0xf000_0000,length:0x800}];assert_eq!(translate_plan(&plan,&short,&mut out),Err(ResourceError::NoWindow))}
+ #[test]fn programs_bars_and_never_enables_bus_master(){struct Fake{regs:[u32;64]}impl ConfigAccess for Fake{fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{Ok(self.regs[o as usize/4]as u16)}fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{self.regs[o as usize/4]=(self.regs[o as usize/4]&0xffff_0000)|v as u32;Ok(())}fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{self.regs[o as usize/4]=v;Ok(())}}let mut f=Fake{regs:[0;64]};f.regs[1]=7;f.regs[4]=0x0000_0008;let plan=AllocationPlan{assignments:[Some(BarAssignment{index:0,kind:BarKind::Memory32,base:0x8000_0000,length:0x1000,prefetchable:false}),None,None,None,None,None],count:1};program_assignments(&mut f,0,&plan).unwrap();assert_eq!(f.regs[4],0x8000_0008);assert_eq!(f.regs[1]as u16,2)}
+ #[test]fn rejects_duplicate_bar_assignments_before_writing(){struct Fake{regs:[u32;64]}impl ConfigAccess for Fake{fn read_u16(&mut self,o:u16)->Result<u16,ResourceError>{Ok(self.regs[o as usize/4]as u16)}fn write_u16(&mut self,o:u16,v:u16)->Result<(),ResourceError>{self.regs[o as usize/4]=(self.regs[o as usize/4]&0xffff_0000)|v as u32;Ok(())}fn read_u32(&mut self,o:u16)->Result<u32,ResourceError>{Ok(self.regs[o as usize/4])}fn write_u32(&mut self,o:u16,v:u32)->Result<(),ResourceError>{self.regs[o as usize/4]=v;Ok(())}}let mut f=Fake{regs:[0;64]};let plan=AllocationPlan{assignments:[Some(BarAssignment{index:0,kind:BarKind::Memory32,base:0x8000_0000,length:0x1000,prefetchable:false}),Some(BarAssignment{index:0,kind:BarKind::Memory32,base:0x8000_1000,length:0x1000,prefetchable:false}),None,None,None,None],count:2};assert_eq!(program_assignments(&mut f,0,&plan),Err(ResourceError::InvalidBar));assert_eq!(f.regs[4],0)}
  #[test]fn emits_wdk_requirements_and_cm_wire_layout(){let req=[r(0,BarKind::Memory64,0x2000,true),None,None,None,None,None];let mut io=[0u8;40+6*32];let n=encode_requirements_alternative(&req,1,3,&mut io).unwrap();assert_eq!(n,72);assert_eq!(u32::from_le_bytes(io[36..40].try_into().unwrap()),1);let resources=[Some(PublishedResource{kind:BarKind::Memory64,raw_start:0x1000,translated_start:0x8000_1000,length:0x2000,prefetchable:true}),None,None,None,None,None];let mut cm=[0u8;20+6*16];assert_eq!(encode_cm_resource_list(&resources,1,3,true,&mut cm).unwrap(),36);assert_eq!(u64::from_le_bytes(cm[24..32].try_into().unwrap()),0x8000_1000)}
 }
