@@ -350,6 +350,23 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_batch_registration_is_atomic_and_tracks_every_frame() {
+        let first = 0x3234_5000;
+        let second = 0x3234_6000;
+        assert_eq!(register_allocations(&[first, second]), Ok(()));
+        assert_eq!(snapshot(first), Some((1, 0, 0)));
+        assert_eq!(snapshot(second), Some((1, 0, 0)));
+        release_allocation(first).unwrap();
+        release_allocation(second).unwrap();
+
+        let third = 0x3234_7000;
+        assert_eq!(register_allocations(&[third, third]), Err(PfnError::AlreadyRegistered));
+        assert_eq!(snapshot(third), None);
+        assert_eq!(register_allocations(&[third, third + 1]), Err(PfnError::InvalidPage));
+        assert_eq!(snapshot(third), None);
+    }
+
+    #[test]
     fn duplicate_registration_and_reference_underflow_are_rejected() {
         let page = 0x2234_5000;
         register_allocation(page).unwrap();
