@@ -6,6 +6,72 @@ pub mod aml;
 pub mod aml_exec;
 pub mod aml_objects;
 
+
+/// Common 36-byte ACPI System Description Table header.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct AcpiTableHeader {
+    pub signature:[u8;4],pub length:u32,pub revision:u8,
+    pub checksum:u8,pub oem_id:[u8;6],pub oem_table_id:[u8;8],
+    pub oem_revision:u32,pub creator_id:u32,pub creator_revision:u32,
+}
+/// ACPI specification family inferred from the RSDP revision and table
+/// revision. This is descriptive only; individual tables still require
+/// revision/length-aware parsing.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum AcpiGeneration { V1,V2ToV4,V5,V6 }
+pub fn acpi_generation(rsdp_revision:u8)->AcpiGeneration {
+    match rsdp_revision {0=>AcpiGeneration::V1,1..=2=>AcpiGeneration::V2ToV4,_=>AcpiGeneration::V5}
+}
+/// Parse and checksum-validate any complete SDT without assuming its payload.
+pub fn parse_sdt_header(bytes:&[u8])->Result<AcpiTableHeader,AcpiError>{
+    if bytes.len()<36{return Err(AcpiError::Truncated)}
+    let mut signature=[0;4];signature.copy_from_slice(&bytes[0..4]);
+    let length=u32le(bytes,4)?;
+    if length<36||length as usize>bytes.len(){return Err(AcpiError::BadLength)}
+    if !checksum_ok(&bytes[..length as usize]){return Err(AcpiError::BadChecksum)}
+    let mut oem_id=[0;6];oem_id.copy_from_slice(&bytes[10..16]);
+    let mut oem_table_id=[0;8];oem_table_id.copy_from_slice(&bytes[16..24]);
+    Ok(AcpiTableHeader{signature,length,revision:bytes[8],checksum:bytes[9],oem_id,oem_table_id,
+        oem_revision:u32le(bytes,24)?,creator_id:u32le(bytes,28)?,creator_revision:u32le(bytes,32)?})
+}
+/// Return a validated table's exact declared extent and metadata.
+pub fn validate_sdt(bytes:&[u8],expected_signature:Option<[u8;4]>)->Result<AcpiTableHeader,AcpiError>{
+    let header=parse_sdt_header(bytes)?;
+    if expected_signature.is_some_and(|s|s!=header.signature){return Err(AcpiError::BadSignature)}
+    Ok(header)
+}
+
+/// Revision-aware subset of FADT fields used during x86 platform bring-up.
+/// Optional extended pointers are zero when the firmware table predates them.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct FadtInfo {
+    pub revision:u8,pub preferred_pm_profile:u8,pub firmware_ctrl:u32,pub dsdt:u32,
+    pub boot_arch_flags:u16,pub flags:u32,pub minor_version:u8,
+    pub x_firmware_ctrl:u64,pub x_dsdt:u64,
+}
+impl FadtInfo {
+    pub fn effective_firmware_ctrl(&self)->u64{if self.x_firmware_ctrl!=0{self.x_firmware_ctrl}else{self.firmware_ctrl as u64}}
+    pub fn effective_dsdt(&self)->u64{if self.x_dsdt!=0{self.x_dsdt}else{self.dsdt as u64}}
+}
+/// Parse the stable ACPI 5.0+ FADT fields, checking each field against the
+/// actual table length. Short legacy FADTs remain valid with absent fields zero.
+pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"FACP"))?;
+    let n=h.length as usize;
+    let mut out=FadtInfo{revision:h.revision,..FadtInfo::default()};
+    if n>=46{out.preferred_pm_profile=bytes[45];}
+    if n>=44{out.firmware_ctrl=u32le(bytes,36)?;out.dsdt=u32le(bytes,40)?;}
+    if n>=110{out.boot_arch_flags=u16::from_le_bytes([bytes[109],bytes[110]]);}
+    if n>=116{out.flags=u32le(bytes,112)?;}
+    if n>=132{out.minor_version=bytes[131];}
+    if n>=148{
+        out.x_firmware_ctrl=u64::from_le_bytes(bytes[132..140].try_into().map_err(|_|AcpiError::Truncated)?);
+        out.x_dsdt=u64::from_le_bytes(bytes[140..148].try_into().map_err(|_|AcpiError::Truncated)?);
+    }
+    if out.effective_dsdt()==0{return Err(AcpiError::MalformedEntry)}
+    Ok(out)
+}
+
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)]
