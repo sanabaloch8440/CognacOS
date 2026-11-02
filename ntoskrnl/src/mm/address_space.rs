@@ -774,6 +774,39 @@ impl AddressSpace {
         Ok(physical)
     }
 
+
+    /// Atomically replace one present user leaf without tearing down its page-table
+    /// hierarchy. Used by copy-on-write so an allocation failure cannot leave a
+    /// previously valid shared mapping absent.
+    pub unsafe fn replace_user_page(
+        &mut self,
+        virtual_address: u64,
+        expected_physical: u64,
+        new_physical: u64,
+        writable: bool,
+        executable: bool,
+    ) -> Result<(), VmError> {
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        if !is_user_range(virtual_address, PAGE_SIZE)
+            || virtual_address & (PAGE_SIZE - 1) != 0
+            || expected_physical & (PAGE_SIZE - 1) != 0
+            || new_physical & (PAGE_SIZE - 1) != 0
+            || new_physical >= 0x1_0000_0000
+            || writable && executable
+        { return Err(VmError::InvalidAddress); }
+        let Some((leaf, entry)) = user_leaf(self.root, virtual_address) else { return Err(VmError::NotMapped); };
+        if entry & ADDR != expected_physical { return Err(VmError::AddressSpaceBusy); }
+        let mut flags = PRESENT | USER;
+        if writable { flags |= WRITE; }
+        if !executable { flags |= NX; }
+        unsafe {
+            leaf.write(new_physical | flags);
+            asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+        }
+        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+        Ok(())
+    }
+
     /// Destroy this address space after switching CR3 away from it. Frees user
     /// leaves, user page-table pages, and the PML4 root; shared supervisor mappings
     /// are never traversed or reclaimed.
