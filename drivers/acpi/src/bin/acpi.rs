@@ -6,12 +6,22 @@ use cognacos_acpi as acpi;
 use cognacos_nt_abi::{bus::{ACPI_FIRMWARE_INTERFACE, INTERFACE_HEADER, ACPI_FIRMWARE_INTERFACE_VERSION}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
 
+const MAX_ACPI_DEVICES:usize=256;
+#[derive(Clone,Copy)]
+struct AcpiDeviceRecord { table:Option<acpi::aml_tables::TableHandle>,node:u16,identity:acpi::acpi_device::AcpiDeviceIdentity }
+impl AcpiDeviceRecord {
+    const EMPTY:Self=Self{table:None,node:0,identity:acpi::acpi_device::AcpiDeviceIdentity::EMPTY};
+}
 struct AcpiState {
     ready: AtomicBool,
     madt: UnsafeCell<MaybeUninit<acpi::MadtInfo>>,
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
     dmar_present: AtomicBool,
+    aml_manager: UnsafeCell<MaybeUninit<acpi::aml_tables::AmlTableManager>>,
+    aml_barrier: UnsafeCell<acpi::aml_tables::AmlExecutionBarrier>,
+    device_records: UnsafeCell<MaybeUninit<[AcpiDeviceRecord;MAX_ACPI_DEVICES]>>,
+    device_count: core::sync::atomic::AtomicUsize,
 }
 unsafe impl Sync for AcpiState {}
 static STATE: AcpiState = AcpiState {
@@ -20,6 +30,10 @@ static STATE: AcpiState = AcpiState {
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
     dmar_present: AtomicBool::new(false),
+    aml_manager: UnsafeCell::new(MaybeUninit::new(acpi::aml_tables::AmlTableManager::new())),
+    aml_barrier: UnsafeCell::new(acpi::aml_tables::AmlExecutionBarrier::new(100_000)),
+    device_records: UnsafeCell::new(MaybeUninit::new([AcpiDeviceRecord::EMPTY;MAX_ACPI_DEVICES])),
+    device_count: core::sync::atomic::AtomicUsize::new(0),
 };
 
 
@@ -101,7 +115,35 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     STATE.ready.store(false, Ordering::Release);
 }
 
-/// DriverEntry performs driver-wide firmware validation only. Device objects,
+fn collect_device_identities(
+    manager:&acpi::aml_tables::AmlTableManager,
+    handle:acpi::aml_tables::TableHandle,
+    table:&[u8],
+    gate:&acpi::aml_tables::AmlExecutionBarrier,
+    records:&mut [AcpiDeviceRecord;MAX_ACPI_DEVICES],
+    count:&mut usize,
+)->Result<(),i32>{
+    let info=manager.table_info(handle).map_err(|_|STATUS_INVALID_PARAMETER)?;
+    let namespace=manager.namespace();
+    for index in info.namespace_start..info.namespace_end{
+        let node=&namespace.nodes[index as usize];
+        if !matches!(node.object_type,acpi::aml::AmlObjectType::Device|acpi::aml::AmlObjectType::Processor|acpi::aml::AmlObjectType::PowerResource|acpi::aml::AmlObjectType::ThermalZone){continue}
+        let mut methods=acpi::acpi_device::IntegerMethodInvoker;
+        match manager.evaluate_device_identity(handle,table,index,gate,&mut methods){
+            Ok(identity)=>{
+                if *count>=records.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+                records[*count]=AcpiDeviceRecord{table:Some(handle),node:index,identity};
+                *count+=1;
+            }
+            Err(acpi::acpi_device::IdentityError::MissingHid)=>{},
+            Err(_)=>return Err(STATUS_INVALID_PARAMETER),
+        }
+    }
+    Ok(())
+}
+
+/// DriverEntry validates firmware and builds the ACPI-1 device identity catalogue.
+/// PDO publication and BusRelations remain ACPI-4 work. Device objects,
 /// ACPI namespace PDOs, AML evaluation, and per-device resources belong to the
 /// later PnP/ACPI namespace integration path, not to DriverEntry.
 #[unsafe(no_mangle)]
@@ -139,6 +181,34 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         Err(STATUS_NOT_FOUND) => {}
         Err(status) => return status,
     }
+    // DSDT is obtained through FADT by the HAL; SSDTs are root-table entries.
+    // Retain the firmware-owned slices for all future AML method dispatch.
+    let dsdt=match unsafe{query_hal_table(*b"DSDT",0)}{Ok(bytes)=>bytes,Err(status)=>return status};
+    let mut ssdt_tables:[&'static [u8];acpi::aml_tables::MAX_AML_TABLES-1]=[&[];acpi::aml_tables::MAX_AML_TABLES-1];
+    let mut ssdt_count=0usize;
+    for instance in 0..acpi::aml_tables::MAX_AML_TABLES-1{
+        match unsafe{query_hal_table(*b"SSDT",instance as u32)}{
+            Ok(bytes)=>{ssdt_tables[ssdt_count]=bytes;ssdt_count+=1;},
+            Err(STATUS_NOT_FOUND)=>break,
+            Err(status)=>return status,
+        }
+    }
+    let manager=unsafe{(*STATE.aml_manager.get()).assume_init_mut()};
+    let barrier=unsafe{&mut *STATE.aml_barrier.get()};
+    let loaded=match manager.load_firmware_tables(dsdt,&ssdt_tables[..ssdt_count],barrier){
+        Ok(tables)=>tables,
+        Err(acpi::aml_tables::TableError::NamespaceCapacity|acpi::aml_tables::TableError::TableLimit)=>return STATUS_INSUFFICIENT_RESOURCES,
+        Err(_)=>return STATUS_INVALID_PARAMETER,
+    };
+    let gate=unsafe{&*STATE.aml_barrier.get()};
+    let records=unsafe{(*STATE.device_records.get()).assume_init_mut()};
+    let mut identity_count=0usize;
+    if collect_device_identities(manager,loaded.dsdt,dsdt,gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
+    for index in 0..loaded.ssdt_count{
+        let handle=loaded.ssdts[index].ok_or(STATUS_INVALID_PARAMETER).unwrap();
+        if collect_device_identities(manager,handle,ssdt_tables[index],gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
+    }
+    STATE.device_count.store(identity_count,Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
     object.driver_unload = Some(driver_unload);
