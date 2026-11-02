@@ -273,11 +273,10 @@ impl AddressSpace {
             }
             return Err(VmError::AlreadyMapped);
         }
-        let tracked_mapping = match super::pfn::acquire_mapping(physical_address) {
-            Ok(()) => true,
-            Err(super::pfn::PfnError::NotTracked) => false,
+        match super::pfn::acquire_mapping(physical_address) {
+            Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
             Err(_) => return Err(VmError::OutOfMemory),
-        };
+        }
         let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
         if !executable { flags |= NX; }
@@ -802,11 +801,10 @@ impl AddressSpace {
         { return Err(VmError::InvalidAddress); }
         let Some((leaf, entry)) = user_leaf(self.root, virtual_address) else { return Err(VmError::NotMapped); };
         if entry & ADDR != expected_physical { return Err(VmError::AddressSpaceBusy); }
-        let new_tracked = match super::pfn::acquire_mapping(new_physical) {
-            Ok(()) => true,
-            Err(super::pfn::PfnError::NotTracked) => false,
+        match super::pfn::acquire_mapping(new_physical) {
+            Ok(()) | Err(super::pfn::PfnError::NotTracked) => {},
             Err(_) => return Err(VmError::OutOfMemory),
-        };
+        }
         let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
         if !executable { flags |= NX; }
@@ -816,7 +814,6 @@ impl AddressSpace {
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
         let _ = super::pfn::release_mapping(expected_physical);
-        let _ = new_tracked;
         Ok(())
     }
 
