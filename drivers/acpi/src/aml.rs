@@ -206,9 +206,6 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16)->Result<(
                 }
             }
             _=>return Err(AmlError::UnsupportedOpcode)
-                }
-            }
-            _=>return Err(AmlError::UnsupportedOpcode)
         }
     }
     Ok(())
