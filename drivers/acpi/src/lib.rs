@@ -12,6 +12,7 @@ pub mod aml_field;
 pub mod aml_tables;
 pub mod acpi_device;
 pub mod acpi_resources;
+pub mod acpi_wdm_resources;
 pub mod acpi_power;
 pub mod acpi_hotplug;
 pub mod acpi_prt;
