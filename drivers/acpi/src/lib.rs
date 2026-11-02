@@ -798,13 +798,16 @@ mod pci_root_crs_tests {
     fn parses_qword_memory_and_io_ranges(){
         // QWord address descriptor: memory, min=0x80000000,
         // max=0x8fffffff, translation=0, length=0x10000000.
-        let mut b=vec![0x8a,43,0,0,0,0,0,0,0,0,0,
-            0x00,0x00,0x00,0x80,0,0,0,0,
+        let mut b=vec![0x8a,43,0,
+            0,0,0,0,
+            0,0,0,0,0,0,0,0,
+            0,0,0,0x80,0,0,0,0,
             0xff,0xff,0xff,0x8f,0,0,0,0,
             0,0,0,0,0,0,0,0,
             0,0,0,0,0,0,0,0,
             0x79,0];
         b[1..3].copy_from_slice(&43u16.to_le_bytes());
+        b[39..47].copy_from_slice(&(0x1000_0000u64).to_le_bytes());
         let parsed=parse_pci_root_resources(&b).unwrap();
         assert_eq!(parsed.count,1);
         assert_eq!(parsed.apertures[0].resource_type,0);
