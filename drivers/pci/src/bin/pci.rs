@@ -471,6 +471,70 @@ unsafe extern "win64" fn query_inventory_counts(
     STATUS_SUCCESS
 }
 
+
+/// Query the resource requirements for one enumerated PCI function into
+/// caller-owned storage. This is the allocation-safe primitive used by the
+/// PnP IRP adapter: it returns the exact encoded byte count and never returns
+/// a pointer to static storage. Call only before the function has been started.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciQueryResourceRequirements(
+    context: PVOID,
+    index: u32,
+    output: *mut u8,
+    output_capacity: usize,
+    bytes_written: *mut usize,
+) -> i32 {
+    if context.is_null() || output.is_null() || bytes_written.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { bytes_written.write(0); }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if context as u64 != HANDOFF.load(Ordering::Acquire) { return STATUS_INVALID_PARAMETER; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) {
+        let status = unsafe { CognacPciEnumerateInventory() };
+        if status != STATUS_SUCCESS { return status; }
+    }
+    let handoff = unsafe { &*(context as *const PciDriverHandoff) };
+    let mut remaining = index as usize;
+    let mut selected = None;
+    for window_index in 0..handoff.window_count as usize {
+        let count = unsafe { (*STATE.function_counts.get())[window_index] };
+        if remaining >= count { remaining -= count; continue; }
+        selected = unsafe { (*STATE.functions.get())[window_index][remaining] };
+        break;
+    }
+    let Some(function) = selected else { return STATUS_NOT_FOUND; };
+    let Some(window) = handoff.windows[..handoff.window_count as usize]
+        .iter().find(|w| w.segment == function.segment
+            && function.bus >= w.bus_start && function.bus <= w.bus_end) else {
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    };
+    let mut config = pci::EcamFunctionConfig {
+        window,
+        segment: function.segment,
+        bus: function.bus,
+        device: function.device,
+        function: function.function,
+    };
+    let result = unsafe {
+        pci::resource_manager::probe_and_encode_requirements(
+            &mut config,
+            function.header.header_type,
+            function.bus as u32,
+            core::slice::from_raw_parts_mut(output, output_capacity),
+        )
+    };
+    match result {
+        Ok(size) => {
+            unsafe { bytes_written.write(size); }
+            STATUS_SUCCESS
+        }
+        Err(pci::resources::ResourceError::Capacity) => STATUS_BUFFER_TOO_SMALL,
+        Err(pci::resources::ResourceError::Config) => STATUS_DEVICE_CONFIGURATION_ERROR,
+        Err(_) => STATUS_NOT_SUPPORTED,
+    }
+}
+
 unsafe extern "win64" fn query_inventory_function(
     context: PVOID, index: u32, output: *mut cognacos_nt_abi::bus::PCI_DEVICE_INFORMATION,
 ) -> i32 {
