@@ -18,10 +18,8 @@ pub struct AcpiTableHeader {
 /// revision. This is descriptive only; individual tables still require
 /// revision/length-aware parsing.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum AcpiGeneration { V1,V2ToV4,V5,V6 }
-pub fn acpi_generation(rsdp_revision:u8)->AcpiGeneration {
-    match rsdp_revision {0=>AcpiGeneration::V1,1..=2=>AcpiGeneration::V2ToV4,_=>AcpiGeneration::V5}
-}
+pub enum RsdpFormat { V1,V2Plus }
+pub fn rsdp_format(revision:u8)->RsdpFormat { if revision==0{RsdpFormat::V1}else{RsdpFormat::V2Plus} }
 /// Parse and checksum-validate any complete SDT without assuming its payload.
 pub fn parse_sdt_header(bytes:&[u8])->Result<AcpiTableHeader,AcpiError>{
     if bytes.len()<36{return Err(AcpiError::Truncated)}
@@ -61,7 +59,7 @@ pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
     let mut out=FadtInfo{revision:h.revision,..FadtInfo::default()};
     if n>=46{out.preferred_pm_profile=bytes[45];}
     if n>=44{out.firmware_ctrl=u32le(bytes,36)?;out.dsdt=u32le(bytes,40)?;}
-    if n>=110{out.boot_arch_flags=u16::from_le_bytes([bytes[109],bytes[110]]);}
+    if n>=111{out.boot_arch_flags=u16::from_le_bytes([bytes[109],bytes[110]]);}
     if n>=116{out.flags=u32le(bytes,112)?;}
     if n>=132{out.minor_version=bytes[131];}
     if n>=148{
@@ -103,6 +101,10 @@ pub struct IoApicEntry { pub id: u8, pub address: u32, pub gsi_base: u32 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IrqOverride { pub bus: u8, pub source_irq: u8, pub gsi: u32, pub active_low: bool, pub level_triggered: bool }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct LocalApicNmi { pub processor_uid:u8,pub flags:u16,pub lint:u8 }
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct X2ApicNmi { pub processor_uid:u32,pub flags:u16,pub lint:u8 }
 pub struct MadtInfo {
     pub local_apic_address: u64,
     pub flags: u32,
@@ -114,7 +116,7 @@ pub struct MadtInfo {
     pub irq_override_count: usize,
 }
 impl MadtInfo {
-    pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0 };
+    pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0 };
 }
 fn u32le(b: &[u8], o: usize) -> Result<u32, AcpiError> {
     let s = b.get(o..o + 4).ok_or(AcpiError::Truncated)?;
@@ -163,12 +165,26 @@ pub fn parse_madt(bytes: &[u8]) -> Result<MadtInfo, AcpiError> {
                 };
                 out.irq_override_count += 1;
             }
+            4 if size >= 6 => {
+                if out.local_apic_nmi_count==out.local_apic_nmis.len(){return Err(AcpiError::TooManyEntries)}
+                let flags=u16::from_le_bytes([e[3],e[4]]);
+                if flags&0x000c==0x0008||flags&0x0003==0x0002{return Err(AcpiError::MalformedEntry)}
+                out.local_apic_nmis[out.local_apic_nmi_count]=LocalApicNmi{processor_uid:e[2],flags,lint:e[5]};
+                out.local_apic_nmi_count+=1;
+            }
             5 if size >= 12 => out.local_apic_address = u64::from_le_bytes([e[4],e[5],e[6],e[7],e[8],e[9],e[10],e[11]]),
             9 if size >= 16 => {
                 if out.cpu_count == out.cpus.len() { return Err(AcpiError::TooManyEntries); }
                 let flags = u32le(e, 8)?;
                 out.cpus[out.cpu_count] = CpuEntry { processor_uid: u32le(e, 12)?, apic_id: u32le(e, 4)?, enabled: flags & 3 != 0, x2apic: true };
                 out.cpu_count += 1;
+            }
+            10 if size >= 12 => {
+                if out.x2apic_nmi_count==out.x2apic_nmis.len(){return Err(AcpiError::TooManyEntries)}
+                let flags=u16::from_le_bytes([e[2],e[3]]);
+                if flags&0x000c==0x0008||flags&0x0003==0x0002{return Err(AcpiError::MalformedEntry)}
+                out.x2apic_nmis[out.x2apic_nmi_count]=X2ApicNmi{flags,processor_uid:u32le(e,4)?,lint:e[8]};
+                out.x2apic_nmi_count+=1;
             }
             _ => {}
         }
