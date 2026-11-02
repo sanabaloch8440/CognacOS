@@ -147,19 +147,19 @@ mod tests{
   let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x85,0x0a,23,0x0a,5,0x60,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(3));
-  let zero=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x85,0x0a,23,0x00,0x60,0x00];
+  let zero=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x85,0x0a,23,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&zero,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&zero,&ns,id,&[]),Err(ExecError::DivideByZero));
  }
  #[test]fn executes_find_set_bit_operations_with_aml_bit_positions(){
   // FindSetLeftBit(0x8000) => 16; FindSetRightBit(0x8000) => 16.
-  let left=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x81,0x0c,0x00,0x80,0,0x00];
+  let left=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x81,0x0c,0x00,0x80,0,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&left,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&left,&ns,id,&[]).unwrap(),AmlValue::Integer(16));
-  let right=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x82,0x0c,0x00,0x80,0,0x00];
+  let right=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x82,0x0c,0x00,0x80,0,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&right,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&right,&ns,id,&[]).unwrap(),AmlValue::Integer(16));
-  let zero=[0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,0x81,0x00,0x00];
+  let zero=[0x14,0x0a,b'T',b'E',b'S',b'T',0,0xa4,0x81,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&zero,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&zero,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
  }
