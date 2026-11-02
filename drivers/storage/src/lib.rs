@@ -74,7 +74,7 @@ impl BlockRequest {
 /// independent of ntoskrnl: pciide.sys supplies the register-I/O implementation,
 /// while ataport owns request scheduling and completion. No port I/O occurs
 /// until a controller-specific RegisterIo implementation is supplied.
-pub mod ide {
+pub mod pciidex;\n\n/// Legacy IDE task-file transport primitives.\npub mod ide {
     use super::StorageError;
 
     pub const PRIMARY_COMMAND_BASE: u16 = 0x1f0;
