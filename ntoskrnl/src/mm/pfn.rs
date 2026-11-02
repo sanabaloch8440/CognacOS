@@ -124,8 +124,12 @@ pub fn register_allocation_range(base: u64, pages: usize) -> Result<(), PfnError
             if entries[index].state == EMPTY {
                 let target = tombstone.unwrap_or(index);
                 entries[target] = Entry { page, references: 1, mappings: 0, pins: 0, state: LIVE };
+                tombstone = None;
                 break;
             }
+        }
+        if let Some(index) = tombstone {
+            entries[index] = Entry { page, references: 1, mappings: 0, pins: 0, state: LIVE };
         }
     }
     Ok(())
@@ -139,8 +143,6 @@ pub fn release_allocation_range(base: u64, pages: usize) -> Result<(), PfnError>
     let bytes = (pages as u64).checked_mul(4096).ok_or(PfnError::InvalidPage)?;
     base.checked_add(bytes).ok_or(PfnError::InvalidPage)?;
     let mut entries = DATABASE.lock();
-    let mut indexes = [usize::MAX; 256];
-    if pages > indexes.len() { return Err(PfnError::DatabaseFull); }
     for offset in 0..pages {
         let page = base + offset as u64 * 4096;
         let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
@@ -148,9 +150,10 @@ pub fn release_allocation_range(base: u64, pages: usize) -> Result<(), PfnError>
         if entry.references != 1 || entry.mappings != 0 || entry.pins != 0 {
             return Err(PfnError::StillReferenced);
         }
-        indexes[offset] = index;
     }
-    for index in indexes.iter().take(pages).copied() {
+    for offset in 0..pages {
+        let page = base + offset as u64 * 4096;
+        let index = find(&entries, page).ok_or(PfnError::NotTracked)?;
         entries[index] = Entry { state: TOMBSTONE, ..Entry::EMPTY };
     }
     Ok(())
