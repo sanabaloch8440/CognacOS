@@ -11,7 +11,7 @@ const MAX_ACPI_PDOS:usize=64;
 const FILE_DEVICE_BUS_EXTENDER:u32=0x0000002a;
 const DEVICE_RELATIONS_BUS:u32=0;
 #[repr(C)]
-struct AcpiPdoExtension { signature:u64, node:u16, source_table:u16, identity:acpi::acpi_device::AcpiDeviceIdentity }
+struct AcpiPdoExtension { signature:u64, node:u16, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity }
 const ACPI_PDO_SIGNATURE:u64=0x4143504950444f31;
 #[repr(C)]
 struct AcpiDeviceRelations { count:u32, objects:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS] }
@@ -73,9 +73,9 @@ __imp_ex_ExFreePoolWithTag: .quad 0
 "#);
 
 #[derive(Clone,Copy)]
-struct AcpiDeviceRecord { table:Option<acpi::aml_tables::TableHandle>,node:u16,identity:acpi::acpi_device::AcpiDeviceIdentity }
+struct AcpiDeviceRecord { table:Option<acpi::aml_tables::TableHandle>,node:u16,aml_bytes:&'static [u8],identity:acpi::acpi_device::AcpiDeviceIdentity }
 impl AcpiDeviceRecord {
-    const EMPTY:Self=Self{table:None,node:0,identity:acpi::acpi_device::AcpiDeviceIdentity::EMPTY};
+    const EMPTY:Self=Self{table:None,node:0,aml_bytes:&[],identity:acpi::acpi_device::AcpiDeviceIdentity::EMPTY};
 }
 struct AcpiState {
     ready: AtomicBool,
@@ -144,6 +144,7 @@ const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
 const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
 const IRP_MN_QUERY_CAPABILITIES: u8 = 0x09;
+const IRP_MN_QUERY_RESOURCES: u8 = 0x0a;
 const IRP_MN_QUERY_ID: u8 = 0x13;
 const BUS_QUERY_DEVICE_ID: u32 = 0;
 const BUS_QUERY_INSTANCE_ID: u32 = 1;
@@ -324,6 +325,31 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
     }
 }
 
+
+unsafe fn query_pdo_resources(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->Result<usize,i32>{
+ let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+ if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{return Err(STATUS_INVALID_PARAMETER)}
+ let ext=unsafe{&*ext};let handle=ext.table.ok_or(STATUS_INVALID_PARAMETER)?;
+ if ext.aml_bytes.is_null()||ext.aml_length<36{return Err(STATUS_INVALID_PARAMETER)}
+ let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+ let scratch=unsafe{ExAllocatePoolWithTag(PAGED_POOL,65536,ACPI_POOL_TAG)};
+ if scratch.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+ let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};let gate=unsafe{&*STATE.aml_barrier.get()};
+ let length=match manager.read_named_buffer(handle,aml,ext.node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
+  Ok(n)=>n,Err(_)=>{unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};return Err(STATUS_NOT_SUPPORTED)}
+ };
+ let parsed=acpi::acpi_resources::parse_resource_template(unsafe{core::slice::from_raw_parts(scratch,length)});
+ unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};
+ let resources=parsed.map_err(|_|STATUS_NOT_SUPPORTED)?;
+ let size=acpi::acpi_wdm_resources::required_size(&resources).map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
+ if acpi::acpi_wdm_resources::descriptor_count(&resources).map_err(|_|STATUS_NOT_SUPPORTED)?==0{return Err(STATUS_NOT_SUPPORTED)}
+ let output=unsafe{ExAllocatePoolWithTag(PAGED_POOL,size,ACPI_POOL_TAG)};
+ if output.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+ match unsafe{acpi::acpi_wdm_resources::serialize(&resources,output,size)}{
+  Ok(_)=>Ok(output as usize),Err(_)=>{unsafe{ExFreePoolWithTag(output,ACPI_POOL_TAG)};Err(STATUS_INVALID_PARAMETER)}
+ }
+}
+
 unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
@@ -356,6 +382,9 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
         },
         IRP_MN_QUERY_CAPABILITIES if device!=unsafe{ACPI_BUS_DEVICE} => {
             unsafe{query_pdo_capabilities(device,stack)}
+        },
+        IRP_MN_QUERY_RESOURCES if device!=unsafe{ACPI_BUS_DEVICE} => {
+            match unsafe{query_pdo_resources(device)} { Ok(pointer)=>{information=pointer;STATUS_SUCCESS}, Err(status)=>status }
         },
         IRP_MN_QUERY_ID if device!=unsafe{ACPI_BUS_DEVICE} => {
             match unsafe{query_pdo_id(device,irp,stack)} {
@@ -396,6 +425,7 @@ fn collect_device_identities(
     manager:&acpi::aml_tables::AmlTableManager,
     handle:acpi::aml_tables::TableHandle,
     table_sources:&[&[u8]],
+    source_bytes:&'static [u8],
     gate:&acpi::aml_tables::AmlExecutionBarrier,
     records:&mut [AcpiDeviceRecord;MAX_ACPI_DEVICES],
     count:&mut usize,
@@ -409,7 +439,7 @@ fn collect_device_identities(
         match manager.evaluate_device_identity(handle,table_sources,index,gate,&mut methods){
             Ok(identity)=>{
                 if *count>=records.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
-                records[*count]=AcpiDeviceRecord{table:Some(handle),node:index,identity};
+                records[*count]=AcpiDeviceRecord{table:Some(handle),node:index,aml_bytes:source_bytes,identity};
                 *count+=1;
             }
             // An unsupported AML method/value suppresses this device's
@@ -484,10 +514,10 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let gate=unsafe{&*STATE.aml_barrier.get()};
     let records=unsafe{(*STATE.device_records.get()).assume_init_mut()};
     let mut identity_count=0usize;
-    if let Err(status)=collect_device_identities(manager,loaded.dsdt,&table_sources[..ssdt_count+1],gate,records,&mut identity_count){return status;}
+    if let Err(status)=collect_device_identities(manager,loaded.dsdt,&table_sources[..ssdt_count+1],dsdt,gate,records,&mut identity_count){return status;}
     for index in 0..loaded.ssdt_count{
         let handle=match loaded.ssdts[index]{Some(handle)=>handle,None=>return STATUS_INVALID_PARAMETER};
-        if let Err(status)=collect_device_identities(manager,handle,&table_sources[..ssdt_count+1],gate,records,&mut identity_count){return status;}
+        if let Err(status)=collect_device_identities(manager,handle,&table_sources[..ssdt_count+1],ssdt_tables[index],gate,records,&mut identity_count){return status;}
     }
     // Create an ACPI bus device and real WDM PDOs for firmware devices
     // reported present and enabled. Each PDO owns an immutable identity copy.
@@ -508,7 +538,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         unsafe {
             let extension=(*pdo).device_extension.cast::<AcpiPdoExtension>();
             if extension.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
-            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,source_table:0,identity:record.identity});
+            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,table:record.table,aml_bytes:record.aml_bytes.as_ptr(),aml_length:record.aml_bytes.len(),identity:record.identity});
         }
         let marked=unsafe{IoMarkBusEnumeratedPdo(pdo)};
         if marked!=STATUS_SUCCESS { return marked; }
