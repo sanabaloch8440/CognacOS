@@ -579,8 +579,10 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
         let _guard = MemoryGuard::acquire();
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 != 0 {
+            let page = free.0[free.1 - 1];
+            pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
             free.1 -= 1;
-            Some(free.0[free.1])
+            Some(page)
         } else {
             let count = HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
             let regions = unsafe { &mut *HIGH_REGIONS.0.get() };
@@ -588,6 +590,7 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
             for region in regions.iter_mut().take(count) {
                 if region.next.checked_add(PAGE_SIZE).is_some_and(|end| end <= region.end) {
                     let page = region.next;
+                    pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
                     region.next += PAGE_SIZE;
                     found = Some(page);
                     break;
@@ -608,7 +611,6 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
             return Err(AllocError::InvalidMap);
         }
         unsafe { ptr::write_bytes(pointer as *mut u8, 0, PAGE_SIZE as usize); }
-        pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
         Ok(page)
     } else {
         unsafe { allocate_page() }
