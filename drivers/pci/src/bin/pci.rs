@@ -344,9 +344,17 @@ unsafe fn start_pci_device(
             let start = unsafe { core::ptr::read_unaligned(p.add(4).cast::<u64>()) };
             let length = unsafe { core::ptr::read_unaligned(p.add(12).cast::<u32>()) } as u64;
             resource_index += 1;
-            if (req.kind == pci::resources::BarKind::Io && kind == 1)
-                || (req.kind != pci::resources::BarKind::Io && kind == 3) {
-                if length < req.length || start % req.alignment != 0 {
+            let flags = unsafe { core::ptr::read_unaligned(p.add(2).cast::<u16>()) };
+            let is_io = req.kind == pci::resources::BarKind::Io;
+            let resource_kind_matches = (is_io && kind == 1) || (!is_io && kind == 3);
+            let prefetch_matches = is_io || ((flags & 0x0004 != 0) == req.prefetchable);
+            if resource_kind_matches && prefetch_matches {
+                let end = match start.checked_add(length) {
+                    Some(value) => value, None => return STATUS_DEVICE_CONFIGURATION_ERROR,
+                };
+                if length < req.length || req.alignment == 0 || start % req.alignment != 0
+                    || (is_io && end > 0x1_0000)
+                    || (req.kind == pci::resources::BarKind::Memory32 && end > (1u64 << 32)) {
                     return STATUS_DEVICE_CONFIGURATION_ERROR;
                 }
                 found = Some(start);
@@ -371,12 +379,24 @@ unsafe fn start_pci_device(
     // Require translated descriptors to be structurally present before touching
     // hardware. The OS has already performed address translation/arbitration.
     for i in 0..trans_n {
-        let p = unsafe { trans_desc.add(i * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
-        let kind = unsafe { *p };
-        if kind == 1 || kind == 3 {
-            let _start = unsafe { core::ptr::read_unaligned(p.add(4).cast::<u64>()) };
-            let len = unsafe { core::ptr::read_unaligned(p.add(12).cast::<u32>()) };
-            if len == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+        let raw_p = unsafe { raw_desc.add(i * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
+        let trans_p = unsafe { trans_desc.add(i * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
+        let raw_kind = unsafe { *raw_p };
+        let trans_kind = unsafe { *trans_p };
+        let raw_flags = unsafe { core::ptr::read_unaligned(raw_p.add(2).cast::<u16>()) };
+        let trans_flags = unsafe { core::ptr::read_unaligned(trans_p.add(2).cast::<u16>()) };
+        let raw_len = unsafe { core::ptr::read_unaligned(raw_p.add(12).cast::<u32>()) };
+        let trans_len = unsafe { core::ptr::read_unaligned(trans_p.add(12).cast::<u32>()) };
+        if raw_kind != trans_kind || raw_flags != trans_flags || raw_len != trans_len {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+        if raw_kind == 1 || raw_kind == 3 {
+            let raw_start = unsafe { core::ptr::read_unaligned(raw_p.add(4).cast::<u64>()) };
+            let trans_start = unsafe { core::ptr::read_unaligned(trans_p.add(4).cast::<u64>()) };
+            if raw_len == 0 || raw_start.checked_add(raw_len as u64).is_none()
+                || trans_start.checked_add(trans_len as u64).is_none() {
+                return STATUS_DEVICE_CONFIGURATION_ERROR;
+            }
         }
     }
     let list_size = 20usize.checked_add(raw_n.checked_mul(pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).unwrap_or(usize::MAX)).unwrap_or(usize::MAX);
