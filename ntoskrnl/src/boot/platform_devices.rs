@@ -29,7 +29,7 @@ fn driver_image_path_eq(path: &[u16], ascii: &[u8]) -> bool {
     })
 }
 
-fn resolve_builtin_driver_image(path: &[u16], output: &mut [u8]) -> Option<usize> {
+pub(crate) fn resolve_builtin_driver_image(path: &[u16], output: &mut [u8]) -> Option<usize> {
     const PREFIX: &[u16] = &[92, 83, 121, 115, 116, 101, 109, 82, 111, 111, 116, 92, 83, 121, 115, 116, 101, 109, 51, 50, 92, 100, 114, 105, 118, 101, 114, 115, 92];
     if path.len() <= PREFIX.len()
         || !path[..PREFIX.len()].iter().zip(PREFIX).all(|(a, b)| {
