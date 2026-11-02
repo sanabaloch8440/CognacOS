@@ -444,12 +444,16 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
 }
 
 fn stop_data_path() -> i32 {
-    AHCI_ONLINE.store(false, Ordering::Release);
+    let was_online = AHCI_ONLINE.swap(false, Ordering::AcqRel);
+    if !was_online { return STATUS_SUCCESS; }
     for _ in 0..AHCI_POLL_BUDGET {
         if !AHCI_IO_BUSY.load(Ordering::Acquire) { break; }
         core::hint::spin_loop();
     }
-    if AHCI_IO_BUSY.load(Ordering::Acquire) { return STATUS_DEVICE_BUSY; }
+    if AHCI_IO_BUSY.load(Ordering::Acquire) {
+        AHCI_ONLINE.store(true, Ordering::Release);
+        return STATUS_DEVICE_BUSY;
+    }
     let ext = match handoff() { Some(value) => value, None => return STATUS_DEVICE_NOT_READY };
     let runtime = unsafe { (*AHCI_RUNTIME.0.get()).assume_init_read() };
     if runtime.clb_cpu == 0 || runtime.fb_cpu == 0 || runtime.table_cpu == 0 || runtime.bounce_cpu == 0 {
