@@ -314,6 +314,64 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
 }
 
 
+/// Platform mapping contract for ACPI firmware physical memory.
+///
+/// Implementations must return a contiguous, readable mapping for the complete
+/// requested range and must not expose device memory as ordinary cacheable RAM.
+/// The ACPI driver owns table parsing; the HAL/MM supplies the mapping policy.
+pub trait AcpiPhysicalMapper {
+    fn map_physical<'a>(&'a self, physical_address:u64, length:usize)->Result<&'a [u8],AcpiError>;
+}
+
+fn mapped_range<'a,M:AcpiPhysicalMapper>(mapper:&'a M,address:u64,length:usize)->Result<&'a [u8],AcpiError>{
+    if address==0||address.checked_add(length as u64).is_none(){return Err(AcpiError::AddressOutOfRange)}
+    let bytes=mapper.map_physical(address,length)?;
+    if bytes.len()<length{return Err(AcpiError::Truncated)}
+    Ok(&bytes[..length])
+}
+
+/// Locate a validated SDT using a platform-provided physical mapper. Unlike
+/// the bootstrap identity-map helper below, this supports XSDT entries and
+/// tables above 4 GiB without dereferencing firmware addresses directly.
+pub fn find_table_with_mapper<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address:u64,signature:[u8;4],instance:usize)->Result<&'a [u8],AcpiError>{
+    let prefix=mapped_range(mapper,rsdp_address,20)?;
+    if prefix.get(0..8)!=Some(b"RSD PTR "){return Err(AcpiError::BadSignature)}
+    let revision=prefix[15];
+    let rsdp_len=if revision>=2{
+        let extended=mapped_range(mapper,rsdp_address,36)?;
+        let length=u32le(extended,20)? as usize;
+        if !(36..=4096).contains(&length){return Err(AcpiError::BadLength)}
+        length
+    }else{20};
+    let rsdp=mapped_range(mapper,rsdp_address,rsdp_len)?;
+    let roots=parse_rsdp(rsdp)?;
+    let (root_address,root_signature,width)=if revision>=2&&roots.xsdt_address!=0{
+        (roots.xsdt_address,*b"XSDT",8usize)
+    }else if roots.rsdt_address!=0{
+        (roots.rsdt_address as u64,*b"RSDT",4usize)
+    }else{return Err(AcpiError::MissingRoot)};
+    let root_header=mapped_range(mapper,root_address,36)?;
+    let root_length=u32le(root_header,4)? as usize;
+    if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&root_length){return Err(AcpiError::BadLength)}
+    let root=mapped_range(mapper,root_address,root_length)?;
+    let root_info=validate_sdt(root,Some(root_signature))?;
+    if (root_info.length as usize-36)%width!=0{return Err(AcpiError::MalformedEntry)}
+    let mut seen=0usize;
+    for offset in (36..root_length).step_by(width){
+        let address=if width==8{u64::from_le_bytes(root[offset..offset+8].try_into().map_err(|_|AcpiError::Truncated)?)}else{u32le(root,offset)? as u64};
+        if address==0{continue}
+        let header=mapped_range(mapper,address,36)?;
+        if header.get(0..4)!=Some(&signature[..]){continue}
+        let length=u32le(header,4)? as usize;
+        if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&length){return Err(AcpiError::BadLength)}
+        let table=mapped_range(mapper,address,length)?;
+        validate_sdt(table,Some(signature))?;
+        if seen==instance{return Ok(table)}
+        seen+=1;
+    }
+    Err(AcpiError::MissingRoot)
+}
+
 /// Locate the Nth ACPI system-description table matching a four-byte signature.
 /// This validates the RSDP, root table, each candidate SDT length and checksum.
 /// The current bootstrap identity map is limited to 4 GiB; XSDT entries above
