@@ -737,12 +737,13 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
             let d=bytes.get(off+1..end).ok_or(AcpiError::Truncated)?;
             match tag {
                 0x79=>{ if len!=1{return Err(AcpiError::MalformedEntry)} ended=true;off=end;break; }
-                0x4b if len==3=>{ // I/O port descriptor
-                    let minimum=u16::from_le_bytes([d[0],d[1]]) as u64;
-                    let maximum=minimum.checked_add(d[2] as u64).ok_or(AcpiError::AddressOutOfRange)?;
+                0x27 if len==7=>{ // I/O port descriptor
+                    let minimum=u16::from_le_bytes([d[1],d[2]]) as u64;
+                    let maximum=u16::from_le_bytes([d[3],d[4]]) as u64;
+                    if maximum<minimum{return Err(AcpiError::MalformedEntry)}
                     push_root_aperture(&mut out,PciRootAperture{resource_type:1,minimum,maximum,translation:0,length:maximum-minimum+1,minimum_fixed:true,maximum_fixed:true})?;
                 }
-                0x4f if len==3=>{ // Fixed I/O
+                0x4b if len==3=>{ // Fixed I/O
                     let minimum=u16::from_le_bytes([d[0],d[1]]) as u64;
                     let length=d[2] as u64;
                     if length==0{return Err(AcpiError::MalformedEntry)}
@@ -758,9 +759,9 @@ pub fn parse_pci_root_resources(bytes:&[u8])->Result<PciRootResources,AcpiError>
         let end=off.checked_add(3).and_then(|v|v.checked_add(len)).ok_or(AcpiError::BadLength)?;
         let d=bytes.get(off+3..end).ok_or(AcpiError::Truncated)?;
         let parsed=match tag {
-            0x88 if len>=13=>Some((2usize,2usize,2usize,2usize,2usize,2usize)), // Word address
-            0x87 if len>=23=>Some((2usize,2usize,4usize,4usize,4usize,4usize)), // DWord address
-            0x8a if len>=43=>Some((2usize,2usize,8usize,8usize,8usize,8usize)), // QWord address
+            0x88 if len>=13=>Some((0usize,1usize,3usize,5usize,7usize,9usize)), // Word address
+            0x87 if len>=23=>Some((0usize,1usize,4usize,7usize,11usize,15usize)), // DWord address
+            0x8a if len>=43=>Some((0usize,1usize,8usize,11usize,19usize,27usize)), // QWord address
             _=>None,
         };
         if let Some((typ_off,flags_off,width,gran_off,min_off,max_off))=parsed{
