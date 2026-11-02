@@ -118,7 +118,9 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 /// Execute one loaded method against the exact AML definition-block byte slice.
 /// Only integer arguments and scalar operations are currently supported.
 pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64])->Result<AmlValue,ExecError>{
- let node=namespace.nodes.get(method_index as usize).ok_or(ExecError::InvalidMethod)?;
+ let index=method_index as usize;
+ if index>=namespace.count{return Err(ExecError::InvalidMethod)}
+ let node=namespace.nodes.get(index).ok_or(ExecError::InvalidMethod)?;
  if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
  let expected=(node.method_flags&7)as usize;if args.len()!=expected||args.len()>7{return Err(ExecError::BadArgumentCount)}
  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
@@ -182,6 +184,12 @@ mod tests{
   let aml=[0x14,0x13,b'T',b'E',b'S',b'T',0,0x70,0x0a,7,0x60,0x75,0x60,0x76,0x60,0xa4,0x7e,0x60,0x0a,0];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(!7u64));
+ }
+ #[test]fn rejects_namespace_slots_outside_the_live_node_count(){
+  let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  assert_eq!(execute_method(&aml,&ns,1,&[]),Err(ExecError::InvalidMethod));
+  assert_eq!(execute_method(&aml,&ns,u16::MAX,&[]),Err(ExecError::InvalidMethod));
  }
  #[test]fn rejects_wrong_argument_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
