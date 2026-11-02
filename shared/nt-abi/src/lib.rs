@@ -227,6 +227,40 @@ pub mod bus {
         pub query_information: PPCI_QUERY_DEVICE_INFORMATION,
     }
 
+    /// Per-IDE-controller resources negotiated by pci.sys and exposed to
+    /// pciide.sys through IRP_MN_QUERY_INTERFACE after START_DEVICE.
+    pub const PCI_IDE_RESOURCE_INTERFACE_VERSION:u32=1;
+    pub const GUID_PCI_IDE_RESOURCE_INTERFACE:GUID=GUID{
+        data1:0x6e2a_1b71,data2:0x8d44,data3:0x4c21,
+        data4:[0xa2,0x11,0x50,0x43,0x49,0x44,0x45,0x31],
+    };
+    #[repr(C)]
+    #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+    pub struct PCI_IDE_CHANNEL_RESOURCES{
+        pub command_base:u16,
+        pub control_base:u16,
+        /// Bit 0 indicates native PCI programming-interface mode.
+        pub flags:u32,
+    }
+    #[repr(C)]
+    #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+    pub struct PCI_IDE_RESOURCES{
+        pub primary:PCI_IDE_CHANNEL_RESOURCES,
+        pub secondary:PCI_IDE_CHANNEL_RESOURCES,
+        pub bus_master_base:u16,
+        /// Bit 0: bus-master capability; bit 1: assigned BAR4 is present.
+        pub flags:u16,
+    }
+    pub type PPCI_QUERY_IDE_RESOURCES=Option<
+        unsafe extern "win64" fn(context:PVOID,output:*mut PCI_IDE_RESOURCES)->NTSTATUS
+    >;
+    #[repr(C)]
+    #[derive(Clone,Copy)]
+    pub struct PCI_IDE_RESOURCE_INTERFACE{
+        pub header:INTERFACE_HEADER,
+        pub query_resources:PPCI_QUERY_IDE_RESOURCES,
+    }
+
     /// MCFG-derived ECAM aperture mapped by NTOSKRNL and consumed by pci.sys.
     /// The driver uses the mapped virtual address directly; no kernel or HAL
     /// callback pointers are embedded in this handoff.
@@ -333,6 +367,9 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<PCI_BRIDGE_INFORMATION>(), 0x08);
                 assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x50);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INTERFACE>(), 0x28);
+                assert_eq!(core::mem::size_of::<PCI_IDE_CHANNEL_RESOURCES>(), 0x08);
+                assert_eq!(core::mem::size_of::<PCI_IDE_RESOURCES>(), 0x14);
+                assert_eq!(core::mem::size_of::<PCI_IDE_RESOURCE_INTERFACE>(), 0x28);
                 assert_ne!(GUID_PCI_DEVICE_INTERFACE, GUID_PCI_BUS_INTERFACE);
                 assert_eq!(core::mem::size_of::<PCI_XHCI_INFORMATION>(), 0x20);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INFORMATION>(), 0x12);
