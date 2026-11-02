@@ -268,7 +268,7 @@ unsafe fn query_pdo_capabilities(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,
         size:size as u16,
         version,
         flags:0, // UniqueID remains FALSE: the instance ID is parent-bus scoped.
-        address:u32::MAX,
+        address:unsafe{(*extension).identity.adr.and_then(|value|u32::try_from(value).ok()).unwrap_or(u32::MAX)},
         ui_number:u32::MAX,
         device_state:[0,1,4,4,4,4,4], // Unspecified; Working=D0; sleep/hibernate/shutdown=D3.
         system_wake:0,
