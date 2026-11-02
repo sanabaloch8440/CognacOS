@@ -1021,6 +1021,7 @@ unsafe fn allocate_pages_in_node_range_mode(
                 if page >= low && page.checked_add(PAGE_SIZE - 1).is_some_and(|end| end <= high)
                     && crate::ntoskrnl::mm::topology::node_for_range(page, PAGE_SIZE) == Some(node)
                     && (page < PHYSICAL_LIMIT || direct_map_address(page).is_some()) {
+                    if super::pfn::register_allocation(page).is_err() { break; }
                     pages.1 -= 1;
                     pages.0[i] = pages.0[pages.1];
                     found = Some(page);
@@ -1051,6 +1052,7 @@ unsafe fn allocate_pages_in_node_range_mode(
                             continue;
                         }
                         if high_memory && direct_map_address(candidate).is_none() { continue; }
+                        if super::pfn::register_allocation(candidate).is_err() { continue; }
                         if candidate == original.next {
                             regions[index].next = page_end;
                         } else if page_end == original.end {
@@ -1085,7 +1087,8 @@ unsafe fn allocate_pages_in_node_range_mode(
     if allocated == 0 || (require_all && allocated != output.len()) {
         // Roll back in reverse allocation order so pages carved from an extent
         // can coalesce back toward the original range.
-        for &page in output[..allocated].iter().rev() {
+        for &pfn in output[..allocated].iter().rev() {
+            let Some(page) = pfn.checked_mul(PAGE_SIZE) else { continue; };
             let _ = unsafe { if try_only { try_free_page(page) } else { free_page(page) } };
         }
         return Err(AllocError::OutOfMemory);
