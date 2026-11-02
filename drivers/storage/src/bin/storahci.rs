@@ -179,12 +179,81 @@ fn allocate_dma(ext: &AhciDriverHandoff, size: u64, alignment: u64, maximum: u64
         || cpu == 0 || dma == 0 || dma % alignment != 0 {
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
-    let validate = device.validate_dma.ok_or(STATUS_NOT_SUPPORTED)?;
+    let Some(validate) = device.validate_dma else {
+        if let Some(free) = device.free_dma { let _ = unsafe { free(ext.device_object, cpu, dma, size) }; }
+        return Err(STATUS_NOT_SUPPORTED);
+    };
     if unsafe { validate(ext.device_object, cpu, dma, size) }.code != 0 {
         if let Some(free) = device.free_dma { let _ = unsafe { free(ext.device_object, cpu, dma, size) }; }
         return Err(STATUS_INVALID_PARAMETER);
     }
     Ok((cpu, dma))
+}
+
+const MAX_DMA_ALLOCATIONS: usize = 4;
+struct DmaStartupGuard {
+    ext: *const AhciDriverHandoff,
+    allocations: [(u64, u64, u64); MAX_DMA_ALLOCATIONS],
+    count: usize,
+    port_base: Option<usize>,
+    engine_touched: bool,
+    bus_master_enabled: bool,
+    committed: bool,
+}
+impl DmaStartupGuard {
+    fn new(ext: *const AhciDriverHandoff) -> Self {
+        Self { ext, allocations: [(0, 0, 0); MAX_DMA_ALLOCATIONS], count: 0,
+            port_base: None, engine_touched: false, bus_master_enabled: false, committed: false }
+    }
+    fn allocate(&mut self, size: u64, alignment: u64, maximum: u64) -> Result<(u64,u64), i32> {
+        if self.count == MAX_DMA_ALLOCATIONS { return Err(STATUS_INSUFFICIENT_RESOURCES); }
+        let ext = unsafe { self.ext.as_ref() }.ok_or(STATUS_INVALID_PARAMETER)?;
+        let (cpu,dma) = allocate_dma(ext,size,alignment,maximum)?;
+        self.allocations[self.count] = (cpu,dma,size);
+        self.count += 1;
+        Ok((cpu,dma))
+    }
+    fn commit(&mut self) { self.committed = true; }
+}
+impl Drop for DmaStartupGuard {
+    fn drop(&mut self) {
+        if self.committed { return; }
+        if let Some(ext) = unsafe { self.ext.as_ref() } {
+            if let (Some(base), Some(hal)) = (self.port_base, unsafe { ext.hal.as_ref() }) {
+                if self.engine_touched {
+                    let mut io = Mmio { base: ext.mmio_base, length: ext.mmio_length, hal };
+                    if let Ok(cmd) = io.read32(base + PORT_CMD) {
+                        let _ = io.write32(base + PORT_CMD, cmd & !CMD_ST);
+                        for _ in 0..AHCI_POLL_BUDGET {
+                            if io.read32(base + PORT_CMD).map(|v| v & CMD_CR == 0).unwrap_or(true) { break; }
+                            core::hint::spin_loop();
+                        }
+                        if let Ok(cmd) = io.read32(base + PORT_CMD) {
+                            let _ = io.write32(base + PORT_CMD, cmd & !CMD_FRE);
+                            for _ in 0..AHCI_POLL_BUDGET {
+                                if io.read32(base + PORT_CMD).map(|v| v & CMD_FR == 0).unwrap_or(true) { break; }
+                                core::hint::spin_loop();
+                            }
+                        }
+                    }
+                }
+            }
+            if self.bus_master_enabled {
+                if let Some(device) = unsafe { ext.device.as_ref() } {
+                    if let Some(set) = device.set_bus_master { let _ = unsafe { set(ext.device_object, false) }; }
+                }
+            }
+            if let Some(device) = unsafe { ext.device.as_ref() } {
+                if let Some(free) = device.free_dma {
+                    while self.count != 0 {
+                        self.count -= 1;
+                        let (cpu,dma,size) = self.allocations[self.count];
+                        if cpu != 0 && dma != 0 { let _ = unsafe { free(ext.device_object,cpu,dma,size) }; }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn ahci_port_base(port: u8) -> usize {
@@ -298,10 +367,11 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
             }
         }
         let port = selected.ok_or(STATUS_DEVICE_NOT_READY)?;
-        let (clb_cpu, clb_dma) = allocate_dma(ext, 1024, 1024, maximum)?;
-        let (fb_cpu, fb_dma) = allocate_dma(ext, 256, 256, maximum)?;
-        let (table_cpu, table_dma) = allocate_dma(ext, 256, 128, maximum)?;
-        let (bounce_cpu, bounce_dma) = allocate_dma(ext, AHCI_MAX_TRANSFER as u64, 4096, maximum)?;
+        let mut dma_guard = DmaStartupGuard::new(ext as *const AhciDriverHandoff);
+        let (clb_cpu, clb_dma) = dma_guard.allocate(1024, 1024, maximum)?;
+        let (fb_cpu, fb_dma) = dma_guard.allocate(256, 256, maximum)?;
+        let (table_cpu, table_dma) = dma_guard.allocate(256, 128, maximum)?;
+        let (bounce_cpu, bounce_dma) = dma_guard.allocate(AHCI_MAX_TRANSFER as u64, 4096, maximum)?;
         unsafe {
             core::ptr::write_bytes(clb_cpu as *mut u8, 0, 1024);
             core::ptr::write_bytes(fb_cpu as *mut u8, 0, 256);
@@ -310,6 +380,7 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
         }
         let runtime = AhciRuntime { port, sectors: 0, clb_cpu, clb_dma, fb_cpu, fb_dma, table_cpu, table_dma, bounce_cpu, bounce_dma };
         let base = ahci_port_base(port);
+        dma_guard.port_base = Some(base);
         io.write32(base + PORT_CLB, clb_dma as u32).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_CLB + 4, (clb_dma >> 32) as u32).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_FB, fb_dma as u32).map_err(|_| STATUS_DEVICE_NOT_READY)?;
@@ -321,8 +392,10 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
         if unsafe { set_bus_master(ext.device_object, true) }.code != 0 {
             return Err(STATUS_DEVICE_NOT_READY);
         }
+        dma_guard.bus_master_enabled = true;
         let cmd = io.read32(base + PORT_CMD).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         io.write32(base + PORT_CMD, cmd | CMD_FRE).map_err(|_| STATUS_DEVICE_NOT_READY)?;
+        dma_guard.engine_touched = true;
         io.write32(base + PORT_CMD, cmd | CMD_FRE | CMD_ST).map_err(|_| STATUS_DEVICE_NOT_READY)?;
         ahci_wait_ready(&mut io, base)?;
         unsafe { ahci_issue(&mut io, &runtime, 0xec, 0, 1, 512, false, false)?; }
@@ -332,6 +405,7 @@ pub unsafe extern "win64" fn CognacStorAhciStartDataPath() -> i32 {
         } else { words[60] as u64 | ((words[61] as u64) << 16) };
         if sectors == 0 { return Err(STATUS_DEVICE_NOT_READY); }
         unsafe { (*AHCI_RUNTIME.0.get()).write(AhciRuntime { sectors, ..runtime }); }
+        dma_guard.commit();
         AHCI_ONLINE.store(true, Ordering::Release);
         Ok(())
     })();
