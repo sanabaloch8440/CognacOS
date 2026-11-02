@@ -347,9 +347,15 @@ unsafe fn start_pci_device(
             let start = unsafe { core::ptr::read_unaligned(p.add(4).cast::<u64>()) };
             let length = unsafe { core::ptr::read_unaligned(p.add(12).cast::<u32>()) } as u64;
             resource_index += 1;
-            if (req.kind == pci::resources::BarKind::Io && kind == 1)
-                || (req.kind != pci::resources::BarKind::Io && kind == 3) {
-                if length < req.length || start % req.alignment != 0 {
+            let flags = unsafe { core::ptr::read_unaligned(p.add(2).cast::<u16>()) };
+            let is_io = req.kind == pci::resources::BarKind::Io;
+            let resource_kind_matches = (is_io && kind == 1) || (!is_io && kind == 3);
+            let prefetch_matches = is_io || ((flags & 0x0004 != 0) == req.prefetchable);
+            if resource_kind_matches && prefetch_matches {
+                let end = match start.checked_add(length) { Some(v) => v, None => return STATUS_DEVICE_CONFIGURATION_ERROR };
+                if length < req.length || req.alignment == 0 || start % req.alignment != 0
+                    || (is_io && end > 0x1_0000)
+                    || (req.kind == pci::resources::BarKind::Memory32 && end > (1u64 << 32)) {
                     return STATUS_DEVICE_CONFIGURATION_ERROR;
                 }
                 found = Some(start);
@@ -381,7 +387,9 @@ unsafe fn start_pci_device(
         // Windows' raw and translated resource lists preserve descriptor order
         // and type. Reject mismatched pairs rather than pairing a BAR with an
         // unrelated translated address.
-        if raw_kind!=trans_kind{return STATUS_DEVICE_CONFIGURATION_ERROR;}
+        let raw_flags=unsafe{core::ptr::read_unaligned(raw_p.add(2).cast::<u16>())};
+        let trans_flags=unsafe{core::ptr::read_unaligned(trans_p.add(2).cast::<u16>())};
+        if raw_kind!=trans_kind||raw_flags!=trans_flags{return STATUS_DEVICE_CONFIGURATION_ERROR;}
         if raw_kind==1||raw_kind==3 {
             let raw_start=unsafe{core::ptr::read_unaligned(raw_p.add(4).cast::<u64>())};
             let trans_start=unsafe{core::ptr::read_unaligned(trans_p.add(4).cast::<u64>())};
