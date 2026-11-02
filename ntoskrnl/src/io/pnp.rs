@@ -673,6 +673,29 @@ pub fn assign_pnp_resource_alternative(
     Ok(count)
 }
 
+/// Consume a WDM IO_RESOURCE_REQUIREMENTS_LIST for an enumerated devnode,
+/// reserve one complete alternative in the kernel arbiter, and advance the
+/// node to RESOURCES_ASSIGNED. The input must be a readable kernel buffer.
+pub fn assign_pnp_wdm_requirements(
+    index: u32,
+    requirements: &[u8],
+    output: &mut [crate::io::resource_arbiter::ResourceAssignment],
+) -> Result<(usize, usize), PnpError> {
+    let snapshot = query_pnp_device(index).ok_or(PnpError::InvalidState)?;
+    if snapshot.state != PNP_DEVICE_ENUMERATED {
+        return Err(PnpError::InvalidState);
+    }
+    let owner = (index as u64).checked_add(1).ok_or(PnpError::InvalidState)?;
+    let selected = crate::io::wdm_requirements::reserve_wdm_requirements(
+        owner, requirements, output,
+    ).map_err(|_| PnpError::InvalidState)?;
+    if transition_pnp_device(index, PNP_DEVICE_RESOURCES_ASSIGNED, 0).is_err() {
+        let _ = crate::io::resource_arbiter::SYSTEM_RESOURCE_ARBITER.release_owner(owner);
+        return Err(PnpError::InvalidState);
+    }
+    Ok(selected)
+}
+
 pub fn transition_pnp_device(index: u32, next: u32, status: i32) -> Result<(), PnpError> {
     let _guard = lock_pnp_table();
     let node = PNP_DEVICES.get(index as usize).ok_or(PnpError::InvalidState)?;
