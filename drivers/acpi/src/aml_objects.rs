@@ -202,7 +202,7 @@ mod tests {
     }
     #[test] fn evaluates_varpackage_element_count_expression(){
         // VarPackage(Add(One, One, NullTarget), { One, ByteConst(9) }).
-        let bytes=[0x13,0x0b,0x72,0x01,0x01,0x00,0x01,0x0a,9];
+        let bytes=[0x13,0x08,0x72,0x01,0x01,0x00,0x01,0x0a,9];
         let mut arena=AmlObjectArena::new();
         let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
         let package=arena.get(id).unwrap();assert_eq!(end,bytes.len());
@@ -221,9 +221,15 @@ mod tests {
         }
     }
     #[test] fn rejects_excessive_package_depth_without_leaking_arena_entries(){
-        let mut bytes=std::vec::Vec::new();
-        for _ in 0..(MAX_DATA_OBJECT_DEPTH as usize+2){bytes.extend_from_slice(&[0x12,0x03,1]);}
-        bytes.push(0x01);
+        let mut bytes=std::vec![0x01];
+        for _ in 0..(MAX_DATA_OBJECT_DEPTH as usize+2){
+            let body_length=1+bytes.len();
+            let short_length=1+body_length;
+            let mut package=std::vec![0x12];
+            if short_length<64{package.push(short_length as u8);}
+            else{let length=2+body_length;package.push(0x40|((length&0x0f)as u8));package.push((length>>4)as u8);}
+            package.push(1);package.extend_from_slice(&bytes);bytes=package;
+        }
         let mut arena=AmlObjectArena::new();
         assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
         assert_eq!(arena.count,0);
