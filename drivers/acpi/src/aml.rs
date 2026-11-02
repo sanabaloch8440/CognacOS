@@ -23,6 +23,8 @@ pub struct AmlNode {
     /// Canonical target for Alias objects; u16::MAX for non-alias nodes.
     pub alias_target:u16,
     pub field_region:u16,
+    pub field_mode:u8,
+    pub field_connection:bool,
     pub field_access_type:u8,
     pub field_access_attribute:u8,
     pub field_access_length:u8,
@@ -30,7 +32,7 @@ pub struct AmlNode {
     pub field_update_rule:u8,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize }
 impl AmlNamespace {
@@ -207,11 +209,12 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
     Ok(value)
 }
 
-fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,flags:u8)->Result<(),AmlError>{
+fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:u16,mode:u8,flags:u8)->Result<(),AmlError>{
     let mut bit_offset=0usize;
     let mut access_type=0u8;
     let mut access_attribute=0u8;
     let mut access_length=0u8;
+    let mut connection=false;
     while c.pos<c.end{
         let op=c.byte()?;
         match op{
@@ -219,7 +222,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,flags:u
                 bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
             }
             0x01=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=0;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // AccessField
-            0x02=>{skip_data_object(c)?;} // ConnectField
+            0x02=>{skip_data_object(c)?;connection=true;} // ConnectField
             0x03=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=c.byte()?;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // ExtendedAccessField
             _=>{
                 c.pos-=1;
@@ -228,7 +231,9 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,flags:u
                 let mut name=[0;4];name.copy_from_slice(seg);
                 let bit_length=read_pkg_value(c)?;
                 let id=ns.insert(container,name,AmlObjectType::Field,0,bit_offset,bit_length)?;
-                ns.nodes[id as usize].field_region=container;
+                ns.nodes[id as usize].field_region=region;
+                ns.nodes[id as usize].field_mode=mode;
+                ns.nodes[id as usize].field_connection=connection;
                 ns.nodes[id as usize].field_access_type=access_type;
                 ns.nodes[id as usize].field_access_attribute=access_attribute;
                 ns.nodes[id as usize].field_access_length=access_length;
@@ -293,9 +298,13 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         if ext==0x86{let _index=parse_name(&mut sub)?;let _data=parse_name(&mut sub)?;}
                         if ext==0x87{let _=parse_name(&mut sub)?;skip_data_object(&mut sub)?;}
                         let flags=sub.byte()?;
-                        let region_node=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
-                        if ns.nodes[region_node as usize].object_type!=AmlObjectType::OperationRegion{return Err(AmlError::InvalidParent)}
-                        parse_field_list(&mut sub,ns,region_node,flags)?;
+                        if flags&0xf8!=0{return Err(AmlError::UnsupportedOpcode)}
+                        let (region_node,mode)=if ext==0x81{
+                            let id=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
+                            if ns.nodes[id as usize].object_type!=AmlObjectType::OperationRegion{return Err(AmlError::InvalidParent)}
+                            (id,0)
+                        }else{(u16::MAX,if ext==0x86{1}else{2})};
+                        parse_field_list(&mut sub,ns,parent,region_node,mode,flags)?;
                         c.pos=end;
                     }
                     0x88=>{
@@ -369,7 +378,7 @@ mod tests{
         assert!(load_definition_block(&aml,&mut ns).is_ok());
         assert_eq!(ns.find_child(0,*b"REGN"),Some(1));
         assert_eq!(ns.nodes[1].object_type,AmlObjectType::OperationRegion);
-        assert_eq!(ns.find_child(1,*b"DAT0"),Some(2));
+        assert_eq!(ns.find_child(0,*b"DAT0"),Some(2));
         assert_eq!(ns.nodes[2].body_start,0);
         assert_eq!(ns.nodes[2].body_length,8);
         assert_eq!(ns.nodes[2].object_type,AmlObjectType::Field);\n        assert_eq!(ns.nodes[2].field_region,1);
