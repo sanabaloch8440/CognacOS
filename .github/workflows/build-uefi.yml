@@ -931,6 +931,7 @@ jobs:
           cmp build/ext4-expected.txt build/ext4-readback.txt
           sudo debugfs -R 'stat /pagefile.sys' "${loopdev}p2" 2>/dev/null | tee build/pagefile-stat.txt
           grep -Eq 'Size: 67108864' build/pagefile-stat.txt
+          grep -Eq 'Blockcount: 131072' build/pagefile-stat.txt
           echo "Ext4 volume verified: README contents and preallocated /pagefile.sys."
           cleanup_loop
           trap - EXIT
