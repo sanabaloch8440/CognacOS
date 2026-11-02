@@ -1101,10 +1101,10 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
 
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 != 0 {
-        free.1 -= 1;
-        let page = free.0[free.1];
-        unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
+        let page = free.0[free.1 - 1];
         super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
+        free.1 -= 1;
+        unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
         return Ok(page);
     }
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
@@ -1112,9 +1112,9 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
     for region in regions.iter_mut().take(count) {
         if region.next.checked_add(PAGE_SIZE).is_some_and(|end| end <= region.end) {
             let page = region.next;
+            super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
             region.next += PAGE_SIZE;
             unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
-            super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?;
             return Ok(page);
         }
     }
@@ -1125,9 +1125,9 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
 pub unsafe fn try_allocate_page() -> Result<u64, AllocError> {
     let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
     let free = unsafe { &mut *FREE_PAGES.0.get() };
-    if free.1 != 0 { free.1 -= 1; let page=free.0[free.1]; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; return Ok(page); }
+    if free.1 != 0 { let page=free.0[free.1-1]; super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; free.1 -= 1; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); }
     let count=REGION_COUNT.load(core::sync::atomic::Ordering::Acquire); let regions=unsafe { &mut *REGIONS.0.get() };
-    for region in regions.iter_mut().take(count) { if region.next.checked_add(PAGE_SIZE).is_some_and(|end|end<=region.end) { let page=region.next; region.next+=PAGE_SIZE; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; return Ok(page); } }
+    for region in regions.iter_mut().take(count) { if region.next.checked_add(PAGE_SIZE).is_some_and(|end|end<=region.end) { let page=region.next; super::pfn::register_allocation(page).map_err(|_| AllocError::OutOfMemory)?; region.next+=PAGE_SIZE; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); } }
     Err(AllocError::OutOfMemory)
 }
 
