@@ -17,6 +17,7 @@ pub(crate) enum RegistryInitError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BootServiceMetadata {
+    pub start_type: u32,
     pub tag: Option<u32>,
     pub group: [u16; 128],
     pub group_len: usize,
