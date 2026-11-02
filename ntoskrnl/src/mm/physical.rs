@@ -1238,6 +1238,13 @@ pub unsafe fn try_free_page(page: u64) -> Result<(), AllocError> {
     unsafe { free_page_mode(page, true) }
 }
 
+fn release_pfn_owner(page: u64) -> Result<(), AllocError> {
+    match super::pfn::snapshot(page) {
+        None => Ok(()), // Boot and externally-owned frames predate PFN registration.
+        Some(_) => super::pfn::release_allocation(page).map_err(|_| AllocError::InvalidPage),
+    }
+}
+
 unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     if page >= PHYSICAL_LIMIT {
         if page >= DIRECT_MAP_PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0
@@ -1248,6 +1255,7 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
         if if try_only { page_is_locked_try(page) } else { page_is_locked(page) } { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 < FREE_CAPACITY {
+            release_pfn_owner(page)?;
             free.0[free.1] = page;
             free.1 += 1;
             return Ok(());
@@ -1256,10 +1264,11 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
         let count = HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
         let end = page.checked_add(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
         for region in regions.iter_mut().take(count) {
-            if end == region.next { region.next = page; return Ok(()); }
-            if page == region.end { region.end = end; return Ok(()); }
+            if end == region.next { release_pfn_owner(page)?; region.next = page; return Ok(()); }
+            if page == region.end { release_pfn_owner(page)?; region.end = end; return Ok(()); }
         }
         if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+        release_pfn_owner(page)?;
         regions[count] = Region { next: page, end };
         HIGH_REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
         return Ok(());
@@ -1286,6 +1295,7 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 < FREE_CAPACITY {
+        release_pfn_owner(page)?;
         free.0[free.1] = page;
         free.1 += 1;
         return Ok(());
@@ -1299,15 +1309,18 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
     for region in regions.iter_mut().take(count) {
         if end == region.next {
+            release_pfn_owner(page)?;
             region.next = page;
             return Ok(());
         }
         if page == region.end {
+            release_pfn_owner(page)?;
             region.end = end;
             return Ok(());
         }
     }
     if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+    release_pfn_owner(page)?;
     regions[count] = Region { next: page, end };
     REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
     Ok(())
