@@ -341,8 +341,8 @@ mod tests{
     }
     #[test]fn validates_nested_package_data_objects(){
         // Name(PKG0, Package(2) { ByteConst(1), Package(1) { Ones } })
-        let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x0a,2,
-                 0x0a,1,0x12,0x04,1,0xff];
+        let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x09,2,
+                 0x0a,1,0x12,0x03,1,0xff];
         let mut ns=AmlNamespace::new();
         assert!(load_definition_block(&aml,&mut ns).is_ok());
         assert_eq!(ns.find_child(0,*b"PKG0"),Some(1));
