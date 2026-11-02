@@ -459,6 +459,25 @@ mod tests {
     }
 
     #[test]
+    fn named_crs_buffer_read_is_gated_and_table_owned(){
+        let aml=[0x08,b'_',b'C',b'R',b'S',0x11,0x05,0x0a,4,0x79,0x00];
+        let dsdt=definition_table(*b"DSDT",&aml);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        let handle=manager.load_dsdt(&dsdt,&gate).unwrap();
+        let node=manager.namespace().find_child(0,*b"_CRS").unwrap();
+        let mut output=[0xa5;8];
+        assert_eq!(manager.read_named_buffer(handle,&dsdt,node,&gate,&mut output),Ok(4));
+        assert_eq!(&output[..4],&[0x79,0x00,0,0]);
+        assert_eq!(output[4],0xa5);
+        let mut blocked=TestGate{busy:core::sync::atomic::AtomicBool::new(true),entered:core::sync::atomic::AtomicBool::new(false)};
+        assert_eq!(manager.read_named_buffer(handle,&dsdt,node,&blocked,&mut output),Err(TableError::ExecutionBusy));
+        blocked.busy.store(false,Ordering::Release);
+        let mut substituted=dsdt.clone();substituted[45]=0x01;substituted[9]=0;
+        substituted[9]=0u8.wrapping_sub(substituted.iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));
+        assert_eq!(manager.read_named_buffer(handle,&substituted,node,&blocked,&mut output),Err(TableError::InvalidHandle));
+    }
+
+    #[test]
     fn device_identity_resolves_objects_from_multiple_definition_tables(){
         let dsdt=identity_dsdt();let ssdt=identity_ssdt();let mut manager=AmlTableManager::new();let gate=gate();
         let loaded=manager.load_firmware_tables(&dsdt,&[&ssdt],&gate).unwrap();
