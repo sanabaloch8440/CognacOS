@@ -318,7 +318,7 @@ mod bridge_encoding_tests {
   assert_eq!(decoded.io,windows.io);assert_eq!(decoded.memory,windows.memory);assert_eq!(decoded.prefetchable,windows.prefetchable);
  }
  #[test]
- fn 64bit_prefetch_upper_address_roundtrips(){
+ fn prefetch_upper_64bit_address_roundtrips(){
   let mut c=Fake{regs:[0;64]};
   let windows=BridgeWindows{prefetchable:Some(Aperture{start:0x1_2000_0000,length:0x20_0000,kind:BarKind::Memory64,prefetchable:true}),..BridgeWindows::default()};
   let u=encode_bridge_windows(&mut c,&windows).unwrap();
