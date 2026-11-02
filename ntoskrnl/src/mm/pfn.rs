@@ -11,7 +11,7 @@
 //! and node/range allocators must use the same registration hooks before they
 //! are considered fully covered by this milestone.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use crate::hal::IrqSpinLock;
 
 const CAPACITY: usize = 65_536;
 const EMPTY: u8 = 0;
@@ -30,28 +30,7 @@ impl Entry {
     const EMPTY: Self = Self { page: 0, references: 0, mappings: 0, pins: 0, state: EMPTY };
 }
 
-struct Database {
-    lock: AtomicBool,
-    entries: core::cell::UnsafeCell<[Entry; CAPACITY]>,
-}
-unsafe impl Sync for Database {}
-static DATABASE: Database = Database {
-    lock: AtomicBool::new(false),
-    entries: core::cell::UnsafeCell::new([Entry::EMPTY; CAPACITY]),
-};
-
-struct Guard;
-impl Guard {
-    fn acquire() -> Self {
-        while DATABASE.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
-        }
-        Self
-    }
-}
-impl Drop for Guard {
-    fn drop(&mut self) { DATABASE.lock.store(false, Ordering::Release); }
-}
+static DATABASE: IrqSpinLock<[Entry; CAPACITY]> = IrqSpinLock::new([Entry::EMPTY; CAPACITY]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PfnError {
@@ -87,8 +66,7 @@ fn find(entries: &[Entry; CAPACITY], page: u64) -> Option<usize> {
 /// Called before the allocator publishes the page to its caller.
 pub fn register_allocation(page: u64) -> Result<(), PfnError> {
     if page == 0 || page & 0xfff != 0 { return Err(PfnError::InvalidPage); }
-    let _guard = Guard::acquire();
-    let entries = unsafe { &mut *DATABASE.entries.get() };
+    let mut entries = DATABASE.lock();
     let start = hash(page);
     let mut tombstone = None;
     for offset in 0..CAPACITY {
@@ -112,8 +90,7 @@ pub fn register_allocation(page: u64) -> Result<(), PfnError> {
 
 /// Acquire a reference owned by a valid hardware mapping.
 pub fn acquire_mapping(page: u64) -> Result<(), PfnError> {
-    let _guard = Guard::acquire();
-    let entries = unsafe { &mut *DATABASE.entries.get() };
+    let mut entries = DATABASE.lock();
     let index = find(entries, page).ok_or(PfnError::NotTracked)?;
     let entry = &mut entries[index];
     entry.references = entry.references.checked_add(1).ok_or(PfnError::ReferenceOverflow)?;
@@ -178,8 +155,7 @@ pub fn release_allocation(page: u64) -> Result<(), PfnError> {
 }
 
 pub fn snapshot(page: u64) -> Option<(u32, u32, u32)> {
-    let _guard = Guard::acquire();
-    let entries = unsafe { &*DATABASE.entries.get() };
+    let entries = DATABASE.lock();
     find(entries, page).map(|index| {
         let entry = entries[index];
         (entry.references, entry.mappings, entry.pins)
