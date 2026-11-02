@@ -145,6 +145,7 @@ const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
 const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
 const IRP_MN_QUERY_CAPABILITIES: u8 = 0x09;
 const IRP_MN_QUERY_RESOURCES: u8 = 0x0a;
+const IRP_MN_QUERY_RESOURCE_REQUIREMENTS: u8 = 0x0b;
 const IRP_MN_QUERY_ID: u8 = 0x13;
 const BUS_QUERY_DEVICE_ID: u32 = 0;
 const BUS_QUERY_INSTANCE_ID: u32 = 1;
@@ -326,26 +327,40 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
 }
 
 
-unsafe fn query_pdo_resources(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->Result<usize,i32>{
+fn read_pdo_resource_template(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,name:[u8;4])->Result<acpi::acpi_resources::ResourceList,i32>{
  let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
  if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{return Err(STATUS_INVALID_PARAMETER)}
  let ext=unsafe{&*ext};let handle=ext.table.ok_or(STATUS_INVALID_PARAMETER)?;
  if ext.aml_bytes.is_null()||ext.aml_length<36{return Err(STATUS_INVALID_PARAMETER)}
  let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+ let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};let gate=unsafe{&*STATE.aml_barrier.get()};
+ let resource_node=manager.namespace().find_child(ext.node,name).ok_or(STATUS_NOT_SUPPORTED)?;
  let scratch=unsafe{ExAllocatePoolWithTag(PAGED_POOL,65536,ACPI_POOL_TAG)};
  if scratch.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
- let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};let gate=unsafe{&*STATE.aml_barrier.get()};
- let length=match manager.read_named_buffer(handle,aml,ext.node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
+ let length=match manager.read_named_buffer(handle,aml,resource_node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
   Ok(n)=>n,Err(_)=>{unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};return Err(STATUS_NOT_SUPPORTED)}
  };
  let parsed=acpi::acpi_resources::parse_resource_template(unsafe{core::slice::from_raw_parts(scratch,length)});
  unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};
- let resources=parsed.map_err(|_|STATUS_NOT_SUPPORTED)?;
+ parsed.map_err(|_|STATUS_NOT_SUPPORTED)
+}
+unsafe fn query_pdo_resources(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->Result<usize,i32>{
+ let resources=read_pdo_resource_template(device,*b"_CRS")?;
  let size=acpi::acpi_wdm_resources::required_size(&resources).map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
  if acpi::acpi_wdm_resources::descriptor_count(&resources).map_err(|_|STATUS_NOT_SUPPORTED)?==0{return Err(STATUS_NOT_SUPPORTED)}
  let output=unsafe{ExAllocatePoolWithTag(PAGED_POOL,size,ACPI_POOL_TAG)};
  if output.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
  match unsafe{acpi::acpi_wdm_resources::serialize(&resources,output,size)}{
+  Ok(_)=>Ok(output as usize),Err(_)=>{unsafe{ExFreePoolWithTag(output,ACPI_POOL_TAG)};Err(STATUS_INVALID_PARAMETER)}
+ }
+}
+unsafe fn query_pdo_resource_requirements(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->Result<usize,i32>{
+ let resources=read_pdo_resource_template(device,*b"_PRS")?;
+ let size=acpi::acpi_wdm_requirements::required_size(&resources).map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
+ if acpi::acpi_wdm_requirements::descriptor_count(&resources).map_err(|_|STATUS_NOT_SUPPORTED)?==0{return Err(STATUS_NOT_SUPPORTED)}
+ let output=unsafe{ExAllocatePoolWithTag(PAGED_POOL,size,ACPI_POOL_TAG)};
+ if output.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+ match unsafe{acpi::acpi_wdm_requirements::serialize(&resources,output,size)}{
   Ok(_)=>Ok(output as usize),Err(_)=>{unsafe{ExFreePoolWithTag(output,ACPI_POOL_TAG)};Err(STATUS_INVALID_PARAMETER)}
  }
 }
@@ -385,6 +400,9 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
         },
         IRP_MN_QUERY_RESOURCES if device!=unsafe{ACPI_BUS_DEVICE} => {
             match unsafe{query_pdo_resources(device)} { Ok(pointer)=>{information=pointer;STATUS_SUCCESS}, Err(status)=>status }
+        },
+        IRP_MN_QUERY_RESOURCE_REQUIREMENTS if device!=unsafe{ACPI_BUS_DEVICE} => {
+            match unsafe{query_pdo_resource_requirements(device)} { Ok(pointer)=>{information=pointer;STATUS_SUCCESS}, Err(status)=>status }
         },
         IRP_MN_QUERY_ID if device!=unsafe{ACPI_BUS_DEVICE} => {
             match unsafe{query_pdo_id(device,irp,stack)} {
