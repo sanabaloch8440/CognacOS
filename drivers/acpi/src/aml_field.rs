@@ -25,8 +25,8 @@ pub trait FieldIo {
     fn read(&mut self,region_node:u16,byte_offset:u64,width:u8)->Result<u64,()>;
     fn write(&mut self,region_node:u16,byte_offset:u64,width:u8,value:u64)->Result<(),()>;
     /// Implementations may acquire/release the ACPI Global Lock here.
-    fn begin_locked_access(&mut self)->Result<(),()>{Ok(())}
-    fn end_locked_access(&mut self)->Result<(),()>{Ok(())}
+    fn begin_locked_access(&mut self)->Result<(),()>{Err(())}
+    fn end_locked_access(&mut self)->Result<(),()>{Err(())}
 }
 
 fn field_node(ns:&AmlNamespace,id:u16)->Result<&crate::aml::AmlNode,FieldError>{
@@ -117,11 +117,16 @@ pub struct AmlMutex {
     sync_level:u8,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SyncError { InvalidOwner,Timeout,NotOwner,SyncLevelViolation,RecursionOverflow }
+pub enum SyncError { InvalidOwner,InvalidObject,Timeout,NotOwner,SyncLevelViolation,RecursionOverflow }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct MutexToken { previous_sync_level:u8 }
 impl AmlMutex {
     pub const fn new(sync_level:u8)->Self{Self{owner:AtomicU64::new(0),recursion:AtomicU16::new(0),sync_level}}
+    pub fn from_namespace(ns:&AmlNamespace,node:u16)->Result<Self,SyncError>{
+        let n=ns.nodes.get(node as usize).filter(|_|(node as usize)<ns.count).ok_or(SyncError::InvalidObject)?;
+        if n.object_type!=AmlObjectType::Mutex||n.method_flags>15{return Err(SyncError::InvalidObject)}
+        Ok(Self::new(n.method_flags))
+    }
     pub fn sync_level(&self)->u8{self.sync_level}
     pub fn acquire(&self,thread_id:u64,current_sync_level:&mut u8,spin_limit:u32)->Result<MutexToken,SyncError>{
         if thread_id==0{return Err(SyncError::InvalidOwner)}
@@ -160,6 +165,11 @@ impl AmlMutex {
 pub struct AmlEvent { signaled:AtomicBool }
 impl AmlEvent {
     pub const fn new()->Self{Self{signaled:AtomicBool::new(false)}}
+    pub fn from_namespace(ns:&AmlNamespace,node:u16)->Result<Self,SyncError>{
+        let n=ns.nodes.get(node as usize).filter(|_|(node as usize)<ns.count).ok_or(SyncError::InvalidObject)?;
+        if n.object_type!=AmlObjectType::Event{return Err(SyncError::InvalidObject)}
+        Ok(Self::new())
+    }
     pub fn signal(&self){self.signaled.store(true,Ordering::Release);}
     pub fn reset(&self){self.signaled.store(false,Ordering::Release);}
     pub fn wait(&self,spin_limit:u32)->Result<(),SyncError>{
@@ -228,6 +238,7 @@ mod tests{
         assert_eq!(read_field(&ns,id,&mut mem),Ok(0b10100));
         assert_eq!(write_field(&ns,id,0b00101,&mut mem),Ok(()));
         assert_eq!(mem.bytes[0]&0b11111,0b00101);
-        assert_eq!(mem.bytes[0]&0b1110_0000,0b1010_0000);\n        assert!(!mem.locked);
+        assert_eq!(mem.bytes[0]&0b1110_0000,0b1010_0000);
+        assert!(!mem.locked);
     }
 }
