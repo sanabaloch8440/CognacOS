@@ -1,7 +1,9 @@
-pub mod aml;
 //! Bounded ACPI table parsing primitives for platform discovery.
 //! Callers must pass a readable, mapped byte slice obtained from firmware data.
 #![no_std]
+
+pub mod aml;
+pub mod aml_exec;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
