@@ -152,6 +152,7 @@ pub fn memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> usize {
 /// withheld until the memory hot-add lifecycle can safely online and offline them.
 pub fn allocatable_memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> usize {
  if !is_ready() { return 0; }
+ let _online_guard=ONLINE_LOCK.acquire();
  let s=unsafe{&*TOPOLOGY.0.get()};
  let mut count=0usize;
  for range in s.0.iter().take(s.1).filter(|range|range.node==node&&!range.hot_pluggable) {
@@ -172,6 +173,46 @@ pub fn allocatable_memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> 
 
 // Runtime state for SRAT hot-pluggable ranges. A range is not allocator-visible
 // until the memory manager completes the online transaction.
+struct OnlineStateLock {
+ #[cfg(target_os = "none")]
+ lock: crate::hal::IrqSpinLock<()>,
+ #[cfg(not(target_os = "none"))]
+ lock: core::sync::atomic::AtomicBool,
+}
+struct OnlineStateGuard<'a> {
+ #[cfg(target_os = "none")]
+ _irq: crate::hal::IrqSpinLockGuard<'a, ()>,
+ #[cfg(not(target_os = "none"))]
+ lock: &'a core::sync::atomic::AtomicBool,
+}
+impl Drop for OnlineStateGuard<'_> {
+ fn drop(&mut self) {
+  #[cfg(not(target_os = "none"))]
+  self.lock.store(false, Ordering::Release);
+ }
+}
+impl OnlineStateLock {
+ const fn new()->Self {
+  Self {
+   #[cfg(target_os = "none")]
+   lock: crate::hal::IrqSpinLock::new(()),
+   #[cfg(not(target_os = "none"))]
+   lock: core::sync::atomic::AtomicBool::new(false),
+  }
+ }
+ fn acquire(&self)->OnlineStateGuard<'_> {
+  #[cfg(target_os = "none")]
+  { OnlineStateGuard{_irq:self.lock.lock()} }
+  #[cfg(not(target_os = "none"))]
+  {
+   while self.lock.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err() {
+    core::hint::spin_loop();
+   }
+   OnlineStateGuard{lock:&self.lock}
+  }
+ }
+}
+static ONLINE_LOCK:OnlineStateLock=OnlineStateLock::new();
 struct OnlineHotplug(core::cell::UnsafeCell<([(u64,u64,u32);MAX_RANGES],usize)>);
 unsafe impl Sync for OnlineHotplug {}
 static ONLINE_HOTPLUG:OnlineHotplug=OnlineHotplug(core::cell::UnsafeCell::new(([(0,0,u32::MAX);MAX_RANGES],0)));
@@ -206,6 +247,7 @@ pub fn hotplug_range_owner(start:u64,length:u64)->Option<u32> {
 pub fn set_hotplug_range_online(start:u64,length:u64,online:bool)->Result<(),TopologyError> {
  let node=hotplug_range_owner(start,length).ok_or(TopologyError::InvalidTable)?;
  let end=start.checked_add(length).ok_or(TopologyError::InvalidTable)?;
+ let _guard=ONLINE_LOCK.acquire();
  let state=unsafe{&mut *ONLINE_HOTPLUG.0.get()};
  if online {
   if state.1==MAX_RANGES||state.0.iter().take(state.1).any(|r|start<r.1&&r.0<end) {
@@ -262,6 +304,7 @@ fn sort_allocation_nodes(
 pub fn allocation_order(preferred:u32,output:&mut [u32])->usize {
  if !is_ready()||output.is_empty(){return 0}
  let s=unsafe{&*TOPOLOGY.0.get()};
+ let _online_guard=ONLINE_LOCK.acquire();
  let online=unsafe{&*ONLINE_HOTPLUG.0.get()};
  let mut count=0usize;
  for r in s.0.iter().take(s.1) {
