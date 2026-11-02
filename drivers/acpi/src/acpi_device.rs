@@ -241,12 +241,12 @@ mod tests{
     }
     struct TypedMethods;
     impl AcpiMethodInvoker for TypedMethods{
-        fn evaluate_value(&mut self,_:&AmlNamespace,_:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
-            Ok(match method{
-                1=>AcpiMethodValue::String(AcpiId::from_bytes(b"ACME0001").unwrap()),
-                2=>{let mut ids=[AcpiId::EMPTY;MAX_COMPATIBLE_IDS];ids[0]=AcpiId::from_bytes(b"ACME0002").unwrap();AcpiMethodValue::CompatibleIds{ids,count:1}},
-                3=>AcpiMethodValue::String(AcpiId::from_bytes(b"SERIAL-7").unwrap()),
-                4=>AcpiMethodValue::Integer(DEVICE_STATUS_DEFAULT as u64),
+        fn evaluate_value(&mut self,ns:&AmlNamespace,_:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
+            Ok(match ns.nodes[method as usize].name{
+                n if n==*b"_HID"=>AcpiMethodValue::String(AcpiId::from_bytes(b"ACME0001").unwrap()),
+                n if n==*b"_CID"=>{let mut ids=[AcpiId::EMPTY;MAX_COMPATIBLE_IDS];ids[0]=AcpiId::from_bytes(b"ACME0002").unwrap();AcpiMethodValue::CompatibleIds{ids,count:1}},
+                n if n==*b"_UID"=>AcpiMethodValue::String(AcpiId::from_bytes(b"SERIAL-7").unwrap()),
+                n if n==*b"_STA"=>AcpiMethodValue::Integer(DEVICE_STATUS_DEFAULT as u64),
                 _=>AcpiMethodValue::Integer(0x10002),
             })
         }
