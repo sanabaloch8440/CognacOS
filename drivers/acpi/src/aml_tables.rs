@@ -115,7 +115,7 @@ struct GatedDeviceInvoker<'a,'g,G: AmlExecutionGate,I:AcpiMethodInvoker>{
 }
 impl<G:AmlExecutionGate,I:AcpiMethodInvoker> AcpiMethodInvoker for GatedDeviceInvoker<'_,'_,G,I>{
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
-        self.gate.enter_method().map_err(|_|ExecError::StepLimit)?;
+        self.gate.enter_method().map_err(|_|ExecError::ExecutionBusy)?;
         let result=self.inner.evaluate_value(namespace,aml,method);
         self.gate.leave_method();
         result
