@@ -98,7 +98,11 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
         }
         0x12|0x13=>{
             let (body,end)=package_end(bytes,pos,limit)?;pos=body;
-            let count=if opcode==0x12{byte(bytes,&mut pos,end)? as usize}else{integer_term(bytes,&mut pos,end)? as usize};
+            let count=if opcode==0x12{byte(bytes,&mut pos,end)? as usize}else{
+                let (count,consumed)=evaluate_term_argument(&bytes[pos..end]).map_err(|_|ObjectError::InvalidTermArgument)?;
+                pos=pos.checked_add(consumed).ok_or(ObjectError::Truncated)?;
+                usize::try_from(count).map_err(|_|ObjectError::TooManyElements)?
+            };
             if count>MAX_PACKAGE_ELEMENTS{return Err(ObjectError::TooManyElements)}
             value.kind=AmlValueKind::Package;
             for _ in 0..count {
