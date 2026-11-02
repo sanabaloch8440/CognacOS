@@ -384,11 +384,12 @@ unsafe fn start_pci_device(
             }
         }
         let Some(base) = found else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
+        let Some(translated_base) = translated_base else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
         plan.assignments[plan.count] = Some(pci::resource_manager::BarAssignment {
             index: req.index, kind: req.kind, base, length: req.length, prefetchable: req.prefetchable,
         });
         translated_plan.assignments[translated_plan.count] = Some(pci::resource_manager::BarAssignment {
-            index: req.index, kind: req.kind, base: translated_base.ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?,
+            index: req.index, kind: req.kind, base: translated_base,
             length: req.length, prefetchable: req.prefetchable,
         });
         plan.count += 1;
