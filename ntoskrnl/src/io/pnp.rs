@@ -614,6 +614,8 @@ pub fn register_pci_information(
     node.start_attempts.store(0, Ordering::Relaxed);
     node.is_root.store(false, Ordering::Relaxed);
     node.device_object.store(0, Ordering::Relaxed);
+    node.enumerator_id.store(0, Ordering::Relaxed);
+    node.identity_hash.store(0, Ordering::Relaxed);
     node.service_name_len.store(0, Ordering::Relaxed);
     node.state.store(PNP_DEVICE_ENUMERATED, Ordering::Release);
     Ok(index as u32)
