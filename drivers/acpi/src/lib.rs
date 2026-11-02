@@ -907,3 +907,68 @@ mod pci_root_crs_tests {
         assert_eq!(parse_pci_root_resources(&[0x8a,43,0]),Err(AcpiError::Truncated));
     }
 }
+
+#[cfg(test)]
+mod acpi_5_6_revision_tests {
+    use super::*;
+    fn checksum(table:&mut [u8]) {
+        table[9]=0;
+        let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));
+        table[9]=0u8.wrapping_sub(sum);
+    }
+    fn header(signature:[u8;4],length:usize,revision:u8)->Vec<u8>{
+        let mut b=vec![0u8;length];b[0..4].copy_from_slice(&signature);
+        b[4..8].copy_from_slice(&(length as u32).to_le_bytes());b[8]=revision;b
+    }
+    #[test]
+    fn validates_revision_aware_sdt_headers(){
+        let mut table=header(*b"TEST",36,2);checksum(&mut table);
+        let parsed=parse_sdt_header(&table).unwrap();
+        assert_eq!(parsed.signature,*b"TEST");assert_eq!(parsed.revision,2);
+        assert_eq!(validate_sdt(&table,Some(*b"TEST")),Ok(parsed));
+        assert_eq!(validate_sdt(&table,Some(*b"FACP")),Err(AcpiError::BadSignature));
+    }
+    #[test]
+    fn parses_fadt_extended_dsdt_and_legacy_fallback(){
+        let mut table=header(*b"FACP",148,6);
+        table[36..40].copy_from_slice(&0x1234u32.to_le_bytes());
+        table[40..44].copy_from_slice(&0x5678u32.to_le_bytes());
+        table[45]=2;table[109..111].copy_from_slice(&0x0003u16.to_le_bytes());
+        table[112..116].copy_from_slice(&0x00000400u32.to_le_bytes());
+        table[131]=1;table[140..148].copy_from_slice(&0x1_0000_5678u64.to_le_bytes());
+        checksum(&mut table);
+        let fadt=parse_fadt(&table).unwrap();
+        assert_eq!(fadt.revision,6);assert_eq!(fadt.preferred_pm_profile,2);
+        assert_eq!(fadt.effective_dsdt(),0x1_0000_5678);
+        assert_eq!(fadt.effective_firmware_ctrl(),0x1234);
+        assert_eq!(fadt.flags,0x400);
+        let mut legacy=header(*b"FACP",116,3);
+        legacy[40..44].copy_from_slice(&0x8765u32.to_le_bytes());checksum(&mut legacy);
+        assert_eq!(parse_fadt(&legacy).unwrap().effective_dsdt(),0x8765);
+    }
+    #[test]
+    fn parses_x86_local_apic_and_x2apic_nmi_records(){
+        let mut table=header(*b"APIC",62,5);
+        table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
+        table[40..44].copy_from_slice(&1u32.to_le_bytes());
+        table[44..50].copy_from_slice(&[4,6,0xff,0x0f,0,1]);
+        table[50..62].copy_from_slice(&[10,12,0x0f,0,0xff,0xff,0xff,0xff,1,0,0,0]);
+        checksum(&mut table);
+        let madt=parse_madt(&table).unwrap();
+        assert_eq!(madt.local_apic_nmi_count,1);
+        assert_eq!(madt.local_apic_nmis[0].processor_uid,0xff);
+        assert_eq!(madt.x2apic_nmi_count,1);
+        assert_eq!(madt.x2apic_nmis[0].processor_uid,u32::MAX);
+        assert_eq!(madt.x2apic_nmis[0].lint,1);
+    }
+    #[test]
+    fn rejects_bad_fadt_checksum_and_reserved_nmi_flags(){
+        let mut table=header(*b"FACP",148,6);
+        table[40..44].copy_from_slice(&1u32.to_le_bytes());checksum(&mut table);
+        table[9]^=1;assert_eq!(parse_fadt(&table),Err(AcpiError::BadChecksum));
+        let mut madt=header(*b"APIC",50,5);
+        madt[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
+        madt[44..50].copy_from_slice(&[4,6,0,0x02,0,1]);checksum(&mut madt);
+        assert_eq!(parse_madt(&madt),Err(AcpiError::MalformedEntry));
+    }
+}
