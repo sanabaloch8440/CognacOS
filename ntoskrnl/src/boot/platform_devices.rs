@@ -521,141 +521,87 @@ pub(crate) fn initialize_acpi_driver(rsdp_address:u64)->bool{
 }
 
 static PCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static PCI_DRIVER_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static mut PCI_DRIVER_OBJECT_STORAGE:core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject>=core::mem::MaybeUninit::uninit();
 static mut PCI_HANDOFF_STORAGE:core::mem::MaybeUninit<nt_abi::bus::PCI_DRIVER_HANDOFF>=core::mem::MaybeUninit::uninit();
 static mut PCI_REGISTRY_IMAGE_BUFFER:[u8;PCI_PE_IMAGE.len()]=[0;PCI_PE_IMAGE.len()];
 static mut PCI_BUS_FDO:*mut io::wdm::DeviceObject=core::ptr::null_mut();
 
-/// Load pci.sys from its registry service entry, pass it firmware-derived ECAM
-/// mappings, and let it create PDOs through the documented NTOSKRNL imports.
-/// Firmware discovery and MMIO mapping remain bootstrap responsibilities;
-/// PCI configuration-space enumeration is exclusively performed by PCI.sys.
+/// Prepare ECAM resources and invoke pci.sys DriverEntry, without enumerating.
 fn initialize_pci_driver(rsdp_address:u64)->bool {
  use core::sync::atomic::Ordering;
  use nt_abi::bus::{PCI_DRIVER_HANDOFF,PCI_ECAM_WINDOW,PCI_DRIVER_HANDOFF_MAGIC,PCI_DRIVER_HANDOFF_VERSION,PCI_DRIVER_HANDOFF_MAX_WINDOWS};
  if PCI_PE_IMAGE.is_empty()||rsdp_address==0{return false;}
- if PCI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return false;}
- let table=match unsafe{acpi::find_table(rsdp_address,*b"MCFG",0)}{Ok(t)=>t,Err(_)=>return false};
- let mcfg=match acpi::parse_mcfg(table){Ok(v)=>v,Err(_)=>return false};
- if mcfg.count==0||mcfg.count>PCI_DRIVER_HANDOFF_MAX_WINDOWS{return false;}
- let mut handoff=PCI_DRIVER_HANDOFF{
-  magic:PCI_DRIVER_HANDOFF_MAGIC,size:core::mem::size_of::<PCI_DRIVER_HANDOFF>() as u32,
-  version:PCI_DRIVER_HANDOFF_VERSION,window_count:mcfg.count as u32,reserved:0,
-  windows:[PCI_ECAM_WINDOW::default();PCI_DRIVER_HANDOFF_MAX_WINDOWS],
- };
- // Reject overlapping ECAM allocations before publishing any aperture to HAL.
- for (i,allocation) in mcfg.allocations.iter().take(mcfg.count).enumerate() {
-  if mcfg.allocations.iter().take(i).any(|prior|prior.segment==allocation.segment
-   &&prior.start_bus<=allocation.end_bus&&allocation.start_bus<=prior.end_bus){return false;}
- }
- let mut mapped=0usize;
- for allocation in mcfg.allocations.iter().take(mcfg.count){
-  let span=((allocation.end_bus as u64-allocation.start_bus as u64)+1).checked_mul(1<<20);
-  let Some(length)=span else{return false};
-  let virtual_base=match kernel_vm::map_io_space(allocation.base_address,length){
-   Ok(v)=>v,Err(_)=>{
-    for prior in handoff.windows.iter().take(mapped){let len=((prior.bus_end as u64-prior.bus_start as u64)+1)<<20;let _=kernel_vm::unmap_io_space(prior.virtual_base,len);}
-    return false
-   }
-  };
-  handoff.windows[mapped]=PCI_ECAM_WINDOW{
-   virtual_base,physical_base:allocation.base_address,segment:allocation.segment,
-   bus_start:allocation.start_bus,bus_end:allocation.end_bus,
-  };
-  mapped+=1;
- }
- // Publish validated, already mapped apertures to HAL only after the complete
- // MCFG set has been mapped and checked for overlap.
- for window in handoff.windows.iter().take(mapped) {
-  if hal::register_pci_ecam_window(window.virtual_base,window.physical_base,window.segment,window.bus_start,window.bus_end).is_err(){return false;}
- }
- unsafe{
-  let handoff_ptr=core::ptr::addr_of_mut!(PCI_HANDOFF_STORAGE).cast::<PCI_DRIVER_HANDOFF>();
-  handoff_ptr.write(handoff);
-  let driver=core::ptr::addr_of_mut!(PCI_DRIVER_OBJECT_STORAGE).cast::<ntoskrnl::driver_loader::DriverObject>();
-  driver.write(core::mem::zeroed());
-  (*driver).object_type=4;(*driver).size=core::mem::size_of::<ntoskrnl::driver_loader::DriverObject>() as i16;
-  (*driver).driver_extension=handoff_ptr.cast();
-  let Some(system_bytes)=boot_hive_bytes("SYSTEM") else{return false};
-  let system_hive=match ntoskrnl::cm::hive::Hive::open(system_bytes){Ok(h)=>h,Err(_)=>return false};
-  const SERVICE:&[u16]=&[80,67,73];
-  const IMAGE_PATH:&[u16]=&[92,83,121,115,116,101,109,82,111,111,116,92,83,121,115,116,101,109,51,50,92,100,114,105,118,101,114,115,92,112,99,105,46,115,121,115];
-  let mut registry_path=[0u16;1024];
-  let image_buffer=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PCI_REGISTRY_IMAGE_BUFFER).cast::<u8>(),PCI_PE_IMAGE.len());
-  let loaded=ntoskrnl::driver_loader::load_registered_service_with_resolver(
-   &system_hive,SERVICE,&mut registry_path,image_buffer,driver,core::ptr::null_mut(),
-   |image_path, output| resolve_builtin_driver_image(image_path, output),ntoskrnl::resolve);
-  if loaded.is_err(){return false;}
+ if PCI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return PCI_DRIVER_READY.load(Ordering::Acquire);}
+ let result=(|| -> bool {
+  let table=match unsafe{acpi::find_table(rsdp_address,*b"MCFG",0)}{Ok(t)=>t,Err(_)=>return false};
+  let mcfg=match acpi::parse_mcfg(table){Ok(v)=>v,Err(_)=>return false};
+  if mcfg.count==0||mcfg.count>PCI_DRIVER_HANDOFF_MAX_WINDOWS{return false;}
+  let mut handoff=PCI_DRIVER_HANDOFF{magic:PCI_DRIVER_HANDOFF_MAGIC,size:core::mem::size_of::<PCI_DRIVER_HANDOFF>() as u32,
+   version:PCI_DRIVER_HANDOFF_VERSION,window_count:mcfg.count as u32,reserved:0,
+   windows:[PCI_ECAM_WINDOW::default();PCI_DRIVER_HANDOFF_MAX_WINDOWS]};
+  for (i,a) in mcfg.allocations.iter().take(mcfg.count).enumerate(){
+   if mcfg.allocations.iter().take(i).any(|p|p.segment==a.segment&&p.start_bus<=a.end_bus&&a.start_bus<=p.end_bus){return false;}
+  }
+  let mut mapped=0usize;
+  for a in mcfg.allocations.iter().take(mcfg.count){
+   let Some(length)=((a.end_bus as u64-a.start_bus as u64)+1).checked_mul(1<<20) else{return false};
+   let virtual_base=match kernel_vm::map_io_space(a.base_address,length){Ok(v)=>v,Err(_)=>return false};
+   handoff.windows[mapped]=PCI_ECAM_WINDOW{virtual_base,physical_base:a.base_address,segment:a.segment,bus_start:a.start_bus,bus_end:a.end_bus};mapped+=1;
+  }
+  for w in handoff.windows.iter().take(mapped){
+   if hal::register_pci_ecam_window(w.virtual_base,w.physical_base,w.segment,w.bus_start,w.bus_end).is_err(){return false;}
+  }
+  unsafe {
+   let handoff_ptr=core::ptr::addr_of_mut!(PCI_HANDOFF_STORAGE).cast::<PCI_DRIVER_HANDOFF>();handoff_ptr.write(handoff);
+   let driver=core::ptr::addr_of_mut!(PCI_DRIVER_OBJECT_STORAGE).cast::<ntoskrnl::driver_loader::DriverObject>();
+   driver.write(core::mem::zeroed());(*driver).object_type=4;(*driver).size=core::mem::size_of::<ntoskrnl::driver_loader::DriverObject>() as i16;(*driver).driver_extension=handoff_ptr.cast();
+   let Some(bytes)=boot_hive_bytes("SYSTEM") else{return false};
+   let hive=match ntoskrnl::cm::hive::Hive::open(bytes){Ok(h)=>h,Err(_)=>return false};
+   const SERVICE:&[u16]=&[80,67,73];let mut path=[0u16;1024];
+   let image=core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PCI_REGISTRY_IMAGE_BUFFER).cast::<u8>(),PCI_PE_IMAGE.len());
+   if ntoskrnl::driver_loader::load_registered_service_with_resolver(&hive,SERVICE,&mut path,image,driver,core::ptr::null_mut(),
+    |p,o|resolve_builtin_driver_image(p,o),ntoskrnl::resolve).is_err(){return false;}
+  }
   true
- }
+ })();
+ PCI_DRIVER_READY.store(result,Ordering::Release);
+ result
 }
 
-/// Enumerate PCI devices only after pci.sys has completed DriverEntry.
-/// The prerequisite phase must call initialize_pci_driver successfully first.
+/// PCI enumeration is a separate phase and is forbidden until DriverEntry passed.
 fn enumerate_pci_bus_devices()->usize {
  use core::sync::atomic::Ordering;
- if !PCI_DRIVER_BINDING_STARTED.load(Ordering::Acquire) { return 0; }
+ if !PCI_DRIVER_READY.load(Ordering::Acquire){return 0;}
  unsafe {
-  let Some(system_bytes)=boot_hive_bytes("SYSTEM") else{return false};
-  let system_hive=match ntoskrnl::cm::hive::Hive::open(system_bytes){Ok(h)=>h,Err(_)=>return false};
-   let mut bus=core::ptr::null_mut();
-   let status=io::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus);
-   if status!=nt_abi::ntstatus::STATUS_SUCCESS||bus.is_null(){return false;}
-   let root_index=match ntoskrnl::pnp::register_root_device(){Ok(index)=>index,Err(_)=>{
-    let _=io::wdm::io_delete_device(bus);return false
-   }};
-   if ntoskrnl::pnp::bind_pnp_device_object(root_index,bus).is_err(){
-    let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);
-    let _=io::wdm::io_delete_device(bus);return false
+  let Some(bytes)=boot_hive_bytes("SYSTEM") else{return 0};
+  let hive=match ntoskrnl::cm::hive::Hive::open(bytes){Ok(h)=>h,Err(_)=>return 0};
+  let driver=core::ptr::addr_of_mut!(PCI_DRIVER_OBJECT_STORAGE).cast::<ntoskrnl::driver_loader::DriverObject>();
+  let mut bus=core::ptr::null_mut();
+  if io::wdm::io_create_device(driver.cast(),0,core::ptr::null_mut(),0x22,0,0,&mut bus)!=nt_abi::ntstatus::STATUS_SUCCESS||bus.is_null(){return 0;}
+  let root=match ntoskrnl::pnp::register_root_device(){Ok(i)=>i,Err(_)=>{let _=io::wdm::io_delete_device(bus);return 0;}};
+  if ntoskrnl::pnp::bind_pnp_device_object(root,bus).is_err(){let _=io::wdm::io_delete_device(bus);return 0;}
+  PCI_BUS_FDO=bus;
+  let status=io::wdm::IoPnPEnumerateBus(bus);
+  if status!=nt_abi::ntstatus::STATUS_SUCCESS{let _=io::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return 0;}
+  let mut count=0usize;
+  for child_index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES{
+   let mut child=core::ptr::null_mut();
+   if io::wdm::IoPnPQueryBusChild(bus,child_index as u32,&mut child)!=nt_abi::ntstatus::STATUS_SUCCESS{break;}
+   if child.is_null(){continue;}
+   let ext=(*child).device_extension.cast::<io::wdm::PciPdoExtension>();
+   if ext.is_null()||(*ext).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
+   if let Ok(index)=ntoskrnl::pnp::register_pci_information(&(*ext).information,Some(root)){
+    if ntoskrnl::pnp::bind_pnp_device_object(index,child).is_ok(){count+=1;}
+    else{let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);}
    }
-   PCI_BUS_FDO=bus;
-   let status=io::wdm::IoPnPEnumerateBus(bus);
-   if status!=nt_abi::ntstatus::STATUS_SUCCESS {
-    let _=ntoskrnl::pnp::transition_pnp_device(root_index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,status);
-    let _=io::wdm::io_delete_device(bus);PCI_BUS_FDO=core::ptr::null_mut();return false;
-   }
-   // Transfer the validated PDO identities from the WDM BusRelations table
-   // into the kernel's registry-facing devnode database. No PCI config access
-   // occurs here; the data originates from pci.sys-created PDO extensions.
-   let mut count=0usize;
-   for child_index in 0..ntoskrnl::pnp::MAX_PNP_DEVICES {
-    let mut child=core::ptr::null_mut();
-    let query=io::wdm::IoPnPQueryBusChild(bus,child_index as u32,&mut child);
-    if query!=nt_abi::ntstatus::STATUS_SUCCESS {break;}
-    if child.is_null(){continue;}
-    let extension=(*child).device_extension.cast::<io::wdm::PciPdoExtension>();
-    if extension.is_null()||(*extension).magic!=io::wdm::PCI_PDO_EXTENSION_MAGIC{continue;}
-    if let Ok(index)=ntoskrnl::pnp::register_pci_information(&(*extension).information,Some(root_index)){
-     if ntoskrnl::pnp::bind_pnp_device_object(index,child).is_ok(){count+=1;}
-     else {let _=ntoskrnl::pnp::transition_pnp_device(index,ntoskrnl::pnp::PNP_DEVICE_REMOVED,nt_abi::ntstatus::STATUS_INVALID_DEVICE_REQUEST);}
-    }
-   }
-   let _=ntoskrnl::pnp::match_registry_services(&system_hive);
-   count
+  }
+  let _=ntoskrnl::pnp::match_registry_services(&hive);count
  }
 }
 
-/// Compatibility entry point; callers should use the explicit two-stage API.
-pub(crate) fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
- if !initialize_pci_driver(rsdp_address) { return false; }
- enumerate_pci_bus_devices()
-}
- while resource assignment and xHCI start
-/// are completed by the PnP/resource-arbitration stages.
-pub(crate) fn enumerate_acpi_pci_devices(rsdp_address:u64)->usize {
- initialize_pci_bus_driver(rsdp_address)
-}
-
-
-/// Initialize pci.sys without enumerating devices.
-pub(crate) fn initialize_pci_driver_for_boot(rsdp_address:u64)->bool {
- initialize_pci_driver(rsdp_address)
-}
-
-/// Enumerate only after prerequisite boot drivers have succeeded.
-pub(crate) fn enumerate_acpi_pci_devices(_rsdp_address:u64)->usize {
- enumerate_pci_bus_devices()
-}
+pub(crate) fn initialize_pci_driver_for_boot(rsdp_address:u64)->bool{initialize_pci_driver(rsdp_address)}
+pub(crate) fn enumerate_acpi_pci_devices(_rsdp_address:u64)->usize{enumerate_pci_bus_devices()}
 
 /// Query PCI.sys' versioned inventory, resolve the endpoint's full bridge
 /// path, size BAR0 with decode and bus mastering disabled, then publish the
