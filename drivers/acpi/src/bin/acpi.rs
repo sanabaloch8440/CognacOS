@@ -207,10 +207,10 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let gate=unsafe{&*STATE.aml_barrier.get()};
     let records=unsafe{(*STATE.device_records.get()).assume_init_mut()};
     let mut identity_count=0usize;
-    if collect_device_identities(manager,loaded.dsdt,&table_sources[..ssdt_count+1],gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
+    if let Err(status)=collect_device_identities(manager,loaded.dsdt,&table_sources[..ssdt_count+1],gate,records,&mut identity_count){return status;}
     for index in 0..loaded.ssdt_count{
         let handle=match loaded.ssdts[index]{Some(handle)=>handle,None=>return STATUS_INVALID_PARAMETER};
-        if collect_device_identities(manager,handle,&table_sources[..ssdt_count+1],gate,records,&mut identity_count).is_err(){return STATUS_INVALID_PARAMETER;}
+        if let Err(status)=collect_device_identities(manager,handle,&table_sources[..ssdt_count+1],gate,records,&mut identity_count){return status;}
     }
     STATE.device_count.store(identity_count,Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
