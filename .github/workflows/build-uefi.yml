@@ -166,6 +166,8 @@ jobs:
         run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_runtime::
       - name: Test AML-4 OperationRegion decoding and address-space dispatch
         run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_region::
+      - name: Test AML-5 field access and synchronization
+        run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_field::
       - name: Check PCI driver library
         run: cargo check --manifest-path drivers/pci/Cargo.toml --lib
       - name: Test PCI ECAM and xHCI resource decoding
