@@ -66,9 +66,21 @@ fn package_end(bytes:&[u8],pos:usize,end:usize)->Result<(usize,usize),ObjectErro
     Ok((pos+1+((lead>>6) as usize),finish))
 }
 
-/// Decode one AML DataRefObject and return its arena index and byte offset after
-/// the object. Nested packages are bounded by both the package end and arena.
+/// Maximum nested Buffer/Package depth accepted by the fixed-stack decoder.
+pub const MAX_DATA_OBJECT_DEPTH:u8=32;
+
+/// Decode one AML DataRefObject transactionally. If any nested initializer is
+/// malformed, arena allocations made by this decode are rolled back.
 pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObjectArena)->Result<(u16,usize),ObjectError>{
+    let checkpoint=arena.count;
+    match decode_data_object_depth(bytes,offset,limit,arena,0){
+        Ok(result)=>Ok(result),
+        Err(error)=>{arena.count=checkpoint;Err(error)}
+    }
+}
+
+fn decode_data_object_depth(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObjectArena,depth:u8)->Result<(u16,usize),ObjectError>{
+    if depth>MAX_DATA_OBJECT_DEPTH{return Err(ObjectError::MalformedObject)}
     if offset>limit||limit>bytes.len(){return Err(ObjectError::Truncated)}
     let mut pos=offset;
     let opcode=byte(bytes,&mut pos,limit)?;
@@ -112,7 +124,7 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
                     let missing=arena.push({let mut z=AmlRuntimeValue::EMPTY;z.kind=AmlValueKind::Uninitialized;z})?;
                     value.elements[value.element_count as usize]=missing;value.element_count+=1;continue
                 }
-                let (child,next)=decode_data_object(bytes,pos,end,arena)?;
+                let (child,next)=decode_data_object_depth(bytes,pos,end,arena,depth+1)?;
                 value.elements[value.element_count as usize]=child;value.element_count+=1;pos=next;
             }
             if pos!=end{return Err(ObjectError::MalformedObject)}
