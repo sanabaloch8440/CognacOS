@@ -60,3 +60,79 @@ pub unsafe fn serialize(r:&ResourceList,output:*mut u8,capacity:usize)->Result<u
 #[test]fn rejects_short_output_without_mutating(){let r=ResourceList::EMPTY;let mut b=[0xa5;32];assert_eq!(unsafe{serialize(&r,b.as_mut_ptr(),b.len())},Err(RequirementsError::OutputTooSmall));assert_eq!(b,[0xa5;32]);}
 #[test]fn rejects_address_overflow(){let mut r=ResourceList::EMPTY;r.entries[0]=Some(Resource::Memory{minimum:u64::MAX,maximum:u64::MAX,alignment:1,length:2,writeable:true,cacheable:false,kind:8});r.count=1;let mut b=[0u8;72];assert_eq!(unsafe{serialize(&r,b.as_mut_ptr(),b.len())},Err(RequirementsError::UnsupportedRange));}
 }
+
+/// Size of an IO_RESOURCE_REQUIREMENTS_LIST containing every complete
+/// firmware configuration. Each configuration is a separate IO_RESOURCE_LIST.
+pub fn required_size_alternatives(r:&crate::acpi_resources::ResourceAlternatives)->Result<usize,RequirementsError>{
+ if r.count==0||r.count>r.entries.len(){return Err(RequirementsError::InvalidResourceList)}
+ let mut total=REQUIREMENTS_HEADER_SIZE;
+ for list in r.entries[..r.count].iter(){
+  let n=descriptor_count(list)?;
+  total=total.checked_add(ALTERNATIVE_HEADER_SIZE).and_then(|v|v.checked_add(n.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE)?)).ok_or(RequirementsError::SizeOverflow)?;
+ }
+ Ok(total)
+}
+
+/// Serialize all _PRS configurations into the variable-length WDM list.
+/// The resource arbiter, not this driver, chooses one of these alternatives.
+pub unsafe fn serialize_alternatives(
+ r:&crate::acpi_resources::ResourceAlternatives,
+ output:*mut u8,
+ capacity:usize,
+)->Result<usize,RequirementsError>{
+ let needed=required_size_alternatives(r)?;
+ if output.is_null()||capacity<needed{return Err(RequirementsError::OutputTooSmall)}
+ // Validate every descriptor before mutating caller memory.
+ for list in r.entries[..r.count].iter(){
+  if list.count>list.entries.len(){return Err(RequirementsError::InvalidResourceList)}
+  for item in list.entries[..list.count].iter().flatten(){match *item{
+   Resource::Io{minimum,maximum,length,alignment,..}|Resource::Memory{minimum,maximum,length,alignment,..}=>if minimum>maximum||length==0||length>u32::MAX as u64||alignment>u32::MAX as u64||maximum.checked_add(length-1).is_none(){return Err(RequirementsError::UnsupportedRange)},
+   Resource::BusNumber{minimum,maximum,length}=>if minimum>maximum||minimum>u32::MAX as u64||maximum>u32::MAX as u64||length==0||length>u32::MAX as u64{return Err(RequirementsError::UnsupportedRange)},
+   Resource::ExtendedIrq{count,..} if count>8=>return Err(RequirementsError::InvalidResourceList),_=>{}
+  }}
+ }
+ unsafe{core::ptr::write_bytes(output,0,needed);w32(output,0,needed as u32);w32(output,4,15);w32(output,8,0);w32(output,12,0);w32(output,16,0);w32(output,20,0);w32(output,24,0);w32(output,28,r.count as u32);}
+ let mut offset=REQUIREMENTS_HEADER_SIZE;
+ for list in r.entries[..r.count].iter(){
+  let count=descriptor_count(list)?;
+  let alt=unsafe{output.add(offset)};
+  unsafe{w16(alt,0,1);w16(alt,2,1);w32(alt,4,count as u32);}
+  let p=unsafe{alt.add(ALTERNATIVE_HEADER_SIZE)};
+  let mut i=0usize;
+  for item in list.entries[..list.count].iter().flatten(){match *item{
+   Resource::Io{minimum,maximum,length,alignment,decode_16_bit}=>unsafe{address(p,i,TYPE_PORT,PORT_IO|if decode_16_bit{PORT_16_BIT_DECODE}else{PORT_10_BIT_DECODE},length,alignment,minimum,maximum);i+=1;},
+   Resource::Memory{minimum,maximum,length,alignment,writeable,cacheable,..}=>unsafe{address(p,i,TYPE_MEMORY,(if writeable{0}else{MEMORY_READ_ONLY})|(if cacheable{MEMORY_CACHEABLE}else{0}),length,alignment,minimum,maximum);i+=1;},
+   Resource::BusNumber{minimum,maximum,length}=>{let d=unsafe{p.add(i*IO_RESOURCE_DESCRIPTOR_SIZE)};unsafe{header(p,i,TYPE_BUS_NUMBER,SHARE_EXCLUSIVE,0,0);w32(d,8,length as u32);w32(d,12,minimum as u32);w32(d,16,maximum as u32);}i+=1;},
+   Resource::Irq{mask,level_triggered,shared,..}=>{let mut choice=0usize;for vector in 0..16u32{if mask&(1u16<<vector)!=0{unsafe{pair(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level_triggered{INTERRUPT_LEVEL_SENSITIVE}else{0},vector,vector,choice!=0);}i+=1;choice+=1;}}},
+   Resource::ExtendedIrq{flags,interrupts,count}=>{let level=flags&2!=0;let shared=flags&8!=0;for (choice,vector) in interrupts[..count as usize].iter().enumerate(){unsafe{pair(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level{INTERRUPT_LEVEL_SENSITIVE}else{0},*vector,*vector,choice!=0);}i+=1;}},
+   Resource::Dma{channels,..}=>{let mut choice=0usize;for channel in 0..8u32{if channels&(1u8<<channel)!=0{unsafe{pair(p,i,TYPE_DMA,SHARE_EXCLUSIVE,0,channel,channel,choice!=0);}i+=1;choice+=1;}}},
+   Resource::EndTag{..}=>{}
+  }}
+  if i!=count{return Err(RequirementsError::InvalidResourceList)}
+  offset=offset.checked_add(ALTERNATIVE_HEADER_SIZE).and_then(|v|v.checked_add(count.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE)?)).ok_or(RequirementsError::SizeOverflow)?;
+ }
+ Ok(needed)
+}
+
+#[cfg(test)]
+mod multiple_alternative_tests{
+ use super::*;
+ use crate::acpi_resources::{Resource,ResourceAlternatives,ResourceList};
+ #[test]fn emits_multiple_complete_io_resource_lists(){
+  let mut alternatives=ResourceAlternatives::EMPTY;
+  for channel in [1u8,4u8]{
+   let mut list=ResourceList::EMPTY;
+   list.entries[0]=Some(Resource::Dma{channels:channel,transfer_size:0,bus_master:false});list.count=1;
+   alternatives.entries[alternatives.count]=list;alternatives.count+=1;
+  }
+  let size=required_size_alternatives(&alternatives).unwrap();assert_eq!(size,112);
+  let mut bytes=[0u8;112];
+  assert_eq!(unsafe{serialize_alternatives(&alternatives,bytes.as_mut_ptr(),bytes.len())},Ok(112));
+  assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()),2);
+  assert_eq!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()),1);
+  assert_eq!(u32::from_le_bytes(bytes[76..80].try_into().unwrap()),1);
+  assert_eq!(u32::from_le_bytes(bytes[56..60].try_into().unwrap()),1);
+  assert_eq!(u32::from_le_bytes(bytes[96..100].try_into().unwrap()),4);
+ }
+ #[test]fn rejects_empty_alternative_set(){assert_eq!(required_size_alternatives(&ResourceAlternatives::EMPTY),Err(RequirementsError::InvalidResourceList));}
+}
