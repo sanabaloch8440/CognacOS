@@ -118,9 +118,9 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
   assert!(matches!(r.entries[1],Some(Resource::Irq{mask:0x0b,..})));}
  #[test]fn parses_fixed_io_descriptor(){let parsed=parse_resource_template(&[0x4b,0x78,0x03,0x03,0x79,0]);assert!(matches!(parsed.unwrap().entries[0],Some(Resource::Io{minimum:0x378,maximum:0x378,length:3,..})));}
  #[test]fn parses_fixed_memory_and_io_as_exact_assigned_bases(){
-  let memory=parse_resource_template(&[0x87,9,0,0,0x00,0x10,0,0,0x20,0,0,0,0x79,0]).unwrap();
+  let memory=parse_resource_template(&[0x86,9,0,0,0x00,0x10,0,0,0x20,0,0,0,0x79,0]).unwrap();
   assert!(matches!(memory.entries[0],Some(Resource::Memory{minimum:0x1000,maximum:0x1000,length:0x20,..})));
-  let io=parse_resource_template(&[0x8b,3,0,0x78,0x03,4,0x79,0]).unwrap();
+  let io=parse_resource_template(&[0x4b,0x78,0x03,4,0x79,0]).unwrap();
   assert!(matches!(io.entries[0],Some(Resource::Io{minimum:0x378,maximum:0x378,length:4,..})));
  }
  #[test]fn rejects_missing_end_tag(){assert_eq!(parse_resource_template(&[0x47,1,0,1,0,1,1,8]),Err(ResourceError::MissingEndTag));}
