@@ -130,7 +130,7 @@ mod tests {
     }
     #[test] fn decodes_nested_packages_by_arena_reference(){
         // Package(2) { One, Package(1) { ByteConst(9) } }
-        let bytes=[0x12,0x08,2,0x01,0x12,0x05,1,0x0a,9];
+        let bytes=[0x12,0x08,2,0x01,0x12,0x04,1,0x0a,9];
         let mut arena=AmlObjectArena::new();
         let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
         assert_eq!(end,bytes.len());let outer=arena.get(id).unwrap();assert_eq!(outer.element_count,2);
