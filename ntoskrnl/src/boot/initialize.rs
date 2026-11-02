@@ -82,7 +82,7 @@ unsafe fn initialize_registry_boot_drivers(
             name: &service_names_snapshot[index][..name_len],
             group: &metadata.group[..metadata.group_len],
             tag: metadata.tag,
-            start_type: 0, // the registry enumerator selected only Start=0/1 candidates
+            start_type: metadata.start_type,
             service_dependencies: &service_refs[index][..service_counts[index]],
             group_dependencies: &group_refs[index][..group_counts[index]],
         };
