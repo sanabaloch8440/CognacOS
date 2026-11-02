@@ -95,7 +95,7 @@ This is an implementation status record, not a compatibility claim.
 | AML execution | Bounded integer-oriented method executor; typed data-object decoder; gated immutable Name(Buffer) extraction with bounded caller storage | Method-returned buffers, references, synchronization and full operation-region semantics remain incomplete |
 | Device identity | _HID, _CID, _UID, _STA, _ADR evaluator | Used to create initial ACPI PDO inventory; unsupported methods can suppress records |
 | ACPI PDO/PnP | Bus device, PDO creation, BusRelations response and kernel relation reference ownership; PDO QueryId and conservative QueryCapabilities; PDO QueryResources evaluates immutable static child _CRS Name(Buffer) objects and serializes supported fixed raw resources; QueryResourceRequirements evaluates immutable static child _PRS Name(Buffer) objects and returns multiple IO_RESOURCE_LIST alternatives, including common resources combined with dependent-function groups, address ranges and per-resource IRQ/DMA choices | Partial; method-returned buffers, dependent-function alternatives beyond the bounded four-configuration limit, translated interrupt vectors, _SRS assignment, ContainerID, device text, bus information, TargetDeviceRelation and complete start/stop/remove behavior remain incomplete |
-| _CRS / _PRS / _SRS | Bounded resource-template parser; PDO QueryResources and QueryResourceRequirements consume immutable child Name(Buffer) objects and return WDM CM/IO resource lists; kernel fixed-capacity transactional arbiter core and indexed PnP-devnode adapter are present | Partial; the kernel now has a bounded WDM requirements decoder/selector that expands IO_RESOURCE_ALTERNATIVE choice groups, honors IO_RESOURCE_PREFERRED ordering, and supports shared level-sensitive line IRQ claims; edge/MSI/policy-bearing shared interrupts and oversized Cartesian expansions fail closed; the ACPI PDO-to-kernel-devnode bridge, typed method-returned buffers, assignment-to-_SRS translation and _SRS execution remain outstanding |
+| _CRS / _PRS / _SRS | Bounded resource-template parser; PDO QueryResources and QueryResourceRequirements consume immutable child Name(Buffer) objects and return WDM CM/IO resource lists; kernel fixed-capacity transactional arbiter core and indexed PnP-devnode adapter are present | Partial; the kernel now has a bounded WDM requirements decoder/selector that expands IO_RESOURCE_ALTERNATIVE choice groups, honors IO_RESOURCE_PREFERRED ordering, and supports shared level-sensitive line IRQ claims; edge/MSI/policy-bearing shared interrupts and oversized Cartesian expansions fail closed; typed method-returned buffers, assignment-to-_SRS translation and _SRS execution remain outstanding |
 | _PRT | Typed route parser and link-device resolver interface | No complete AML-to-link-device-to-HAL route path |
 | Power / wake | State and _PRW data primitives | No complete kernel power-manager dispatch path |
 | GPE / Notify / eject | Queue and lifecycle primitives | Not connected end-to-end to GPE dispatch, PnP invalidation and removal rundown |
@@ -151,3 +151,12 @@ selected configuration is translated, programmed through _SRS, and verified
 against _CRS. Typed AML method-returned buffers and the complete start/stop/
 remove lifecycle remain incomplete. Do not enable hardware drivers that require
 resources based on this milestone alone.
+
+
+The ACPI PDO creation path now registers each child with the kernel's generic
+PnP devnode table through `IoPnPRegisterBusDevice`, using the AML namespace-node
+identity as its stable enumerator-scoped key. The WDM BusRelations database and
+the generic devnode table each retain their own PDO reference. This establishes
+the identity/lifetime bridge only: it does not yet select `_PRS` resources,
+translate assignments into raw/translated `CM_RESOURCE_LIST` objects, invoke
+`_SRS`, or authorize child START_DEVICE success.
