@@ -149,7 +149,10 @@ pub fn validate_forwarding_path(
     for need in [required.io, required.memory, required.prefetchable].into_iter().flatten() {
         let end = need.start.checked_add(need.length).ok_or(HierarchyError::InvalidRequirement)?;
         if !allowed[..n].iter().any(|a| {
-            a.kind == need.kind && a.prefetchable == need.prefetchable
+            (a.kind == need.kind
+                || (need.kind == BarKind::Memory32 && need.prefetchable
+                    && a.kind == BarKind::Memory64 && a.prefetchable))
+                && a.prefetchable == need.prefetchable
                 && a.start <= need.start
                 && a.start.checked_add(a.length).is_some_and(|limit| end <= limit)
         }) { return Err(HierarchyError::InvalidRequirement); }
