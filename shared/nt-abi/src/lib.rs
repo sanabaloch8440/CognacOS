@@ -129,6 +129,15 @@ pub mod bus {
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
     };
 
+    /// Per-PCI-PDO identity interface. Unlike the bus-wide configuration
+    /// interface, this is queried on an individual child PDO and reports only
+    /// the immutable identity captured during enumeration.
+    pub const PCI_DEVICE_INTERFACE_VERSION: u32 = 1;
+    pub const GUID_PCI_DEVICE_INTERFACE: GUID = GUID {
+        data1: 0x7b7a_2a03, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+
     /// Common prefix for all published bus interfaces.
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -205,6 +214,17 @@ pub mod bus {
         pub vendor_id: u16,
         pub device_id: u16,
         pub command: u16,
+    }
+
+    pub type PPCI_QUERY_DEVICE_INFORMATION = Option<
+        unsafe extern "win64" fn(context: PVOID, information: *mut PCI_DEVICE_INFORMATION) -> NTSTATUS,
+    >;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct PCI_DEVICE_INTERFACE {
+        pub header: INTERFACE_HEADER,
+        pub query_information: PPCI_QUERY_DEVICE_INFORMATION,
     }
 
     /// MCFG-derived ECAM aperture mapped by NTOSKRNL and consumed by pci.sys.
@@ -312,6 +332,8 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
                 assert_eq!(core::mem::size_of::<PCI_BRIDGE_INFORMATION>(), 0x08);
                 assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x50);
+                assert_eq!(core::mem::size_of::<PCI_DEVICE_INTERFACE>(), 0x28);
+                assert_ne!(GUID_PCI_DEVICE_INTERFACE, GUID_PCI_BUS_INTERFACE);
                 assert_eq!(core::mem::size_of::<PCI_XHCI_INFORMATION>(), 0x20);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INFORMATION>(), 0x12);
                 assert_eq!(core::mem::size_of::<PCI_ECAM_WINDOW>(), 0x18);

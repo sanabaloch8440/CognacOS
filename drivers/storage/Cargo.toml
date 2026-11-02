@@ -22,3 +22,19 @@ path = "src/bin/stornvme.rs"
 [[bin]]
 name = "disk"
 path = "src/bin/disk.rs"
+
+[[bin]]
+name = "ataport"
+path = "src/bin/ataport.rs"
+
+[[bin]]
+name = "pciidex"
+path = "src/bin/pciidex.rs"
+
+[[bin]]
+name = "pciide"
+path = "src/bin/pciide.rs"
+
+[[bin]]
+name = "atapi"
+path = "src/bin/atapi.rs"

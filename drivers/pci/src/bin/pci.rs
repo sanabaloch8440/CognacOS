@@ -170,7 +170,20 @@ pub unsafe extern "win64" fn CognacPciEnumerateInventory() -> i32 {
     result
 }
 
-unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+unsafe extern "win64" fn query_pdo_information(
+    context: PVOID,
+    output: *mut PCI_DEVICE_INFORMATION,
+) -> i32 {
+    if context.is_null() || output.is_null() { return STATUS_INVALID_PARAMETER; }
+    let extension = context.cast::<PciPdoExtension>();
+    if unsafe { (*extension).magic != PCI_PDO_EXTENSION_MAGIC || (*extension).version != 1 } {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { output.write((*extension).information); }
+    STATUS_SUCCESS
+}
+
+unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -202,6 +215,30 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
             let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut PCI_BUS_INTERFACE>()) };
             if guid.is_null() || output.is_null() {
                 STATUS_INVALID_PARAMETER
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_DEVICE_INTERFACE {
+                if version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION
+                    || (size as usize) < core::mem::size_of::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>()
+                    || device.is_null() {
+                    STATUS_NOT_SUPPORTED
+                } else {
+                    let extension = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+                    if extension.is_null() || unsafe { (*extension).magic != PCI_PDO_EXTENSION_MAGIC || (*extension).version != 1 } {
+                        STATUS_NOT_SUPPORTED
+                    } else {
+                        let interface = cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE {
+                            header: cognacos_nt_abi::bus::INTERFACE_HEADER {
+                                size: core::mem::size_of::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>() as u16,
+                                version: cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION as u16,
+                                context: extension.cast(),
+                                interface_reference: None,
+                                interface_dereference: None,
+                            },
+                            query_information: Some(query_pdo_information),
+                        };
+                        unsafe { core::ptr::write_unaligned(output.cast::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>(), interface); }
+                        STATUS_SUCCESS
+                    }
+                }
             } else if unsafe { *guid } != cognacos_nt_abi::bus::GUID_PCI_BUS_INTERFACE
                 || version as u32 != PCI_BUS_INTERFACE_VERSION
                 || (size as usize) < core::mem::size_of::<PCI_BUS_INTERFACE>() {
@@ -593,6 +630,34 @@ pub unsafe extern "win64" fn CognacPciFindAhci(output: *mut pci::PciFunction) ->
     }
     STATUS_NOT_FOUND
 }
+/// Locate the first PCI IDE-class controller (base class 01h, subclass
+/// 01h). This is inventory only: it does not size BARs, change decode bits,
+/// enable bus mastering, or claim resources. The PnP start-device resource
+/// transaction remains the only authority for activating the controller.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciFindIde(output: *mut cognacos_nt_abi::bus::PCI_DEVICE_INFORMATION) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    for window in 0..MAX_WINDOWS {
+        let count = unsafe { (*STATE.function_counts.get())[window] };
+        let functions = unsafe { &(*STATE.functions.get())[window] };
+        for function in functions.iter().take(count).flatten() {
+            let h = function.header;
+            if h.is_ide_controller() {
+                unsafe { output.write(cognacos_nt_abi::bus::PCI_DEVICE_INFORMATION {
+                    segment: function.segment, bus: function.bus, device: function.device,
+                    function: function.function, header_type: h.header_type,
+                    revision_id: h.revision_id, programming_interface: h.programming_interface,
+                    subclass: h.subclass, class_code: h.class_code, reserved: 0,
+                    vendor_id: h.vendor_id, device_id: h.device_id, command: h.command,
+                }); }
+                return STATUS_SUCCESS;
+            }
+        }
+    }
+    STATUS_NOT_FOUND
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacPciFindNvme(output: *mut pci::PciFunction) -> i32 {
     if output.is_null() { return STATUS_INVALID_PARAMETER; }
