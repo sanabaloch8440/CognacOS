@@ -142,4 +142,19 @@ mod tests {
         let node=namespace.find_child(0,*b"_CRS").unwrap();
         assert_eq!(decode_named_buffer(&aml,&namespace,node,&mut [0;8]),Err(BufferError::InitializerTooLong));
     }
+
+    #[test]
+    fn evaluates_modulo_and_find_set_bit_buffer_sizes(){
+        let modulo=[0xa4,0x11,0x08,0x85,0x0a,23,0x0a,5,0x00,0xaa];
+        let mut small=[0xcc;8];
+        assert_eq!(decode_returned_buffer(&modulo,&mut small),Ok(3));
+        assert_eq!(&small[..3],&[0xaa,0,0]);
+
+        let bit_scan=[0xa4,0x11,0x09,0x81,0x0c,0x00,0x80,0x00,0x00,0x00,0xaa];
+        let mut large=[0xcc;16];
+        assert_eq!(decode_returned_buffer(&bit_scan,&mut large),Ok(16));
+        assert_eq!(large[0],0xaa);
+        assert!(large[1..].iter().all(|byte|*byte==0));
+    }
+
 }
