@@ -20,6 +20,8 @@ pub(crate) struct SystemRegistryState {
     pub control_sets: ControlSetSelection,
     pub boot_driver_count: usize,
     pub boot_driver_services: &'static [[u16; 128]],
+    pub service_group_count: usize,
+    pub service_groups: &'static [[u16; 128]],
 }
 
 // Boot runs this before secondary processors and the general scheduler are
@@ -27,6 +29,10 @@ pub(crate) struct SystemRegistryState {
 const MAX_BOOT_DRIVER_SERVICES: usize = 128;
 static mut BOOT_DRIVER_SERVICE_NAMES: [[u16; 128]; MAX_BOOT_DRIVER_SERVICES] =
     [[0; 128]; MAX_BOOT_DRIVER_SERVICES];
+const MAX_SERVICE_GROUPS: usize = 64;
+static mut SERVICE_GROUP_NAMES: [[u16; 128]; MAX_SERVICE_GROUPS] =
+    [[0; 128]; MAX_SERVICE_GROUPS];
+static mut SERVICE_GROUP_ORDER_RAW: [u16; 1024] = [0; 1024];
 
 
 /// Validate the mounted SYSTEM hive and its active control-set selection.
@@ -49,8 +55,37 @@ pub(crate) fn initialize_system_registry(
     let boot_driver_count =
         crate::ntoskrnl::cm::service_config::enumerate_boot_driver_services(&hive, names)
             .map_err(|_| RegistryInitError::InvalidSystemHive)?;
-    // Publish only the populated prefix as an immutable boot snapshot. This
-    // storage is never modified after Configuration Manager initialization.
+    // Snapshot the registry's ServiceGroupOrder into kernel-owned fixed storage.
+    // The raw MULTI_SZ is parsed before publishing so no hive-backed slices escape.
+    let raw = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(SERVICE_GROUP_ORDER_RAW).cast::<u16>(), 1024,
+        )
+    };
+    let raw_len = crate::ntoskrnl::cm::service_config::query_service_group_order(&hive, raw)
+        .map_err(|_| RegistryInitError::InvalidSystemHive)?;
+    let groups = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(SERVICE_GROUP_NAMES).cast::<[u16; 128]>(),
+            MAX_SERVICE_GROUPS,
+        )
+    };
+    groups.fill([0; 128]);
+    let mut group_count = 0usize;
+    let mut offset = 0usize;
+    while offset < raw_len && raw[offset] != 0 {
+        let Some(rel_end) = raw[offset..raw_len].iter().position(|unit| *unit == 0) else {
+            return Err(RegistryInitError::InvalidSystemHive);
+        };
+        if rel_end == 0 || rel_end > 128 || group_count == MAX_SERVICE_GROUPS {
+            return Err(RegistryInitError::InvalidSystemHive);
+        }
+        groups[group_count][..rel_end].copy_from_slice(&raw[offset..offset + rel_end]);
+        group_count += 1;
+        offset += rel_end + 1;
+    }
+    // Publish only the populated prefixes as immutable boot snapshots. These
+    // buffers are kernel-owned and are never mutated after registry init.
     let boot_driver_services = unsafe {
         core::slice::from_raw_parts(
             core::ptr::addr_of!(BOOT_DRIVER_SERVICE_NAMES).cast::<[u16; 128]>(),
@@ -58,9 +93,16 @@ pub(crate) fn initialize_system_registry(
         )
     };
 
+    let service_groups = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(SERVICE_GROUP_NAMES).cast::<[u16; 128]>(), group_count,
+        )
+    };
     Ok(SystemRegistryState {
         control_sets,
         boot_driver_count,
         boot_driver_services,
+        service_group_count: group_count,
+        service_groups,
     })
 }
