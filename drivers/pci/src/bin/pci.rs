@@ -170,7 +170,20 @@ pub unsafe extern "win64" fn CognacPciEnumerateInventory() -> i32 {
     result
 }
 
-unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+unsafe extern "win64" fn query_pdo_information(
+    context: PVOID,
+    output: *mut PCI_DEVICE_INFORMATION,
+) -> i32 {
+    if context.is_null() || output.is_null() { return STATUS_INVALID_PARAMETER; }
+    let extension = context.cast::<PciPdoExtension>();
+    if unsafe { (*extension).magic != PCI_PDO_EXTENSION_MAGIC || (*extension).version != 1 } {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { output.write((*extension).information); }
+    STATUS_SUCCESS
+}
+
+unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -202,6 +215,30 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
             let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut PCI_BUS_INTERFACE>()) };
             if guid.is_null() || output.is_null() {
                 STATUS_INVALID_PARAMETER
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_DEVICE_INTERFACE {
+                if version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION
+                    || (size as usize) < core::mem::size_of::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>()
+                    || device.is_null() {
+                    STATUS_NOT_SUPPORTED
+                } else {
+                    let extension = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+                    if extension.is_null() || unsafe { (*extension).magic != PCI_PDO_EXTENSION_MAGIC || (*extension).version != 1 } {
+                        STATUS_NOT_SUPPORTED
+                    } else {
+                        let interface = cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE {
+                            header: cognacos_nt_abi::bus::INTERFACE_HEADER {
+                                size: core::mem::size_of::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>() as u16,
+                                version: cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION as u16,
+                                context: extension.cast(),
+                                interface_reference: None,
+                                interface_dereference: None,
+                            },
+                            query_information: Some(query_pdo_information),
+                        };
+                        unsafe { core::ptr::write_unaligned(output.cast::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>(), interface); }
+                        STATUS_SUCCESS
+                    }
+                }
             } else if unsafe { *guid } != cognacos_nt_abi::bus::GUID_PCI_BUS_INTERFACE
                 || version as u32 != PCI_BUS_INTERFACE_VERSION
                 || (size as usize) < core::mem::size_of::<PCI_BUS_INTERFACE>() {
