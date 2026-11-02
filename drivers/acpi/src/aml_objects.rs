@@ -115,6 +115,7 @@ pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObj
                 let (child,next)=decode_data_object(bytes,pos,end,arena)?;
                 value.elements[value.element_count as usize]=child;value.element_count+=1;pos=next;
             }
+            if pos!=end{return Err(ObjectError::MalformedObject)}
             pos=end;
         }
         _=>return Err(ObjectError::UnsupportedOpcode)
