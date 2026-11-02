@@ -1052,13 +1052,13 @@ unsafe fn allocate_pages_in_node_range_mode(
                             continue;
                         }
                         if high_memory && direct_map_address(candidate).is_none() { continue; }
+                        if candidate != original.next && page_end != original.end && region_count == MAX_REGIONS { continue; }
                         if super::pfn::register_allocation(candidate).is_err() { continue; }
                         if candidate == original.next {
                             regions[index].next = page_end;
                         } else if page_end == original.end {
                             regions[index].end = candidate;
                         } else {
-                            if region_count == MAX_REGIONS { continue; }
                             regions[index] = Region { next: original.next, end: candidate };
                             regions[region_count] = Region { next: page_end, end: original.end };
                             region_count += 1;
