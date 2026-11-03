@@ -37,6 +37,9 @@ struct PciIdeFdoExtension {
     previous_state: ControllerState,
     active_channels: u8,
     present_drives: u8,
+    // One independently identified ATA device per channel/device position.
+    // These channels are the miniport's persistent PIO transport state.
+    channels: [Option<Channel>; 4],
 }
 const _: () = assert!(core::mem::size_of::<PciIdeFdoExtension>() <= 512);
 
@@ -185,6 +188,7 @@ fn initialize_compatibility_channels(extension: &mut PciIdeFdoExtension) -> i32 
     ];
     let mut active = 0u8;
     let mut drives = 0u8;
+    let mut discovered = [None; 4];
     let mut io = X86PortIo;
     for (index, (command, control, command_resource, command_len, control_resource, control_len)) in channels.iter().copied().enumerate() {
         if !assigned_port_range(resources, command_resource, command_len)
@@ -198,13 +202,18 @@ fn initialize_compatibility_channels(extension: &mut PciIdeFdoExtension) -> i32 
             if status == 0 || status == 0xff { continue; }
             let mut probe = channel;
             if probe.identify(&mut io).is_ok() {
-                drives |= 1 << (index * 2 + device as usize);
+                let slot = index * 2 + device as usize;
+                drives |= 1 << slot;
+                // IDENTIFY updates sectors to the device-reported LBA28
+                // capacity. Retain the validated channel for later requests.
+                discovered[slot] = Some(probe);
             }
         }
     }
-    if active == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    if active == 0 || drives == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
     extension.active_channels = active;
     extension.present_drives = drives;
+    extension.channels = discovered;
     STATUS_SUCCESS
 }
 
@@ -236,8 +245,15 @@ unsafe extern "win64" fn pnp_complete(
             }
         }
         IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL => {
-            if status == STATUS_SUCCESS && unsafe { (*extension).controller.state } == ControllerState::Started {
-                let _ = unsafe { (*extension).controller.stop_succeeded() };
+            if status == STATUS_SUCCESS {
+                let ext = unsafe { &mut *extension };
+                if ext.controller.state == ControllerState::Started {
+                    let _ = ext.controller.stop_succeeded();
+                }
+                // Do not leave stale channel state visible after stop/removal.
+                ext.channels = [None; 4];
+                ext.active_channels = 0;
+                ext.present_drives = 0;
             }
         }
         IRP_MN_REMOVE_DEVICE => {
@@ -339,6 +355,7 @@ unsafe extern "win64" fn add_device(driver: *mut c_void, pdo: *mut DEVICE_OBJECT
             previous_state: ControllerState::Created,
             active_channels: 0,
             present_drives: 0,
+            channels: [None; 4],
         });
         (*fdo).flags = ((*fdo).flags & !0x80) | ((*lower).flags & (0x02 | 0x04));
     }
