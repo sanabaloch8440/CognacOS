@@ -449,6 +449,11 @@ pub struct AcpiTableProvenance {
     pub validated: bool,
 }
 
+/// A validated table view whose borrow is tied to the mapper lifetime. Retaining
+/// this value prevents callers from accidentally outliving the HAL mapping.
+#[derive(Debug)]
+pub struct AcpiMappedTable<'a> { pub bytes:&'a [u8], pub provenance:AcpiTableProvenance }
+
 /// Return the physical address and validated header metadata for a table.
 pub fn table_provenance_with_mapper<M: AcpiPhysicalMapper>(mapper: &M, rsdp_address: u64, signature: [u8; 4], instance: usize) -> Result<AcpiTableProvenance, AcpiError> {
     let prefix = mapped_range(mapper, rsdp_address, 20)?;
@@ -477,6 +482,14 @@ pub fn table_provenance_with_mapper<M: AcpiPhysicalMapper>(mapper: &M, rsdp_addr
         seen += 1;
     }
     Err(AcpiError::MissingRoot)
+}
+
+/// Map a table together with its validated provenance; the returned bytes
+/// cannot outlive the mapper borrow that owns the physical mapping.
+pub fn map_table_with_provenance<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address:u64,signature:[u8;4],instance:usize)->Result<AcpiMappedTable<'a>,AcpiError>{
+    let provenance=table_provenance_with_mapper(mapper,rsdp_address,signature,instance)?;
+    let bytes=find_table_with_mapper(mapper,rsdp_address,signature,instance)?;
+    Ok(AcpiMappedTable{bytes,provenance})
 }
 
 /// Discover and parse MADT through the platform mapper, without assuming a
