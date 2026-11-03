@@ -352,6 +352,7 @@ pub trait AcpiPowerFirmware{
  fn invoke_device_method(&mut self,device_node:u16,method:[u8;4])->Result<(),PowerResourceError>;
  fn evaluate_integer_method(&mut self,device_node:u16,method:[u8;4])->Result<u64,PowerResourceError>;
  fn invoke_power_resource_method(&mut self,resource_node:u16,enable:bool)->Result<(),PowerResourceError>;
+ fn invoke_wake_method(&mut self,device_node:u16,enable:bool,system_state:u8,device_state:u8)->Result<(),PowerResourceError>;
 }
 /// Execute ACPI methods which report dynamic device power policy.
 /// _PSC reports the current D-state; _PPC reports the current performance
