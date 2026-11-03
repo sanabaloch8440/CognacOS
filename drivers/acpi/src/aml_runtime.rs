@@ -243,9 +243,11 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
                     let required=n.checked_add(1).ok_or(RuntimeError::ValueTooLarge)?;
                     let bytes=if target.kind==AmlValueKind::Buffer{target_length}else{required};
                     converted.byte_length=bytes as u16;
-                    let copied=core::cmp::min(n,bytes.saturating_sub(1));
+                    let copied=core::cmp::min(n,bytes);
                     converted.bytes[..copied].copy_from_slice(&source.bytes[..copied]);
-                    if copied<bytes{converted.bytes[copied]=0;}
+                    // The source string's implicit terminator is copied only
+                    // when it fits; any remaining target bytes stay zero.
+                    if n<bytes{converted.bytes[n]=0;}
                 }
                 AmlValueKind::Buffer=>{
                     let n=checked_byte_length(source)?;
