@@ -176,6 +176,15 @@ fn lookup_path(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
     Ok(p)
 }
 
+fn external_type_for(kind:AmlObjectType)->Option<u8>{
+    match kind{
+        AmlObjectType::Device=>Some(6),AmlObjectType::Event=>Some(7),
+        AmlObjectType::Method=>Some(8),AmlObjectType::Mutex=>Some(9),
+        AmlObjectType::OperationRegion=>Some(10),AmlObjectType::PowerResource=>Some(11),
+        AmlObjectType::Processor=>Some(12),AmlObjectType::ThermalZone=>Some(13),
+        _=>None,
+    }
+}
 fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:bool,kind:AmlObjectType,body_start:usize,body_len:usize,flags:u8)->Result<u16,AmlError>{
     if n.count==0{return Ok(if n.rooted{0}else{current})}
     let mut p=resolve_parent(ns,current,n)?;
@@ -191,6 +200,8 @@ fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:
                     // The External parser validates repeated declaration
                     // compatibility after it has decoded the declared type.
                 } else if existing==AmlObjectType::External && ns.nodes[found as usize].external_placeholder {
+                    let declared=ns.nodes[found as usize].external_object_type;
+                    if declared!=0 && external_type_for(kind).is_some_and(|expected|expected!=declared){return Err(AmlError::DuplicateName)}
                     ns.nodes[found as usize].object_type=kind;
                     ns.nodes[found as usize].method_flags=flags;
                     ns.nodes[found as usize].body_start=u32::try_from(body_start).map_err(|_|AmlError::BadDefinitionBlock)?;
@@ -634,6 +645,15 @@ mod tests{
         assert_eq!(ns.nodes[id].source_table,1);
         assert_eq!(unload_definition_block(&mut ns,1),1);
         assert!(ns.find_child(0,*b"MET0").is_none());
+    }
+    #[test]fn external_object_type_must_match_the_later_declaration(){
+        let mut ns=AmlNamespace::new();
+        load_definition_block_owned(&[0x15,b'M',b'E',b'T',b'0',8,0],&mut ns,1).unwrap();
+        let device=[0x5b,0x82,0x0b,b'M',b'E',b'T',b'0',0x08,b'_',b'S',b'T',b'A',0x01];
+        assert_eq!(load_definition_block_owned(&device,&mut ns,2),Err(AmlError::DuplicateName));
+        let id=ns.find_child(0,*b"MET0").unwrap() as usize;
+        assert_eq!(ns.nodes[id].object_type,AmlObjectType::External);
+        assert_eq!(ns.nodes[id].source_table,1);
     }
     #[test]fn repeated_external_declarations_must_match_and_keep_original_owner(){
         let mut ns=AmlNamespace::new();
