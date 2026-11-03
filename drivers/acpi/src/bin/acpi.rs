@@ -663,6 +663,12 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     STATE.active_operations.store(0,Ordering::Release);
     STATE.interface_references.store(0,Ordering::Release);
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
+    // Publish the driver's dispatch contract before creating any device object.
+    // PnP may observe the FDO as soon as it is registered with the I/O manager;
+    // installing callbacks only after PDO creation leaves a window in which a
+    // valid device object has no driver-owned PnP dispatch path.
+    object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+    object.driver_unload = Some(driver_unload);
     let madt_bytes = match unsafe { query_hal_table(*b"APIC", 0) } {
         Ok(bytes) => bytes,
         Err(status) => return status,
@@ -793,11 +799,13 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         for i in 0..MAX_ACPI_PDOS { ACPI_BUS_RELATIONS.objects[i]=ACPI_PDOS[i]; }
     }
     STATE.device_count.store(identity_count,Ordering::Release);
-    object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
-    object.driver_unload = Some(driver_unload);
     STATE.ready.store(true, Ordering::Release);
     let enumerate=unsafe{IoPnPEnumerateBus(bus_device)};
-    if enumerate!=STATUS_SUCCESS && enumerate!=STATUS_PENDING { return enumerate; }
+    if enumerate!=STATUS_SUCCESS && enumerate!=STATUS_PENDING {
+        STATE.ready.store(false,Ordering::Release);
+        STATE.unloading.store(true,Ordering::Release);
+        return enumerate;
+    }
     STATUS_SUCCESS
 }
 
