@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `acpi-production-batch-1-table-validation`  
-**Status:** tasks 1–27 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
+**Status:** tasks 1–28 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -41,7 +41,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 
 26. [x] Implement exact AML operand/target typing and conversion rules. Verified by AML runtime, method-executor, parser, and table-lifecycle regression suites; see `AML_OPERAND_TARGET_CONVERSIONS.md`.
 27. [x] Complete arithmetic, logical, bitwise, conversion, and target-store opcode semantics.
-28. [ ] Implement If/Else/While/Break/Continue/Return with package-boundary-safe control flow.
+28. [x] Implement If/Else/While/Break/Continue/Return with package-boundary-safe control flow.
 29. [ ] Correct method argument/local lifetime, recursion, and serialization-flag behavior.
 30. [ ] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
@@ -178,3 +178,10 @@ Task 25 was verified on commit `d9f460432dfecc134cb9a6dcafbd6fa8a9202540` by ACP
 Task 27 was completed and verified on PR branch commit `b663d80eed8aa5a6d23a0e8a9587fedb463a4fa2` by ACPI workflow run [`41587243631`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587243631). The workflow compiled all ACPI library tests and passed the focused firmware suites, including **45 AML method-executor tests**, **37 AML runtime tests**, **42 AML parser tests**, and **11 AML table-lifecycle tests**.
 
 The independently authored executor implements the arithmetic, logical, bitwise, explicit data-conversion, BCD-conversion, and target-store semantics listed in `AML_OPCODE_SEMANTICS.md`. The task is checked only for these defined opcode families; it does not imply full AML interpreter or ACPI driver production readiness. The separate UEFI/QEMU workflow remains a distinct acceptance gate.
+
+
+## AML control-flow task 28 evidence
+
+Task 28 was completed on PR branch code commit `444ac7506d752a5647610f868469fe9ead7d092a` and verified by ACPI workflow [`41587859995`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587859995). The workflow passed all configured suites, including 49 AML method-executor tests, 37 AML runtime tests, 42 AML parser tests, and 11 AML table-lifecycle tests. Documentation-only follow-up commit `8e4077dfab7a9b2f505bde7d6bcfade4fd37cc00` also passed [workflow `41587872679`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587872679).
+
+Control-flow execution is bounded by the enclosing Reader's package end. If and Else are handled as sibling packages, While re-evaluates its predicate each iteration, Break/Continue are consumed by the nearest While, and Return propagates to the method boundary. Regression tests cover malformed If/Else/While package lengths and standalone Else rejection. This milestone does not implement method serialization or synchronization semantics (task 29).
