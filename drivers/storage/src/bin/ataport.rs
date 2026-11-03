@@ -55,7 +55,6 @@ unsafe extern "win64" {
  fn IoSkipCurrentIrpStackLocation(irp:*mut IRP);
  fn IoSetCompletionRoutine(irp:*mut IRP,routine:Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT,*mut IRP,PVOID)->i32>,context:PVOID,success:u8,error:u8,cancel:u8);
  fn IoPnPQueryBusInterface(device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,size:u16,version:u16,output:PVOID)->i32;
- fn IoPnPRegisterBusDevice(enumerator_id:u32,identity_hash:u64,device:*mut DEVICE_OBJECT,output_index:*mut u32)->i32;
  fn IoPnPProcessBusRelations(bus:*mut DEVICE_OBJECT,relations:*const c_void)->i32;
  fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
  fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
@@ -80,7 +79,6 @@ IMPORT IoSkipCurrentIrpStackLocation
 IMPORT IoSetCompletionRoutine
 IMPORT IoPnPQueryBusInterface
 IMPORT IoPnPRegisterDeviceDriver
-IMPORT IoPnPRegisterBusDevice
 IMPORT IoPnPProcessBusRelations
 IMPORT IoPnPEnumerateBus
 .section .data.imports.ntoskrnl,"aw",@progbits
@@ -102,7 +100,6 @@ IAT IoSkipCurrentIrpStackLocation
 IAT IoSetCompletionRoutine
 IAT IoPnPQueryBusInterface
 IAT IoPnPRegisterDeviceDriver
-IAT IoPnPRegisterBusDevice
 IAT IoPnPProcessBusRelations
 IAT IoPnPEnumerateBus
 "#);
@@ -205,9 +202,6 @@ unsafe fn publish_disk_child(ext:*mut AtaPortFdoExtension,slot:u8,descriptor:Dis
   child_ext.write(AtaDiskPdoExtension{magic:DISK_PDO_MAGIC,parent:unsafe{(*ext).self_device},slot,reserved:[0;7],descriptor});
   (*child).flags|=0x0000_1004;
  }
- let mut devnode=0u32;
- let status=unsafe{IoPnPRegisterBusDevice(ATA_ENUMERATOR_ID,descriptor.identity.stable_id,child,&mut devnode)};
- if status!=STATUS_SUCCESS{unsafe{(*child_ext).magic=0;IoDeleteDevice(child)};return status}
  let relations=unsafe{&mut (*ext).relations};
  let index=relations.count as usize;
  relations.objects[index]=child;
