@@ -701,7 +701,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y dosfstools e2fsprogs mtools parted qemu-system-x86 ovmf swtpm llvm gdb
-          mkdir -p build/EFI/BOOT build/kernel build/EFI/CognacOS/Hives
+          mkdir -p build/EFI/BOOT build/kernel build/ntoskrnl build/EFI/CognacOS/Hives
           test -s build/registry/SYSTEM
           cp build/registry/SYSTEM build/EFI/CognacOS/Hives/SYSTEM
           if [[ -f build/cognacos-bootloader.signed.efi ]]; then
