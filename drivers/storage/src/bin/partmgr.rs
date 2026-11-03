@@ -172,6 +172,7 @@ unsafe fn scan_partitions(ext:*mut PartMgrFdoExtension)->i32{
   let entry_size=u32::from_le_bytes(header[84..88].try_into().unwrap_or([0;4])) as usize;
   let required=match entry_count.checked_mul(entry_size){Some(v) if entry_count>0&&entry_count<=128&&entry_size>=128&&v<=GPT_ENTRY_BUFFER_BYTES=>v,_=>return STATUS_DEVICE_DATA_ERROR};
   let sectors=((required+511)/512) as u32;
+  if descriptor.geometry.validate_io(entries_lba,sectors).is_err(){return STATUS_DEVICE_DATA_ERROR}
   let mut entries=[0u8;GPT_ENTRY_BUFFER_BYTES];
   let status=unsafe{read_disk(lower,entries_lba,sectors,&mut entries[..sectors as usize*512])};
   if status!=STATUS_SUCCESS{return status}
@@ -254,7 +255,9 @@ unsafe fn dispatch_partition(device:*mut DEVICE_OBJECT,ext:*mut PartitionPdoExte
   let offset=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<i64>())};
   let sector_size=unsafe{(*ext).geometry.logical_sector_size};
   let partition=unsafe{(*ext).partition};
-  if offset<0||sector_size==0||offset as u64%sector_size as u64!=0||length==0||length%sector_size!=0
+  let buffer=unsafe{(*irp).associated_irp[0] as *mut u8};
+  let flags=unsafe{(*irp).flags};
+  if flags&IRP_BUFFERED_IO==0||buffer.is_null()||offset<0||sector_size==0||offset as u64%sector_size as u64!=0||length==0||length%sector_size!=0
    ||offset as u64>partition.sector_count.saturating_mul(sector_size as u64)
    ||length as u64>partition.sector_count.saturating_mul(sector_size as u64).saturating_sub(offset as u64){
    return unsafe{complete(irp,STATUS_INVALID_PARAMETER,0)}
@@ -299,6 +302,7 @@ unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->
  let pdo_ext=unsafe{(*pdo).device_extension.cast::<AtaDiskPdoExtension>()};
  if pdo_ext.is_null()||unsafe{(*pdo_ext).magic!=DISK_PDO_MAGIC}{return STATUS_NOT_SUPPORTED}
  let descriptor=unsafe{(*pdo_ext).descriptor};
+ if descriptor.geometry.validate().is_err()||descriptor.identity.stable_id==0{return STATUS_DEVICE_CONFIGURATION_ERROR}
  let mut fdo=core::ptr::null_mut();
  let status=unsafe{IoCreateDevice(driver.cast(),core::mem::size_of::<PartMgrFdoExtension>() as u32,core::ptr::null_mut(),FILE_DEVICE_DISK,0,0,&mut fdo)};
  if status!=STATUS_SUCCESS{return status}if fdo.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
