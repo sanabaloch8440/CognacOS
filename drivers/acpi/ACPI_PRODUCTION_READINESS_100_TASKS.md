@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `acpi-production-readiness-audit`  
-**Status:** tasks 1–23 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
+**Status:** tasks 1–25 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -35,7 +35,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 22. [x] Validate Buffer, Package, and VarPackage payloads and nested package boundaries.
 23. [x] Reject unterminated strings and malformed encodings without scanning past table bounds.
 24. [x] Report unsupported opcode with table ID, term-boundary byte offset, opcode, and enclosing namespace path; operand failures are attributed to their owning term.
-25. [ ] Create an iASL/ACPICA-derived parser conformance corpus.
+25. [x] Create an independently authored ACPI-specification-derived AML parser conformance corpus with documented provenance.
 
 ## AML execution and runtime objects
 
@@ -166,3 +166,8 @@ The UEFI/QEMU build workflow remains failing separately and is not represented a
 ## AML diagnostic context verification
 
 Task 24 was verified on commit `96520689707d3bf20c2405fa79b4597861c01582` by ACPI Rust unit-test workflow run `41577363837`. The job compiled all ACPI library tests and ran the firmware/AML suites; its log explicitly reports both `structured_diagnostic_identifies_nested_term_and_scope_parent` and `structured_diagnostic_tracks_nested_scope_path` passing. Diagnostic offsets are term-boundary offsets, not guaranteed exact inner operand cursors.
+
+
+## AML conformance corpus verification
+
+Task 25 was verified on commit `d9f460432dfecc134cb9a6dcafbd6fa8a9202540` by ACPI Rust unit-test workflow run `41577872796`. The workflow compiled all ACPI library tests and passed the firmware discovery and AML parser suites; the job log explicitly reports `aml::tests::specification_derived_conformance_corpus ... ok`. The corpus is independently authored from public ACPI grammar references and documents its provenance in `drivers/acpi/AML_CONFORMANCE_CORPUS.md`; it is not ACPICA/iASL-derived.
