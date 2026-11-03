@@ -8,7 +8,7 @@ not a declaration that the AML interpreter is complete.
 
 Behavior is derived from the public ACPI Specification 6.6, especially the AML
 term grammar in Section 19.2 and the ASL operator reference in Section 19.6.
-Relevant conversion operators are Sections 19.6.138–19.6.143.
+Relevant conversion operators are Sections 19.6.137–19.6.143.
 
 - https://uefi.org/sites/default/files/resources/ACPI_Spec_6.6.pdf
 
