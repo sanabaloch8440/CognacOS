@@ -8,6 +8,7 @@ on:
       - 'ntoskrnl/src/ke/**'
       - 'ntoskrnl/src/ntoskrnl.rs'
       - 'ntoskrnl/Cargo.toml'
+      - 'Hal/exports.rs'
       - '.github/workflows/acpi-tests.yml'
   push:
     branches: [main]
