@@ -1,6 +1,11 @@
 //! Bounded, integer-only AML method execution core.
 //! This constrained interpreter executes a safe scalar subset and fails closed
 //! on unsupported AML terms and address-space access.
+/*
+ * FIXME(ACPI-PRODUCTION) — AML method execution
+ * FIXME(ACPI-PRODUCTION): This is a constrained AML executor, not yet a full production interpreter. Intended completion: exact operand and target semantics, control flow, references, method arguments/locals and serialization, mutexes/events/Global Lock, namespace mutation, OperationRegion/Field handlers, module-level execution, _OSI policy, budgets/timeouts, and cleanup on every exit path. Keep hardware access behind validated region handlers; never execute AML in interrupt context. Add differential tests against ACPICA for every supported opcode.
+ */
+
 #![no_std]
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
 pub const MAX_AML_STEPS:usize=100_000;
