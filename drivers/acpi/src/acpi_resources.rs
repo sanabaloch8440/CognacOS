@@ -237,9 +237,51 @@ pub fn select_assigned_resources(
             }
             if let Some(index)=found{used[index]=true}else{matched=false;break}
         }
-        if matched{return Ok(*allocated)}
+        if matched{
+            let mut selected=ResourceList::EMPTY;
+            let mut consumed=[false;MAX_RESOURCES];
+            for req in required[..alternative.count].iter().flatten(){
+                if matches!(req,Resource::EndTag{..}){continue}
+                let mut found=None;
+                for (index,candidate) in allocated.entries[..allocated.count].iter().enumerate(){
+                    if consumed[index]{continue}
+                    if let Some(candidate)=candidate{
+                        if allocation_satisfies(*req,*candidate){found=Some((index,*candidate));break}
+                    }
+                }
+                let Some((index,candidate))=found else{return Err(ResourceError::InvalidDescriptor)};
+                consumed[index]=true;
+                selected.push(project_assignment(*req,candidate).ok_or(ResourceError::InvalidDescriptor)?)?;
+            }
+            return Ok(selected)
+        }
     }
     Err(ResourceError::InvalidDescriptor)
+}
+
+/// Project an arbiter-selected address/vector onto the matching _PRS
+/// descriptor so polarity, wake, decode, and memory attributes are retained.
+fn project_assignment(requirement:Resource,allocated:Resource)->Option<Resource>{
+    match (requirement,allocated){
+        (Resource::Io{alignment,length,decode_16_bit,..},Resource::Io{minimum:base,length:actual,..}) if length==actual=>
+            Some(Resource::Io{minimum:base,maximum:base,alignment,length,decode_16_bit}),
+        (Resource::Memory{alignment,length,writeable,cacheable,kind,..},Resource::Memory{minimum:base,length:actual,..}) if length==actual=>
+            Some(Resource::Memory{minimum:base,maximum:base,alignment,length,writeable,cacheable,kind}),
+        (Resource::BusNumber{length,..},Resource::BusNumber{minimum:base,length:actual,..}) if length==actual=>
+            Some(Resource::BusNumber{minimum:base,maximum:base+length-1,length}),
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,..},Resource::Irq{mask,..}) if mask.count_ones()==1=>
+            Some(Resource::Irq{mask,level_triggered,active_low,shared,wake_capable}),
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,..},Resource::ExtendedIrq{interrupts,count,..}) if count==1=>{
+            let gsi=interrupts[0];
+            if gsi<16{Some(Resource::Irq{mask:1u16<<(gsi as u16),level_triggered,active_low,shared,wake_capable})}
+            else{Some(Resource::ExtendedIrq{flags:(if level_triggered{2}else{0})|(if active_low{4}else{0})|(if shared{8}else{0})|(if wake_capable{0x10}else{0}),interrupts,count:1})}
+        }
+        (Resource::ExtendedIrq{flags, ..},Resource::ExtendedIrq{interrupts,count,..}) if count>0=>
+            Some(Resource::ExtendedIrq{flags,interrupts,count}),
+        (Resource::Dma{transfer_size,bus_master,..},Resource::Dma{channels,..})=>
+            Some(Resource::Dma{channels,transfer_size,bus_master}),
+        _=>None,
+    }
 }
 
 /// Verify that firmware's post-_SRS _CRS describes the exact allocation
