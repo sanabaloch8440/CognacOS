@@ -867,13 +867,6 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"WDM exactly-once completion and outstanding-IRP unload rundown self-test passed.\r\n");
-        // Read-only native Rust ext filesystem parser self-test.
-        if !extfs::self_test() {
-            serial_write(b"FATAL: ext filesystem parser self-test failed.\r\n");
-            halt();
-        }
-        serial_write(b"Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).\r\n");
-
         // Storage discovery and filesystem validation belong to the loaded
         // storage and filesystem drivers. The kernel-owned ATA/ext4 smoke test
         // was removed with the in-kernel ATA transport.
