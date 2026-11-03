@@ -3,8 +3,7 @@
 //! returning from unmap. No identity-map fallback is permitted.
 use core::{ffi::c_void, ptr, sync::atomic::{fence,Ordering}};
 use super::{DmaError,ScatterGatherElement,MAX_SG_SEGMENTS,PAGE_SIZE};
-#[path = "iommu/vtd.rs"]
-pub mod vtd;
+pub use crate::hal::vtd;
 const MAX_MAPPINGS:usize=256;
 const MAX_COMMON:usize=128;
 const OK:i32=0;
