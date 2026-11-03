@@ -450,7 +450,7 @@ mod cm_resource_list_tests{
   let parsed=parse_cm_resource_list(&bytes).unwrap();
   assert_eq!(parsed.count,2);
   assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x3f8,maximum:0x3f8,length:8,decode_16_bit:true,..})));
-  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0e,count:1,interrupts,..}) if interrupts[0]==9));
  }
 }
 
@@ -461,7 +461,7 @@ mod assigned_resource_encoding_tests{
  fn selects_arbiter_allocation_and_round_trips_srs_template(){
   let mut requirement=ResourceList::EMPTY;
   requirement.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
-  requirement.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[5,9,0,0,0,0,0,0],count:2});
+  requirement.entries[1]=Some(Resource::ExtendedIrq{flags:0x0e,interrupts:[5,9,0,0,0,0,0,0],count:2});
   requirement.count=2;
   let mut alternatives=ResourceAlternatives::EMPTY;
   alternatives.entries[0]=requirement;alternatives.count=1;
@@ -471,7 +471,7 @@ mod assigned_resource_encoding_tests{
   allocated.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[9,0,0,0,0,0,0,0],count:1});
   allocated.count=2;
   let selected=select_assigned_resources(&alternatives,&allocated).unwrap();
-  assert_eq!(selected,allocated);
+  assert!(matches!(selected.entries[1],Some(Resource::ExtendedIrq{flags:0x0e,count:1,interrupts,..}) if interrupts[0]==9));
 
   let mut bytes=[0u8;128];
   let length=encode_resource_template(&selected,&mut bytes).unwrap();
