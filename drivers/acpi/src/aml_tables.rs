@@ -533,6 +533,27 @@ mod tests {
     }
 
     #[test]
+    fn rejected_ssdt_restores_mutated_external_placeholder(){
+        let dsdt=definition_table(*b"DSDT",&[0x15,b'D',b'E',b'V',b'0',0x06]);
+        // Scope(DEV0) refines the DSDT External placeholder to a Device, then
+        // encounters an unsupported term after inserting TEST.
+        let ssdt=definition_table(*b"SSDT",&[0x10,0x0d,b'D',b'E',b'V',b'0',
+            0x08,b'T',b'E',b'S',b'T',0x0a,1,0x99]);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        manager.load_dsdt(&dsdt,&gate).unwrap();
+        let dev=manager.namespace().find_child(0,*b"DEV0").unwrap();
+        assert_eq!(manager.namespace().nodes[dev as usize].object_type,crate::aml::AmlObjectType::External);
+        assert!(manager.namespace().nodes[dev as usize].external_placeholder);
+        assert_eq!(manager.load_ssdt(&ssdt,&gate),Err(TableError::Parse(AmlError::UnsupportedOpcode)));
+        assert_eq!(manager.namespace().count,2);
+        let restored=&manager.namespace().nodes[dev as usize];
+        assert_eq!(restored.object_type,crate::aml::AmlObjectType::External);
+        assert!(restored.external_placeholder);
+        assert_eq!(restored.source_table,0);
+        assert_eq!(manager.namespace().find_child(dev,*b"TEST"),None);
+    }
+
+    #[test]
     fn table_manager_evaluates_identity_with_table_ownership_and_method_gate(){
         let dsdt=identity_dsdt();let mut manager=AmlTableManager::new();let gate=gate();
         let handle=manager.load_dsdt(&dsdt,&gate).unwrap();
