@@ -131,6 +131,7 @@ pub struct Irp { pub bytes: [u8; IRP_SIZE_X64] }
 #[derive(Clone, Copy)]
 pub struct IoStackLocation {
     pub major_function: u8, pub minor_function: u8, pub flags: u8, pub control: u8,
+    pub parameters_alignment: u32,
     pub parameters: [u8; 0x20], pub device_object: *mut DeviceObject,
     pub file_object: *mut c_void, pub completion_routine: Option<IoCompletionRoutine>,
     pub context: *mut c_void,
@@ -156,7 +157,7 @@ impl IrpSlot {
   suspended_completion:false,free_requested:false,active_ops:0,outstanding_count:0,
   outstanding_devices:[ptr::null_mut();MAX_WDM_STACK_LOCATIONS],
   object:Irp{bytes:[0;IRP_SIZE_X64]},
-  stack:[IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()};MAX_WDM_STACK_LOCATIONS],
+  stack:[IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters_alignment:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()};MAX_WDM_STACK_LOCATIONS],
   system_buffer:ptr::null_mut(),system_buffer_pages:0,system_buffer_len:0,
   ioctl_output_buffer:ptr::null_mut(),ioctl_output_len:0,built_sync_ioctl:false,
   sync_thread_id:0,requestor_pid:0,sync_event:ptr::null_mut(),sync_next:ptr::null_mut(),sync_prev:ptr::null_mut(),sync_queued:false,
