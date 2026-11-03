@@ -466,7 +466,15 @@ fn read_pdo_resource_template(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,nam
  let resource_node=manager.namespace().find_child(ext.node,name).ok_or(STATUS_NOT_SUPPORTED)?;
  let scratch=unsafe{ExAllocatePoolWithTag(PAGED_POOL,65536,ACPI_POOL_TAG)};
  if scratch.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
- let length=match manager.read_named_buffer(handle,aml,resource_node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
+ let output=unsafe{core::slice::from_raw_parts_mut(scratch,65536)};
+ let length=match manager.namespace().nodes[resource_node as usize].object_type{
+  acpi::aml::AmlObjectType::Method=>{
+   let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+   manager.read_method_buffer(handle,aml,resource_node,gate,&mut runtime,output)
+  }
+  acpi::aml::AmlObjectType::Name=>manager.read_named_buffer(handle,aml,resource_node,gate,output),
+  _=>Err(acpi::aml_tables::TableError::BufferRead(acpi::aml_buffer::BufferError::NotBuffer)),
+ }{
   Ok(n)=>n,Err(_)=>{unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};return Err(STATUS_NOT_SUPPORTED)}
  };
  let parsed=acpi::acpi_resources::parse_resource_template(unsafe{core::slice::from_raw_parts(scratch,length)});
@@ -494,7 +502,15 @@ fn read_pdo_resource_alternatives(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT
  let resource_node=manager.namespace().find_child(ext.node,*b"_PRS").ok_or(STATUS_NOT_SUPPORTED)?;
  let scratch=unsafe{ExAllocatePoolWithTag(PAGED_POOL,65536,ACPI_POOL_TAG)};
  if scratch.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
- let length=match manager.read_named_buffer(handle,aml,resource_node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
+ let output=unsafe{core::slice::from_raw_parts_mut(scratch,65536)};
+ let length=match manager.namespace().nodes[resource_node as usize].object_type{
+  acpi::aml::AmlObjectType::Method=>{
+   let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+   manager.read_method_buffer(handle,aml,resource_node,gate,&mut runtime,output)
+  }
+  acpi::aml::AmlObjectType::Name=>manager.read_named_buffer(handle,aml,resource_node,gate,output),
+  _=>Err(acpi::aml_tables::TableError::BufferRead(acpi::aml_buffer::BufferError::NotBuffer)),
+ }{
   Ok(n)=>n,Err(_)=>{unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};return Err(STATUS_NOT_SUPPORTED)}
  };
  let parsed=acpi::acpi_resources::parse_resource_requirements_template(unsafe{core::slice::from_raw_parts(scratch,length)});
