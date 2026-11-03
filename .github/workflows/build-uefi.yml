@@ -387,9 +387,11 @@ jobs:
           set -euo pipefail
           cat > /tmp/cognacos-ntoskrnl-debug-tests.rs <<'RS'
           #![allow(dead_code)]
-          mod ata_disk {
-              pub fn debug_trace_store_read(_: u64, _: &mut [u8]) -> bool { false }
-              pub fn debug_trace_store_write(_: u64, _: &[u8]) -> bool { false }
+          mod io {
+              pub mod storage {
+                  pub fn debug_trace_store_read(_: u64, _: &mut [u8]) -> bool { false }
+                  pub fn debug_trace_store_write(_: u64, _: &[u8]) -> bool { false }
+              }
           }
           mod debug {
               include!(concat!(env!("GITHUB_WORKSPACE"), "/ntoskrnl/src/dbg/debugger.rs"));
