@@ -22,7 +22,7 @@ pub const MAX_COMPATIBLE_IDS:usize=16;
 pub const MAX_ID_STRING:usize=64;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum IdentityError { InvalidDevice,MissingHid,MalformedObject,UnsupportedObject,InvalidEisaId,TooManyCompatibleIds,Method(ExecError),StringTooLong }
+pub enum IdentityError { InvalidDevice,MissingHid,MalformedObject,UnsupportedObject,InvalidEisaId,TooManyCompatibleIds,Method(ExecError),StringTooLong,MissingRequiredObject }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AcpiId { pub bytes:[u8;MAX_ID_STRING], pub length:u8 }
