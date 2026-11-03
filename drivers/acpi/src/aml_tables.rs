@@ -5,7 +5,7 @@
 #![no_std]
 
 use crate::{parse_sdt_header,AcpiError};
-use crate::aml::{AmlError,AmlNamespace,load_definition_block,MAX_NAMESPACE_NODES};
+use crate::aml::{AmlError,AmlNamespace,load_definition_block_owned,MAX_NAMESPACE_NODES};
 use crate::aml_exec::{self,AmlValue,ExecError};
 use crate::acpi_device::{self,AcpiDeviceIdentity,AcpiMethodInvoker,AcpiMethodValue,IdentityError};
 use core::sync::atomic::{AtomicUsize,Ordering};
@@ -274,8 +274,7 @@ impl AmlTableManager {
         }
         if self.namespace.count>=MAX_NAMESPACE_NODES{return Err(TableError::NamespaceCapacity)}
         let before=self.namespace.count;
-        load_definition_block(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace)?;
-        for node in before..self.namespace.count{self.namespace.nodes[node].source_table=self.count as u8;}
+        load_definition_block_owned(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,self.count as u32)?;
         if self.namespace.count>u16::MAX as usize{
             self.namespace.count=before;
             return Err(TableError::NamespaceCapacity)
@@ -413,7 +412,8 @@ impl AmlTableManager {
         if !record.active||record.generation!=handle.generation{return Err(TableError::InvalidHandle)}
         if self.namespace.count!=record.info.namespace_end as usize{return Err(TableError::NamespaceChanged)}
         if record.info.signature==*b"DSDT"&&self.count!=1{return Err(TableError::UnloadOrder)}
-        self.namespace.count=record.info.namespace_start as usize;
+        crate::aml::unload_definition_block(&mut self.namespace,handle.slot as u32);
+        if self.namespace.count!=record.info.namespace_start as usize{return Err(TableError::NamespaceChanged)}
         self.records[handle.slot as usize]=TableRecord::EMPTY;
         self.count-=1;
         if record.info.signature==*b"DSDT"{self.dsdt_loaded=false;}

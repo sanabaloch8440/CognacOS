@@ -62,11 +62,15 @@ pub fn validate_sdt(bytes:&[u8],expected_signature:Option<[u8;4]>)->Result<AcpiT
 pub struct FadtInfo {
     pub revision:u8,pub preferred_pm_profile:u8,pub firmware_ctrl:u32,pub dsdt:u32,
     pub boot_arch_flags:u16,pub flags:u32,pub minor_version:u8,
-    pub x_firmware_ctrl:u64,pub x_dsdt:u64,
+    pub x_firmware_ctrl:u64,pub x_dsdt:u64,pub pm1a_control_legacy:u32,
+    pub reset_register:Option<AcpiGas>, pub x_pm1a_control_block:Option<AcpiGas>,
+    pub x_pm1b_control_block:Option<AcpiGas>, pub x_pm2_control_block:Option<AcpiGas>,
+    pub x_pm_timer_block:Option<AcpiGas>, pub x_gpe0_block:Option<AcpiGas>, pub x_gpe1_block:Option<AcpiGas>,
 }
 impl FadtInfo {
     pub fn effective_firmware_ctrl(&self)->u64{if self.x_firmware_ctrl!=0{self.x_firmware_ctrl}else{self.firmware_ctrl as u64}}
     pub fn effective_dsdt(&self)->u64{if self.x_dsdt!=0{self.x_dsdt}else{self.dsdt as u64}}
+    pub fn effective_pm1a_control_address(&self)->u64{self.x_pm1a_control_block.map(|g|g.address).filter(|a|*a!=0).unwrap_or(self.pm1a_control_legacy as u64)}
 }
 /// Parse the stable ACPI 5.0+ FADT fields, checking each field against the
 /// actual table length. Short legacy FADTs remain valid with absent fields zero.
@@ -79,6 +83,14 @@ pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
     if n>=111{out.boot_arch_flags=u16::from_le_bytes([bytes[109],bytes[110]]);}
     if n>=116{out.flags=u32le(bytes,112)?;}
     if n>=132{out.minor_version=bytes[131];}
+    if n>=68{out.pm1a_control_legacy=u32le(bytes,64)?;}
+    if n>=128{out.reset_register=parse_optional_gas(bytes,116)?;}
+    if n>=184{out.x_pm1a_control_block=parse_optional_gas(bytes,172)?;}
+    if n>=196{out.x_pm1b_control_block=parse_optional_gas(bytes,184)?;}
+    if n>=208{out.x_pm2_control_block=parse_optional_gas(bytes,196)?;}
+    if n>=220{out.x_pm_timer_block=parse_optional_gas(bytes,208)?;}
+    if n>=232{out.x_gpe0_block=parse_optional_gas(bytes,220)?;}
+    if n>=244{out.x_gpe1_block=parse_optional_gas(bytes,232)?;}
     if n>=148{
         out.x_firmware_ctrl=u64::from_le_bytes(bytes[132..140].try_into().map_err(|_|AcpiError::Truncated)?);
         out.x_dsdt=u64::from_le_bytes(bytes[140..148].try_into().map_err(|_|AcpiError::Truncated)?);
@@ -97,7 +109,7 @@ static LAST_RSDP_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::At
 pub fn rsdp_address() -> u64 { LAST_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Acquire) }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEntries, MalformedEntry, MissingRoot, MissingMadt, AddressOutOfRange }
+pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEntries, MalformedEntry, MissingRoot, MissingMadt, AddressOutOfRange, DuplicateTable }
 
 /// Convert ACPI discovery failures to the shared NTSTATUS ABI at the driver boundary.
 pub const fn error_to_ntstatus(error: AcpiError) -> nt_abi::ntstatus::NTSTATUS {
@@ -107,7 +119,7 @@ pub const fn error_to_ntstatus(error: AcpiError) -> nt_abi::ntstatus::NTSTATUS {
         AcpiError::TooManyEntries => STATUS_INSUFFICIENT_RESOURCES,
         AcpiError::MissingRoot | AcpiError::MissingMadt => STATUS_UNSUCCESSFUL,
         AcpiError::BadSignature | AcpiError::BadLength | AcpiError::BadChecksum
-        | AcpiError::MalformedEntry | AcpiError::AddressOutOfRange => STATUS_INVALID_PARAMETER,
+        | AcpiError::MalformedEntry | AcpiError::AddressOutOfRange | AcpiError::DuplicateTable => STATUS_INVALID_PARAMETER,
     }
 }
 
@@ -230,7 +242,7 @@ pub fn validate_rsdp(bytes: &[u8]) -> Result<u8, AcpiError> {
     if revision >= 2 {
         if bytes.len() < 36 { return Err(AcpiError::Truncated); }
         let length = u32le(bytes, 20)? as usize;
-        if length < 36 || length > bytes.len() { return Err(AcpiError::BadLength); }
+        if !(36..=MAX_RSDP_LENGTH).contains(&length) || length > bytes.len() { return Err(AcpiError::BadLength); }
         if !checksum_ok(&bytes[..length]) { return Err(AcpiError::BadChecksum); }
     }
     Ok(revision)
@@ -257,6 +269,7 @@ pub fn parse_rsdp(bytes: &[u8]) -> Result<RsdpRoots, AcpiError> {
 }
 
 const MAX_ACPI_TABLE_LENGTH: usize = 1024 * 1024;
+const MAX_RSDP_LENGTH: usize = 4096;
 // CognacOS x64 bootstrap paging identity-maps the first 64 GiB. Firmware
 // discovery uses this early mapping only; runtime users should prefer the
 // AcpiPhysicalMapper interface for platform-managed mappings.
@@ -266,7 +279,6 @@ const LOW_IDENTITY_LIMIT: u64 = 0x10_0000_0000;
 /// The bootstrap identity-maps only 0..4 GiB, so physical ranges are checked
 /// before dereferencing. This routine discovers topology but enables no devices.
 pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
-    LAST_RSDP_ADDRESS.store(rsdp_address, core::sync::atomic::Ordering::Release);
     if rsdp_address == 0 || rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
@@ -324,7 +336,9 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
             return Err(AcpiError::AddressOutOfRange);
         }
         let table = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
-        return parse_madt(table);
+        let madt = parse_madt(table)?;
+        LAST_RSDP_ADDRESS.store(rsdp_address, core::sync::atomic::Ordering::Release);
+        return Ok(madt);
     }
     Err(AcpiError::MissingMadt)
 }
@@ -376,6 +390,7 @@ pub fn find_table_with_mapper<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address
     for offset in (36..root_length).step_by(width){
         let address=if width==8{u64::from_le_bytes(root[offset..offset+8].try_into().map_err(|_|AcpiError::Truncated)?)}else{u32le(root,offset)? as u64};
         if address==0{continue}
+        if address & 3 != 0 { return Err(AcpiError::MalformedEntry); }
         let header=mapped_range(mapper,address,36)?;
         if header.get(0..4)!=Some(&signature[..]){continue}
         let length=u32le(header,4)? as usize;
@@ -386,6 +401,95 @@ pub fn find_table_with_mapper<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address
         seen+=1;
     }
     Err(AcpiError::MissingRoot)
+}
+
+/// Resolve the DSDT through the FADT pointer rather than assuming DSDT is
+/// listed directly in the RSDT/XSDT. Extended X_DSDT is preferred when
+/// non-zero; parse_fadt supplies the legacy DSDT fallback for older tables.
+/// Both the FADT and DSDT are independently length/signature/checksum checked.
+pub fn find_dsdt_with_mapper<'a, M: AcpiPhysicalMapper>(
+    mapper: &'a M,
+    rsdp_address: u64,
+) -> Result<&'a [u8], AcpiError> {
+    let fadt_table = find_table_with_mapper(mapper, rsdp_address, *b"FACP", 0)?;
+    let fadt = parse_fadt(fadt_table)?;
+    let dsdt_address = fadt.effective_dsdt();
+    let dsdt_header = mapped_range(mapper, dsdt_address, 36)?;
+    let dsdt_length = u32le(dsdt_header, 4)? as usize;
+    if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&dsdt_length) {
+        return Err(AcpiError::BadLength);
+    }
+    let dsdt = mapped_range(mapper, dsdt_address, dsdt_length)?;
+    validate_sdt(dsdt, Some(*b"DSDT"))?;
+    Ok(dsdt)
+}
+/// Resolve an SSDT by its zero-based occurrence in root-table order. Multiple
+/// SSDTs are expected and are intentionally not treated as duplicate singleton
+/// tables; callers load them in the returned instance order.
+pub fn find_ssdt_with_mapper<'a, M: AcpiPhysicalMapper>(mapper: &'a M, rsdp_address: u64, instance: usize) -> Result<&'a [u8], AcpiError> {
+    find_table_with_mapper(mapper, rsdp_address, *b"SSDT", instance)
+}
+
+/// Return a singleton table only when exactly one matching instance exists.
+pub fn find_unique_table_with_mapper<'a, M: AcpiPhysicalMapper>(mapper: &'a M, rsdp_address: u64, signature: [u8; 4]) -> Result<&'a [u8], AcpiError> {
+    let first = find_table_with_mapper(mapper, rsdp_address, signature, 0)?;
+    match find_table_with_mapper(mapper, rsdp_address, signature, 1) {
+        Ok(_) => Err(AcpiError::DuplicateTable),
+        Err(AcpiError::MissingRoot) => Ok(first),
+        Err(error) => Err(error),
+    }
+}
+
+/// Validated table identity and firmware provenance. Mapping lifetime remains
+/// owned by the HAL; this record does not extend the lifetime of mapped bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AcpiTableProvenance {
+    pub rsdp_address: u64, pub physical_address: u64, pub signature: [u8; 4],
+    pub revision: u8, pub length: u32, pub checksum: u8, pub instance: usize,
+    pub validated: bool,
+}
+
+/// A validated table view whose borrow is tied to the mapper lifetime. Retaining
+/// this value prevents callers from accidentally outliving the HAL mapping.
+#[derive(Debug)]
+pub struct AcpiMappedTable<'a> { pub bytes:&'a [u8], pub provenance:AcpiTableProvenance }
+
+/// Return the physical address and validated header metadata for a table.
+pub fn table_provenance_with_mapper<M: AcpiPhysicalMapper>(mapper: &M, rsdp_address: u64, signature: [u8; 4], instance: usize) -> Result<AcpiTableProvenance, AcpiError> {
+    let prefix = mapped_range(mapper, rsdp_address, 20)?;
+    let revision = prefix[15];
+    let rsdp_len = if revision >= 2 { let x = mapped_range(mapper, rsdp_address, 36)?; let n = u32le(x, 20)? as usize; if !(36..=MAX_RSDP_LENGTH).contains(&n) { return Err(AcpiError::BadLength); } n } else { 20 };
+    let roots = parse_rsdp(mapped_range(mapper, rsdp_address, rsdp_len)?)?;
+    let (root_address, root_sig, width) = if revision >= 2 && roots.xsdt_address != 0 { (roots.xsdt_address, *b"XSDT", 8usize) } else if roots.rsdt_address != 0 { (roots.rsdt_address as u64, *b"RSDT", 4usize) } else { return Err(AcpiError::MissingRoot); };
+    let h = mapped_range(mapper, root_address, 36)?;
+    let n = u32le(h, 4)? as usize;
+    if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&n) { return Err(AcpiError::BadLength); }
+    let root = mapped_range(mapper, root_address, n)?;
+    let rh = validate_sdt(root, Some(root_sig))?;
+    if (rh.length as usize - 36) % width != 0 { return Err(AcpiError::MalformedEntry); }
+    let mut seen = 0usize;
+    for off in (36..n).step_by(width) {
+        let address = if width == 8 { u64::from_le_bytes(root[off..off+8].try_into().map_err(|_|AcpiError::Truncated)?) } else { u32le(root, off)? as u64 };
+        if address == 0 { continue; }
+        if address & 3 != 0 { return Err(AcpiError::MalformedEntry); }
+        let th = mapped_range(mapper, address, 36)?;
+        if th.get(0..4) != Some(&signature[..]) { continue; }
+        let length = u32le(th, 4)? as usize;
+        if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&length) { return Err(AcpiError::BadLength); }
+        let table = mapped_range(mapper, address, length)?;
+        let parsed = validate_sdt(table, Some(signature))?;
+        if seen == instance { return Ok(AcpiTableProvenance { rsdp_address, physical_address: address, signature, revision: parsed.revision, length: parsed.length, checksum: parsed.checksum, instance, validated: true }); }
+        seen += 1;
+    }
+    Err(AcpiError::MissingRoot)
+}
+
+/// Map a table together with its validated provenance; the returned bytes
+/// cannot outlive the mapper borrow that owns the physical mapping.
+pub fn map_table_with_provenance<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address:u64,signature:[u8;4],instance:usize)->Result<AcpiMappedTable<'a>,AcpiError>{
+    let provenance=table_provenance_with_mapper(mapper,rsdp_address,signature,instance)?;
+    let bytes=find_table_with_mapper(mapper,rsdp_address,signature,instance)?;
+    Ok(AcpiMappedTable{bytes,provenance})
 }
 
 /// Discover and parse MADT through the platform mapper, without assuming a
@@ -539,6 +643,45 @@ pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
 }
 
 
+
+/// FACS is not an SDT and has no checksum byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FacsInfo { pub length:u32, pub hardware_signature:u32, pub firmware_waking_vector:u32, pub global_lock:u32, pub flags:u32, pub x_firmware_waking_vector:u64, pub version:u8, pub ospm_flags:u32 }
+pub fn parse_facs(bytes:&[u8])->Result<FacsInfo,AcpiError>{
+    if bytes.len()<8{return Err(AcpiError::Truncated)} if bytes.get(0..4)!=Some(b"FACS"){return Err(AcpiError::BadSignature)}
+    let length=u32le(bytes,4)? as usize;if length<64||length>bytes.len(){return Err(AcpiError::BadLength)}
+    Ok(FacsInfo{length:length as u32,hardware_signature:u32le(bytes,8)?,firmware_waking_vector:u32le(bytes,12)?,global_lock:u32le(bytes,16)?,flags:u32le(bytes,20)?,x_firmware_waking_vector:u64::from_le_bytes(bytes[24..32].try_into().map_err(|_|AcpiError::Truncated)?),version:bytes[32],ospm_flags:u32le(bytes,36)?})
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct AcpiGas { pub address_space_id:u8,pub bit_width:u8,pub bit_offset:u8,pub access_size:u8,pub address:u64 }
+fn parse_optional_gas(bytes:&[u8],offset:usize)->Result<Option<AcpiGas>,AcpiError>{let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;if s.iter().all(|b|*b==0){Ok(None)}else{Ok(Some(parse_gas(bytes,offset)?))}}
+fn parse_gas(bytes:&[u8],offset:usize)->Result<AcpiGas,AcpiError>{
+    let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;
+    let gas=AcpiGas{address_space_id:s[0],bit_width:s[1],bit_offset:s[2],access_size:s[3],address:u64::from_le_bytes(s[4..12].try_into().map_err(|_|AcpiError::Truncated)?)};
+    if gas.address_space_id>1||gas.address==0||gas.bit_width==0||gas.bit_offset>=gas.bit_width||gas.access_size>4{return Err(AcpiError::MalformedEntry)} Ok(gas)
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct HpetInfo { pub event_timer_block_id:u32,pub base:AcpiGas,pub sequence_number:u8,pub minimum_tick:u16,pub page_protection:u8 }
+pub fn parse_hpet(bytes:&[u8])->Result<HpetInfo,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"HPET"))?;if h.length<56{return Err(AcpiError::BadLength)} let base=parse_gas(bytes,40)?;let page_protection=bytes[55];if page_protection>2{return Err(AcpiError::MalformedEntry)}
+    Ok(HpetInfo{event_timer_block_id:u32le(bytes,36)?,base,sequence_number:bytes[52],minimum_tick:u16::from_le_bytes([bytes[53],bytes[54]]),page_protection})
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BgrtInfo { pub version:u16,pub status:u8,pub image_type:u8,pub image_address:u64,pub offset_x:u32,pub offset_y:u32 }
+pub fn parse_bgrt(bytes:&[u8])->Result<BgrtInfo,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"BGRT"))?;if h.length<56{return Err(AcpiError::BadLength)} let version=u16::from_le_bytes([bytes[36],bytes[37]]);let status=bytes[38];let image_type=bytes[39];let image_address=u64::from_le_bytes(bytes[40..48].try_into().map_err(|_|AcpiError::Truncated)?);
+    if version!=1||status&!1!=0||image_type!=0||(status&1!=0&&image_address==0){return Err(AcpiError::MalformedEntry)}
+    Ok(BgrtInfo{version,status,image_type,image_address,offset_x:u32le(bytes,48)?,offset_y:u32le(bytes,52)?})
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct GtdtInfo { pub counter_control_base:u64,pub secure_el1_interrupt:u32,pub nonsecure_el1_interrupt:u32,pub virtual_el1_interrupt:u32,pub nonsecure_el2_interrupt:u32,pub counter_read_base:u64,pub platform_timer_count:u32,pub platform_timer_offset:u32 }
+pub fn parse_gtdt(bytes:&[u8])->Result<GtdtInfo,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"GTDT"))?;if h.length<96{return Err(AcpiError::BadLength)} let count=u32le(bytes,88)?;let offset=u32le(bytes,92)?;if count>0&&(offset<96||offset>=h.length){return Err(AcpiError::MalformedEntry)}
+    Ok(GtdtInfo{counter_control_base:u64::from_le_bytes(bytes[36..44].try_into().map_err(|_|AcpiError::Truncated)?),secure_el1_interrupt:u32le(bytes,48)?,nonsecure_el1_interrupt:u32le(bytes,56)?,virtual_el1_interrupt:u32le(bytes,64)?,nonsecure_el2_interrupt:u32le(bytes,72)?,counter_read_base:u64::from_le_bytes(bytes[80..88].try_into().map_err(|_|AcpiError::Truncated)?),platform_timer_count:count,platform_timer_offset:offset})
+}
+pub fn validate_pptt(bytes:&[u8])->Result<AcpiTableHeader,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"PPTT"))?;let end=h.length as usize;let mut off=36usize;while off<end{if off.checked_add(4).filter(|v|*v<=end).is_none(){return Err(AcpiError::MalformedEntry)}let size=bytes[off+1] as usize;if size<4||off.checked_add(size).filter(|v|*v<=end).is_none(){return Err(AcpiError::MalformedEntry)}off+=size;}Ok(h)
+}
 
 /// Maximum NUMA proximity domains retained from SRAT/SLIT firmware tables.
 pub const MAX_NUMA_DOMAINS:usize=64;
@@ -1324,4 +1467,210 @@ mod numa_table_tests {
         b[48]=1;b[49]=40;b[80..88].copy_from_slice(&u64::MAX.to_le_bytes());finish(&mut b);
         assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
     }
+}
+
+#[cfg(test)]
+mod rsdp_validation_regression_tests {
+    use super::*;
+    fn checksum(bytes: &mut [u8], index: usize, end: usize) {
+        bytes[index] = 0;
+        let sum = bytes[..end].iter().fold(0u8, |a, b| a.wrapping_add(*b));
+        bytes[index] = 0u8.wrapping_sub(sum);
+    }
+    fn rsdp_v2() -> [u8; 36] {
+        let mut b = [0u8; 36];
+        b[..8].copy_from_slice(b"RSD PTR ");
+        b[15] = 2;
+        b[20..24].copy_from_slice(&36u32.to_le_bytes());
+        b[24..32].copy_from_slice(&0x1000u64.to_le_bytes());
+        checksum(&mut b, 8, 20);
+        checksum(&mut b, 32, 36);
+        b
+    }
+    #[test]
+    fn accepts_valid_v2_rsdp_and_rejects_corrupt_checksums() {
+        assert_eq!(validate_rsdp(&rsdp_v2()), Ok(2));
+        let mut b = rsdp_v2();
+        b[8] ^= 1;
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadChecksum));
+        let mut b = rsdp_v2();
+        b[35] ^= 1;
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadChecksum));
+    }
+    #[test]
+    fn rejects_extended_rsdp_lengths_outside_supported_bounds() {
+        let mut b = rsdp_v2();
+        b[20..24].copy_from_slice(&35u32.to_le_bytes());
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadLength));
+        let mut b = rsdp_v2();
+        b[20..24].copy_from_slice(&((MAX_RSDP_LENGTH + 1) as u32).to_le_bytes());
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadLength));
+    }
+    #[test]
+    fn rejects_bad_signature_and_short_rsdp() {
+        assert_eq!(validate_rsdp(&[0u8; 19]), Err(AcpiError::Truncated));
+        let mut b = rsdp_v2();
+        b[0] = b'X';
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadSignature));
+    }
+}
+
+#[cfg(test)]
+mod root_table_validation_regression_tests {
+    use super::*;
+    struct Mapper<'a> { rsdp_addr: u64, rsdp: &'a [u8], root_addr: u64, root: &'a [u8] }
+    impl AcpiPhysicalMapper for Mapper<'_> {
+        fn map_physical<'a>(&'a self, address: u64, length: usize) -> Result<&'a [u8], AcpiError> {
+            let b = if address == self.rsdp_addr { self.rsdp } else if address == self.root_addr { self.root } else { return Err(AcpiError::AddressOutOfRange); };
+            if length > b.len() { return Err(AcpiError::Truncated); }
+            Ok(&b[..length])
+        }
+    }
+    fn rsdp(root_address: u64) -> [u8; 36] {
+        let mut b = [0u8; 36];
+        b[..8].copy_from_slice(b"RSD PTR ");
+        b[15] = 2;
+        b[20..24].copy_from_slice(&36u32.to_le_bytes());
+        b[24..32].copy_from_slice(&root_address.to_le_bytes());
+        b[8] = 0u8.wrapping_sub(b[..20].iter().fold(0u8, |s, v| s.wrapping_add(*v)));
+        b[32] = 0u8.wrapping_sub(b.iter().fold(0u8, |s, v| s.wrapping_add(*v)));
+        b
+    }
+    fn finish_sdt(b: &mut [u8]) {
+        b[9] = 0;
+        b[9] = 0u8.wrapping_sub(b.iter().fold(0u8, |s, v| s.wrapping_add(*v)));
+    }
+    #[test]
+    fn rejects_root_table_payload_not_divisible_by_entry_width() {
+        let mut root = [0u8; 45];
+        root[..4].copy_from_slice(b"XSDT");
+        root[4..8].copy_from_slice(&45u32.to_le_bytes());
+        finish_sdt(&mut root);
+        let r = rsdp(0x2000);
+        let mapper = Mapper { rsdp_addr: 0x1000, rsdp: &r, root_addr: 0x2000, root: &root };
+        assert_eq!(find_table_with_mapper(&mapper, 0x1000, *b"FACP", 0), Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_root_pointer_range_overflow_before_mapping() {
+        let r = rsdp(u64::MAX - 8);
+        let mapper = Mapper { rsdp_addr: 0x1000, rsdp: &r, root_addr: 0, root: &[] };
+        assert_eq!(find_table_with_mapper(&mapper, 0x1000, *b"FACP", 0), Err(AcpiError::AddressOutOfRange));
+    }
+}
+
+#[cfg(test)]
+mod dsdt_resolution_tests {
+    use super::*;
+    struct Mapper<'a> {
+        rsdp: &'a [u8], xsdt: &'a [u8], fadt: &'a [u8], dsdt: &'a [u8],
+        rsdp_addr: u64, xsdt_addr: u64, fadt_addr: u64, dsdt_addr: u64,
+    }
+    impl AcpiPhysicalMapper for Mapper<'_> {
+        fn map_physical<'a>(&'a self, address: u64, length: usize) -> Result<&'a [u8], AcpiError> {
+            let bytes = if address == self.rsdp_addr { self.rsdp }
+                else if address == self.xsdt_addr { self.xsdt }
+                else if address == self.fadt_addr { self.fadt }
+                else if address == self.dsdt_addr { self.dsdt }
+                else { return Err(AcpiError::AddressOutOfRange); };
+            if length > bytes.len() { return Err(AcpiError::Truncated); }
+            Ok(&bytes[..length])
+        }
+    }
+    fn finish(bytes: &mut [u8], checksum_index: usize) {
+        bytes[checksum_index] = 0;
+        let end = if checksum_index == 8 { 20 } else { bytes.len() };
+        bytes[checksum_index] = 0u8.wrapping_sub(bytes[..end].iter().fold(0u8, |s, b| s.wrapping_add(*b)));
+    }
+    #[test]
+    fn resolves_dsdt_from_extended_fadt_pointer() {
+        let mut rsdp = [0u8; 36]; rsdp[..8].copy_from_slice(b"RSD PTR "); rsdp[15] = 2;
+        rsdp[20..24].copy_from_slice(&36u32.to_le_bytes()); rsdp[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+        finish(&mut rsdp, 8); finish(&mut rsdp, 32);
+        let mut xsdt = [0u8; 44]; xsdt[..4].copy_from_slice(b"XSDT"); xsdt[4..8].copy_from_slice(&44u32.to_le_bytes());
+        xsdt[36..44].copy_from_slice(&0x3000u64.to_le_bytes()); finish(&mut xsdt, 9);
+        let mut fadt = [0u8; 148]; fadt[..4].copy_from_slice(b"FACP"); fadt[4..8].copy_from_slice(&148u32.to_le_bytes());
+        fadt[40..44].copy_from_slice(&0x4000u32.to_le_bytes()); fadt[140..148].copy_from_slice(&0x1_0000_4000u64.to_le_bytes()); finish(&mut fadt, 9);
+        let mut dsdt = [0u8; 36]; dsdt[..4].copy_from_slice(b"DSDT"); dsdt[4..8].copy_from_slice(&36u32.to_le_bytes()); finish(&mut dsdt, 9);
+        let mapper = Mapper { rsdp: &rsdp, xsdt: &xsdt, fadt: &fadt, dsdt: &dsdt, rsdp_addr: 0x1000, xsdt_addr: 0x2000, fadt_addr: 0x3000, dsdt_addr: 0x1_0000_4000 };
+        let found = find_dsdt_with_mapper(&mapper, 0x1000).unwrap();
+        assert_eq!(found.get(0..4), Some(&b"DSDT"[..]));
+    }
+    #[test]
+    fn falls_back_to_legacy_dsdt_pointer_when_extended_pointer_is_zero() {
+        let mut rsdp = [0u8; 36]; rsdp[..8].copy_from_slice(b"RSD PTR "); rsdp[15] = 2;
+        rsdp[20..24].copy_from_slice(&36u32.to_le_bytes()); rsdp[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+        finish(&mut rsdp, 8); finish(&mut rsdp, 32);
+        let mut xsdt = [0u8; 44]; xsdt[..4].copy_from_slice(b"XSDT"); xsdt[4..8].copy_from_slice(&44u32.to_le_bytes());
+        xsdt[36..44].copy_from_slice(&0x3000u64.to_le_bytes()); finish(&mut xsdt, 9);
+        let mut fadt = [0u8; 148]; fadt[..4].copy_from_slice(b"FACP"); fadt[4..8].copy_from_slice(&148u32.to_le_bytes());
+        fadt[40..44].copy_from_slice(&0x4000u32.to_le_bytes()); finish(&mut fadt, 9);
+        let mut dsdt = [0u8; 36]; dsdt[..4].copy_from_slice(b"DSDT"); dsdt[4..8].copy_from_slice(&36u32.to_le_bytes()); finish(&mut dsdt, 9);
+        let mapper = Mapper { rsdp: &rsdp, xsdt: &xsdt, fadt: &fadt, dsdt: &dsdt, rsdp_addr: 0x1000, xsdt_addr: 0x2000, fadt_addr: 0x3000, dsdt_addr: 0x4000 };
+        let found = find_dsdt_with_mapper(&mapper, 0x1000).unwrap();
+        assert_eq!(found.get(0..4), Some(&b"DSDT"[..]));
+    }
+}
+
+
+#[cfg(test)]
+mod firmware_table_policy_tests {
+    use super::*;
+    struct Mapper<'a> { rsdp: &'a [u8], root: &'a [u8], first: &'a [u8], second: &'a [u8], rsdp_addr:u64, root_addr:u64, first_addr:u64, second_addr:u64 }
+    impl AcpiPhysicalMapper for Mapper<'_> {
+        fn map_physical<'a>(&'a self, address:u64, length:usize)->Result<&'a [u8],AcpiError> {
+            let bytes=if address==self.rsdp_addr {self.rsdp} else if address==self.root_addr {self.root} else if address==self.first_addr {self.first} else if address==self.second_addr {self.second} else {return Err(AcpiError::AddressOutOfRange)};
+            if length>bytes.len(){return Err(AcpiError::Truncated)} Ok(&bytes[..length])
+        }
+    }
+    fn finish(b:&mut [u8], at:usize) { b[at]=0; let end=if at==8{20}else{b.len()}; b[at]=0u8.wrapping_sub(b[..end].iter().fold(0u8,|a,v|a.wrapping_add(*v))); }
+    fn make_rsdp()->[u8;36] { let mut b=[0u8;36];b[..8].copy_from_slice(b"RSD PTR ");b[15]=2;b[20..24].copy_from_slice(&36u32.to_le_bytes());b[24..32].copy_from_slice(&0x2000u64.to_le_bytes());finish(&mut b,8);finish(&mut b,32);b }
+    fn make_sdt(sig:[u8;4],revision:u8)->[u8;36] { let mut b=[0u8;36];b[..4].copy_from_slice(&sig);b[4..8].copy_from_slice(&36u32.to_le_bytes());b[8]=revision;finish(&mut b,9);b }
+    #[test]
+    fn ssdt_instances_are_enumerated_in_root_order_and_provenance_is_retained() {
+        let rsdp=make_rsdp();let first=make_sdt(*b"SSDT",2);let second=make_sdt(*b"SSDT",3);
+        let mut root=[0u8;52];root[..4].copy_from_slice(b"XSDT");root[4..8].copy_from_slice(&52u32.to_le_bytes());
+        root[36..44].copy_from_slice(&0x3000u64.to_le_bytes());root[44..52].copy_from_slice(&0x4000u64.to_le_bytes());finish(&mut root,9);
+        let mapper=Mapper{rsdp:&rsdp,root:&root,first:&first,second:&second,rsdp_addr:0x1000,root_addr:0x2000,first_addr:0x3000,second_addr:0x4000};
+        assert_eq!(find_ssdt_with_mapper(&mapper,0x1000,0).unwrap()[8],2);
+        assert_eq!(find_ssdt_with_mapper(&mapper,0x1000,1).unwrap()[8],3);
+        assert_eq!(find_ssdt_with_mapper(&mapper,0x1000,2),Err(AcpiError::MissingRoot));
+        let p=table_provenance_with_mapper(&mapper,0x1000,*b"SSDT",1).unwrap();
+        assert_eq!(p.physical_address,0x4000);assert_eq!(p.revision,3);assert_eq!(p.length,36);assert!(p.validated);
+        let mapped=map_table_with_provenance(&mapper,0x1000,*b"SSDT",1).unwrap();assert_eq!(mapped.bytes[8],3);assert_eq!(mapped.provenance.physical_address,0x4000);
+    }
+    #[test]
+    fn singleton_policy_rejects_multiple_fadt_instances() {
+        let rsdp=make_rsdp();let fadt=make_sdt(*b"FACP",6);
+        let mut root=[0u8;52];root[..4].copy_from_slice(b"XSDT");root[4..8].copy_from_slice(&52u32.to_le_bytes());
+        root[36..44].copy_from_slice(&0x3000u64.to_le_bytes());root[44..52].copy_from_slice(&0x3000u64.to_le_bytes());finish(&mut root,9);
+        let mapper=Mapper{rsdp:&rsdp,root:&root,first:&fadt,second:&fadt,rsdp_addr:0x1000,root_addr:0x2000,first_addr:0x3000,second_addr:0x4000};
+        assert_eq!(find_unique_table_with_mapper(&mapper,0x1000,*b"FACP"),Err(AcpiError::DuplicateTable));
+    }
+}
+
+
+#[cfg(test)]
+mod remaining_firmware_table_tests {
+ use super::*;
+ fn finish(b:&mut [u8]){b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));}
+ fn sdt(sig:[u8;4],n:usize)->std::vec::Vec<u8>{let mut b=std::vec![0u8;n];b[..4].copy_from_slice(&sig);b[4..8].copy_from_slice(&(n as u32).to_le_bytes());b[8]=1;b}
+ #[test] fn validates_facs_without_applying_sdt_checksum(){let mut b=[0u8;64];b[..4].copy_from_slice(b"FACS");b[4..8].copy_from_slice(&64u32.to_le_bytes());b[32]=2;let f=parse_facs(&b).unwrap();assert_eq!(f.length,64);assert_eq!(f.version,2);assert_eq!(parse_facs(&b[..40]),Err(AcpiError::BadLength));}
+ #[test] fn validates_hpet_gas_and_page_protection(){let mut b=sdt(*b"HPET",56);b[41]=64;b[44..52].copy_from_slice(&0xfed0_0000u64.to_le_bytes());finish(&mut b);let h=parse_hpet(&b).unwrap();assert_eq!(h.base.address,0xfed0_0000);b[55]=3;finish(&mut b);assert_eq!(parse_hpet(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_bgrt_version_status_and_image_address(){let mut b=sdt(*b"BGRT",56);b[36..38].copy_from_slice(&1u16.to_le_bytes());b[38]=1;b[40..48].copy_from_slice(&0x1000u64.to_le_bytes());finish(&mut b);assert_eq!(parse_bgrt(&b).unwrap().image_address,0x1000);b[40..48].fill(0);finish(&mut b);assert_eq!(parse_bgrt(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_gtdt_fixed_fields_and_timer_offset(){let mut b=sdt(*b"GTDT",100);b[88..92].copy_from_slice(&1u32.to_le_bytes());b[92..96].copy_from_slice(&96u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b).unwrap().platform_timer_count,1);b[92..96].copy_from_slice(&95u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_pptt_variable_node_bounds(){let mut b=sdt(*b"PPTT",40);b[36]=0;b[37]=4;finish(&mut b);assert!(validate_pptt(&b).is_ok());b[37]=8;finish(&mut b);assert_eq!(validate_pptt(&b),Err(AcpiError::MalformedEntry));}
+}
+
+
+#[cfg(test)]
+mod fadt_gas_tests {
+ use super::*;
+ #[test] fn prefers_valid_extended_pm1a_gas_and_keeps_legacy_fallback(){
+  let mut b=std::vec![0u8;244];b[..4].copy_from_slice(b"FACP");b[4..8].copy_from_slice(&244u32.to_le_bytes());b[8]=6;b[40..44].copy_from_slice(&0x1234u32.to_le_bytes());b[64..68].copy_from_slice(&0x404u32.to_le_bytes());
+  b[172]=1;b[173]=16;b[175]=1;b[176..184].copy_from_slice(&0x404u64.to_le_bytes());
+  b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));
+  let f=parse_fadt(&b).unwrap();assert_eq!(f.effective_pm1a_control_address(),0x404);assert_eq!(f.x_pm1a_control_block.unwrap().address,0x404);
+  b[172]=0;b[173]=0;b[175]=0;b[176..184].fill(0);b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));
+  assert_eq!(parse_fadt(&b).unwrap().effective_pm1a_control_address(),0x404);
+ }
 }

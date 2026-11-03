@@ -16,7 +16,7 @@ pub const MAX_PACKAGE_ELEMENTS:usize=16;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
-pub enum AmlValueKind { Empty=0,Uninitialized=1,Integer=2,String=3,Buffer=4,Package=5 }
+pub enum AmlValueKind { Empty=0,Uninitialized=1,Integer=2,String=3,Buffer=4,Package=5,ObjectReference=6 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlRuntimeValue {
     pub kind:AmlValueKind,
@@ -25,9 +25,14 @@ pub struct AmlRuntimeValue {
     pub byte_length:u16,
     pub elements:[u16;MAX_PACKAGE_ELEMENTS],
     pub element_count:u8,
+    /// Encoded target kind and identity for AML ObjectReference values.
+    pub reference_kind:u8,
+    pub reference_id:u16,
+    pub reference_index:u16,
+    pub reference_bit_width:u16,
 }
 impl AmlRuntimeValue {
-    pub const EMPTY:Self=Self{kind:AmlValueKind::Empty,integer:0,bytes:[0;MAX_AML_BYTES],byte_length:0,elements:[0;MAX_PACKAGE_ELEMENTS],element_count:0};
+    pub const EMPTY:Self=Self{kind:AmlValueKind::Empty,integer:0,bytes:[0;MAX_AML_BYTES],byte_length:0,elements:[0;MAX_PACKAGE_ELEMENTS],element_count:0,reference_kind:0,reference_id:0,reference_index:0,reference_bit_width:0};
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ObjectError { Truncated,BadPackageLength,UnsupportedOpcode,InvalidTermArgument,ValueArenaFull,ValueTooLarge,TooManyElements,MalformedObject }
