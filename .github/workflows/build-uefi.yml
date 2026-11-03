@@ -699,6 +699,10 @@ jobs:
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/CognacOS
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/CognacOS/Hives
+          mmd -i build/cognacos-uefi.img@@1048576 ::/System32
+          mmd -i build/cognacos-uefi.img@@1048576 ::/System32/drivers
+          mcopy -i build/cognacos-uefi.img@@1048576 build/drivers/*.sys ::/System32/drivers/
+          mcopy -i build/cognacos-uefi.img@@1048576 build/drivers/Hal.dll ::/System32/drivers/Hal.dll
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/CognacOS/Hives/SYSTEM ::/EFI/CognacOS/Hives/SYSTEM
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
