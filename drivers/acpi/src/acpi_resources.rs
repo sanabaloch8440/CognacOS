@@ -194,18 +194,17 @@ fn allocation_satisfies(requirement:Resource,allocated:Resource)->bool{
         (Resource::Irq{mask,level_triggered,active_low,shared,..},
          Resource::ExtendedIrq{flags,interrupts,count}) =>
             count==1&&interrupts[0]<16&&mask&(1u16<<interrupts[0])!=0
-                &&level_triggered==(flags&2!=0)&&active_low==(flags&4!=0)&&shared==(flags&8!=0),
+                &&level_triggered==(flags&2!=0)&&shared==(flags&8!=0),
         (Resource::ExtendedIrq{flags,interrupts,count},
          Resource::ExtendedIrq{flags:actual_flags,interrupts:actual,count:actual_count}) =>
             count>0&&count<=8&&actual_count>0&&actual_count<=8
-                &&flags&0x1e==actual_flags&0x1e
+                &&(flags&0x0a)==(actual_flags&0x0a)
                 &&actual[..actual_count as usize].iter().all(|gsi|interrupts[..count as usize].contains(gsi)),
         (Resource::ExtendedIrq{flags,interrupts,count},
          Resource::Irq{mask,level_triggered,active_low,shared,..}) =>
             count>0&&count<=8&&mask.count_ones()==1
                 &&interrupts[..count as usize].contains(&(mask.trailing_zeros()))
-                &&(flags&2!=0)==level_triggered&&(flags&4!=0)==active_low
-                &&(flags&8!=0)==shared,
+                &&(flags&2!=0)==level_triggered&&(flags&8!=0)==shared,
         (Resource::Dma{channels,transfer_size,bus_master},
          Resource::Dma{channels:allocated,transfer_size:actual_size,bus_master:actual_master}) =>
             allocated.count_ones()==1&&channels&allocated!=0
@@ -295,6 +294,34 @@ fn project_assignment(requirement:Resource,allocated:Resource)->Option<Resource>
     }
 }
 
+/// Strict post-programming comparison. CM_RESOURCE_LIST does not carry all
+/// ACPI electrical attributes, so _PRS arbitration deliberately ignores those
+/// fields; a fresh _CRS readback must match them exactly.
+fn current_resource_matches(expected:Resource,current:Resource)->bool{
+    if !allocation_satisfies(current,expected){return false}
+    match (expected,current){
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,..},
+         Resource::Irq{level_triggered:a,active_low:b,shared:c,wake_capable:d,..}) =>
+            level_triggered==a&&active_low==b&&shared==c&&wake_capable==d,
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,mask},
+         Resource::ExtendedIrq{flags,interrupts,count}) =>
+            count==1&&count<=8&&mask&(1u16.checked_shl(interrupts[0]).unwrap_or(0))!=0
+                &&level_triggered==(flags&2!=0)&&active_low==(flags&4!=0)
+                &&shared==(flags&8!=0)&&wake_capable==(flags&0x10!=0),
+        (Resource::ExtendedIrq{flags,interrupts,count},
+         Resource::ExtendedIrq{flags:actual_flags,interrupts:actual,count:actual_count}) =>
+            count==actual_count&&count>0&&count<=8&&flags&0x1e==actual_flags&0x1e
+                &&interrupts[..count as usize]==actual[..actual_count as usize],
+        (Resource::ExtendedIrq{flags,interrupts,count},
+         Resource::Irq{mask,level_triggered,active_low,shared,wake_capable,..}) =>
+            count>0&&count<=8&&mask.count_ones()==1
+                &&interrupts[..count as usize].contains(&mask.trailing_zeros())
+                &&(flags&2!=0)==level_triggered&&(flags&4!=0)==active_low
+                &&(flags&8!=0)==shared&&(flags&0x10!=0)==wake_capable,
+        _=>true,
+    }
+}
+
 /// Verify that firmware's post-_SRS _CRS describes the exact allocation
 /// selected by the PnP arbiter. Matching is order-independent and rejects
 /// missing, duplicated, or additional non-EndTag resources.
@@ -317,7 +344,7 @@ pub fn verify_current_resources(
         for (index,candidate) in current.entries[..current.count].iter().enumerate(){
             if used[index]{continue}
             if let Some(candidate)=candidate{
-                if allocation_satisfies(*candidate,*expected){found=Some(index);break}
+                if current_resource_matches(*expected,*candidate){found=Some(index);break}
             }
         }
         if let Some(index)=found{used[index]=true}else{return Err(ResourceError::InvalidDescriptor)}
