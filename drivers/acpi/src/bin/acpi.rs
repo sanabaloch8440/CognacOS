@@ -266,6 +266,81 @@ unsafe fn query_hal_table(signature: [u8; 4], instance: u32) -> Result<&'static 
 }
 
 const IRP_MJ_PNP: usize = 0x1b;
+
+const IRP_MJ_POWER:usize=0x16;
+const IRP_MN_WAIT_WAKE:u8=0x00;
+const IRP_MN_SET_POWER:u8=0x02;
+const IRP_MN_QUERY_POWER:u8=0x03;
+
+/// Execute one optional device power method through the owning AML table's
+/// serialized interpreter. Missing _PSx methods are legal and are no-ops.
+fn invoke_pdo_power_method(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,name:[u8;4])->i32{
+ if device.is_null(){return STATUS_INVALID_PARAMETER}
+ let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+ if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{return STATUS_INVALID_PARAMETER}
+ let ext=unsafe{&*ext};
+ let Some(handle)=ext.table else{return STATUS_DEVICE_NOT_READY};
+ if ext.aml_bytes.is_null()||ext.aml_length<36{return STATUS_INVALID_PARAMETER}
+ let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+ let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
+ let Some(method)=manager.namespace().find_child(ext.node,name) else{return STATUS_SUCCESS};
+ if manager.namespace().nodes[method as usize].object_type!=acpi::aml::AmlObjectType::Method{return STATUS_DEVICE_CONFIGURATION_ERROR}
+ let gate=unsafe{&*STATE.aml_barrier.get()};
+ let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+ match manager.invoke_method_value_with_args(handle,aml,method,gate,&mut runtime,&[]){
+  Ok(_)=>STATUS_SUCCESS,
+  Err(error)=>table_error_to_status(error),
+ }
+}
+
+/// WDM power dispatch runs at PASSIVE_LEVEL in this implementation because
+/// AML methods may wait on namespace mutexes. The kernel's PO preamble owns
+/// transition reservation and completion; this routine performs ACPI policy.
+unsafe extern "win64" fn power_dispatch(
+ device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,
+ irp:*mut cognacos_nt_abi::io::IRP,
+)->i32{
+ let Some(_operation)=AcpiOperationGuard::enter() else{return STATUS_DEVICE_NOT_READY};
+ if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+ let stack=unsafe{(*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION};
+ if stack.is_null(){return STATUS_INVALID_PARAMETER}
+ let minor=unsafe{(*stack).minor_function};
+ let raw=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u64>())};
+ let state_type=raw as u32;
+ let state=(raw>>32) as u32;
+ let status=match minor{
+  IRP_MN_QUERY_POWER=>{
+   if state_type==1&&(1..=4).contains(&state){STATUS_SUCCESS}
+   else if state_type==0&&(1..=6).contains(&state){STATUS_SUCCESS}
+   else{STATUS_INVALID_DEVICE_REQUEST}
+  }
+  IRP_MN_SET_POWER if state_type==1=>{
+   if !(1..=4).contains(&state){STATUS_INVALID_DEVICE_REQUEST}
+   else if device==unsafe{ACPI_BUS_DEVICE}{STATUS_SUCCESS}
+   else{
+    // WDM DEVICE_POWER_STATE encodes D0..D3 as 1..4.
+    let method=match state{1=>*b"_PS0",2=>*b"_PS1",3=>*b"_PS2",4=>*b"_PS3",_=>*b"____"};
+    invoke_pdo_power_method(device,method)
+   }
+  }
+  IRP_MN_WAIT_WAKE=>{
+   // WAIT_WAKE must not be accepted until _PRW/_PSW and platform wake routing
+   // are installed for this PDO. QueryDeviceCapabilities currently advertises
+   // no wake capability, so fail closed rather than leave a false pending IRP.
+   STATUS_NOT_SUPPORTED
+  }
+  IRP_MN_SET_POWER if state_type==0=>{
+   // System sleep requires the platform register backend and coordinated device
+   // stack power-down; never report success without completing that sequence.
+   STATUS_NOT_SUPPORTED
+  }
+  _=>STATUS_INVALID_DEVICE_REQUEST,
+ };
+ unsafe{(*irp).io_status.status.status=status;(*irp).io_status.information=0;}
+ status
+}
+
+
 const IRP_MN_START_DEVICE: u8 = 0x00;
 const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
@@ -756,6 +831,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     // installing callbacks only after PDO creation leaves a window in which a
     // valid device object has no driver-owned PnP dispatch path.
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+     object.major_function[IRP_MJ_POWER] = Some(power_dispatch);
     object.driver_unload = Some(driver_unload);
     let madt_bytes = match unsafe { query_hal_table(*b"APIC", 0) } {
         Ok(bytes) => bytes,
