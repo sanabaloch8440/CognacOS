@@ -391,9 +391,10 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
                 AmlValueKind::Buffer=>{
                     let n=checked_byte_length(source)?;
                     let target_length=checked_byte_length(target)?;
-                    // A non-empty existing Buffer retains its extent. A
-                    // zero-length Buffer is treated as an unallocated target.
-                    let bytes=if target_exists&&target_length!=0{target_length}else{n};
+                    // An existing Buffer retains its declared extent,
+                    // including a legitimate zero-length Buffer. Only an
+                    // absent target adopts the source extent.
+                    let bytes=if target_exists{target_length}else{n};
                     converted.byte_length=bytes as u16;
                     let copied=core::cmp::min(n,bytes);
                     converted.bytes[..copied].copy_from_slice(&source.bytes[..copied]);
@@ -1136,6 +1137,23 @@ mod tests{
         store_reference_with_mode(reference,integer_id,StoreMode::CopyObject,
             &mut bindings,&namespace,&mut arena).unwrap();
         assert_eq!(&arena.get(buffer).unwrap().bytes[..2],&[0xca,0x53]);
+    }
+
+    #[test]fn zero_length_existing_buffer_targets_remain_zero_length(){
+        let arena=AmlObjectArena::new();
+        let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Buffer;
+        let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Buffer;
+        source.byte_length=2;source.bytes[..2].copy_from_slice(&[0x12,0x34]);
+        let result=convert_to_target_type(&source,&target,&arena,64,true).unwrap();
+        assert_eq!(result.kind,AmlValueKind::Buffer);assert_eq!(result.byte_length,0);
+        let mut text=AmlRuntimeValue::EMPTY;text.kind=AmlValueKind::String;
+        text.byte_length=2;text.bytes[..2].copy_from_slice(b"AB");
+        let result=convert_to_target_type(&text,&target,&arena,64,true).unwrap();
+        assert_eq!(result.byte_length,0);
+        let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;
+        integer.integer=0x1234;
+        let result=convert_to_target_type(&integer,&target,&arena,64,true).unwrap();
+        assert_eq!(result.byte_length,0);
     }
 
     #[test]fn named_buffer_to_buffer_store_preserves_extent_and_zero_extends(){
