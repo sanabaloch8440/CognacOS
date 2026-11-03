@@ -33,8 +33,8 @@ pub fn build_wake_info(gpe:WakeResource,deepest_sleep_state:u64,additional_gpes:
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum PowerMethod{Disable,PowerD0,PowerD1,PowerD2,PowerD3}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct DevicePowerState{pub d_state:u8,pub disabled:bool,pub wake:Option<WakeInfo>}
-impl DevicePowerState{pub const INITIAL:Self=Self{d_state:0,disabled:false,wake:None};}
+pub struct DevicePowerState{pub d_state:u8,pub disabled:bool,pub wake:Option<WakeInfo>,pub active_resources:[u16;MAX_POWER_RESOURCE_DEPENDENCIES],pub active_resource_count:u8}
+impl DevicePowerState{pub const INITIAL:Self=Self{d_state:0,disabled:false,wake:None,active_resources:[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES],active_resource_count:0};}
 pub trait AcpiPowerMethodInvoker{
  fn evaluate_prs(&mut self)->Result<&[u8],PowerError>;
  fn set_srs(&mut self,selected:&ResourceList)->bool;
@@ -341,4 +341,79 @@ mod power_resource_graph_tests{
   assert_eq!(validate_current_power_state(3),Ok(3));assert!(validate_current_power_state(4).is_err());
   assert_eq!(validate_performance_limit(2,4),Ok(2));assert!(validate_performance_limit(4,4).is_err());
  }
+}
+
+
+/// AML bridge used by the device-power state machine. The native WDM adapter
+/// implements these calls with AmlTableManager and the serialized AML runtime;
+/// no firmware method is executed by the kernel's DISPATCH_LEVEL power preamble.
+pub trait AcpiPowerFirmware{
+ fn evaluate_prx(&mut self,device_node:u16,state:u8,output:&mut [u16;MAX_POWER_RESOURCE_DEPENDENCIES])->Result<usize,PowerResourceError>;
+ fn invoke_device_method(&mut self,device_node:u16,method:[u8;4])->Result<(),PowerResourceError>;
+ fn evaluate_integer_method(&mut self,device_node:u16,method:[u8;4])->Result<u64,PowerResourceError>;
+ fn invoke_power_resource_method(&mut self,resource_node:u16,enable:bool)->Result<(),PowerResourceError>;
+}
+/// Execute ACPI methods which report dynamic device power policy.
+/// _PSC reports the current D-state; _PPC reports the current performance
+/// limit; _PSR reports external-power-source status. Values are validated
+/// before being returned to WDM policy.
+pub fn query_device_power_policy(firmware:&mut impl AcpiPowerFirmware,node:u16,performance_states:u8)->Result<(u8,u8,bool),PowerResourceError>{
+ let psc=validate_current_power_state(firmware.evaluate_integer_method(node,*b"_PSC")?)?;
+ let ppc=validate_performance_limit(firmware.evaluate_integer_method(node,*b"_PPC")?,performance_states)?;
+ let psr=firmware.evaluate_integer_method(node,*b"_PSR")?;
+ if psr>1{return Err(PowerResourceError::InvalidPowerState)}
+ Ok((psc,ppc,psr!=0))
+}
+/// PowerResourceGraph adapter whose _ON/_OFF operations are AML invocations.
+pub struct FirmwarePowerResourceBackend<'a,F:AcpiPowerFirmware>{pub firmware:&'a mut F}
+impl<F:AcpiPowerFirmware> PowerResourceBackend for FirmwarePowerResourceBackend<'_,F>{
+ fn set_power_resource(&mut self,node:u16,enabled:bool)->bool{
+  self.firmware.invoke_power_resource_method(node,enabled).is_ok()
+ }
+}
+/// Apply a D-state transition against _PRx and _PSx. Newly required resources
+/// are acquired before the device method; resources no longer needed are
+/// released only after the new state method succeeds. Failure unwinds newly
+/// acquired references and leaves the cached state unchanged.
+pub fn transition_device_with_resources(
+ firmware:&mut impl AcpiPowerFirmware,
+ graph:&mut PowerResourceGraph,
+ state:&mut DevicePowerState,
+ device_node:u16,
+ target:u8,
+)->Result<(),PowerResourceError>{
+ if target>3{return Err(PowerResourceError::InvalidPowerState)}
+ if target==state.d_state{return Ok(())}
+ let mut desired=[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES];
+ let desired_count=firmware.evaluate_prx(device_node,target,&mut desired)?;
+ if desired_count>desired.len(){return Err(PowerResourceError::TooManyDependencies)}
+ for i in 0..desired_count{
+  if desired[i]==u16::MAX||desired[..i].contains(&desired[i]){return Err(PowerResourceError::DuplicateDependency)}
+ }
+ let mut newly_acquired=[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES];let mut new_count=0usize;
+ for resource in desired[..desired_count].iter().copied(){
+  if !state.active_resources[..state.active_resource_count as usize].contains(&resource){
+   if let Err(error)=graph.acquire(resource,&mut FirmwarePowerResourceBackend{firmware}){
+    while new_count>0{new_count-=1;let _=graph.release(newly_acquired[new_count],&mut FirmwarePowerResourceBackend{firmware});}
+    return Err(error)
+   }
+   newly_acquired[new_count]=resource;new_count+=1;
+  }
+ }
+ let method=match target{0=>*b"_PS0",1=>*b"_PS1",2=>*b"_PS2",3=>*b"_PS3",_=>return Err(PowerResourceError::InvalidPowerState)};
+ if let Err(error)=firmware.invoke_device_method(device_node,method){
+  while new_count>0{new_count-=1;let _=graph.release(newly_acquired[new_count],&mut FirmwarePowerResourceBackend{firmware});}
+  return Err(error)
+ }
+ let old=state.active_resources;let old_count=state.active_resource_count as usize;
+ for resource in old[..old_count].iter().copied(){
+  if !desired[..desired_count].contains(&resource){
+   graph.release(resource,&mut FirmwarePowerResourceBackend{firmware})?;
+  }
+ }
+ state.active_resources=[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES];
+ state.active_resources[..desired_count].copy_from_slice(&desired[..desired_count]);
+ state.active_resource_count=desired_count as u8;
+ state.d_state=target;
+ Ok(())
 }
