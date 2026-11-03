@@ -480,6 +480,11 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
 pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8,
     sync:&dyn AmlMethodSynchronizer)->Result<AmlRuntimeValue,ExecError>{
+    // This convenience API owns a fresh arena, so caller-supplied arena handles
+    // cannot be valid here. Nested AML calls may still pass validated handles.
+    if args.iter().any(|value|matches!(value.kind,AmlValueKind::Package|AmlValueKind::ObjectReference)){
+        return Err(ExecError::UnsupportedArgumentValue)
+    }
     let mut arena=AmlObjectArena::new();
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
     execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,0)
@@ -768,6 +773,22 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"RECU").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::CallDepthLimit));
+ }
+ #[test]fn rejects_method_arguments_with_unowned_arena_handles_or_invalid_extents(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',1,0xa4,0x68];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+
+  let mut bad_buffer=AmlRuntimeValue::EMPTY;bad_buffer.kind=AmlValueKind::Buffer;
+  bad_buffer.byte_length=(bad_buffer.bytes.len()+1) as u16;
+  assert_eq!(execute_method_typed_with_values(&aml,&ns,id,&[bad_buffer],64),Err(ExecError::UnsupportedArgumentValue));
+
+  let mut bad_package=AmlRuntimeValue::EMPTY;bad_package.kind=AmlValueKind::Package;
+  bad_package.element_count=1;bad_package.elements[0]=u16::MAX;
+  assert_eq!(execute_method_typed_with_values(&aml,&ns,id,&[bad_package],64),Err(ExecError::UnsupportedArgumentValue));
+
+  let reference=make_object_reference(AmlReference::PackageElement{package:u16::MAX,index:0});
+  assert_eq!(execute_method_typed_with_values(&aml,&ns,id,&[reference],64),Err(ExecError::UnsupportedArgumentValue));
  }
  #[test]fn serialized_method_requires_host_sync_and_releases_its_implicit_mutex(){
   let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0x38,0xa4,0x01];
