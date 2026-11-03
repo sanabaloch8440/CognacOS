@@ -176,14 +176,14 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
 /// selected by the PnP arbiter, not translated HAL addresses.
 fn allocation_satisfies(requirement:Resource,allocated:Resource)->bool{
     match (requirement,allocated){
-        (Resource::Io{minimum,maximum,alignment,length,..},
-         Resource::Io{minimum:base,length:actual,..}) =>
-            actual==length&&base>=minimum&&base<=maximum
+        (Resource::Io{minimum,maximum,alignment,length,decode_16_bit},
+         Resource::Io{minimum:base,length:actual,decode_16_bit:actual_decode,..}) =>
+            actual==length&&decode_16_bit==actual_decode&&base>=minimum&&base<=maximum
                 &&(alignment<=1||base%alignment==0),
-        (Resource::Memory{minimum,maximum,alignment,length,..},
-         Resource::Memory{minimum:base,length:actual,..}) =>
-            actual==length&&base>=minimum&&base<=maximum
-                &&(alignment<=1||base%alignment==0),
+        (Resource::Memory{minimum,maximum,alignment,length,writeable,cacheable,..},
+         Resource::Memory{minimum:base,length:actual,writeable:actual_writeable,cacheable:actual_cacheable,..}) =>
+            actual==length&&writeable==actual_writeable&&cacheable==actual_cacheable
+                &&base>=minimum&&base<=maximum&&(alignment<=1||base%alignment==0),
         (Resource::BusNumber{minimum,maximum,length},
          Resource::BusNumber{minimum:base,length:actual,..}) =>
             actual==length&&base>=minimum&&base<=maximum,
