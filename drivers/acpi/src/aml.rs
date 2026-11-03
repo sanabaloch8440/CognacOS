@@ -587,7 +587,7 @@ mod tests{
         let aml=[0x5b,0x82,0x13,0x50,b'P',b'C',b'I',b'0',0x08,b'_',
             b'H',b'I',b'D',0x0d,b'P',b'N',b'P',b'0',b'A',b'0',b'8',0];
         let mut ns=AmlNamespace::new();
-        assert!(load_definition_block(&aml,&mut ns).is_ok());
+        assert_eq!(load_definition_block(&aml,&mut ns),Ok(()));
         assert_eq!(ns.find_child(0,*b"PCI0"),Some(1));
         assert_eq!(ns.find_child(1,*b"_HID"),Some(2));
     }
@@ -736,7 +736,7 @@ mod tests{
         assert_eq!(resolve_name_string(&ns,0,&name),Err(AmlError::InvalidParent));
     }
     #[test]fn explicit_root_and_parent_paths_do_not_search_other_ancestors(){
-        let aml=[0x10,0x16,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
+        let aml=[0x10,0x17,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
                  0x10,0x0b,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let child=ns.find_child(ns.find_child(0,*b"PAR0").unwrap(),*b"CHD0").unwrap();
