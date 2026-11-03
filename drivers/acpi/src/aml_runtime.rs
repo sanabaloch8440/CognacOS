@@ -229,16 +229,23 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
             converted.kind=AmlValueKind::Buffer;
             match source.kind{
                 AmlValueKind::Integer=>{
-                    let bytes=(width_bits/8) as usize;
+                    let width_bytes=(width_bits/8) as usize;
+                    let target_length=checked_byte_length(target)?;
+                    let bytes=if target.kind==AmlValueKind::Buffer{target_length}else{width_bytes};
                     converted.byte_length=bytes as u16;
-                    for i in 0..bytes{converted.bytes[i]=(source.integer>>(i*8)) as u8;}
+                    for i in 0..core::cmp::min(bytes,width_bytes){
+                        converted.bytes[i]=(source.integer>>(i*8)) as u8;
+                    }
                 }
                 AmlValueKind::String=>{
                     let n=checked_byte_length(source)?;
-                    if n>=MAX_AML_BYTES{return Err(RuntimeError::ValueTooLarge)}
-                    converted.bytes[..n].copy_from_slice(&source.bytes[..n]);
-                    converted.bytes[n]=0;
-                    converted.byte_length=(n+1) as u16;
+                    let target_length=checked_byte_length(target)?;
+                    let required=n.checked_add(1).ok_or(RuntimeError::ValueTooLarge)?;
+                    let bytes=if target.kind==AmlValueKind::Buffer{target_length}else{required};
+                    converted.byte_length=bytes as u16;
+                    let copied=core::cmp::min(n,bytes.saturating_sub(1));
+                    converted.bytes[..copied].copy_from_slice(&source.bytes[..copied]);
+                    if copied<bytes{converted.bytes[copied]=0;}
                 }
                 AmlValueKind::Buffer=>{
                     let n=checked_byte_length(source)?;
@@ -259,21 +266,18 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
                 }
                 AmlValueKind::Buffer=>{
                     let n=checked_byte_length(source)?;
-                    // ACPI implicit Buffer-to-String conversion emits
-                    // one 0x-prefixed, two-digit hexadecimal byte per
-                    // source byte, separated by a single space.
-                    let output_len=if n==0{0}else{n.checked_mul(5).and_then(|v|v.checked_sub(1)).ok_or(RuntimeError::ValueTooLarge)?};
+                    // ACPI 6.6 implicit Buffer-to-String conversion
+                    // emits two hexadecimal digits per byte, separated by
+                    // one space; a zero-length buffer becomes an empty string.
+                    let output_len=if n==0{0}else{n.checked_mul(3).and_then(|v|v.checked_sub(1)).ok_or(RuntimeError::ValueTooLarge)?};
                     if output_len>MAX_AML_BYTES{return Err(RuntimeError::ValueTooLarge)}
                     const HEX:&[u8;16]=b"0123456789ABCDEF";
                     converted.kind=AmlValueKind::String;
                     converted.byte_length=output_len as u16;
                     for i in 0..n{
-                        let offset=i*5;
-                        if i!=0{converted.bytes[offset-1]=b' ';}
-                        converted.bytes[offset]=b'0';
-                        converted.bytes[offset+1]=b'x';
-                        converted.bytes[offset+2]=HEX[(source.bytes[i]>>4) as usize];
-                        converted.bytes[offset+3]=HEX[(source.bytes[i]&0xf) as usize];
+                        if i!=0{converted.bytes[i*3-1]=b' ';}
+                        converted.bytes[i*3]=HEX[(source.bytes[i]>>4) as usize];
+                        converted.bytes[i*3+1]=HEX[(source.bytes[i]&0xf) as usize];
                     }
                 }
                 _=>return Err(RuntimeError::TypeMismatch),
@@ -503,7 +507,7 @@ mod tests{
         let buffer=convert_source_operand(&number,AmlValueKind::Buffer,32,&arena).unwrap();
         assert_eq!(buffer.byte_length,4);assert_eq!(&buffer.bytes[..4],&[0x34,0x12,0,0]);
         let string=convert_source_operand(&bytes,AmlValueKind::String,64,&arena).unwrap();
-        assert_eq!(string.byte_length,9);assert_eq!(&string.bytes[..9],b"0x34 0x12");
+        assert_eq!(string.byte_length,5);assert_eq!(&string.bytes[..5],b"34 12");
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
         assert_eq!(convert_source_operand(&package,AmlValueKind::Integer,64,&arena),Err(RuntimeError::TypeMismatch));
     }
@@ -623,6 +627,31 @@ mod tests{
         buffer.byte_length=0;
         assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
+    #[test]fn named_buffer_result_conversion_preserves_target_extent(){
+        let aml=[0x08,b'B',b'U',b'F',b'0',0x11,0x04,0x0a,2,0,0,0];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"BUF0").unwrap();
+        let mut arena=AmlObjectArena::new();
+        let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Buffer;
+        target.byte_length=2;target.bytes[..2].copy_from_slice(&[0xaa,0xbb]);
+        let target_id=arena.allocate(target).unwrap();
+        let mut bindings=AmlBindings::new();bindings.bind(&namespace,node,target_id).unwrap();
+        let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;
+        integer.integer=0x12345678;
+        let integer_id=arena.allocate(integer).unwrap();
+        store_reference(bindings.reference_node(&namespace,node).unwrap(),integer_id,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        let result=arena.get(bindings.value_id(node).unwrap()).unwrap();
+        assert_eq!(result.byte_length,2);assert_eq!(&result.bytes[..2],&[0x78,0x56]);
+        let mut text=AmlRuntimeValue::EMPTY;text.kind=AmlValueKind::String;
+        text.byte_length=4;text.bytes[..4].copy_from_slice(b"ABCD");
+        let text_id=arena.allocate(text).unwrap();
+        store_reference(bindings.reference_node(&namespace,node).unwrap(),text_id,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        let result=arena.get(bindings.value_id(node).unwrap()).unwrap();
+        assert_eq!(result.byte_length,2);assert_eq!(&result.bytes[..2],b"AB");
+    }
+
     #[test]fn copy_object_detaches_mutable_buffer_and_string_values(){
         let aml=[0x08,b'T',b'A',b'R',b'G',0x11,0x04,0x0a,1,0,0xaa];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
