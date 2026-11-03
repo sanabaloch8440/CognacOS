@@ -27,7 +27,7 @@ EXPECTED_IMPORTS = {
             "IoCopyCurrentIrpStackLocationToNext", "IoSetCompletionRoutine",
             "IoAllocateIrp", "IoGetNextIrpStackLocation", "IoFreeIrp",
             "IoCompleteRequest", "IoPnPRegisterDeviceDriver",
-            "IoPnPEnumerateBus", "IoMountFAT32Volume", "IoFAT32StorageRoundTripTest",
+            "IoPnPEnumerateBus", "IoMountFAT32Volume",
         ],
     },
     "pciidex.sys": {
