@@ -7,7 +7,7 @@
 //! PCI stack completes successfully. Hardware register programming is kept
 //! fail-closed until a HAL-backed port/MMIO mapping provider is connected.
 
-use core::ffi::c_void;
+use core::{ffi::c_void, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_nt_abi::{
     bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
     io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
@@ -46,6 +46,17 @@ struct PciIdeFdoExtension {
     channels: [Option<Channel>; 4],
 }
 const _: () = assert!(core::mem::size_of::<PciIdeFdoExtension>() <= 512);
+
+struct PioGuard<'a>(&'a AtomicBool);
+impl<'a> PioGuard<'a> {
+    fn acquire(lock: &'a AtomicBool) -> Self {
+        while lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        Self(lock)
+    }
+}
+impl Drop for PioGuard<'_> { fn drop(&mut self) { self.0.store(false, Ordering::Release); } }
 
 unsafe extern "win64" {
     fn IoCreateDevice(driver: *mut DRIVER_OBJECT, extension_size: u32,
@@ -220,6 +231,7 @@ unsafe extern "win64" fn miniport_submit(
     let request = unsafe { &*request };
     let slot = (request.flags & 0x3) as usize;
     let Some(channel) = (unsafe { (*ext).channels[slot] }) else { return STATUS_NOT_FOUND; };
+    let _pio_guard = PioGuard::acquire(&extension.pio_lock);
     let mut io = X86PortIo;
     let result = match request.operation {
         cognacos_storage::ata_port::AtaPortOperation::Read => {
@@ -493,6 +505,7 @@ unsafe extern "win64" fn add_device(driver: *mut c_void, pdo: *mut DEVICE_OBJECT
             active_channels: 0,
             present_drives: 0,
             channels: [None; 4],
+            pio_lock: AtomicBool::new(false),
         });
         (*fdo).flags = ((*fdo).flags & !0x80) | ((*lower).flags & (0x02 | 0x04));
     }
