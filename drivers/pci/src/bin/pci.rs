@@ -344,6 +344,10 @@ unsafe fn query_standard_bus_interface(device:*mut DEVICE_OBJECT,version:u16,siz
         || (size as usize)<core::mem::size_of::<BUS_INTERFACE_STANDARD>() {
         return STATUS_NOT_SUPPORTED;
     }
+    let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
+    if extension.is_null() || unsafe{(*extension).magic!=PCI_PDO_EXTENSION_MAGIC || (*extension).version!=1} {
+        return STATUS_NOT_SUPPORTED;
+    }
     let interface=BUS_INTERFACE_STANDARD {
         size:core::mem::size_of::<BUS_INTERFACE_STANDARD>() as u16,
         version:BUS_INTERFACE_STANDARD_VERSION as u16,
