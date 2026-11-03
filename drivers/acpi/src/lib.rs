@@ -230,7 +230,7 @@ pub fn validate_rsdp(bytes: &[u8]) -> Result<u8, AcpiError> {
     if revision >= 2 {
         if bytes.len() < 36 { return Err(AcpiError::Truncated); }
         let length = u32le(bytes, 20)? as usize;
-        if length < 36 || length > bytes.len() { return Err(AcpiError::BadLength); }
+        if !(36..=MAX_RSDP_LENGTH).contains(&length) || length > bytes.len() { return Err(AcpiError::BadLength); }
         if !checksum_ok(&bytes[..length]) { return Err(AcpiError::BadChecksum); }
     }
     Ok(revision)
@@ -257,6 +257,7 @@ pub fn parse_rsdp(bytes: &[u8]) -> Result<RsdpRoots, AcpiError> {
 }
 
 const MAX_ACPI_TABLE_LENGTH: usize = 1024 * 1024;
+const MAX_RSDP_LENGTH: usize = 4096;
 // CognacOS x64 bootstrap paging identity-maps the first 64 GiB. Firmware
 // discovery uses this early mapping only; runtime users should prefer the
 // AcpiPhysicalMapper interface for platform-managed mappings.
@@ -266,7 +267,6 @@ const LOW_IDENTITY_LIMIT: u64 = 0x10_0000_0000;
 /// The bootstrap identity-maps only 0..4 GiB, so physical ranges are checked
 /// before dereferencing. This routine discovers topology but enables no devices.
 pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
-    LAST_RSDP_ADDRESS.store(rsdp_address, core::sync::atomic::Ordering::Release);
     if rsdp_address == 0 || rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
@@ -324,7 +324,9 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
             return Err(AcpiError::AddressOutOfRange);
         }
         let table = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
-        return parse_madt(table);
+        let madt = parse_madt(table)?;
+        LAST_RSDP_ADDRESS.store(rsdp_address, core::sync::atomic::Ordering::Release);
+        return Ok(madt);
     }
     Err(AcpiError::MissingMadt)
 }
