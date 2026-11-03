@@ -5,7 +5,7 @@
 //! the parent disk FDO. It never accesses controller registers.
 use core::ffi::c_void;
 use cognacos_nt_abi::{io::{DEVICE_OBJECT,DRIVER_OBJECT,IRP,IO_STACK_LOCATION},ntstatus::*,types::PVOID};
-use cognacos_storage::{disk_class::{parse_mbr,parse_gpt,DiskDescriptor,Partition,PartitionTable,PartitionStyle},Geometry};
+use cognacos_storage::{disk_class::{parse_mbr,parse_gpt,DiskDescriptor,Partition},Geometry};
 
 const IRP_MJ_READ:usize=3;
 const IRP_MJ_WRITE:usize=4;
@@ -22,7 +22,6 @@ const IRP_BUFFERED_IO:u32=0x10;
 const FDO_MAGIC:u64=0x434f_474e_5041_5254;
 const DISK_PDO_MAGIC:u64=0x434f_474e_4449_534b;
 const PARTITION_PDO_MAGIC:u64=0x434f_474e_5054_4e50;
-const PARTITION_ENUMERATOR_ID:u32=0x5041_5254;
 const IOCTL_DISK_GET_LENGTH_INFO:u32=0x0007_405c;
 const IOCTL_STORAGE_GET_DEVICE_NUMBER:u32=0x002d_1080;
 const GPT_ENTRY_BUFFER_BYTES:usize=16*1024;
