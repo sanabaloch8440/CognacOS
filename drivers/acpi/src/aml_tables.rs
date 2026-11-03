@@ -512,6 +512,20 @@ mod tests {
     }
 
     #[test]
+    fn rejected_optional_ssdt_does_not_poison_following_table_load(){
+        let dsdt=identity_dsdt();
+        let bad_ssdt=definition_table(*b"SSDT",&[0x08,b'T',b'E',b'S',b'T',0x0a,1,0x99]);
+        let good_ssdt=identity_ssdt();
+        let mut manager=AmlTableManager::new();let gate=gate();
+        manager.load_dsdt(&dsdt,&gate).unwrap();
+        let before=manager.namespace().count;
+        assert_eq!(manager.load_ssdt(&bad_ssdt,&gate),Err(TableError::Parse(AmlError::UnsupportedOpcode)));
+        assert_eq!(manager.namespace().count,before);
+        assert_eq!(manager.namespace().find_child(0,*b"TEST"),None);
+        assert!(manager.load_ssdt(&good_ssdt,&gate).is_ok());
+    }
+
+    #[test]
     fn table_manager_evaluates_identity_with_table_ownership_and_method_gate(){
         let dsdt=identity_dsdt();let mut manager=AmlTableManager::new();let gate=gate();
         let handle=manager.load_dsdt(&dsdt,&gate).unwrap();
