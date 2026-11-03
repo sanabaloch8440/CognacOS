@@ -10,6 +10,7 @@
 
 pub const MAX_NAMESPACE_NODES:usize=2048;
 pub const MAX_NAME_SEGMENTS:usize=8;
+pub const MAX_DIAGNOSTIC_PATH:usize=MAX_NAME_SEGMENTS;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlError { Truncated, BadPackageLength, BadName, UnsupportedOpcode, NamespaceFull, NamespaceCapacity { capacity:usize, requested:usize }, DuplicateName, InvalidParent, BadDefinitionBlock }
@@ -24,6 +25,9 @@ pub struct AmlDiagnostic {
     pub term_offset:usize,
     pub opcode:Option<u8>,
     pub namespace_parent:u16,
+    /// Root-to-leaf NameSeg path for the enclosing namespace object.
+    pub namespace_path:[[u8;4];MAX_DIAGNOSTIC_PATH],
+    pub namespace_depth:u8,
     pub error:AmlError,
 }
 
@@ -575,6 +579,18 @@ pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,ta
                     node.body_length=0;
                 }
             }
+            // Capture the namespace path before rollback truncates newly
+            // created nodes. The path is bounded and ordered root-to-leaf.
+            let mut namespace_path=[[0u8;4];MAX_DIAGNOSTIC_PATH];
+            let mut namespace_depth=0usize;
+            let mut node_index=context.namespace_parent;
+            while node_index!=0 && namespace_depth<MAX_DIAGNOSTIC_PATH {
+                let Some(node)=namespace.nodes.get(node_index as usize) else { break };
+                namespace_path[namespace_depth]=node.name;
+                namespace_depth+=1;
+                node_index=node.parent;
+            }
+            namespace_path[..namespace_depth].reverse();
             namespace.count=original_count;
             namespace.loading_table=original_owner;
             Err(AmlDiagnostic{
@@ -582,6 +598,8 @@ pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,ta
                 term_offset:context.term_offset.min(aml.len()),
                 opcode:context.opcode,
                 namespace_parent:context.namespace_parent,
+                namespace_path,
+                namespace_depth:namespace_depth as u8,
                 error,
             })
         }
@@ -776,6 +794,8 @@ mod tests{
         assert_eq!(diagnostic.term_offset,6);
         assert_eq!(diagnostic.opcode,Some(0x99));
         assert_eq!(diagnostic.namespace_parent,1);
+        assert_eq!(diagnostic.namespace_depth,1);
+        assert_eq!(diagnostic.namespace_path[0],*b"SCP0");
         assert_eq!(diagnostic.error,AmlError::UnsupportedOpcode);
         assert_eq!(ns.count,1);
     }
