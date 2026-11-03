@@ -167,6 +167,7 @@ pub trait AddressSpaceHandler {
     fn write(&mut self,space_id:u8,address:u64,width:u8,value:u64)->Result<(),()>;
 }
 
+/// Read a width-bounded value through the registered platform address-space handler.
 pub fn read_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     offset:u64,width:u8,handler:&mut H)->Result<u64,RegionError>{
     validate_width(width)?;
@@ -178,6 +179,7 @@ pub fn read_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     handler.read(region.space_id,address,width).map(|value|value & width_mask(width)).map_err(|_|RegionError::HandlerFailure)
 }
 
+/// Write a width-bounded value through the registered platform address-space handler.
 pub fn write_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     offset:u64,width:u8,value:u64,handler:&mut H)->Result<(),RegionError>{
     validate_width(width)?;
