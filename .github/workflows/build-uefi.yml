@@ -142,32 +142,8 @@ jobs:
         run: cargo test --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check ACPI driver library
         run: cargo check --manifest-path drivers/acpi/Cargo.toml --lib
-      - name: Test ACPI DMAR requester-scope parsing
+      - name: Test ACPI driver unit and regression suite
         run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib
-      - name: Test AML definition-block parser and namespace loader
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml::"
-      - name: Test AML runtime objects and references
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_runtime::"
-      - name: Test AML-4 OperationRegion decoding and address-space dispatch
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_region::"
-      - name: Test AML-5 field access and synchronization
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_field::"
-      - name: Test AML-6 DSDT SSDT loading and unload lifecycle
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_tables::"
-      - name: Test AML-7 bounded static Buffer extraction
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib aml_buffer::"
-      - name: Test ACPI PDO IO_RESOURCE_REQUIREMENTS_LIST serialization
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib acpi_wdm_requirements::"
-      - name: Test ACPI dependent _PRS configuration parsing
-        run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib dependent_requirement_tests
-      - name: Test ACPI PDO CM_RESOURCE_LIST serialization
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib acpi_wdm_resources::"
-      - name: Test ACPI-1 device identity objects
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib acpi_device::"
-      - name: Test ACPI-5 resource selection and device power policy
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib acpi_power::"
-      - name: Test ACPI-6 hotplug, eject, removal and wake lifecycle
-        run: "cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib acpi_hotplug::"
       - name: Check PCI driver library
         run: cargo check --manifest-path drivers/pci/Cargo.toml --lib
       - name: Test PCI ECAM and xHCI resource decoding
@@ -227,8 +203,6 @@ jobs:
         run: cargo check --manifest-path drivers/i8042prt/Cargo.toml --lib
       - name: Test PS/2 scan-code and bounded polling
         run: cargo test --manifest-path drivers/i8042prt/Cargo.toml --target x86_64-unknown-linux-gnu --lib
-      - name: Test PS/2 keyboard input across simulated D0 suspend/resume
-        run: cargo test --manifest-path drivers/i8042prt/Cargo.toml --target x86_64-unknown-linux-gnu --lib power_lifecycle_tests
       - name: Check USB xHCI controller core
         run: cargo check --manifest-path drivers/usbxhci/Cargo.toml --lib
       - name: Test USB xHCI capability, rings, DMA and controller startup
@@ -241,25 +215,7 @@ jobs:
         run: cargo check --manifest-path drivers/ucx01020/Cargo.toml --lib
       - name: Test UCX object, request, cancellation and generation lifetimes
         run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib
-      - name: Test USB WDM PnP, IRP/URB validation and power rundown
-        run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib wdm::tests
-      - name: Test UCX root-hub control requests and port-change bitmap
-        run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib root_hub::tests
-      - name: Test UCX bulk stream object rundown
-        run: cargo test --manifest-path drivers/ucx01020/Cargo.toml --target x86_64-unknown-linux-gnu --lib streams::tests
-      - name: Test xHCI transfer submission, Link TRB and DPC completion
-        run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib runtime::tests
-      - name: Test USB address-zero enumeration and child-PDO removal
-        run: cargo test --manifest-path drivers/usbhub3/Cargo.toml --target x86_64-unknown-linux-gnu --lib runtime::tests
-      - name: Test USB xHCI port power-state transitions
-        run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib power_state_tests
-      - name: Test USB xHCI controller D0 exit and entry
-        run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib controller_power_tests
-      - name: Test ordered USB device-hub-controller wait-wake propagation
-        run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib usb_wake_chain_tests
       - name: Test JBD2 journal superblock validation and feature gating
-        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib jbd2::tests
-      - name: Test JBD2 journal validation, replay, revoke, and ordered commit
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib jbd2::tests
       - name: Test ext4 bitmap, directory, inode, and inline extent mutations
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib ops::tests
