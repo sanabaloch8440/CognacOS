@@ -551,15 +551,18 @@ pub unsafe fn initialize_with_reserved_ranges(
     }
     // Hot-pluggable SRAT ranges are reserved from every generic allocator
     // until an explicit online transaction publishes them.
-    if crate::ntoskrnl::mm::topology::is_ready() {
-        let nodes=crate::ntoskrnl::mm::topology::memory_node_count();
-        let mut hotplug=[(0u64,0u64);crate::ntoskrnl::mm::topology::MAX_RANGES];
-        for node in 0..nodes as u32 {
-            let n=crate::ntoskrnl::mm::topology::hotplug_memory_ranges_for_node(node,&mut hotplug);
-            for &(start,length) in &hotplug[..n] {
-                let end=start.checked_add(length).ok_or(AllocError::InvalidMap)?;
-                subtract_reserved_range(&mut staged,&mut count,start,end)?;
-                subtract_reserved_range(&mut staged_high,&mut high_count,start,end)?;
+    #[cfg(not(test))]
+    {
+        if crate::ntoskrnl::mm::topology::is_ready() {
+            let nodes=crate::ntoskrnl::mm::topology::memory_node_count();
+            let mut hotplug=[(0u64,0u64);crate::ntoskrnl::mm::topology::MAX_RANGES];
+            for node in 0..nodes as u32 {
+                let n=crate::ntoskrnl::mm::topology::hotplug_memory_ranges_for_node(node,&mut hotplug);
+                for &(start,length) in &hotplug[..n] {
+                    let end=start.checked_add(length).ok_or(AllocError::InvalidMap)?;
+                    subtract_reserved_range(&mut staged,&mut count,start,end)?;
+                    subtract_reserved_range(&mut staged_high,&mut high_count,start,end)?;
+                }
             }
         }
     }
@@ -1516,6 +1519,7 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
 
 /// Count allocator-owned free pages for one NUMA node. Counts include returned
 /// PFNs and uncarved extents, but exclude hot-plug memory until it is online.
+#[cfg(not(test))]
 pub fn free_pages_for_node(node:u32)->u64 {
     let _guard=MemoryGuard::acquire();
     if !crate::ntoskrnl::mm::topology::is_ready(){return 0}
@@ -1543,6 +1547,7 @@ pub fn free_pages_for_node(node:u32)->u64 {
 }
 
 /// Fill a caller-owned array with current free-page totals for each NUMA node.
+#[cfg(not(test))]
 pub fn free_pages_by_node(output:&mut [u64])->usize {
     let count=output.len().min(crate::ntoskrnl::mm::topology::MAX_NODES);
     for (node,value) in output.iter_mut().take(count).enumerate() {
@@ -1572,6 +1577,7 @@ fn remove_interval_from_regions(
 /// Online a firmware-designated hot-pluggable SRAT interval. The UEFI map must
 /// describe the complete interval as RAM; the range is added atomically to the
 /// appropriate low/high free-region set and then exposed to NUMA allocation.
+#[cfg(not(test))]
 pub unsafe fn online_hotplug_memory(start:u64,length:u64)->Result<u32,AllocError> {
     if length==0||start<LOW_RESERVED_END||start&(PAGE_SIZE-1)!=0
         ||length&(PAGE_SIZE-1)!=0 {return Err(AllocError::InvalidPage)}
@@ -1619,6 +1625,7 @@ pub unsafe fn online_hotplug_memory(start:u64,length:u64)->Result<u32,AllocError
 /// Offline a previously onlined hot-plug interval. The operation is refused
 /// unless every page is currently free, so allocated, pinned, or DMA-owned
 /// frames can never be withdrawn underneath a consumer.
+#[cfg(not(test))]
 pub unsafe fn offline_hotplug_memory(start:u64,length:u64)->Result<(),AllocError> {
     if length==0||start<LOW_RESERVED_END||start&(PAGE_SIZE-1)!=0
         ||length&(PAGE_SIZE-1)!=0{return Err(AllocError::InvalidPage)}
