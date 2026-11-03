@@ -9,7 +9,7 @@ const PAGE_SIZE:u64=4096;
 const MAX_GAS_MAPPINGS:usize=128;
 const SPACE_SYSTEM_MEMORY:u8=0;
 const SPACE_SYSTEM_IO:u8=1;
-static MAP_LOCK:AtomicBool=AtomicBool::new(false);
+static MAP_LOCK:AtomicBool=AtomicBool::new(false);\nstatic RMW_LOCK:AtomicBool=AtomicBool::new(false);
 static MAPPED_PHYSICAL:[AtomicU64;MAX_GAS_MAPPINGS]=[const{AtomicU64::new(0)};MAX_GAS_MAPPINGS];
 static MAPPED_VIRTUAL:[AtomicU64;MAX_GAS_MAPPINGS]=[const{AtomicU64::new(0)};MAX_GAS_MAPPINGS];
 
