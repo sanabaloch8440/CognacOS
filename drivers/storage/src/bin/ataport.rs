@@ -7,7 +7,7 @@
 use core::{ffi::c_void, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 use cognacos_nt_abi::{
     bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
-    io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
+    io::{DRIVER_EXTENSION,DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
     ntstatus::*, types::PVOID,
 };
 use cognacos_storage::ata_port::{
@@ -50,12 +50,12 @@ unsafe extern "win64" {
  fn IoAttachDeviceToDeviceStack(source:*mut DEVICE_OBJECT,target:*mut DEVICE_OBJECT)->*mut DEVICE_OBJECT;
  fn IoDetachDevice(target:*mut DEVICE_OBJECT);
  fn IoCallDriver(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32;
- fn IoCopyCurrentIrpStackLocationToNext(irp:*mut IRP);
- fn IoSkipCurrentIrpStackLocation(irp:*mut IRP);
- fn IoSetCompletionRoutine(irp:*mut IRP,routine:Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT,*mut IRP,PVOID)->i32>,context:PVOID,success:u8,error:u8,cancel:u8);
- fn IoPnPQueryBusInterface(device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,size:u16,version:u16,output:PVOID)->i32;
- fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
- fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
+
+ fn IoAllocateIrp(stack_size:i8,charge_quota:u8)->*mut IRP;
+ fn IoFreeIrp(irp:*mut IRP);
+ fn KeInitializeEvent(event:PVOID,event_type:i32,state:u8);
+ fn KeSetEvent(event:PVOID,increment:i32,wait:u8)->i32;
+ fn KeWaitForSingleObject(event:PVOID,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -72,12 +72,6 @@ IMPORT IoDeleteDevice
 IMPORT IoAttachDeviceToDeviceStack
 IMPORT IoDetachDevice
 IMPORT IoCallDriver
-IMPORT IoCopyCurrentIrpStackLocationToNext
-IMPORT IoSkipCurrentIrpStackLocation
-IMPORT IoSetCompletionRoutine
-IMPORT IoPnPQueryBusInterface
-IMPORT IoPnPRegisterDeviceDriver
-IMPORT IoPnPEnumerateBus
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -92,12 +86,6 @@ IAT IoDeleteDevice
 IAT IoAttachDeviceToDeviceStack
 IAT IoDetachDevice
 IAT IoCallDriver
-IAT IoCopyCurrentIrpStackLocationToNext
-IAT IoSkipCurrentIrpStackLocation
-IAT IoSetCompletionRoutine
-IAT IoPnPQueryBusInterface
-IAT IoPnPRegisterDeviceDriver
-IAT IoPnPEnumerateBus
 "#);
 
 #[repr(C)]
@@ -149,6 +137,81 @@ impl Guard {
  fn acquire()->Self { while PORT_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();} Self }
 }
 impl Drop for Guard { fn drop(&mut self){PORT_LOCK.store(false,Ordering::Release);} }
+
+
+/// WDK inline macro equivalents. These are deliberately local to the driver;
+/// none of these identifiers is imported from ntoskrnl.exe.
+fn current_stack_location(irp:*mut IRP)->*mut IO_STACK_LOCATION {
+ if irp.is_null(){return core::ptr::null_mut()}
+ unsafe{(*irp).tail[8] as *mut IO_STACK_LOCATION}
+}
+fn next_stack_location(irp:*mut IRP)->*mut IO_STACK_LOCATION {
+ let current=current_stack_location(irp);
+ if current.is_null(){core::ptr::null_mut()}else{unsafe{current.sub(1)}}
+}
+unsafe fn copy_current_irp_stack_location_to_next(irp:*mut IRP) {
+ let current=current_stack_location(irp);let next=next_stack_location(irp);
+ if !current.is_null()&&!next.is_null(){unsafe{core::ptr::copy(current,next,1)}}
+}
+unsafe fn skip_current_irp_stack_location(irp:*mut IRP) {
+ if irp.is_null(){return}
+ let current=current_stack_location(irp);if current.is_null(){return}
+ unsafe{(*irp).current_location=(*irp).current_location.saturating_add(1);(*irp).tail[8]=current.add(1) as usize;}
+}
+unsafe fn set_completion_routine(
+ irp:*mut IRP,
+ routine:Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT,*mut IRP,PVOID)->i32>,
+ context:PVOID,success:u8,error:u8,cancel:u8,
+) {
+ let next=next_stack_location(irp);if next.is_null(){return}
+ let mut control=0u8;
+ if success!=0{control|=0x40}
+ if error!=0{control|=0x80}
+ if cancel!=0{control|=0x20}
+ unsafe{(*next).completion_routine=routine;(*next).context=context;(*next).control|=control;}
+}
+
+/// Completion for a synchronous IRP_MN_QUERY_INTERFACE request. Returning
+/// STATUS_MORE_PROCESSING_REQUIRED leaves the caller-allocated IRP intact.
+unsafe extern "win64" fn query_interface_complete(
+ _device:*mut DEVICE_OBJECT,_irp:*mut IRP,context:PVOID
+)->i32 {
+ if !context.is_null(){let _=unsafe{KeSetEvent(context,0,0)};}
+ 0xC0000016u32 as i32
+}
+
+/// Query a bus-provided interface using the Windows PnP IRP contract, not a
+/// CognacOS-only helper export. QUERY_INTERFACE is synchronous to the caller.
+unsafe fn query_pci_bus_interface(
+ device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,
+ size:u16,version:u16,output:PVOID
+)->i32 {
+ if device.is_null()||guid.is_null()||output.is_null(){return STATUS_INVALID_PARAMETER}
+ let stack_size=unsafe{(*device).stack_size.max(1)};
+ let irp=unsafe{IoAllocateIrp(stack_size as i8,0)};
+ if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
+ let mut event=[0u64;3];
+ unsafe{KeInitializeEvent(event.as_mut_ptr().cast(),0,0);}
+ let stack=next_stack_location(irp);
+ if stack.is_null(){unsafe{IoFreeIrp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
+ unsafe{
+  (*stack).major_function=0x1b; // IRP_MJ_PNP
+  (*stack).minor_function=0x08; // IRP_MN_QUERY_INTERFACE
+  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<*const cognacos_nt_abi::bus::GUID>(),guid);
+  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u16>(),size);
+  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(10).cast::<u16>(),version);
+  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<PVOID>(),output);
+  set_completion_routine(irp,Some(query_interface_complete),event.as_mut_ptr().cast(),1,1,1);
+ }
+ let status=unsafe{IoCallDriver(device,irp)};
+ if status==STATUS_PENDING {
+  let wait=unsafe{KeWaitForSingleObject(event.as_mut_ptr().cast(),0,0,0,core::ptr::null())};
+  if wait<0{unsafe{IoFreeIrp(irp)};return wait}
+ }
+ let io_status=unsafe{(*irp).io_status.status.status};
+ unsafe{IoFreeIrp(irp)}
+ if status==STATUS_PENDING{io_status}else if status>=0{io_status}else{status}
+}
 
 fn current_stack(irp:*mut IRP)->*mut IO_STACK_LOCATION {
  if irp.is_null(){core::ptr::null_mut()}else{unsafe{(*irp).tail[8] as *mut IO_STACK_LOCATION}}
@@ -246,7 +309,6 @@ unsafe fn register_miniport(ext:*mut AtaPortFdoExtension,table:*const AtaPortMin
  }
  unsafe{discover_disk_children(ext);}
  let physical=unsafe{(*ext).physical};
- if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
  STATUS_SUCCESS
 }
 unsafe fn unregister_miniport(ext:*mut AtaPortFdoExtension,context:*mut c_void)->i32{
@@ -377,13 +439,12 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
   if minor==IRP_MN_REMOVE_DEVICE {
    let physical=unsafe{(*ext).physical};
    unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;}
-   if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
-   unsafe{IoSetCompletionRoutine(irp,Some(remove_complete),device.cast(),1,1,1);IoSkipCurrentIrpStackLocation(irp);return IoCallDriver((*ext).lower,irp);}
+   unsafe{set_completion_routine(irp,Some(remove_complete),device.cast(),1,1,1);skip_current_irp_stack_location(irp);return IoCallDriver((*ext).lower,irp);}
   }
   if minor==IRP_MN_START_DEVICE||minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL {
-   unsafe{IoSetCompletionRoutine(irp,Some(pnp_complete),device.cast(),1,1,1);IoSkipCurrentIrpStackLocation(irp);return IoCallDriver((*ext).lower,irp);}
+   unsafe{set_completion_routine(irp,Some(pnp_complete),device.cast(),1,1,1);skip_current_irp_stack_location(irp);return IoCallDriver((*ext).lower,irp);}
   }
-  unsafe{IoSkipCurrentIrpStackLocation(irp);return IoCallDriver((*ext).lower,irp);}
+  unsafe{skip_current_irp_stack_location(irp);return IoCallDriver((*ext).lower,irp);}
  }
  if major==IRP_MJ_CREATE||major==IRP_MJ_CLOSE{return unsafe{complete(irp,STATUS_SUCCESS,0)}}
  if major==IRP_MJ_INTERNAL_DEVICE_CONTROL{
@@ -424,10 +485,10 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  unsafe{complete(irp,status,if status==STATUS_SUCCESS{information as usize}else{0})}
 }
 
-unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->i32{
+unsafe extern "win64" fn add_device(driver:*mut DRIVER_OBJECT,pdo:*mut DEVICE_OBJECT)->i32{
  if driver.is_null()||pdo.is_null(){return STATUS_INVALID_PARAMETER}
  let mut interface=core::mem::MaybeUninit::<PCI_DEVICE_INTERFACE>::zeroed();
- let status=unsafe{IoPnPQueryBusInterface(pdo,&GUID_PCI_DEVICE_INTERFACE,core::mem::size_of::<PCI_DEVICE_INTERFACE>() as u16,cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION as u16,interface.as_mut_ptr().cast())};
+ let status=unsafe{query_pci_bus_interface(pdo,&GUID_PCI_DEVICE_INTERFACE,core::mem::size_of::<PCI_DEVICE_INTERFACE>() as u16,cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION as u16,interface.as_mut_ptr().cast())};
  if status!=STATUS_SUCCESS{return STATUS_NOT_SUPPORTED}
  let interface=unsafe{interface.assume_init()};
  if (interface.header.size as usize)<core::mem::size_of::<PCI_DEVICE_INTERFACE>()||interface.header.version as u32!=cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION{return STATUS_REVISION_MISMATCH}
@@ -451,7 +512,12 @@ static DRIVER_SIGNATURE:[u8;8]=*b"ATAPORT_";
 pub unsafe extern "win64" fn DriverEntry(driver:*mut DRIVER_OBJECT,_context:PVOID)->i32{
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
  unsafe{for index in 0..=IRP_MJ_MAXIMUM_FUNCTION{(*driver).major_function[index]=Some(dispatch)}(*driver).driver_unload=None;}
- unsafe{IoPnPRegisterDeviceDriver(driver.cast(),Some(add_device))}
+ {
+  let extension=unsafe{(*driver).driver_extension.cast::<DRIVER_EXTENSION>()};
+  if extension.is_null(){return STATUS_INVALID_PARAMETER}
+  unsafe{(*extension).add_device=Some(add_device);}
+  STATUS_SUCCESS
+ }
 }
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>)->!{loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}}
