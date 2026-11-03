@@ -659,7 +659,7 @@ fn parse_optional_gas(bytes:&[u8],offset:usize)->Result<Option<AcpiGas>,AcpiErro
     // ACPI defines a zero GAS address as an absent optional register. Firmware
     // may leave the other descriptor bytes populated, so testing all 12 bytes
     // for zero incorrectly rejects otherwise valid FADTs.
-    if s[4..12].iter().all(|byte|*byte==0){Ok(None)}else{Ok(Some(parse_gas(bytes,offset)?)}
+    if s[4..12].iter().all(|byte|*byte==0){Ok(None)}else{Ok(Some(parse_gas(bytes,offset)?))}
 }
 fn parse_gas(bytes:&[u8],offset:usize)->Result<AcpiGas,AcpiError>{
     let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;
