@@ -694,16 +694,23 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
         if all_signalled {
             let id=current_id.unwrap_or(0);
             let mut abandoned_index=None;
+            let mut acquired_mutants=0usize;
             for (index,object) in object_list.iter().copied().enumerate(){
                 if unsafe{(*object).kind}==MUTANT_OBJECT{
                     if let Some(record)=mutants.records.iter_mut().find(|r|r.object==object as usize){
                         if record.owner==id{record.recursion=record.recursion.saturating_add(1);}
                         else{record.owner=id;record.recursion=1;}
                         if record.abandoned{if abandoned_index.is_none(){abandoned_index=Some(index);}record.abandoned=false;}
-                        unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);}
+                        unsafe{
+                            object.cast::<u8>().add(48).write(0);
+                            (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);
+                        }
+                        acquired_mutants+=1;
                     }
                 }else{let _=consume_wait_all_object(id,object as u64);}
             }
+            drop(mutants);
+            for _ in 0..acquired_mutants{let _=crate::thread::adjust_apc_region_for_thread(id,false,true);}
             return abandoned_index.map_or(STATUS_SUCCESS,|index|STATUS_ABANDONED_WAIT_0+index as i32);
         }
         drop(mutants);
