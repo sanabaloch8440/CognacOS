@@ -541,8 +541,8 @@ fn try_register_volume_pagefile(partition_device: *mut DeviceObject) -> bool {
 }
 
 /// End-to-end guest check. The physical port driver backs a registered disk
-/// object; GPT and ext4 then read only through disk/partition READ IRPs.
-pub fn run_ext4_readme_test() -> bool {
+/// object; GPT discovery and FAT32 volume I/O use the partition device stack.
+pub fn run_fat32_readme_test() -> bool {
     let disk = match AtaPrimaryMaster::initialize() { Ok(d) => d, Err(_) => return false };
     DISK_CAPACITY.store(disk.sectors.saturating_mul(SECTOR_BYTES as u64), Ordering::Release);
     *STORAGE_DISK.lock() = Some(disk);
@@ -550,7 +550,7 @@ pub fn run_ext4_readme_test() -> bool {
     unsafe { crate::serial_write(b"Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.\r\n"); }
     let mut whole_disk = IoManagerBlockDevice { device: disk_device, capacity: DISK_CAPACITY.load(Ordering::Acquire) };
     // A third, dedicated GPT partition is optional. Trace writes are disabled
-    // unless the image explicitly reserves it; ext4 and GPT metadata are never used as scratch space.
+    // unless the image explicitly reserves it; filesystem and GPT metadata are never used as scratch space.
     if let Ok(trace_partition) = extfs::read_gpt_partition(&mut whole_disk, 2, SECTOR_BYTES as u32) {
         if let (Ok(start), Ok(capacity)) = (trace_partition.start_byte(), trace_partition.capacity_bytes()) {
             TRACE_PARTITION_START.store(start / SECTOR_BYTES as u64, Ordering::Release);
@@ -577,13 +577,9 @@ pub fn run_ext4_readme_test() -> bool {
     } else {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot write skipped or failed.\r\n"); }
     }
-    if crate::file_services::mount_ext4_volume(partition_device)<0{return false;}
-    // Discover pagefile.sys on the ordinary mounted volume. Registration only
-    // succeeds for a fully allocated, initialized, 4-KiB-block ext4 file.
-    let _ = try_register_volume_pagefile(partition_device);
-
-    // Verify that the mounted ext4 volume is reachable through the public
-    // FILE_OBJECT/IRP file-service path, not only through the block parser.
+    if crate::fat32_driver::mount_volume(partition_device)<0{return false;}
+    // Verify that the mounted FAT32 volume is reachable through the registered
+    // FAT32 filesystem driver's FILE_OBJECT/IRP path.
     let handle=match crate::file_services::open_for_process(0,b"\\README.txt"){
         Ok(handle)=>handle,
         Err(_)=>return false,
@@ -630,6 +626,6 @@ pub fn run_ext4_readme_test() -> bool {
         || &restored[..EXPECTED.len()]!=EXPECTED
         || close_result.is_err()
     {return false;}
-    unsafe { crate::serial_write(b"Guest ext4 WDM FILE_OBJECT read/write/cache/MDL/cleanup/close path passed.\r\n"); }
+    unsafe { crate::serial_write(b"Guest FAT32 WDM FILE_OBJECT create/read/write/flush/cleanup/close path passed.\r\n"); }
     true
 }
