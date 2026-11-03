@@ -4,7 +4,7 @@
 //! requests, serializes miniport registration, and dispatches bounded PIO I/O.
 //! The controller-specific PCI IDE function driver attaches above this FDO
 //! and registers its implementation with IOCTL_ATA_PORT_REGISTER_MINIPORT.
-use core::{ffi::c_void, sync::atomic::{AtomicBool, Ordering}};
+use core::{ffi::c_void, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 use cognacos_nt_abi::{
     bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
     io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
@@ -14,6 +14,7 @@ use cognacos_storage::ata_port::{
     AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, validate_request,
     ATA_PORT_INTERFACE_VERSION,
 };
+use cognacos_storage::disk_class::{parse_ata_identify, DiskDescriptor};
 
 const IRP_MJ_CREATE:usize=0;
 const IRP_MJ_CLOSE:usize=2;
@@ -36,6 +37,11 @@ const IOCTL_ATA_PORT_UNREGISTER_MINIPORT:u32=(FILE_DEVICE_CONTROLLER<<16)|(0x801
 const IOCTL_ATA_PORT_SUBMIT_MINIPORT:u32=(FILE_DEVICE_CONTROLLER<<16)|(0x802<<2)|3;
 const IRP_BUFFERED_IO:u32=0x10;
 const SECTOR_SIZE:u32=512;
+const FILE_DEVICE_DISK:u32=7;
+const ATA_ENUMERATOR_ID:u32=0x4154_4150;
+const DISK_PDO_MAGIC:u64=0x434f_474e_4449_534b;
+const IRP_MN_QUERY_DEVICE_RELATIONS:u8=0x07;
+const BUS_RELATIONS:u32=0;
 const MAX_PIO_SECTORS:u32=256;
 
 unsafe extern "win64" {
@@ -49,6 +55,8 @@ unsafe extern "win64" {
  fn IoSkipCurrentIrpStackLocation(irp:*mut IRP);
  fn IoSetCompletionRoutine(irp:*mut IRP,routine:Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT,*mut IRP,PVOID)->i32>,context:PVOID,success:u8,error:u8,cancel:u8);
  fn IoPnPQueryBusInterface(device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,size:u16,version:u16,output:PVOID)->i32;
+ fn IoPnPRegisterBusDevice(enumerator_id:u32,identity_hash:u64,device:*mut DEVICE_OBJECT,output_index:*mut u32)->i32;
+ fn IoPnPProcessBusRelations(bus:*mut DEVICE_OBJECT,relations:*const c_void)->i32;
  fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
 }
 core::arch::global_asm!(r#"
@@ -71,6 +79,8 @@ IMPORT IoSkipCurrentIrpStackLocation
 IMPORT IoSetCompletionRoutine
 IMPORT IoPnPQueryBusInterface
 IMPORT IoPnPRegisterDeviceDriver
+IMPORT IoPnPRegisterBusDevice
+IMPORT IoPnPProcessBusRelations
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -90,20 +100,44 @@ IAT IoSkipCurrentIrpStackLocation
 IAT IoSetCompletionRoutine
 IAT IoPnPQueryBusInterface
 IAT IoPnPRegisterDeviceDriver
+IAT IoPnPRegisterBusDevice
+IAT IoPnPProcessBusRelations
 "#);
+
+#[repr(C)]
+struct AtaPortDeviceRelations {
+ count:u32,
+ objects:[*mut DEVICE_OBJECT;64],
+}
+impl AtaPortDeviceRelations {
+ const EMPTY:Self=Self{count:0,objects:[core::ptr::null_mut();64]};
+}
 
 #[repr(C)]
 struct AtaPortFdoExtension {
  magic:u64,
  lower:*mut DEVICE_OBJECT,
  physical:*mut DEVICE_OBJECT,
+ driver:*mut DRIVER_OBJECT,
  miniport:Option<AtaPortMiniportInterface>,
  started:u8,
  removing:u8,
  active_requests:u32,
  reserved:[u8;2],
+ relations:AtaPortDeviceRelations,
 }
-const _:()=assert!(core::mem::size_of::<AtaPortFdoExtension>()<=256);
+const _:()=assert!(core::mem::size_of::<AtaPortFdoExtension>()<=768);
+
+#[repr(C)]
+struct AtaDiskPdoExtension {
+ magic:u64,
+ parent:*mut DEVICE_OBJECT,
+ slot:u8,
+ reserved:[u8;7],
+ descriptor:DiskDescriptor,
+}
+const _:()=assert!(core::mem::size_of::<AtaDiskPdoExtension>()<=160);
+static NEXT_REQUEST_ID:AtomicU64=AtomicU64::new(1);
 
 static PORT_LOCK:AtomicBool=AtomicBool::new(false);
 struct ActiveRequest(*mut AtaPortFdoExtension);
@@ -132,6 +166,64 @@ fn extension(device:*mut DEVICE_OBJECT)->Option<*mut AtaPortFdoExtension>{
  if ext.is_null()||unsafe{(*ext).magic!=FDO_MAGIC}{None}else{Some(ext)}
 }
 
+fn disk_extension(device:*mut DEVICE_OBJECT)->Option<*mut AtaDiskPdoExtension>{
+ if device.is_null(){return None}
+ let ext=unsafe{(*device).device_extension.cast::<AtaDiskPdoExtension>()};
+ if ext.is_null()||unsafe{(*ext).magic!=DISK_PDO_MAGIC}{None}else{Some(ext)}
+}
+
+unsafe fn identify_slot(ext:*mut AtaPortFdoExtension,slot:u8)->Result<DiskDescriptor,i32>{
+ let mut buffer=[0u8;512];
+ let request=AtaPortRequest{
+  size:core::mem::size_of::<AtaPortRequest>() as u32,
+  operation:AtaPortOperation::Identify,request_id:NEXT_REQUEST_ID.fetch_add(1,Ordering::Relaxed),
+  lba:0,sector_count:1,flags:slot as u32,system_buffer:buffer.as_mut_ptr(),
+  sg_list:core::ptr::null(),sg_count:0,timeout_ms:30_000,
+  packet_cdb:core::ptr::null(),packet_cdb_length:0,reserved:[0;7],
+ };
+ let (status,bytes)=unsafe{execute_request(ext,&request)};
+ if status!=STATUS_SUCCESS{return Err(status)}
+ if bytes!=512{return Err(STATUS_DEVICE_DATA_ERROR)}
+ let words:[u16;256]=core::array::from_fn(|index|u16::from_le_bytes([buffer[index*2],buffer[index*2+1]]));
+ parse_ata_identify(&words).map_err(cognacos_storage::error_to_ntstatus)
+}
+
+unsafe fn publish_disk_child(ext:*mut AtaPortFdoExtension,slot:u8,descriptor:DiskDescriptor)->i32{
+ if unsafe{(*ext).relations.count as usize}>=64{return STATUS_INSUFFICIENT_RESOURCES}
+ if descriptor.geometry.logical_sector_size!=SECTOR_SIZE{return STATUS_NOT_SUPPORTED}
+ let mut child=core::ptr::null_mut();
+ let status=unsafe{IoCreateDevice((*ext).driver,core::mem::size_of::<AtaDiskPdoExtension>() as u32,
+  core::ptr::null_mut(),FILE_DEVICE_DISK,0,0,&mut child)};
+ if status!=STATUS_SUCCESS{return status}
+ if child.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
+ let child_ext=unsafe{(*child).device_extension.cast::<AtaDiskPdoExtension>()};
+ unsafe{
+  child_ext.write(AtaDiskPdoExtension{magic:DISK_PDO_MAGIC,parent:ext.cast::<u8>().cast::<DEVICE_OBJECT>(),slot,reserved:[0;7],descriptor});
+  (*child).flags|=0x0000_1004;
+ }
+ let mut devnode=0u32;
+ let status=unsafe{IoPnPRegisterBusDevice(ATA_ENUMERATOR_ID,descriptor.identity.stable_id,child,&mut devnode)};
+ if status!=STATUS_SUCCESS{unsafe{(*child_ext).magic=0;IoDeleteDevice(child)};return status}
+ let relations=unsafe{&mut (*ext).relations};
+ let index=relations.count as usize;
+ relations.objects[index]=child;
+ relations.count+=1;
+ STATUS_SUCCESS
+}
+
+unsafe fn discover_disk_children(ext:*mut AtaPortFdoExtension){
+ for slot in 0..4u8{
+  let count=unsafe{(*ext).relations.count as usize};
+  if unsafe{(*ext).relations.objects[..count].iter().any(|child|{
+   let Some(disk)=disk_extension(*child) else{return false};
+   (*disk).slot==slot
+  })}{continue}
+  if let Ok(descriptor)=unsafe{identify_slot(ext,slot)}{
+   let _=unsafe{publish_disk_child(ext,slot,descriptor)};
+  }
+ }
+}
+
 /// Miniport registration is delivered as a private METHOD_NEITHER internal
 /// control IRP from pciide.sys. The table is copied into the controller FDO.
 unsafe fn register_miniport(ext:*mut AtaPortFdoExtension,table:*const AtaPortMiniportInterface)->i32{
@@ -154,8 +246,11 @@ unsafe fn register_miniport(ext:*mut AtaPortFdoExtension,table:*const AtaPortMin
   let _guard=Guard::acquire();unsafe{(*ext).started=1;}
   return status;
  }
- let _guard=Guard::acquire();
- unsafe{(*ext).miniport=Some(candidate);(*ext).started=1;}
+ {
+  let _guard=Guard::acquire();
+  unsafe{(*ext).miniport=Some(candidate);(*ext).started=1;}
+ }
+ unsafe{discover_disk_children(ext);}
  STATUS_SUCCESS
 }
 unsafe fn unregister_miniport(ext:*mut AtaPortFdoExtension,context:*mut c_void)->i32{
@@ -187,7 +282,10 @@ unsafe extern "win64" fn pnp_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,con
 unsafe extern "win64" fn remove_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,context:PVOID)->i32{
  let fdo=context.cast::<DEVICE_OBJECT>();if fdo.is_null()||irp.is_null(){return STATUS_SUCCESS}
  if let Some(ext)=extension(fdo){
-  unsafe{(*ext).removing=1;(*ext).magic=0;}
+  unsafe{(*ext).removing=1;}
+  let empty=AtaPortDeviceRelations::EMPTY;
+  let _=unsafe{IoPnPProcessBusRelations(fdo,(&empty as *const AtaPortDeviceRelations).cast())};
+  unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;(*ext).magic=0;}
   let lower=unsafe{(*ext).lower};if !lower.is_null(){unsafe{IoDetachDevice(lower)}}
  }
  unsafe{IoDeleteDevice(fdo)}
@@ -214,13 +312,75 @@ unsafe fn execute_request(ext:*mut AtaPortFdoExtension,request_ptr:*const AtaPor
  (STATUS_SUCCESS,transferred)
 }
 
+
+unsafe fn dispatch_disk_pdo(device:*mut DEVICE_OBJECT,disk:*mut AtaDiskPdoExtension,irp:*mut IRP)->i32{
+ if irp.is_null(){return STATUS_INVALID_PARAMETER}
+ let stack=current_stack(irp);if stack.is_null(){return STATUS_INVALID_PARAMETER}
+ let major=unsafe{(*stack).major_function as usize};
+ if major==IRP_MJ_CREATE||major==IRP_MJ_CLOSE{return unsafe{complete(irp,STATUS_SUCCESS,0)}}
+ if major==IRP_MJ_PNP{
+  let minor=unsafe{(*stack).minor_function};
+  if minor==IRP_MN_REMOVE_DEVICE{
+   unsafe{(*disk).magic=0;IoDeleteDevice(device);}
+   return unsafe{complete(irp,STATUS_SUCCESS,0)}
+  }
+  return unsafe{complete(irp,STATUS_SUCCESS,0)}
+ }
+ let operation=match major{
+  IRP_MJ_READ=>AtaPortOperation::Read,
+  IRP_MJ_WRITE=>AtaPortOperation::Write,
+  IRP_MJ_FLUSH_BUFFERS=>AtaPortOperation::Flush,
+  _=>return unsafe{complete(irp,STATUS_INVALID_DEVICE_REQUEST,0)}
+ };
+ let descriptor=unsafe{(*disk).descriptor};
+ let parent=unsafe{(*disk).parent};
+ let Some(parent_ext)=extension(parent) else{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}};
+ let mut request=AtaPortRequest{
+  size:core::mem::size_of::<AtaPortRequest>() as u32,operation,
+  request_id:NEXT_REQUEST_ID.fetch_add(1,Ordering::Relaxed),lba:0,sector_count:0,
+  flags:unsafe{(*disk).slot as u32},system_buffer:core::ptr::null_mut(),
+  sg_list:core::ptr::null(),sg_count:0,timeout_ms:30_000,
+  packet_cdb:core::ptr::null(),packet_cdb_length:0,reserved:[0;7],
+ };
+ if operation!=AtaPortOperation::Flush{
+  let length=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
+  let offset=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<i64>())};
+  let buffer=unsafe{(*irp).associated_irp[0] as *mut u8};
+  let flags=unsafe{(*irp).flags};
+  let sector_size=descriptor.geometry.logical_sector_size;
+  if flags&IRP_BUFFERED_IO==0||buffer.is_null()||offset<0||sector_size==0
+   ||offset as u64%sector_size as u64!=0||length==0||length%sector_size!=0
+   ||length/sector_size>MAX_PIO_SECTORS{
+   return unsafe{complete(irp,STATUS_INVALID_PARAMETER,0)}
+  }
+  let lba=offset as u64/sector_size as u64;
+  let sectors=length/sector_size;
+  if descriptor.geometry.validate_io(lba,sectors).is_err(){
+   return unsafe{complete(irp,STATUS_INVALID_PARAMETER,0)}
+  }
+  request.lba=lba;request.sector_count=sectors;request.system_buffer=buffer;
+ }
+ let (status,information)=unsafe{execute_request(parent_ext,&request)};
+ unsafe{complete(irp,status,if status==STATUS_SUCCESS{information as usize}else{0})}
+}
+
 unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
- let Some(ext)=extension(device) else{return STATUS_DELETE_PENDING};
+ let Some(ext)=extension(device) else{
+  if let Some(disk)=disk_extension(device){return unsafe{dispatch_disk_pdo(device,disk,irp)}}
+  return STATUS_DELETE_PENDING
+ };
  let stack=current_stack(irp);if stack.is_null(){return STATUS_INVALID_PARAMETER}
  let major=unsafe{(*stack).major_function as usize};
  if major==IRP_MJ_PNP {
   let minor=unsafe{(*stack).minor_function};
+  if minor==IRP_MN_QUERY_DEVICE_RELATIONS {
+   let relation_type=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
+   if relation_type==BUS_RELATIONS {
+    let relations=unsafe{core::ptr::addr_of!((*ext).relations)};
+    return unsafe{complete(irp,STATUS_SUCCESS,relations as usize)}
+   }
+  }
   if minor==IRP_MN_REMOVE_DEVICE {
    unsafe{IoSetCompletionRoutine(irp,Some(remove_complete),device.cast(),1,1,1);IoSkipCurrentIrpStackLocation(irp);return IoCallDriver((*ext).lower,irp);}
   }
@@ -284,7 +444,7 @@ unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->
  let lower=unsafe{IoAttachDeviceToDeviceStack(fdo,pdo)};
  if lower.is_null(){unsafe{IoDeleteDevice(fdo)};return STATUS_DEVICE_NOT_READY}
  let ext=unsafe{(*fdo).device_extension.cast::<AtaPortFdoExtension>()};
- unsafe{ext.write(AtaPortFdoExtension{magic:FDO_MAGIC,lower,physical:pdo,miniport:None,started:0,removing:0,active_requests:0,reserved:[0;2]});(*fdo).flags=(((*fdo).flags&!0x80)|((*lower).flags&(0x02|0x04)))|0x04;}
+ unsafe{ext.write(AtaPortFdoExtension{magic:FDO_MAGIC,lower,physical:pdo,driver:driver.cast(),miniport:None,started:0,removing:0,active_requests:0,reserved:[0;2],relations:AtaPortDeviceRelations::EMPTY});(*fdo).flags=(((*fdo).flags&!0x80)|((*lower).flags&(0x02|0x04)))|0x04;}
  STATUS_SUCCESS
 }
 
