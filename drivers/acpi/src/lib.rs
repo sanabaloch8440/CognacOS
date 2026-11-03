@@ -1552,7 +1552,8 @@ mod dsdt_resolution_tests {
     }
     fn finish(bytes: &mut [u8], checksum_index: usize) {
         bytes[checksum_index] = 0;
-        bytes[checksum_index] = 0u8.wrapping_sub(bytes.iter().fold(0u8, |s, b| s.wrapping_add(*b)));
+        let end = if checksum_index == 8 { 20 } else { bytes.len() };
+        bytes[checksum_index] = 0u8.wrapping_sub(bytes[..end].iter().fold(0u8, |s, b| s.wrapping_add(*b)));
     }
     #[test]
     fn resolves_dsdt_from_extended_fadt_pointer() {
@@ -1595,7 +1596,7 @@ mod firmware_table_policy_tests {
             if length>bytes.len(){return Err(AcpiError::Truncated)} Ok(&bytes[..length])
         }
     }
-    fn finish(b:&mut [u8], at:usize) { b[at]=0; b[at]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v))); }
+    fn finish(b:&mut [u8], at:usize) { b[at]=0; let end=if at==8{20}else{b.len()}; b[at]=0u8.wrapping_sub(b[..end].iter().fold(0u8,|a,v|a.wrapping_add(*v))); }
     fn make_rsdp()->[u8;36] { let mut b=[0u8;36];b[..8].copy_from_slice(b"RSD PTR ");b[15]=2;b[20..24].copy_from_slice(&36u32.to_le_bytes());b[24..32].copy_from_slice(&0x2000u64.to_le_bytes());finish(&mut b,8);finish(&mut b,32);b }
     fn make_sdt(sig:[u8;4],revision:u8)->[u8;36] { let mut b=[0u8;36];b[..4].copy_from_slice(&sig);b[4..8].copy_from_slice(&36u32.to_le_bytes());b[8]=revision;finish(&mut b,9);b }
     #[test]
@@ -1629,6 +1630,6 @@ mod remaining_firmware_table_tests {
  #[test] fn validates_facs_without_applying_sdt_checksum(){let mut b=[0u8;64];b[..4].copy_from_slice(b"FACS");b[4..8].copy_from_slice(&64u32.to_le_bytes());b[32]=2;let f=parse_facs(&b).unwrap();assert_eq!(f.length,64);assert_eq!(f.version,2);assert_eq!(parse_facs(&b[..40]),Err(AcpiError::BadLength));}
  #[test] fn validates_hpet_gas_and_page_protection(){let mut b=sdt(*b"HPET",56);b[41]=64;b[44..52].copy_from_slice(&0xfed0_0000u64.to_le_bytes());finish(&mut b);let h=parse_hpet(&b).unwrap();assert_eq!(h.base.address,0xfed0_0000);b[55]=3;finish(&mut b);assert_eq!(parse_hpet(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_bgrt_version_status_and_image_address(){let mut b=sdt(*b"BGRT",56);b[36..38].copy_from_slice(&1u16.to_le_bytes());b[38]=1;b[40..48].copy_from_slice(&0x1000u64.to_le_bytes());finish(&mut b);assert_eq!(parse_bgrt(&b).unwrap().image_address,0x1000);b[40..48].fill(0);finish(&mut b);assert_eq!(parse_bgrt(&b),Err(AcpiError::MalformedEntry));}
- #[test] fn validates_gtdt_fixed_fields_and_timer_offset(){let mut b=sdt(*b"GTDT",96);b[88..92].copy_from_slice(&1u32.to_le_bytes());b[92..96].copy_from_slice(&96u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b).unwrap().platform_timer_count,1);b[92..96].copy_from_slice(&95u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_gtdt_fixed_fields_and_timer_offset(){let mut b=sdt(*b"GTDT",100);b[88..92].copy_from_slice(&1u32.to_le_bytes());b[92..96].copy_from_slice(&96u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b).unwrap().platform_timer_count,1);b[92..96].copy_from_slice(&95u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_pptt_variable_node_bounds(){let mut b=sdt(*b"PPTT",40);b[36]=0;b[37]=4;finish(&mut b);assert!(validate_pptt(&b).is_ok());b[37]=8;finish(&mut b);assert_eq!(validate_pptt(&b),Err(AcpiError::MalformedEntry));}
 }
