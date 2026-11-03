@@ -168,7 +168,7 @@ impl GpeController{
      };
      if self.queued==MAX_DEFERRED_EVENTS{return Err(EventError::QueueFull)}
      io.write(enable_gas,1,(enabled&!mask) as u64)?;
-     io.clear_status_w1c(io,block.register_gas(false,index),mask)?;
+     io.clear_status_w1c(block.register_gas(false,index),mask)?;
      self.queue[self.tail]=DeferredGpe{number:event,method_node:registration.method_node,trigger:registration.trigger};
      self.tail=(self.tail+1)%MAX_DEFERRED_EVENTS;self.queued+=1;captured+=1;
      if let Some(entry)=self.events[..self.event_count].iter_mut().find(|e|e.number==event){entry.enabled=false;}
