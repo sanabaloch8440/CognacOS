@@ -536,7 +536,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          cargo build --manifest-path drivers/acpi/Cargo.toml --lib
+          cargo build --manifest-path drivers/acpi/Cargo.toml --lib --target x86_64-unknown-linux-gnu
           acpi_rlib="$(find target -type f -name 'libcognacos_acpi*.rlib' -print -quit)"
           test -n "$acpi_rlib"
           rustc --edition=2021 --test ntoskrnl/src/mm/topology.rs \
