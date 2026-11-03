@@ -10,7 +10,25 @@ EXPECTED_IMPORTS = {
             "IoAttachDeviceToDeviceStack", "IoDetachDevice", "IoCallDriver",
             "IoCopyCurrentIrpStackLocationToNext", "IoSkipCurrentIrpStackLocation",
             "IoSetCompletionRoutine", "IoPnPQueryBusInterface",
-            "IoPnPRegisterDeviceDriver",
+            "IoPnPRegisterDeviceDriver", "IoPnPRegisterBusDevice",
+            "IoPnPProcessBusRelations", "IoPnPEnumerateBus",
+        ],
+    },
+    "disk.sys": {
+        "ntoskrnl.exe": [
+            "IoCreateDevice", "IoDeleteDevice", "IoAttachDeviceToDeviceStack",
+            "IoDetachDevice", "IoCallDriver", "IoSkipCurrentIrpStackLocation",
+            "IoSetCompletionRoutine", "IoPnPRegisterDeviceDriver", "IoCompleteRequest",
+        ],
+    },
+    "partmgr.sys": {
+        "ntoskrnl.exe": [
+            "IoCreateDevice", "IoDeleteDevice", "IoAttachDeviceToDeviceStack",
+            "IoDetachDevice", "IoCallDriver", "IoSkipCurrentIrpStackLocation",
+            "IoCopyCurrentIrpStackLocationToNext", "IoSetCompletionRoutine",
+            "IoAllocateIrp", "IoGetNextIrpStackLocation", "IoFreeIrp",
+            "IoCompleteRequest", "IoPnPRegisterDeviceDriver",
+            "IoPnPRegisterBusDevice", "IoPnPEnumerateBus",
         ],
     },
     "pciidex.sys": {
