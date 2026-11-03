@@ -13,6 +13,7 @@ const MEMORY_READ_ONLY:u16=1;const MEMORY_CACHEABLE:u16=0x20;
 const INTERRUPT_LEVEL_SENSITIVE:u16=1;const IO_RESOURCE_ALTERNATIVE:u8=0x08;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RequirementsError{SizeOverflow,OutputTooSmall,InvalidResourceList,UnsupportedRange}
+/// Count WDM IO_RESOURCE_DESCRIPTOR records after validating the ACPI resource list shape.
 pub fn descriptor_count(r:&ResourceList)->Result<usize,RequirementsError>{
  if r.count>r.entries.len(){return Err(RequirementsError::InvalidResourceList)}
  let mut n=0usize;for item in r.entries[..r.count].iter().flatten(){let add=match item{
@@ -22,6 +23,7 @@ pub fn descriptor_count(r:&ResourceList)->Result<usize,RequirementsError>{
  Resource::Dma{channels,..}=>channels.count_ones() as usize,Resource::EndTag{..}=>0,
  };n=n.checked_add(add).ok_or(RequirementsError::SizeOverflow)?;}Ok(n)
 }
+/// Compute the exact serialized IO_RESOURCE_REQUIREMENTS_LIST size with checked arithmetic.
 pub fn required_size(r:&ResourceList)->Result<usize,RequirementsError>{
  let count=descriptor_count(r)?;
  REQUIREMENTS_HEADER_SIZE.checked_add(ALTERNATIVE_HEADER_SIZE).and_then(|n|n.checked_add(count.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE)?)).ok_or(RequirementsError::SizeOverflow)
