@@ -188,7 +188,7 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      self.operand_integer(&execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)?)
+      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)?;self.operand_integer(&value)}
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
