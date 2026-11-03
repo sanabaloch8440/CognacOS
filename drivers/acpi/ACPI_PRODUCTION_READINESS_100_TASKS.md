@@ -1,7 +1,7 @@
 # CognacOS ACPI Driver — 100-Task Production Readiness Plan
 
 **Repository:** `sanabaloch8440/CognacOS`  
-**Branch:** `acpi-production-readiness-audit`  
+**Branch:** `acpi-production-batch-1-table-validation`  
 **Status:** tasks 1–26 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
