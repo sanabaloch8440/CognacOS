@@ -72,6 +72,8 @@ unsafe extern "win64" {
  fn KeInitializeEvent(event:PVOID,event_type:i32,state:u8);
  fn KeSetEvent(event:PVOID,increment:i32,wait:u8)->i32;
  fn KeWaitForSingleObject(event:PVOID,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
+ fn IoGetAttachedDeviceReference(device:*mut DEVICE_OBJECT)->*mut DEVICE_OBJECT;
+ fn ObDereferenceObject(object:PVOID);
 }
 
 core::arch::global_asm!(r#"
@@ -89,6 +91,8 @@ IMPORT IoDeleteDevice
 IMPORT IoAttachDeviceToDeviceStack
 IMPORT IoDetachDevice
 IMPORT IoCallDriver
+IMPORT ObDereferenceObject
+IMPORT IoGetAttachedDeviceReference
 IMPORT KeWaitForSingleObject
 IMPORT KeSetEvent
 IMPORT KeInitializeEvent
@@ -111,6 +115,8 @@ IAT IoDeleteDevice
 IAT IoAttachDeviceToDeviceStack
 IAT IoDetachDevice
 IAT IoCallDriver
+IAT ObDereferenceObject
+IAT IoGetAttachedDeviceReference
 IAT KeWaitForSingleObject
 IAT KeSetEvent
 IAT KeInitializeEvent
@@ -161,7 +167,7 @@ unsafe fn query_pci_bus_interface(device:*mut DEVICE_OBJECT,guid:*const cognacos
  if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
  let mut event=[0u64;3];unsafe{KeInitializeEvent(event.as_mut_ptr().cast(),0,0);}
  let stack=next_stack_location(irp);
- if stack.is_null(){unsafe{IoFreeIrp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
+ if stack.is_null(){unsafe{IoFreeIrp(irp);ObDereferenceObject(target.cast())};return STATUS_INSUFFICIENT_RESOURCES}
  unsafe{
   (*stack).major_function=0x1b;(*stack).minor_function=0x08;
   core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<*const cognacos_nt_abi::bus::GUID>(),guid);
@@ -170,13 +176,13 @@ unsafe fn query_pci_bus_interface(device:*mut DEVICE_OBJECT,guid:*const cognacos
   core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<PVOID>(),output);
   set_completion_routine(irp,Some(query_interface_complete),event.as_mut_ptr().cast(),1,1,1);
  }
- let status=unsafe{IoCallDriver(device,irp)};
+ let status=unsafe{IoCallDriver(target,irp)};
  if status==STATUS_PENDING{
   let wait=unsafe{KeWaitForSingleObject(event.as_mut_ptr().cast(),0,0,0,core::ptr::null())};
-  if wait<0{unsafe{IoFreeIrp(irp)};return wait}
+  if wait<0{unsafe{IoFreeIrp(irp);ObDereferenceObject(target.cast())};return wait}
  }
  let io_status=unsafe{(*irp).io_status.status.status};
- unsafe{IoFreeIrp(irp)}
+ unsafe{IoFreeIrp(irp);ObDereferenceObject(target.cast())}
  if status==STATUS_PENDING{io_status}else if status<0{status}else{io_status}
 }
 
