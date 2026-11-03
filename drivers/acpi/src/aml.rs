@@ -568,8 +568,8 @@ mod tests{
         assert_eq!(decode_package_length(&[0x80,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,16),Ok((16,16)));
     }
     #[test]fn parses_root_parent_dual_and_multi_name_strings(){
-        let (rooted,end)=parse_name_string(&[0x5c,b'_',b'S',b'B',b'_',b'P',b'C',b'I',b'0'],0,9).unwrap();
-        assert!(rooted.rooted);assert_eq!(rooted.count,2);assert_eq!(end,9);
+        let (rooted,end)=parse_name_string(&[0x5c,0x2e,b'_',b'S',b'B',b'_',b'P',b'C',b'I',b'0'],0,10).unwrap();
+        assert!(rooted.rooted);assert_eq!(rooted.count,2);assert_eq!(end,10);
         let (parent,end)=parse_name_string(&[0x5e,b'P',b'C',b'I',b'0'],0,5).unwrap();
         assert_eq!(parent.parents,1);assert_eq!(parent.segments[0],*b"PCI0");assert_eq!(end,5);
         let (dual,end)=parse_name_string(&[0x2e,b'P',b'C',b'I',b'0',b'D',b'E',b'V',b'0'],0,9).unwrap();
@@ -580,7 +580,7 @@ mod tests{
     #[test]fn loads_device_and_name_namespace(){
         // Device(PCI0) { Name(_HID, EisaId("PNP0A08")) } -- the name value
         // is deliberately a simple AML string in this initial parser slice.
-        let aml=[0x5b,0x82,0x13,0x50,b'P',b'C',b'I',b'0',0x08,b'_',
+        let aml=[0x5b,0x82,0x14,0x50,b'P',b'C',b'I',b'0',0x08,b'_',
             b'H',b'I',b'D',0x0d,b'P',b'N',b'P',b'0',b'A',b'0',b'8',0];
         let mut ns=AmlNamespace::new();
         assert!(load_definition_block(&aml,&mut ns).is_ok());
@@ -588,7 +588,7 @@ mod tests{
         assert_eq!(ns.find_child(1,*b"_HID"),Some(2));
     }
     #[test]fn resolves_unprefixed_names_through_ancestor_scopes(){
-        let aml=[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
+        let aml=[0x10,0x16,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
                  0x10,0x0b,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let parent=ns.find_child(0,*b"PAR0").unwrap();let child=ns.find_child(parent,*b"CHD0").unwrap();
@@ -697,7 +697,7 @@ mod tests{
         assert_eq!(resolve_name_string(&ns,0,&name),Err(AmlError::InvalidParent));
     }
     #[test]fn explicit_root_and_parent_paths_do_not_search_other_ancestors(){
-        let aml=[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
+        let aml=[0x10,0x16,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01,
                  0x10,0x0b,b'C',b'H',b'D',b'0',0x08,b'V',b'A',b'L',b'1',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let child=ns.find_child(ns.find_child(0,*b"PAR0").unwrap(),*b"CHD0").unwrap();
