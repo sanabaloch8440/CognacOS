@@ -183,8 +183,10 @@ pub fn thread_exit_cleanup(thread:u64){
         }
         for id in timed_out[..timed_count].iter().copied(){let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_TIMEOUT,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_TIMEOUT);let _=crate::thread::complete_wait(id,status);}
         if let Some(id)=owner_waiter{
-            let mut table=MUTANTS.lock();
-            if let Some(record)=table.records.iter_mut().find(|r|r.object==object){record.owner=id;record.recursion=1;record.abandoned=false;}
+            {
+                let mut table=MUTANTS.lock();
+                if let Some(record)=table.records.iter_mut().find(|r|r.object==object){record.owner=id;record.recursion=1;record.abandoned=false;}
+            }
             unsafe{
                 header.cast::<u8>().add(48).write(0);
                 (&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
@@ -192,25 +194,19 @@ pub fn thread_exit_cleanup(thread:u64){
             let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_ABANDONED_WAIT_0,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_ABANDONED_WAIT_0);
             let _=crate::thread::complete_wait(id,status);
         }
-    }
-    complete_ready_wait_all_groups();
-    // With no remaining wait-all reservation, an unowned abandoned state now
-    // lives in KMUTANT.Abandoned and no longer needs a kernel pointer record.
-    // The next waiter reconstructs the record from the caller-owned object.
-    // (The loop may have handled several objects; scan only the abandoned,
-    // unowned records rather than retaining driver-image addresses forever.)
-    for index in 0..2048 {
-        let object={
-            let table=MUTANTS.lock();
-            table.records[index].object
-        };
-        if object==0||crate::dispatcher::has_wait_all_object(object as u64){continue}
-        let mut table=MUTANTS.lock();
-        let record=&mut table.records[index];
-        if record.object==object&&record.owner==0&&record.recursion==0&&record.abandoned {
-            *record=MutantRecord::EMPTY;
+        // Resolve wait-all groups before retiring the abandoned record. A
+        // ready group may acquire this mutant (and other objects) atomically.
+        complete_ready_wait_all_groups();
+        if !crate::dispatcher::has_wait_all_object(object as u64) {
+            let mut table=MUTANTS.lock();
+            if let Some(record)=table.records.iter_mut().find(|r|r.object==object) {
+                if record.owner==0&&record.recursion==0&&record.abandoned {
+                    *record=MutantRecord::EMPTY;
+                }
+            }
         }
     }
+    complete_ready_wait_all_groups();
 }
 
 // ---- FAST_MUTEX ABI entry points -------------------------------------------
