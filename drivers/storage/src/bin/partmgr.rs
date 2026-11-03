@@ -307,11 +307,11 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
   }
   if minor==IRP_MN_START_DEVICE{
    let lower=unsafe{(*ext).lower};
-   unsafe{IoCopyCurrentIrpStackLocationToNext(irp);IoSetCompletionRoutine(irp,Some(pnp_complete),device.cast(),1,1,1);return IoCallDriver(lower,irp);}
+   unsafe{copy_current_irp_stack_location_to_next(irp);set_completion_routine(irp,Some(pnp_complete),device.cast(),1,1,1);return IoCallDriver(lower,irp);}
   }
-  let lower=unsafe{(*ext).lower};unsafe{IoSkipCurrentIrpStackLocation(irp);return IoCallDriver(lower,irp);}
+  let lower=unsafe{(*ext).lower};unsafe{skip_current_irp_stack_location(irp);return IoCallDriver(lower,irp);}
  }
- let lower=unsafe{(*ext).lower};unsafe{IoSkipCurrentIrpStackLocation(irp);IoCallDriver(lower,irp)}
+ let lower=unsafe{(*ext).lower};unsafe{skip_current_irp_stack_location(irp);IoCallDriver(lower,irp)}
 }
 
 unsafe extern "win64" fn add_device(driver:*mut DRIVER_OBJECT,pdo:*mut DEVICE_OBJECT)->i32{
