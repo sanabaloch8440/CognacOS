@@ -1373,3 +1373,46 @@ mod rsdp_validation_regression_tests {
         assert_eq!(validate_rsdp(&b), Err(AcpiError::BadSignature));
     }
 }
+
+#[cfg(test)]
+mod root_table_validation_regression_tests {
+    use super::*;
+    struct Mapper<'a> { rsdp_addr: u64, rsdp: &'a [u8], root_addr: u64, root: &'a [u8] }
+    impl AcpiPhysicalMapper for Mapper<'_> {
+        fn map_physical<'a>(&'a self, address: u64, length: usize) -> Result<&'a [u8], AcpiError> {
+            let b = if address == self.rsdp_addr { self.rsdp } else if address == self.root_addr { self.root } else { return Err(AcpiError::AddressOutOfRange); };
+            if length > b.len() { return Err(AcpiError::Truncated); }
+            Ok(&b[..length])
+        }
+    }
+    fn rsdp(root_address: u64) -> [u8; 36] {
+        let mut b = [0u8; 36];
+        b[..8].copy_from_slice(b"RSD PTR ");
+        b[15] = 2;
+        b[20..24].copy_from_slice(&36u32.to_le_bytes());
+        b[24..32].copy_from_slice(&root_address.to_le_bytes());
+        b[8] = 0u8.wrapping_sub(b[..20].iter().fold(0u8, |s, v| s.wrapping_add(*v)));
+        b[32] = 0u8.wrapping_sub(b.iter().fold(0u8, |s, v| s.wrapping_add(*v)));
+        b
+    }
+    fn finish_sdt(b: &mut [u8]) {
+        b[9] = 0;
+        b[9] = 0u8.wrapping_sub(b.iter().fold(0u8, |s, v| s.wrapping_add(*v)));
+    }
+    #[test]
+    fn rejects_root_table_payload_not_divisible_by_entry_width() {
+        let mut root = [0u8; 45];
+        root[..4].copy_from_slice(b"XSDT");
+        root[4..8].copy_from_slice(&45u32.to_le_bytes());
+        finish_sdt(&mut root);
+        let r = rsdp(0x2000);
+        let mapper = Mapper { rsdp_addr: 0x1000, rsdp: &r, root_addr: 0x2000, root: &root };
+        assert_eq!(find_table_with_mapper(&mapper, 0x1000, *b"FACP", 0), Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_root_pointer_range_overflow_before_mapping() {
+        let r = rsdp(u64::MAX - 8);
+        let mapper = Mapper { rsdp_addr: 0x1000, rsdp: &r, root_addr: 0, root: &[] };
+        assert_eq!(find_table_with_mapper(&mapper, 0x1000, *b"FACP", 0), Err(AcpiError::AddressOutOfRange));
+    }
+}
