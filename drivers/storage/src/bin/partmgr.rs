@@ -58,6 +58,7 @@ unsafe extern "win64"{
  fn IoCompleteRequest(irp:*mut IRP,priority_boost:i8);
  fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
  fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
+ fn IoMountFAT32Volume(device:*mut DEVICE_OBJECT)->i32;
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -82,6 +83,7 @@ IMPORT IoFreeIrp
 IMPORT IoCompleteRequest
 IMPORT IoPnPRegisterDeviceDriver
 IMPORT IoPnPEnumerateBus
+IMPORT IoMountFAT32Volume
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -104,6 +106,7 @@ IAT IoFreeIrp
 IAT IoCompleteRequest
 IAT IoPnPRegisterDeviceDriver
 IAT IoPnPEnumerateBus
+IAT IoMountFAT32Volume
 "#);
 
 fn fdo_extension(device:*mut DEVICE_OBJECT)->Option<*mut PartMgrFdoExtension>{
@@ -199,6 +202,13 @@ unsafe extern "win64" fn pnp_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,con
   if minor==IRP_MN_START_DEVICE&&status==STATUS_SUCCESS{
    let _=unsafe{scan_partitions(ext)};
    let physical=unsafe{(*ext).physical};if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
+   // Prefer later data partitions over the EFI system partition. Only one
+   // FAT32 volume is currently mounted by the kernel's single-volume VPB path.
+   let count=unsafe{(*ext).relations.count as usize};
+   for index in (0..count).rev(){
+    let child=unsafe{(*ext).relations.objects[index]};
+    if !child.is_null()&&unsafe{IoMountFAT32Volume(child)}==STATUS_SUCCESS{break}
+   }
   }
   if minor==IRP_MN_REMOVE_DEVICE{
    let physical=unsafe{(*ext).physical};
