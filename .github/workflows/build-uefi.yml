@@ -26,8 +26,6 @@ permissions:
   contents: read
 
 concurrency:
-  # One queue for this workflow across branches and PR refs: a newer run
-  # cancels any in-progress or pending older run to avoid wasting CI minutes.
   group: cognacos-build-uefi
   cancel-in-progress: true
 
@@ -44,8 +42,6 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       CARGO_INCREMENTAL: 0
-      # Keep DWARF line tables and frame pointers in the ELF symbol companions
-      # used by GDB. PE artifacts remain the actual boot/runtime images.
       CARGO_PROFILE_RELEASE_DEBUG: "2"
       CARGO_PROFILE_RELEASE_STRIP: "none"
     steps:
@@ -138,8 +134,7 @@ jobs:
           dll_path="target/x86_64-pc-windows-gnu/release/bcrypt.dll"
           if [[ ! -s "$dll_path" ]]; then
             echo "Expected bcrypt cdylib was not produced at $dll_path."
-            find target/x86_64-pc-windows-gnu/release -maxdepth 2 -type f -printf '%p
-' | sort
+            find target/x86_64-pc-windows-gnu/release -maxdepth 2 -type f -printf '%p\n' | sort
             exit 1
           fi
           cp "$dll_path" build/bcrypt/bcrypt.dll
@@ -147,9 +142,6 @@ jobs:
           grep -Fq "BCryptOpenAlgorithmProvider" build/bcrypt/exports.txt
           grep -Fq "BCryptGenRandom" build/bcrypt/exports.txt
           grep -Fq "BCryptDeriveKeyPBKDF2" build/bcrypt/exports.txt
-          # llvm-readobj prints each export as a multi-line block. Count
-          # the named BCrypt API entries directly; the image also contains
-          # unrelated support-library symbols which must not affect this count.
           export_count="$(grep -cE '^[[:space:]]*Name: BCrypt' build/bcrypt/exports.txt || true)"
           echo "Detected named BCrypt API exports: $export_count"
           test "$export_count" -eq 60
@@ -364,35 +356,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/ntdll
-          # Export the pinned Windows 11 x64 NTDLL name inventory from the
-          # Rust DLL, rather than shipping a small custom Cognac-only subset.
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          names = []
-          for raw in Path("ntdll/exports/windows-11-x64-exports.txt").read_text().splitlines():
-              name = raw.strip()
-              if not name or name.startswith("#"):
-                  continue
-              if not re.fullmatch(r"[A-Za-z0-9_]+", name):
-                  raise SystemExit(f"invalid NTDLL export name: {name!r}")
-              names.append(name)
-          if len(names) < 2000 or len(names) != len(set(names)):
-              raise SystemExit(f"unexpected Windows NTDLL inventory: {len(names)} unique={len(set(names))}")
-          Path("build/ntdll/ntdll-rust.def").write_text("LIBRARY ntdll
-EXPORTS
-" + "".join(f"    {name}
-" for name in names))
-          print(f"Generated Rust NTDLL definition with {len(names)} Windows 11 exports")
-          PY
+          python3 scripts/ci/generate_ntdll_def.py
           sysroot="$(rustc --print sysroot)"
           mkdir -p "$RUNNER_TEMP/ntdll-linker"
           ln -sf "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" "$RUNNER_TEMP/ntdll-linker/lld-link"
           test -x "$RUNNER_TEMP/ntdll-linker/lld-link"
           export PATH="$RUNNER_TEMP/ntdll-linker:$PATH"
-          # rustc's Windows target adds ntdll.lib by default. The native DLL
-          # must not import itself, so satisfy that target-default input with a
-          # tiny COFF archive member; native service entry points link in-tree.
           cat > "$RUNNER_TEMP/ntdll-empty.rs" <<'RS'
           #![no_std]
           #[no_mangle]
@@ -405,22 +374,7 @@ EXPORTS
           dll=target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll
           test -s "$dll"
           file "$dll" | grep -q 'PE32+.*DLL'
-          python3 - "$dll" <<'PY'
-          import struct, sys
-          blob = open(sys.argv[1], "rb").read()
-          assert blob[:2] == b"MZ", "Rust NTDLL lacks DOS header"
-          pe = struct.unpack_from("<I", blob, 0x3c)[0]
-          assert blob[pe:pe+4] == b"PE\0\0", "Rust NTDLL lacks PE signature"
-          assert struct.unpack_from("<H", blob, pe+4)[0] == 0x8664, "Rust NTDLL is not AMD64"
-          sections = struct.unpack_from("<H", blob, pe+6)[0]
-          opt_size = struct.unpack_from("<H", blob, pe+20)[0]
-          characteristics = struct.unpack_from("<H", blob, pe+22)[0]
-          opt = pe + 24
-          assert struct.unpack_from("<H", blob, opt)[0] == 0x20b, "Rust NTDLL is not PE32+"
-          assert characteristics & 0x2000, "Rust NTDLL is not marked as a DLL"
-          assert opt_size >= 240 and sections > 0, "Rust NTDLL optional header/sections are invalid"
-          print(f"Rust NTDLL PE32+ validation passed: {sections} sections")
-          PY
+          python3 scripts/ci/validate_ntdll_pe.py "$dll"
       - name: Build Rust kernel32.dll, kernelbase.dll, and shell32.dll as native PE32+ DLLs
         shell: bash
         env:
@@ -547,11 +501,6 @@ EXPORTS
           mkdir -p build/drivers
           build_driver() {
             local name="$1" package="$2" bin="$3" base="$4" output="$5"
-            # Driver images are linked into the high canonical kernel address
-            # range. The small/kernel code models emit signed-32-bit absolute
-            # relocations for constants, which cannot reach these image bases.
-            # Use the large model consistently for every independently linked
-            # PE driver, not only xHCI.
             RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C code-model=large -C link-arg=-T$GITHUB_WORKSPACE/$package/driver.ld" \
               cargo build --manifest-path "$package/Cargo.toml" --target x86_64-unknown-none \
                 --target-dir "target/driver-$name" --release --bin "$bin"
@@ -575,112 +524,7 @@ EXPORTS
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-stornvme/x86_64-unknown-none/release/stornvme build/drivers/stornvme.sys --image-base=0xffff800120000000 --dll
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C code-model=large -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/disk.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-disk --release --bin disk
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus target/driver-disk/x86_64-unknown-none/release/disk build/drivers/disk.sys --image-base=0xffff800130000000 --dll
-          python3 - <<'PY'
-          import struct
-          from pathlib import Path
-          for path in sorted(Path("build/drivers").iterdir()):
-              p = path.read_bytes()
-              assert p[:2] == b"MZ", f"{path}: missing MZ"
-              pe = struct.unpack_from("<I", p, 0x3c)[0]
-              assert p[pe:pe+4] == b"PE\0\0", f"{path}: missing PE"
-              assert struct.unpack_from("<H", p, pe+4)[0] == 0x8664, f"{path}: wrong machine"
-              assert struct.unpack_from("<H", p, pe+22)[0] & 0x2000, f"{path}: not a DLL image"
-              opt = pe + 24
-              assert struct.unpack_from("<H", p, opt)[0] == 0x20b, f"{path}: not PE32+"
-              assert struct.unpack_from("<H", p, opt+68)[0] == 1, f"{path}: not native subsystem"
-              assert struct.unpack_from("<I", p, opt+16)[0] != 0, f"{path}: no entry point"
-              import_rva, import_size = struct.unpack_from("<II", p, opt+112+8)
-              if path.name in ("pci.sys", "acpi.sys", "usbxhci.sys"):
-                  assert import_rva and import_size >= 40, f"{path}: missing required ntoskrnl/HAL import directory"
-                  section_count = struct.unpack_from("<H", p, pe+6)[0]
-                  optional_size = struct.unpack_from("<H", p, pe+20)[0]
-                  section_table = pe + 24 + optional_size
-
-                  def rva_to_offset(rva):
-                      for index in range(section_count):
-                          sh = section_table + index * 40
-                          virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", p, sh+8)
-                          span = max(virtual_size, raw_size)
-                          if virtual_address <= rva < virtual_address + span:
-                              return raw_offset + (rva - virtual_address)
-                      raise AssertionError(f"{path}: RVA 0x{rva:x} is not backed by a PE section")
-
-                  def read_c_string(offset):
-                      end = p.find(b"\0", offset)
-                      assert end >= 0, f"{path}: unterminated import string"
-                      return p[offset:end].decode("ascii")
-
-                  imports = {}
-                  iat_rvas = []
-                  descriptor_offset = rva_to_offset(import_rva)
-                  descriptor_limit = descriptor_offset + import_size
-                  while descriptor_offset + 20 <= descriptor_limit:
-                      original_thunk, timestamp, forwarder, name_rva, first_thunk = struct.unpack_from("<IIIII", p, descriptor_offset)
-                      descriptor_offset += 20
-                      if not any((original_thunk, timestamp, forwarder, name_rva, first_thunk)):
-                          break
-                      dll = read_c_string(rva_to_offset(name_rva)).lower()
-                      assert original_thunk and first_thunk, f"{path}: import descriptor lacks lookup/IAT tables"
-                      iat_rvas.append(first_thunk)
-                      names = []
-                      index = 0
-                      while True:
-                          thunk = struct.unpack_from("<Q", p, rva_to_offset(original_thunk + index * 8))[0]
-                          if thunk == 0:
-                              break
-                          assert not (thunk & (1 << 63)), f"{path}: ordinal imports are not expected"
-                          hint_name = rva_to_offset(thunk & 0xffffffff)
-                          names.append(read_c_string(hint_name + 2))
-                          index += 1
-                      imports[dll] = names
-                  expected_imports = {
-                      "pci.sys": {
-                          "ntoskrnl.exe": ["IoCreateDevice", "IoDeleteDevice"],
-                      },
-                      "acpi.sys": {
-                          "hal.dll": ["HalAcpiGetTableEx"],
-                      },
-                      "usbxhci.sys": {
-                          "ntoskrnl.exe": [
-                              "IoCreateDevice", "IoDeleteDevice", "IoGetDmaAdapter",
-                              "MmMapIoSpace", "MmUnmapIoSpace", "IoConnectInterrupt",
-                              "IoDisconnectInterrupt", "KeInitializeDpc", "KeInsertQueueDpc",
-                              "IoCompleteRequest",
-                          ],
-                          "hal.dll": [
-                              "HalEnableInterrupt", "HalDisableInterrupt",
-                              "HalAllocateCommonBuffer", "HalFreeCommonBuffer",
-                              "HalGetBusDataByOffset", "HalSetBusDataByOffset",
-                          ],
-                      },
-                  }[path.name]
-                  assert imports == expected_imports, f"{path}: unexpected imports: {imports}"
-                  # Each imported DLL has its own FirstThunk array. A driver
-                  # importing both ntoskrnl.exe and hal.dll must therefore have
-                  # one IAT per import descriptor, not one shared/contiguous IAT.
-                  assert len(iat_rvas) == len(imports), (
-                      f"{path}: expected one IAT per imported DLL; "
-                      f"found {len(iat_rvas)} for {len(imports)} DLLs"
-                  )
-                  for first_thunk in iat_rvas:
-                      iat_section = next(
-                          (struct.unpack_from("<I", p, section_table+i*40+36)[0]
-                           for i in range(section_count)
-                           if struct.unpack_from("<I", p, section_table+i*40+12)[0] <= first_thunk
-                           < struct.unpack_from("<I", p, section_table+i*40+12)[0]
-                           + max(struct.unpack_from("<I", p, section_table+i*40+8)[0],
-                                 struct.unpack_from("<I", p, section_table+i*40+16)[0])),
-                          0,
-                      )
-                      assert iat_section & 0x80000000, (
-                          f"{path}: IAT at RVA 0x{first_thunk:x} is not in writable data"
-                      )
-              else:
-                  assert (import_rva, import_size) == (0, 0), f"{path}: unexpected PE imports: {import_rva:#x}/{import_size}"
-
-              assert struct.unpack_from("<II", p, opt+112+5*8) == (0, 0), f"{path}: relocations unsupported by stage-1 loader"
-              print(f"validated native PE32+ driver: {path} ({len(p)} bytes)")
-          PY
+          python3 scripts/ci/validate_driver_pe.py
       - name: Test XSTATE source contracts
         run: cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-xstate-source-contracts
       - name: Test user virtual-range validation
@@ -771,24 +615,7 @@ EXPORTS
           file build/cognacos-kernel.exe build/cognacos-kernel-release.exe
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel.exe ntoskrnl/src/abi/manifests/26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp IoCreateDevice IoDeleteDevice MmMapIoSpace MmUnmapIoSpace
           cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports build/cognacos-kernel-release.exe ntoskrnl/src/abi/manifests/26100.json SeAccessCheck SePrivilegeCheck SeSinglePrivilegeCheck SeValidSecurityDescriptor SeCaptureSubjectContext SeReleaseSubjectContext SeLockSubjectContext SeUnlockSubjectContext PsAssignImpersonationToken PsReferencePrimaryToken PsDereferencePrimaryToken IoAllocateIrp IoFreeIrp IoBuildDeviceIoControlRequest IoCallDriver IoCompleteRequest IoAcquireCancelSpinLock IoReleaseCancelSpinLock IoCsqInitialize IoCsqInitializeEx IoCsqInsertIrp IoCsqInsertIrpEx IoCsqRemoveIrp IoCsqRemoveNextIrp
-          python3 - <<'PY'
-          import struct
-          p = open("build/cognacos-kernel.exe", "rb").read()
-          assert p[:2] == b"MZ", "missing DOS MZ signature"
-          off = struct.unpack_from("<I", p, 0x3c)[0]
-          assert p[off:off+4] == b"PE\0\0", "missing PE signature"
-          assert struct.unpack_from("<H", p, off+4)[0] == 0x8664, "not AMD64"
-          assert struct.unpack_from("<H", p, off+24)[0] == 0x20b, "not PE32+"
-          sections = struct.unpack_from("<H", p, off+6)[0]
-          opt = off + 24
-          assert struct.unpack_from("<Q", p, opt+24)[0] == 0xffffffff7fe00000, "unexpected kernel image base"
-          assert struct.unpack_from("<H", p, opt+68)[0] == 1, "kernel must use native subsystem"
-          assert struct.unpack_from("<II", p, opt+112+8) == (0, 0), "kernel imports are unsupported"
-          assert struct.unpack_from("<II", p, opt+112+5*8) == (0, 0), "kernel relocations are unsupported"
-          table = opt + struct.unpack_from("<H", p, off+20)[0]
-          assert all(struct.unpack_from("<I", p, table+i*40+12)[0] >= 0x1000 for i in range(sections)), "invalid section RVA"
-          print(f"PE32+ native kernel header validation passed: {sections} sections")
-          PY
+          python3 scripts/ci/validate_kernel_pe.py
       - name: Pin PE32+ kernel digest into Rust bootloader trust anchor
         id: kernel-digest
         shell: bash
@@ -818,14 +645,7 @@ EXPORTS
           test "${#signature}" -eq 128
           openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey build/cognacos-kernel-public.der -in build/cognacos-kernel.exe -sigfile build/cognacos-kernel.sig
           cp build/cognacos-kernel.exe build/cognacos-kernel-tampered.exe
-          python3 - <<'PY'
-          p = "build/cognacos-kernel-tampered.exe"
-          with open(p, "r+b") as f:
-              b = f.read(1)
-              assert b
-              f.seek(0)
-              f.write(bytes([b[0] ^ 1]))
-          PY
+          python3 scripts/ci/tamper_kernel_byte.py build/cognacos-kernel-tampered.exe
           if openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey build/cognacos-kernel-public.der -in build/cognacos-kernel-tampered.exe -sigfile build/cognacos-kernel.sig >/dev/null 2>&1; then
             echo "Tampered kernel incorrectly passed signature verification." >&2
             exit 1
@@ -840,8 +660,6 @@ EXPORTS
           COGNACOS_KERNEL_SHA256: ${{ steps.kernel-digest.outputs.sha256 }}
           COGNACOS_KERNEL_SIGNATURE: ${{ steps.kernel-sign.outputs.signature }}
           COGNACOS_SIGNING_PUBLIC_KEY: ${{ steps.kernel-sign.outputs.public_key }}
-          # Use the portable serial Curve25519 backend for the UEFI target; the
-          # auto-selected SIMD backend crashes LLVM codegen on the hosted toolchain.
           RUSTFLAGS: '--cfg curve25519_dalek_backend="serial"'
           CARGO_PROFILE_RELEASE_OPT_LEVEL: 2
         run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
@@ -905,9 +723,6 @@ EXPORTS
           cp build/dlls/shell32.dll build/EFI/BOOT/shell32.dll
           cp build/dlls/msvcrt.dll build/EFI/BOOT/msvcrt.dll
           cp build/kbdus/kbdus.dll build/EFI/BOOT/kbdus.dll
-          # beep.sys is an optional external compatibility fixture. Keep the
-          # image bootable when the fixture is not supplied; the assessment
-          # step below reports NOT RUN in that case.
           if [[ -f test/beep.sys ]]; then
             cp test/beep.sys build/EFI/BOOT/beep.sys
           else
@@ -915,12 +730,8 @@ EXPORTS
           fi
           truncate -s 256M build/cognacos-uefi.img
           parted -s build/cognacos-uefi.img mklabel gpt
-          # Keep the FAT32 EFI System Partition small and dedicate the remaining
-          # disk space to a real ext4 data partition consumed by the guest.
           parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 65MiB
           parted -s build/cognacos-uefi.img set 1 esp on
-          # Keep the final 16 MiB as an explicit debug-trace partition.
-          # Paging uses /pagefile.sys on ext4; this partition is trace-only.
           parted -s build/cognacos-uefi.img mkpart COGNACDATA ext4 65MiB 240MiB
           parted -s build/cognacos-uefi.img mkpart COGNACDEBUG ext4 240MiB 255MiB
           mformat -i build/cognacos-uefi.img@@1048576 -F -T 131072 ::
@@ -942,7 +753,6 @@ EXPORTS
           fi
           mkdir -p build/ext4-root
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
-          # Preallocate a normal volume file; the kernel pins its ext4 extents at boot.
           dd if=/dev/zero of=build/ext4-root/pagefile.sys bs=1M count=64 status=none
           loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
           cleanup_loop() { sudo losetup -d "$loopdev" 2>/dev/null || true; }
@@ -954,8 +764,6 @@ EXPORTS
             exit 1
           fi
           sudo mkfs.ext4 -F -q -L COGNACDATA -O ^metadata_csum,^huge_file,^dir_nlink,^extra_isize,^dir_index,^has_journal -d build/ext4-root "${loopdev}p2"
-          # Validate the exact bytes stored in the filesystem, not merely the
-          # source staging file. This does not substitute for the guest test.
           sudo debugfs -R 'cat /README.txt' "${loopdev}p2" 2>/dev/null > build/ext4-readback.txt
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-expected.txt
           cmp build/ext4-expected.txt build/ext4-readback.txt
@@ -973,8 +781,6 @@ EXPORTS
         shell: bash
         run: |
           set -euo pipefail
-          # Select a matching CODE/VARS pair: mixing 2 MiB and 4 MiB
-          # firmware images can make QEMU fail before the boot test starts.
           if [ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] && [ -f /usr/share/OVMF/OVMF_VARS_4M.fd ]; then
             code=/usr/share/OVMF/OVMF_CODE_4M.fd
             vars_template=/usr/share/OVMF/OVMF_VARS_4M.fd
@@ -988,51 +794,9 @@ EXPORTS
           fi
           cp "$vars_template" build/OVMF_VARS.fd
           : > build/serial.log
-          # Keep the original QEMU instance alive while GDB attaches. The old
-          # timeout-based run killed QEMU before the diagnostic branch could run,
-          # so its "GDB snapshot" silently started a second, unrelated boot.
-          # Capture the legacy PC speaker output to a WAV artifact. The kernel
-          # emits a diagnostic tone only after beep.sys DriverEntry and device
-          # registration succeed; this proves the QEMU audio path, not the driver's IOCTL.
           rm -f build/beep.wav build/gdb-first-user-fault.txt
           command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
-          # Attach GDB before firmware starts executing. A conditional hardware
-          # breakpoint captures the first CPL3 exception frame and then resumes
-          # automatically, so diagnostics do not depend on a post-crash attach.
-          cat > build/gdb-first-fault.gdb <<'GDB'
-          set pagination off
-          set confirm off
-          set architecture i386:x86-64
-          file target/x86_64-unknown-none/release/cognacos-kernel
-          target remote 127.0.0.1:12345
-          hbreak cognacos_exception_dispatch
-          condition 1 $rdi == 14
-          commands 1
-            silent
-            printf "
-===== GDB FIRST PAGE-FAULT EXCEPTION (ANY CPL) =====
-"
-            printf "vector=%#lx error=%#lx frame=%#lx
-", $rdi, $rsi, $rdx
-            printf "RIP=%#lx CS=%#lx RFLAGS=%#lx RSP=%#lx SS=%#lx
-", *(unsigned long long *)($rdx + 136), *(unsigned long long *)($rdx + 144), *(unsigned long long *)($rdx + 152), *(unsigned long long *)($rdx + 160), *(unsigned long long *)($rdx + 168)
-            info registers cr2 cr3
-            x/22gx $rdx
-            set $fault_rip = *(unsigned long long *)($rdx + 136)
-            printf "===== FAULTING INSTRUCTIONS (kernel or user; runtime-generated stub or PE image) =====
-"
-            x/24i $fault_rip-24
-            info symbol $fault_rip
-            info line *$fault_rip
-            printf "===== END GDB FIRST RING-3 EXCEPTION =====
-"
-            continue
-          end
-          continue
-          GDB
-          # Attach a QEMU USB 3.x xHCI controller and an emulated HID keyboard.
-          # Q35 provides AHCI, not legacy ISA IDE. Add a PCI IDE controller.
-          # This exercises the guest's primary-channel ATA PIO path.
+          cp scripts/gdb/first-fault.gdb build/gdb-first-fault.gdb
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine q35,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
@@ -1049,60 +813,12 @@ EXPORTS
             -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
             -no-reboot -no-shutdown &
           qemu_pid=$!
-          # Verify QEMU really attached both USB devices to this guest. This checks
-          # emulated hardware topology only; it does not claim guest driver enumeration.
-          python3 - <<'PY'
-          import socket, time
-          path = "build/qemu-monitor.sock"
-          deadline = time.monotonic() + 10
-          monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-          monitor.settimeout(2)
-          while True:
-              try:
-                  monitor.connect(path)
-                  break
-              except (FileNotFoundError, ConnectionRefusedError):
-                  if time.monotonic() >= deadline:
-                      raise SystemExit("QEMU monitor did not become available")
-                  time.sleep(0.1)
-          def read_prompt():
-              data = bytearray()
-              end = time.monotonic() + 3
-              while b"(qemu)" not in data and time.monotonic() < end:
-                  try:
-                      chunk = monitor.recv(65536)
-                  except socket.timeout:
-                      break
-                  if not chunk:
-                      break
-                  data.extend(chunk)
-              return data.decode("utf-8", "replace")
-          read_prompt()
-          monitor.sendall(b"info qtree
-")
-          tree = read_prompt()
-          monitor.close()
-          for expected in ("qemu-xhci", "usb-kbd", "piix3-ide", "osdisk"):
-              if expected not in tree:
-                  raise SystemExit(f"QEMU device topology missing {expected}:
-{tree}")
-          print("QEMU topology verified: xHCI + USB keyboard + PIIX3 primary-channel ATA disks.")
-          if "intel-iommu" not in tree:
-              raise SystemExit("QEMU IOMMU device missing from guest topology")
-          print("QEMU topology includes Intel VT-d; guest DMAR parsing and translation are checked separately.")
-          PY
-          # Keep diagnostics out of the boot-critical path. GDB attaches only
-          # after a detected failure, so it cannot leave the guest paused.
+          python3 scripts/ci/check_qemu_topology.py
           cleanup_qemu() {
             kill "$qemu_pid" 2>/dev/null || true
             wait "$qemu_pid" 2>/dev/null || true
           }
           trap cleanup_qemu EXIT
-
-          # The NTDLL ABI smoke marker is emitted before the remaining PE,
-          # process-exit, and scheduler tests. Do not stop QEMU at that intermediate
-          # milestone: wait for process-lifecycle completion and a terminal timer result.
-          # This leaves QEMU live at the actual failing instruction if later boot work hangs.
           for _ in $(seq 1 120); do
             if grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log &&
                grep -Eq 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer\.|Timer preemption stress FAILED\.|WARNING: calibrated APIC timer could not start; interrupts remain disabled\.|Interrupts remain disabled because APIC/timer setup was not fully validated\.' build/serial.log; then
@@ -1115,9 +831,6 @@ EXPORTS
             fi
             sleep 0.25
           done
-
-          # Run failure capture before assertions: an early kernel fault may
-          # naturally prevent the VT-d/xHCI markers below from ever appearing.
           if ! grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log ||
              ! grep -Fq 'VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.' build/serial.log ||
              ! grep -Fq 'xHCI bind: DriverEntry succeeded' build/serial.log ||
@@ -1127,83 +840,7 @@ EXPORTS
             echo "=== GDB first-user-fault monitor ==="
             echo "Not run during normal boot; collecting a live snapshot after failure."
             set +e
-            # Load DWARF-bearing ELF companions so GDB can resolve source file:line
-            # for the kernel and HAL, while attaching to the *same* failing QEMU.
-            # The native NTDLL PE/PDB and all debug companions are preserved as artifacts.
-            cat > build/gdb-diagnose.gdb <<'GDB'
-            set pagination off
-            set confirm off
-            set print pretty on
-            set print frame-arguments all
-            set disassemble-next-line on
-            set backtrace limit 80
-            set architecture i386:x86-64
-            set substitute-path /home/runner/work/CognacOS/CognacOS .
-            # QEMU boots build/cognacos-kernel.exe, converted from the debug ELF.
-            # Load that exact debug ELF so runtime PCs resolve against matching DWARF.
-            file target/x86_64-unknown-none/debug/cognacos-kernel
-            target remote 127.0.0.1:12345
-            source tools/gdb/cognacos-forensics.gdb
-            cognacos-forensics
-            echo \
-===== LIVE CPU / SOURCE LOCATION =====\
-
-            info registers
-            info variables XHCI_PCI_DEVICE
-            info variables PCI_BUS_FDO
-            info variables VT_D_REQUESTER_OWNER
-            info variables XHCI_INTERRUPT_VECTOR
-            info variables XHCI_DRIVER_BINDING_STARTED
-            echo \
-===== PCI / VT-d / xHCI static state =====\
-
-            x/gx &cognacos_kernel::PCI_BUS_FDO
-            x/bx &cognacos_kernel::PCI_DRIVER_BINDING_STARTED
-            x/16gx &cognacos_kernel::ntoskrnl::pnp::XHCI_PCI_DEVICE
-            x/wx &cognacos_kernel::VT_D_REQUESTER_OWNER
-            x/wx &cognacos_kernel::ntoskrnl::pnp::XHCI_INTERRUPT_VECTOR
-            x/bx &cognacos_kernel::XHCI_DRIVER_BINDING_STARTED
-            echo \
-===== PCI.sys inventory state (PE base 0xffff8000e0000000) =====\
-
-            # The PCI image may have section-level mappings that leave one of
-            # these optional inventory addresses inaccessible. A failed GDB
-            # memory read must not abort the remaining CPU/stack/backtrace capture.
-            python
-          import gdb
-          for expression in ("x/4gx 0xffff8000e0006070", "x/gx 0xffff8000e0064318"):
-              try:
-                  gdb.execute(expression)
-              except gdb.error as error:
-                  print("Optional PCI image memory inspection unavailable: " + str(error))
-          end
-            info threads
-            thread apply all info registers rip rsp
-            thread apply all info line *$rip
-            info line *$rip
-            list *$rip
-            info symbol $rip
-            x/32i $rip-32
-            x/32gx $rsp
-            echo \
-===== KERNEL BACKTRACE WITH SOURCE LINES =====\
-
-            thread apply all bt full
-            echo \
-===== HAL SYMBOL COMPANION =====\
-
-            add-symbol-file target/driver-hal/x86_64-unknown-none/release/hal
-            info symbol $rip
-            info line *$rip
-            echo \
-===== NTDLL SYMBOL/EXPORT CHECK =====\
-
-            info sharedlibrary
-            maintenance info sections
-            detach
-            quit
-          GDB
-            set +e
+            cp scripts/gdb/diagnose.gdb build/gdb-diagnose.gdb
             gdb -q -batch -x build/gdb-diagnose.gdb > build/gdb-state.txt 2>&1
             gdb_status=$?
             if [[ -f cognacos-gdb-forensics.txt ]]; then cp cognacos-gdb-forensics.txt build/; fi
@@ -1214,56 +851,11 @@ EXPORTS
             cat build/serial.log || true
             echo "=== QEMU CPU exception / reset trace ==="
             tail -n 500 build/qemu-debug.log || true
-            # llvm-symbolizer discovers the CodeView PDB beside the PE image.
-            # The linker writes it under build/ntdll, so stage a matching copy
-            # next to the DLL before either NTDLL symbol-resolution diagnostic.
             if [[ -f build/ntdll/cognac_ntdll.pdb && -f target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll ]]; then
               cp build/ntdll/cognac_ntdll.pdb target/x86_64-pc-windows-msvc/release/cognac_ntdll.pdb
             fi
             echo "=== Classify captured RIP and resolve NTDLL only when it belongs to that image ==="
-            python3 - <<'PY'
-          import re, struct, subprocess
-          from pathlib import Path
-
-          gdb = Path("build/gdb-state.txt").read_text(errors="replace")
-          serial = Path("build/serial.log").read_text(errors="replace")
-          m = re.search(r"\brip\s+0x([0-9a-fA-F]+)", gdb)
-          if not m:
-              print("GDB did not report RIP; retain gdb-state.txt and qemu-debug.log for manual analysis.")
-              raise SystemExit(0)
-          rip = int(m.group(1), 16)
-          pe_path = Path("target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll")
-          if not pe_path.exists():
-              print(f"NTDLL PE/PDB input missing: {pe_path}")
-              raise SystemExit(0)
-          blob = pe_path.read_bytes()
-          if blob[:2] != b"MZ":
-              print("NTDLL input is not a PE image.")
-              raise SystemExit(0)
-          pe = struct.unpack_from("<I", blob, 0x3c)[0]
-          if blob[pe:pe+4] != b"PE\0\0":
-              print("NTDLL PE signature is invalid.")
-              raise SystemExit(0)
-          opt = pe + 24
-          image_base = struct.unpack_from("<Q", blob, opt + 24)[0]
-          image_size = struct.unpack_from("<I", blob, opt + 56)[0]
-          candidates = [int(x, 16) for x in re.findall(r"module=0x([0-9a-fA-F]+)", serial)]
-          candidates.append(image_base)
-          base = next((b for b in reversed(candidates) if b <= rip < b + image_size), None)
-          if base is None:
-              print(f"Captured RIP 0x{rip:x} is outside all known NTDLL image ranges; NTDLL preferred base=0x{image_base:x}, image size=0x{image_size:x}.")
-              print("This is not evidence that execution was inside NTDLL or that the PE loader is broken.")
-              print("Treat this RIP as a ntoskrnl/HAL/other-image address and use the ntoskrnl/HAL DWARF and QEMU exception trace above.")
-              print("NTDLL source resolution requires a RIP inside its actual loaded image range; do not subtract the NTDLL preferred base from an unrelated address.")
-              raise SystemExit(0)
-          rva = rip - base
-          print(f"NTDLL source resolution: RIP=0x{rip:x}, loaded_base=0x{base:x}, RVA=0x{rva:x}")
-          cmd = ["llvm-symbolizer", "--obj=" + str(pe_path), "--relative-address", "--functions=linkage", "--demangle", hex(rva)]
-          result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-          print(result.stdout.rstrip() or "llvm-symbolizer returned no line information; inspect the archived PDB.")
-          if result.returncode:
-              print(f"llvm-symbolizer exit status: {result.returncode}")
-          PY
+            python3 scripts/ci/classify_fault_rip.py
             cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- resolve-qemu-trace \
               --trace build/qemu-debug.log \
               --serial build/serial.log \
@@ -1273,13 +865,9 @@ EXPORTS
               --gdb build/gdb-state.txt || true
             exit 1
           fi
-
-          # Verify the IOMMU and xHCI handoff only after the failure-capture
-          # branch has had a chance to preserve the live guest's stack and GDB state.
           grep -F 'VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.' build/serial.log
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
           grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
-
           cleanup_qemu
           trap - EXIT
           cat build/serial.log
@@ -1289,7 +877,7 @@ EXPORTS
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
           grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
           grep -E '^xHCI bind: (safe IOMMU DMA or masked interrupt route unavailable|required HAL/device services are incomplete|loading PE32\+ usbxhci.sys|PE image load or DriverEntry failed|DriverEntry succeeded)' build/serial.log || grep -F 'PCI xHCI detected but no safe PnP MMIO resource could be published.' build/serial.log
-           grep -F 'CognacOS Rust kernel entered.' build/serial.log
+          grep -F 'CognacOS Rust kernel entered.' build/serial.log
           grep -F 'XSTATE processor policy initialized; enabled mask=' build/serial.log
           grep -F 'XSTATE XSAVE/XRSTOR processor self-test passed.' build/serial.log
           grep -F 'KUSER_SHARED_DATA XState mapping and read-only ABI test passed.' build/serial.log
@@ -1454,41 +1042,7 @@ EXPORTS
               echo "AUDIO RESULT: INCOMPLETE - QEMU did not produce build/beep.wav; audio capture is supplemental and cannot invalidate kernel build/boot checks."
               exit 0
             fi
-            python3 - <<'PY'
-          import array, math, wave
-          from pathlib import Path
-          path = Path("build/beep.wav")
-          try:
-              with wave.open(str(path), "rb") as wav:
-                  channels = wav.getnchannels()
-                  width = wav.getsampwidth()
-                  rate = wav.getframerate()
-                  frames = wav.readframes(wav.getnframes())
-          except (wave.Error, EOFError) as exc:
-              print(f"AUDIO RESULT: INCOMPLETE - invalid WAV; audio capture is supplemental: {exc}")
-              raise SystemExit(0)
-          if width not in (1, 2, 3, 4) or not frames:
-              print("AUDIO RESULT: INCOMPLETE - WAV has no usable audio samples; audio capture is supplemental.")
-              raise SystemExit(0)
-          if width == 1:
-              samples = [b - 128 for b in frames]
-          elif width == 2:
-              samples = array.array("h")
-              samples.frombytes(frames[:len(frames) // 2 * 2])
-          elif width == 4:
-              samples = array.array("i")
-              samples.frombytes(frames[:len(frames) // 4 * 4])
-          else:
-              samples = [int.from_bytes(frames[i:i+3], "little", signed=True)
-                         for i in range(0, len(frames)-2, 3)]
-          peak = max((abs(int(s)) for s in samples), default=0)
-          rms = math.sqrt(sum(int(s) * int(s) for s in samples) / max(1, len(samples)))
-          print(f"WAV: {path}, channels={channels}, sample_rate={rate}, sample_width={width}, frames={len(frames)//width}, peak={peak}, rms={rms:.2f}")
-          if peak == 0 or rms < 1.0:
-              print("AUDIO RESULT: INCOMPLETE - captured samples are silent; audio capture is supplemental.")
-              raise SystemExit(0)
-          print("AUDIO RESULT: PASS - captured QEMU PC speaker audio contains non-zero samples.")
-          PY
+            python3 scripts/ci/verify_audio.py
           } | tee -a "$report"
       - name: Assess Microsoft beep.sys PE compatibility
         if: always()
@@ -1499,10 +1053,6 @@ EXPORTS
             sudo apt-get update
             sudo apt-get install -y llvm
           fi
-          # The proprietary/reference test driver is optional and is not
-          # checked into this repository. Missing test input must be reported
-          # honestly, but must not turn an otherwise successful OS build into
-          # a false CI failure.
           if [ ! -f test/beep.sys ]; then
             echo "BEEP.SYS ASSESSMENT: NOT RUN - test/beep.sys is not present; no compatibility claim is made. Build and boot checks remain authoritative."
             exit 0
