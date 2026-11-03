@@ -7,6 +7,7 @@ const TYPE_PORT:u8=1;const TYPE_INTERRUPT:u8=2;const TYPE_MEMORY:u8=3;const TYPE
 const SHARE_EXCLUSIVE:u8=1;const SHARE_SHARED:u8=3;const PORT_IO:u16=1;const PORT_16_BIT_DECODE:u16=2;const PORT_10_BIT_DECODE:u16=4;const MEMORY_READ_ONLY:u16=1;const MEMORY_CACHEABLE:u16=0x20;const INTERRUPT_LATCHED:u16=1;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum SerializeError{TooManyDescriptors,SizeOverflow,OutputTooSmall,InvalidResourceList}
+/// Count CM_PARTIAL_RESOURCE_DESCRIPTOR entries represented by the fixed ACPI resource list.
 pub fn descriptor_count(r:&ResourceList)->Result<usize,SerializeError>{
  if r.count>r.entries.len(){return Err(SerializeError::InvalidResourceList)}
  let mut n=0usize;for item in r.entries[..r.count].iter().flatten(){let add=match item{
@@ -14,6 +15,7 @@ pub fn descriptor_count(r:&ResourceList)->Result<usize,SerializeError>{
  Resource::ExtendedIrq{count,..}=>*count as usize,Resource::Dma{channels,..}=>channels.count_ones() as usize,Resource::EndTag{..}=>0};
  n=n.checked_add(add).ok_or(SerializeError::SizeOverflow)?;}Ok(n)
 }
+/// Compute the exact CM_RESOURCE_LIST output size, rejecting invalid counts and arithmetic overflow.
 pub fn required_size(r:&ResourceList)->Result<usize,SerializeError>{4usize.checked_add(16).and_then(|n|n.checked_add(descriptor_count(r).ok()?.checked_mul(PARTIAL_DESCRIPTOR_SIZE)?)).ok_or(SerializeError::SizeOverflow)}
 unsafe fn w16(p:*mut u8,o:usize,v:u16){unsafe{p.add(o).cast::<u16>().write_unaligned(v)}}
 unsafe fn w32(p:*mut u8,o:usize,v:u32){unsafe{p.add(o).cast::<u32>().write_unaligned(v)}}

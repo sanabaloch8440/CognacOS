@@ -24,6 +24,7 @@ impl PrtTable {
         if self.entries[..self.count].iter().flatten().any(|old| old.address == entry.address && old.pin == entry.pin) { return Err(PrtError::DuplicateRoute); }
         self.entries[self.count] = Some(entry); self.count += 1; Ok(())
     }
+/// Find the route for a device address and PCI interrupt pin in the validated _PRT table.
     pub fn find(&self, address: u32, pin: u8) -> Option<PrtEntry> {
         self.entries[..self.count].iter().flatten().find(|e| e.pin == pin &&
             (e.address == address || (e.address >> 16 == address >> 16 && e.address & 0xffff == 0xffff))).copied()
@@ -34,6 +35,7 @@ impl PrtTable {
 /// link-device namespace path. SourceIndex is retained for link resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvaluatedPrtElement<'a> { pub address: u64, pub pin: u64, pub source_path: Option<&'a [u8]>, pub source_index: u64 }
+/// Validate evaluated _PRT package elements and build a bounded, duplicate-free route table.
 pub fn build_prt_table(elements: &[EvaluatedPrtElement<'_>]) -> Result<PrtTable, PrtError> {
     if elements.len() > MAX_PRT_ENTRIES { return Err(PrtError::TooManyEntries); }
     let mut out = PrtTable::EMPTY;
@@ -56,6 +58,7 @@ pub fn build_prt_table(elements: &[EvaluatedPrtElement<'_>]) -> Result<PrtTable,
 /// The platform resolver must consult selected link-device resources and the
 /// resource arbiter before returning a concrete GSI.
 pub trait LinkDeviceResolver { fn resolve_gsi(&self, canonical_path: &[u8], source_index: u32) -> Result<u32, PrtError>; }
+/// Resolve a validated _PRT entry through its link-device source and return the selected GSI.
 pub fn resolve_route<R: LinkDeviceResolver>(table: &PrtTable, address: u32, pin: u8, resolver: &R) -> Result<u32, PrtError> {
     let route = table.find(address, pin).ok_or(PrtError::MissingRoute)?;
     match route.source {

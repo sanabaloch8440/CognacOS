@@ -36,6 +36,7 @@ pub struct OperationRegion {
 }
 impl OperationRegion {
     pub const EMPTY:Self=Self{node:u16::MAX,space_id:0,base:0,length:0};
+/// Compute the exclusive end of an OperationRegion with overflow checking.
     pub fn end_exclusive(&self)->Result<u64,RegionError>{
         self.base.checked_add(self.length).ok_or(RegionError::AddressOverflow)
     }
@@ -102,10 +103,13 @@ pub struct OperationRegionTable {
 }
 impl OperationRegionTable {
     pub const fn new()->Self{Self{entries:[OperationRegion::EMPTY;MAX_OPERATION_REGIONS],count:0}}
+/// Return the number of registered OperationRegion objects.
     pub fn count(&self)->usize{self.count}
+/// Find an OperationRegion by its AML namespace node identifier.
     pub fn get(&self,node:u16)->Option<&OperationRegion>{
         self.entries.iter().take(self.count).find(|r|r.node==node)
     }
+/// Register one validated region while rejecting duplicate nodes and table exhaustion.
     pub fn register(&mut self,region:OperationRegion)->Result<(),RegionError>{
         if self.get(region.node).is_some(){return Err(RegionError::DuplicateRegion)}
         if self.count==MAX_OPERATION_REGIONS{return Err(RegionError::RegionTableFull)}
@@ -113,6 +117,7 @@ impl OperationRegionTable {
         let _=region.end_exclusive()?;
         self.entries[self.count]=region;self.count+=1;Ok(())
     }
+/// Decode and register one namespace OperationRegion declaration.
     pub fn load_node(&mut self,aml:&[u8],namespace:&AmlNamespace,node:u16)
         ->Result<(),RegionError>{
         let region=decode_operation_region(aml,namespace,node)?;
@@ -133,6 +138,7 @@ impl OperationRegionTable {
         }
         Ok(())
     }
+/// Find a registered region that fully contains an access in the requested address space.
     pub fn find_containing(&self,space_id:u8,address:u64,width:u8)
         ->Result<&OperationRegion,RegionError>{
         validate_width(width)?;
@@ -161,6 +167,7 @@ pub trait AddressSpaceHandler {
     fn write(&mut self,space_id:u8,address:u64,width:u8,value:u64)->Result<(),()>;
 }
 
+/// Read a width-bounded value through the registered platform address-space handler.
 pub fn read_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     offset:u64,width:u8,handler:&mut H)->Result<u64,RegionError>{
     validate_width(width)?;
@@ -172,6 +179,7 @@ pub fn read_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     handler.read(region.space_id,address,width).map(|value|value & width_mask(width)).map_err(|_|RegionError::HandlerFailure)
 }
 
+/// Write a width-bounded value through the registered platform address-space handler.
 pub fn write_region<H:AddressSpaceHandler>(table:&OperationRegionTable,node:u16,
     offset:u64,width:u8,value:u64,handler:&mut H)->Result<(),RegionError>{
     validate_width(width)?;

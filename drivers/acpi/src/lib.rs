@@ -506,8 +506,27 @@ pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
         if base == 0 || base & 0xfffff != 0 || end_bus < start_bus {
             return Err(AcpiError::MalformedEntry);
         }
-        let span = ((end_bus as u64 - start_bus as u64) + 1).checked_mul(1 << 20).ok_or(AcpiError::BadLength)?;
-        base.checked_add(span).ok_or(AcpiError::AddressOutOfRange)?;
+        // ECAM consumes one MiB for every bus in the inclusive bus interval.
+        // Compute an exclusive physical end so both arithmetic overflow and
+        // overlapping firmware windows can be rejected before PCI maps them.
+        let span = ((end_bus as u64 - start_bus as u64) + 1)
+            .checked_mul(1 << 20).ok_or(AcpiError::BadLength)?;
+        let physical_end = base.checked_add(span).ok_or(AcpiError::AddressOutOfRange)?;
+        for previous in out.allocations.iter().take(out.count) {
+            let previous_span = ((previous.end_bus as u64 - previous.start_bus as u64) + 1)
+                .checked_mul(1 << 20).ok_or(AcpiError::BadLength)?;
+            let previous_end = previous.base_address.checked_add(previous_span)
+                .ok_or(AcpiError::AddressOutOfRange)?;
+            // A segment cannot describe the same bus number twice, and two
+            // ECAM apertures cannot alias the same physical MMIO pages even
+            // when firmware assigns them to different PCI segments.
+            let bus_overlap = previous.segment == segment
+                && start_bus <= previous.end_bus && previous.start_bus <= end_bus;
+            let physical_overlap = base < previous_end && previous.base_address < physical_end;
+            if bus_overlap || physical_overlap {
+                return Err(AcpiError::MalformedEntry);
+            }
+        }
         out.allocations[out.count] = McfgAllocation { base_address: base, segment, start_bus, end_bus };
         out.count += 1;
     }
@@ -551,7 +570,10 @@ pub fn parse_srat(bytes:&[u8])->Result<SratInfo,AcpiError>{
                 if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=(e[2] as u32)|((e[9] as u32)<<8)|((e[10] as u32)<<16)|((e[11] as u32)<<24);
                 let flags=u32le(e,4)?;
-                out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id:e[3] as u32,enabled:flags&1!=0,x2apic:false};out.cpu_count+=1;
+                if flags&!1!=0{return Err(AcpiError::MalformedEntry)}
+                let apic_id=e[3] as u32;
+                if flags&1!=0&&out.cpus.iter().take(out.cpu_count).any(|cpu|cpu.enabled&&cpu.apic_id==apic_id){return Err(AcpiError::MalformedEntry)}
+                out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id,enabled:flags&1!=0,x2apic:false};out.cpu_count+=1;
             }
             1 if size>=40=>{
                 if out.memory_count==out.memory.len(){return Err(AcpiError::TooManyEntries)}
@@ -559,13 +581,16 @@ pub fn parse_srat(bytes:&[u8])->Result<SratInfo,AcpiError>{
                 let base=u64::from_le_bytes(e[8..16].try_into().map_err(|_|AcpiError::Truncated)?);
                 let length=u64::from_le_bytes(e[16..24].try_into().map_err(|_|AcpiError::Truncated)?);
                 let flags=u32le(e,28)?;
-                if length==0||base.checked_add(length).is_none(){return Err(AcpiError::MalformedEntry)}
-                out.memory[out.memory_count]=NumaMemoryAffinity{proximity_domain:domain,base,length,
-                    enabled:flags&1!=0,hot_pluggable:flags&2!=0,non_volatile:flags&4!=0};out.memory_count+=1;
+                let end=base.checked_add(length).ok_or(AcpiError::MalformedEntry)?;
+                if length==0||base&0xfff!=0||length&0xfff!=0||flags&!7!=0{return Err(AcpiError::MalformedEntry)}
+                if flags&1!=0&&out.memory.iter().take(out.memory_count).any(|old|old.enabled&&base<old.base.saturating_add(old.length)&&old.base<end){return Err(AcpiError::MalformedEntry)}
+                out.memory[out.memory_count]=NumaMemoryAffinity{proximity_domain:domain,base,length,enabled:flags&1!=0,hot_pluggable:flags&2!=0,non_volatile:flags&4!=0};out.memory_count+=1;
             }
             2 if size>=24=>{
                 if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=u32le(e,4)?;let apic_id=u32le(e,8)?;let flags=u32le(e,12)?;
+                if flags&!1!=0{return Err(AcpiError::MalformedEntry)}
+                if flags&1!=0&&out.cpus.iter().take(out.cpu_count).any(|cpu|cpu.enabled&&cpu.apic_id==apic_id){return Err(AcpiError::MalformedEntry)}
                 out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id,enabled:flags&1!=0,x2apic:true};out.cpu_count+=1;
             }
             _=>{}
@@ -1206,6 +1231,40 @@ mod numa_table_tests {
     }
 
     #[test]
+    fn rejects_overlapping_mcfg_bus_ranges_within_a_segment() {
+        let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
+        b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
+        b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
+        b[60..68].copy_from_slice(&0x9000_0000u64.to_le_bytes());
+        b[68..70].copy_from_slice(&0u16.to_le_bytes());b[70]=7;b[71]=15;
+        finish(&mut b);
+        assert_eq!(parse_mcfg(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_physical_ecam_alias_even_across_segments() {
+        let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
+        b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
+        b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
+        b[60..68].copy_from_slice(&0x8070_0000u64.to_le_bytes());
+        b[68..70].copy_from_slice(&1u16.to_le_bytes());b[70]=0;b[71]=7;
+        finish(&mut b);
+        assert_eq!(parse_mcfg(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn accepts_disjoint_mcfg_ranges_and_segments() {
+        let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
+        b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
+        b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
+        b[60..68].copy_from_slice(&0x9000_0000u64.to_le_bytes());
+        b[68..70].copy_from_slice(&1u16.to_le_bytes());b[70]=0;b[71]=7;
+        finish(&mut b);
+        assert_eq!(parse_mcfg(&b).unwrap().count,2);
+    }
+
+    #[test]
     fn parses_srat_x2apic_and_hotplug_nonvolatile_memory(){
         let mut b=vec![0u8;48+24+40];b[0..4].copy_from_slice(b"SRAT");
         let table_length=b.len() as u32;b[4..8].copy_from_slice(&table_length.to_le_bytes());b[8]=3;
@@ -1228,6 +1287,32 @@ mod numa_table_tests {
         assert_eq!(s.distance(0,1),Some(20));assert_eq!(s.distance(1,0),Some(25));
         b[44]=9;finish(&mut b);assert_eq!(parse_slit(&b),Err(AcpiError::MalformedEntry));
     }
+    #[test]
+    fn rejects_overlapping_enabled_srat_memory_affinities() {
+        let mut b=vec![0u8;48+40+40];b[0..4].copy_from_slice(b"SRAT");
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
+        b[48]=1;b[49]=40;b[56..64].copy_from_slice(&0x1000u64.to_le_bytes());
+        b[64..72].copy_from_slice(&0x4000u64.to_le_bytes());b[76..80].copy_from_slice(&1u32.to_le_bytes());
+        b[88]=1;b[89]=40;b[96..104].copy_from_slice(&0x3000u64.to_le_bytes());
+        b[104..112].copy_from_slice(&0x2000u64.to_le_bytes());b[116..120].copy_from_slice(&1u32.to_le_bytes());
+        finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_duplicate_enabled_srat_processor_ids() {
+        let mut b=vec![0u8;48+16+16];b[0..4].copy_from_slice(b"SRAT");
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
+        b[48]=0;b[49]=16;b[51]=7;b[52..56].copy_from_slice(&1u32.to_le_bytes());
+        b[64]=0;b[65]=16;b[67]=7;b[68..72].copy_from_slice(&1u32.to_le_bytes());
+        finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_reserved_srat_affinity_flags() {
+        let mut b=vec![0u8;64];b[0..4].copy_from_slice(b"SRAT");
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
+        b[48]=0;b[49]=16;b[52..56].copy_from_slice(&2u32.to_le_bytes());
+        finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
+    }
+
     #[test]
     fn rejects_srat_memory_range_overflow(){
         let mut b=vec![0u8;88];b[0..4].copy_from_slice(b"SRAT");b[4..8].copy_from_slice(&(88u32).to_le_bytes());

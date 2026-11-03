@@ -39,6 +39,7 @@ impl AmlNode {
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize }
 impl AmlNamespace {
     pub const fn new()->Self { Self{nodes:[AmlNode::ROOT;MAX_NAMESPACE_NODES],count:1} }
+/// Find a direct namespace child by its four-byte AML NameSeg without resolving aliases.
     pub fn find_child(&self,parent:u16,name:[u8;4])->Option<u16>{
         self.nodes.iter().take(self.count).enumerate().skip(1)
             .find(|(_,n)|n.parent==parent&&n.name==name).map(|(i,_)|i as u16)
@@ -71,6 +72,7 @@ impl<'a> Cursor<'a>{
     fn byte(&mut self)->Result<u8,AmlError>{if self.pos>=self.end{return Err(AmlError::Truncated)}let b=self.bytes[self.pos];self.pos+=1;Ok(b)}
     fn take(&mut self,n:usize)->Result<&'a [u8],AmlError>{let e=self.pos.checked_add(n).ok_or(AmlError::Truncated)?;if e>self.end{return Err(AmlError::Truncated)}let s=&self.bytes[self.pos..e];self.pos=e;Ok(s)}
 }
+/// Decode AML PkgLength and return the package end while enforcing the caller's byte limit.
 pub fn decode_package_length(bytes:&[u8],offset:usize,limit:usize)->Result<(usize,usize),AmlError>{
     let lead=*bytes.get(offset).filter(|_|offset<limit).ok_or(AmlError::Truncated)?;
     let follow=(lead>>6) as usize;
