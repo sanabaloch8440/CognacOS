@@ -296,6 +296,37 @@ pub mod ide {
             assert_eq!(ch.read_sector(&mut Fake{status:STATUS_DRQ,words:[0;256],writes:std::vec::Vec::new()},10,&mut [0;512]),Err(StorageError::OutOfRange));
         }
         #[test]
+        fn multi_sector_pio_read_uses_one_command_and_exact_buffer_length() {
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:32,poll_budget:8};
+            let mut fake=Fake{status:STATUS_DRQ,words:[0x5aa5;256],writes:std::vec::Vec::new()};
+            let mut output=[0u8;1024];
+            ch.read_sectors(&mut fake,4,&mut output).unwrap();
+            assert!(output.iter().all(|byte| *byte == 0xa5 || *byte == 0x5a));
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f2 && *value == 2));
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f7 && *value == CMD_READ_SECTORS as u16));
+        }
+
+        #[test]
+        fn multi_sector_pio_write_validates_range_and_encodes_256_sectors() {
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:512,poll_budget:8};
+            let mut fake=Fake{status:STATUS_DRQ,words:[0;256],writes:std::vec::Vec::new()};
+            let input=[0x3cu8;256*SECTOR_BYTES];
+            ch.write_sectors(&mut fake,0,&input).unwrap();
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f2 && *value == 0));
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f7 && *value == CMD_WRITE_SECTORS as u16));
+            assert_eq!(fake.writes.iter().filter(|(port,_)| *port == 0x1f0).count(), 256*256);
+            assert_eq!(ch.write_sectors(&mut fake,500,&input),Err(StorageError::OutOfRange));
+        }
+
+        #[test]
+        fn multi_sector_pio_rejects_partial_sector_buffers() {
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:32,poll_budget:8};
+            let mut fake=Fake{status:STATUS_DRQ,words:[0;256],writes:std::vec::Vec::new()};
+            assert_eq!(ch.read_sectors(&mut fake,0,&mut [0u8;513]),Err(StorageError::InvalidArgument));
+            assert_eq!(ch.write_sectors(&mut fake,0,&[0u8;0]),Err(StorageError::InvalidArgument));
+        }
+
+        #[test]
         fn bounded_polling_times_out_on_busy_controller() {
             let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:10,poll_budget:2};
             assert_eq!(ch.flush(&mut Fake{status:STATUS_BSY,words:[0;256],writes:std::vec::Vec::new()}),Err(StorageError::Timeout));
