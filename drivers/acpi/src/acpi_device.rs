@@ -365,4 +365,45 @@ mod tests{
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         assert_eq!(evaluate_device_identity(&ns,&one_table(&aml),1,&mut IntegerMethodInvoker),Err(IdentityError::MissingHid));
     }
+    struct SyncRecorder{
+        acquired:core::sync::atomic::AtomicUsize,
+        released:core::sync::atomic::AtomicUsize,
+        fail:bool,
+    }
+    impl SyncRecorder{fn new()->Self{Self{acquired:core::sync::atomic::AtomicUsize::new(0),released:core::sync::atomic::AtomicUsize::new(0),fail:false}}}
+    impl aml_exec::AmlMethodSynchronizer for SyncRecorder{
+        fn acquire(&self,_method:u16,_level:u8)->Result<(),ExecError>{
+            if self.fail{return Err(ExecError::ExecutionBusy)}
+            self.acquired.fetch_add(1,core::sync::atomic::Ordering::SeqCst);Ok(())
+        }
+        fn release(&self,_method:u16){self.released.fetch_add(1,core::sync::atomic::Ordering::SeqCst);}
+    }
+    #[test]fn synchronized_invoker_locks_serialized_direct_string_results(){
+        let mut aml=std::vec::Vec::new();
+        aml.extend_from_slice(&[0x5b,0x82,0,b'D',b'E',b'V',b'0']);
+        add_method(&mut aml,*b"_HID",&[0xa4,0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0]);
+        aml[2]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let method=ns.find_child(ns.find_child(0,*b"DEV0").unwrap(),*b"_HID").unwrap();
+        assert_ne!(ns.nodes[method as usize].method_flags&0x08,0);
+        let sync=SyncRecorder::new();
+        let mut invoker=SynchronizedMethodInvoker{synchronizer:&sync};
+        assert_eq!(invoker.evaluate_value(&ns,&aml,method).unwrap(),AcpiMethodValue::String(AcpiId::from_bytes(b"ACME0001").unwrap()));
+        assert_eq!(sync.acquired.load(core::sync::atomic::Ordering::SeqCst),1);
+        assert_eq!(sync.released.load(core::sync::atomic::Ordering::SeqCst),1);
+    }
+    #[test]fn synchronized_invoker_fails_closed_when_serialized_method_lock_fails(){
+        let mut aml=std::vec::Vec::new();
+        aml.extend_from_slice(&[0x5b,0x82,0,b'D',b'E',b'V',b'0']);
+        add_method(&mut aml,*b"_HID",&[0xa4,0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0]);
+        aml[2]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let method=ns.find_child(ns.find_child(0,*b"DEV0").unwrap(),*b"_HID").unwrap();
+        let sync=SyncRecorder{fail:true,..SyncRecorder::new()};
+        let mut invoker=SynchronizedMethodInvoker{synchronizer:&sync};
+        assert_eq!(invoker.evaluate_value(&ns,&aml,method),Err(ExecError::ExecutionBusy));
+        assert_eq!(sync.acquired.load(core::sync::atomic::Ordering::SeqCst),0);
+        assert_eq!(sync.released.load(core::sync::atomic::Ordering::SeqCst),0);
+    }
+
 }
