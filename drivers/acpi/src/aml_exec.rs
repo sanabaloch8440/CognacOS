@@ -11,7 +11,7 @@ use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,Am
 use crate::aml_runtime::{to_integer_implicit,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -25,7 +25,7 @@ impl<'a> Reader<'a>{
 #[derive(Clone,Copy)]
 enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ExecFlow{Continue,Return(u64),Break,ContinueLoop}
+enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
 struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
 impl<'a,'b> Machine<'a,'b>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
@@ -121,9 +121,8 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      let value=execute_method_inner(self.aml,self.namespace,canonical,
-          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)?;
-      Ok(Self::integer_value(value))
+      execute_method_inner(self.aml,self.namespace,canonical,
+          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)
      }
      _=>Err(ExecError::NonIntegerName),
     }
@@ -189,7 +188,7 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)
+      self.operand_integer(&execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)?)
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
@@ -211,7 +210,7 @@ impl<'a,'b> Machine<'a,'b>{
    self.step()?;let op=r.byte()?;
    match op{
     0xa3=>{},
-    0xa4=>return Ok(ExecFlow::Return(self.term(r)?)),
+    0xa4=>return Ok(ExecFlow::Return(self.term_value(r)?)),
     0x70=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::Store)?;},
     0x9d=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::CopyObject)?;},
     0xa0|0xa2=>{
@@ -264,7 +263,7 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 /// Only integer arguments and scalar operations are currently supported.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings)->Result<u64,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings)->Result<AmlRuntimeValue,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
@@ -277,17 +276,31 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  let zero=Machine::integer_value(0);
  let mut m=Machine{locals:[zero;8],args:[zero;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
  for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
- let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(value)
+ let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>Machine::integer_value(0),ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};
+ if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
+ Ok(value)
 }
 
 
 /// Execute a scalar-returning AML method using the Integer width encoded by
 /// the containing DefinitionBlock (32 bits for revision 1, otherwise 64).
-pub fn execute_method_with_values(aml:&[u8],namespace:&AmlNamespace,
-    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlValue,ExecError>{
+/// Execute a method and preserve Integer, String, or Buffer return objects.
+/// Package returns are rejected because their arena-backed element handles
+/// cannot outlive this invocation without an owning result arena.
+pub fn execute_method_typed_with_values(aml:&[u8],namespace:&AmlNamespace,
+    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlRuntimeValue,ExecError>{
     let mut arena=AmlObjectArena::new();
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
-    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings).map(AmlValue::Integer)
+    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings)
+}
+
+/// Compatibility scalar API: returns an Integer and rejects typed non-Integer
+/// results rather than silently coercing a String or Buffer return.
+pub fn execute_method_with_values(aml:&[u8],namespace:&AmlNamespace,
+    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlValue,ExecError>{
+    let value=execute_method_typed_with_values(aml,namespace,method_index,args,integer_width_bits)?;
+    if value.kind!=AmlValueKind::Integer{return Err(ExecError::NonIntegerName)}
+    Ok(AmlValue::Integer(value.integer))
 }
 
 /// Integer-argument compatibility entry point using an explicit AML width.
@@ -333,6 +346,25 @@ mod tests{
   // Existing public entry point passes Integer args; typed Name operands are
   // exercised above while Local/Arg scalar values remain width-aware.
   assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn method_return_preserves_string_and_buffer_object_types(){
+  let string_aml=[0x08,b'S',b'T',b'R',b'0',0x0d,b'O',b'K',0,
+      0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,b'S',b'T',b'R',b'0'];
+  let mut ns=AmlNamespace::new();load_definition_block(&string_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&string_aml,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::String);assert_eq!(value.byte_length,2);
+  assert_eq!(&value.bytes[..2],b"OK");
+  assert_eq!(execute_method(&string_aml,&ns,id,&[]),Err(ExecError::NonIntegerName));
+
+  let buffer_aml=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,0x34,0x12,
+      0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,b'B',b'U',b'F',b'0'];
+  let mut ns=AmlNamespace::new();load_definition_block(&buffer_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&buffer_aml,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::Buffer);assert_eq!(value.byte_length,2);
+  assert_eq!(&value.bytes[..2],&[0x34,0x12]);
  }
 
  #[test]fn store_and_copy_object_apply_distinct_named_buffer_target_rules(){
