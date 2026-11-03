@@ -385,3 +385,33 @@ mod dependent_requirement_tests {
   assert_eq!(parse_resource_template(&[0x79, 0, 0]), Err(ResourceError::InvalidLength));
  }
 }
+
+
+#[cfg(test)] mod acpi_v6_extended_irq_fixture {
+ use super::*;
+ 
+ #[test] fn parses_extended_irq_gsi_and_flags() {
+  let bytes=[0x89,6,0,0,1,24,0,0,0,0x79,0];
+  let parsed=parse_resource_template(&bytes).unwrap();
+  assert_eq!(parsed.count,2);
+  assert!(matches!(parsed.entries[0],Some(Resource::ExtendedIrq{flags:0,count:1,interrupts,..}) if interrupts[0]==24));
+ }
+
+}
+
+
+#[cfg(test)] mod acpi_v6_qword_bus_number {
+ use super::*;
+ 
+ #[test] fn parses_qword_bus_number_window() {
+  let mut bytes=[0u8;48]; bytes[0]=0x8a; bytes[1]=43; bytes[2]=2;
+  bytes[14..22].copy_from_slice(&0x20u64.to_le_bytes());
+  bytes[22..30].copy_from_slice(&0x2fu64.to_le_bytes());
+  bytes[30..38].copy_from_slice(&1u64.to_le_bytes());
+  bytes[38..46].copy_from_slice(&0x10u64.to_le_bytes());
+  bytes[46]=0x79;
+  let parsed=parse_resource_template(&bytes).unwrap();
+  assert!(matches!(parsed.entries[0],Some(Resource::BusNumber{minimum:0x20,maximum:0x2f,length:0x10})));
+ }
+
+}

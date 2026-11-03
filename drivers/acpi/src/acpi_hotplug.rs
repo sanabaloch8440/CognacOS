@@ -122,3 +122,18 @@ pub fn disarm_device_wake(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)
  #[test]fn wake_arm_is_idempotent(){let mut d=ready();let mut b=fake();arm_device_wake(&mut d,4,&mut b).unwrap();arm_device_wake(&mut d,4,&mut b).unwrap();assert!(d.wake_armed);disarm_device_wake(&mut d,4,&mut b).unwrap();assert!(!d.wake_armed);}
  #[test]fn surprise_removal_skips_firmware_eject(){let mut d=ready();let mut b=fake();surprise_remove(&mut d,4,&mut b).unwrap();assert_eq!(d.state,DeviceLifecycle::RemovalPending);assert_eq!(b.ost_count,0);}
 }
+
+#[cfg(test)] mod acpi_v6_hotplug_generation_guard {
+ use super::*;
+ 
+ #[test] fn duplicate_arrival_cannot_replace_live_device_generation() {
+  let mut device=HotplugDevice::EMPTY;
+  device_arrived(&mut device,7,4).unwrap();
+  mark_enumerated(&mut device,4).unwrap();
+  assert_eq!(device_arrived(&mut device,9,5),Err(HotplugError::InvalidTransition));
+  assert_eq!(device.node,7);
+  assert_eq!(device.generation,4);
+  assert_eq!(device.state,DeviceLifecycle::Enumerated);
+ }
+
+}

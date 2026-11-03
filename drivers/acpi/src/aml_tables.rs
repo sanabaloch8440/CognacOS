@@ -126,6 +126,11 @@ impl<G:AmlExecutionGate,I:AcpiMethodInvoker> AcpiMethodInvoker for GatedDeviceIn
 
 pub struct AmlTableManager {
     namespace:AmlNamespace,
+    // Parser declarations can resolve and refine External placeholders that
+    // were created by earlier tables. Keep a persistent snapshot buffer so a
+    // failed table can restore both appended nodes and mutations to existing
+    // namespace entries without consuming the small kernel boot stack.
+    rollback_nodes:[crate::aml::AmlNode;MAX_NAMESPACE_NODES],
     records:[TableRecord;MAX_AML_TABLES],
     count:usize,
     next_generation:u32,
@@ -133,8 +138,8 @@ pub struct AmlTableManager {
 }
 impl AmlTableManager {
     pub const fn new()->Self {
-        Self{namespace:AmlNamespace::new(),records:[TableRecord::EMPTY;MAX_AML_TABLES],
-            count:0,next_generation:1,dsdt_loaded:false}
+        Self{namespace:AmlNamespace::new(),rollback_nodes:[crate::aml::AmlNode::ROOT;MAX_NAMESPACE_NODES],
+            records:[TableRecord::EMPTY;MAX_AML_TABLES],count:0,next_generation:1,dsdt_loaded:false}
     }
     /// # Safety
     /// The RSDP, root-table, FADT, DSDT, and SSDT physical ranges must be mapped
@@ -274,8 +279,17 @@ impl AmlTableManager {
         }
         if self.namespace.count>=MAX_NAMESPACE_NODES{return Err(TableError::NamespaceCapacity)}
         let before=self.namespace.count;
-        load_definition_block_owned(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,self.count as u32)?;
+        // A DefinitionBlock is one namespace transaction. Snapshot the fixed
+        // namespace into manager-owned storage: AML External resolution may
+        // mutate an existing placeholder as well as append new nodes.
+        self.rollback_nodes.copy_from_slice(&self.namespace.nodes);
+        if let Err(error)=load_definition_block_owned(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,self.count as u32){
+            self.namespace.nodes.copy_from_slice(&self.rollback_nodes);
+            self.namespace.count=before;
+            return Err(TableError::Parse(error));
+        }
         if self.namespace.count>u16::MAX as usize{
+            self.namespace.nodes.copy_from_slice(&self.rollback_nodes);
             self.namespace.count=before;
             return Err(TableError::NamespaceCapacity)
         }
@@ -490,6 +504,55 @@ mod tests {
         let aml=[0x10,0x0f,b'D',b'E',b'V',b'0',0x14,0x09,b'_',b'S',b'T',b'A',0,0xa4,0x0a,5];
         definition_table(*b"SSDT",&aml)
     }
+    #[test]
+    fn rejected_definition_block_rolls_back_partial_namespace(){
+        // The Name declaration is valid, but the following opcode is outside
+        // the supported grammar. Rejecting the table must not retain TEST.
+        let aml=[0x08,b'T',b'E',b'S',b'T',0x0a,1,0x99];
+        let dsdt=definition_table(*b"DSDT",&aml);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        assert_eq!(manager.load_dsdt(&dsdt,&gate),Err(TableError::Parse(AmlError::UnsupportedOpcode)));
+        assert_eq!(manager.namespace().count,1);
+        assert_eq!(manager.namespace().find_child(0,*b"TEST"),None);
+        assert_eq!(manager.table_count(),0);
+        assert!(!manager.dsdt_loaded());
+    }
+
+    #[test]
+    fn rejected_optional_ssdt_does_not_poison_following_table_load(){
+        let dsdt=identity_dsdt();
+        let bad_ssdt=definition_table(*b"SSDT",&[0x08,b'T',b'E',b'S',b'T',0x0a,1,0x99]);
+        let good_ssdt=identity_ssdt();
+        let mut manager=AmlTableManager::new();let gate=gate();
+        manager.load_dsdt(&dsdt,&gate).unwrap();
+        let before=manager.namespace().count;
+        assert_eq!(manager.load_ssdt(&bad_ssdt,&gate),Err(TableError::Parse(AmlError::UnsupportedOpcode)));
+        assert_eq!(manager.namespace().count,before);
+        assert_eq!(manager.namespace().find_child(0,*b"TEST"),None);
+        assert!(manager.load_ssdt(&good_ssdt,&gate).is_ok());
+    }
+
+    #[test]
+    fn rejected_ssdt_restores_mutated_external_placeholder(){
+        let dsdt=definition_table(*b"DSDT",&[0x15,b'D',b'E',b'V',b'0',8,0]);
+        // A Method declaration promotes the DSDT External placeholder. The
+        // unsupported term after the method body forces rollback after that
+        // in-place mutation has occurred.
+        let ssdt=definition_table(*b"SSDT",&[0x14,0x06,b'D',b'E',b'V',b'0',0,0x99]);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        manager.load_dsdt(&dsdt,&gate).unwrap();
+        let dev=manager.namespace().find_child(0,*b"DEV0").unwrap();
+        assert_eq!(manager.namespace().nodes[dev as usize].object_type,crate::aml::AmlObjectType::External);
+        assert!(manager.namespace().nodes[dev as usize].external_placeholder);
+        assert_eq!(manager.load_ssdt(&ssdt,&gate),Err(TableError::Parse(AmlError::UnsupportedOpcode)));
+        assert_eq!(manager.namespace().count,2);
+        let restored=&manager.namespace().nodes[dev as usize];
+        assert_eq!(restored.object_type,crate::aml::AmlObjectType::External);
+        assert!(restored.external_placeholder);
+        assert_eq!(restored.source_table,0);
+        assert_eq!(manager.namespace().find_child(dev,*b"TEST"),None);
+    }
+
     #[test]
     fn table_manager_evaluates_identity_with_table_ownership_and_method_gate(){
         let dsdt=identity_dsdt();let mut manager=AmlTableManager::new();let gate=gate();

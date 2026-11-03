@@ -59,3 +59,17 @@ pub unsafe fn serialize(r:&ResourceList,out:*mut u8,capacity:usize)->Result<usiz
 #[test]fn rejects_unassigned_address_ranges(){let mut r=ResourceList::EMPTY;r.entries[0]=Some(Resource::Io{minimum:0x100,maximum:0x1ff,alignment:1,length:8,decode_16_bit:true});r.count=1;let mut b=[0u8;40];assert_eq!(unsafe{serialize(&r,b.as_mut_ptr(),b.len())},Err(SerializeError::InvalidResourceList));}
 #[test]fn short_output_is_not_modified(){let mut r=ResourceList::EMPTY;r.entries[0]=Some(Resource::Io{minimum:1,maximum:1,alignment:1,length:1,decode_16_bit:true});r.count=1;let mut b=[0xa5;20];assert_eq!(unsafe{serialize(&r,b.as_mut_ptr(),b.len())},Err(SerializeError::OutputTooSmall));assert_eq!(b,[0xa5;20]);}
 }
+
+#[cfg(test)] mod acpi_v6_cm_resource_output_atomicity {
+ use super::*;
+ 
+ #[test] fn short_output_is_not_modified() {
+  let mut resources=ResourceList::EMPTY;
+  resources.entries[0]=Some(Resource::Irq{mask:1<<5,level_triggered:true,active_low:false,shared:true,wake_capable:false});
+  resources.count=1;
+  let mut output=[0x5au8;20];
+  assert_eq!(unsafe{serialize(&resources,output.as_mut_ptr(),output.len())},Err(SerializeError::OutputTooSmall));
+  assert_eq!(output,[0x5au8;20]);
+ }
+
+}

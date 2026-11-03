@@ -11,7 +11,7 @@
 use core::sync::atomic::{AtomicBool,AtomicU16,AtomicU64,Ordering};
 use crate::aml::{AmlNamespace,AmlObjectType};
 
-pub const MAX_FIELD_BITS:u32=64;
+pub const MAX_FIELD_BITS:u32=4096;
 pub const DEFAULT_SPIN_LIMIT:u32=100_000;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -32,6 +32,14 @@ pub trait FieldIo {
     /// Implementations may acquire/release the ACPI Global Lock here.
     fn begin_locked_access(&mut self)->Result<(),()>{Err(())}
     fn end_locked_access(&mut self)->Result<(),()>{Err(())}
+    /// Read one access unit through an AML IndexField pair. The backend must
+    /// serialize index-register selection with the matching data-register read.
+    fn read_indexed(&mut self,_index_register:u16,_data_register:u16,_byte_offset:u64,_width:u8)->Result<u64,()>{Err(())}
+    /// Write one access unit through an AML IndexField pair. The backend must
+    /// serialize index-register selection with the matching data-register write.
+    fn write_indexed(&mut self,_index_register:u16,_data_register:u16,_byte_offset:u64,_width:u8,_value:u64)->Result<(),()>{Err(())}
+    /// Select the bank for a BankField before accessing its underlying region.
+    fn select_bank(&mut self,_bank_register:u16,_bank_value:u64)->Result<(),()>{Err(())}
 }
 
 fn field_node(ns:&AmlNamespace,id:u16)->Result<&crate::aml::AmlNode,FieldError>{
@@ -196,6 +204,189 @@ impl AmlEvent {
 }
 impl Default for AmlEvent{fn default()->Self{Self::new()}}
 
+
+/// Validate an IndexField declaration and return its namespace metadata.
+fn index_field_node(ns:&AmlNamespace,id:u16)->Result<&crate::aml::AmlNode,FieldError>{
+    let n=ns.nodes.get(id as usize).filter(|_|(id as usize)<ns.count).ok_or(FieldError::InvalidNode)?;
+    if n.object_type!=AmlObjectType::Field{return Err(FieldError::NotField)}
+    if n.field_mode!=1||n.field_connection{return Err(FieldError::UnsupportedAccess)}
+    if n.field_index_register==u16::MAX||n.field_data_register==u16::MAX{return Err(FieldError::InvalidNode)}
+    if n.body_length==0{return Err(FieldError::InvalidLength)}
+    if n.body_length>MAX_FIELD_BITS{return Err(FieldError::FieldTooWide)}
+    Ok(n)
+}
+/// Read an IndexField through a backend-serialized index/data register operation.
+pub fn read_index_field<I:FieldIo>(ns:&AmlNamespace,id:u16,io:&mut I)->Result<u64,FieldError>{
+    let n=index_field_node(ns,id)?;
+    let width=access_bytes(n.field_access_type)?;
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=(||{
+        let unit_bits=width as u64*8;let start=n.body_start as u64;
+        let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
+        let mut value=0u64;let mut cached_unit=u64::MAX;let mut cached=0u64;
+        for bit in start..end{
+            let unit=(bit/unit_bits)*width as u64;
+            if unit!=cached_unit{cached=io.read_indexed(n.field_index_register,n.field_data_register,unit,width)
+                .map_err(|_|FieldError::IoFailure)?&unit_mask(width);cached_unit=unit;}
+            value|=((cached>>((bit%unit_bits) as u32))&1)<<((bit-start) as u32);
+        }
+        Ok(value)
+    })();
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
+/// Write an IndexField while honoring its update rule and access-unit boundaries.
+pub fn write_index_field<I:FieldIo>(ns:&AmlNamespace,id:u16,value:u64,io:&mut I)->Result<(),FieldError>{
+    let n=index_field_node(ns,id)?;
+    let width=access_bytes(n.field_access_type)?;
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=(||{
+        let unit_bits=width as u64*8;let start=n.body_start as u64;
+        let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
+        let mut unit=(start/unit_bits)*width as u64;let last=((end-1)/unit_bits)*width as u64;
+        while unit<=last{
+            let unit_start=unit.checked_mul(8).ok_or(FieldError::AddressOverflow)?;
+            let unit_end=unit_start.checked_add(unit_bits).ok_or(FieldError::AddressOverflow)?;
+            let a=start.max(unit_start);let b=end.min(unit_end);let shift=(a-unit_start) as u32;
+            let count=(b-a) as u32;let source=(a-start) as u32;
+            let low=if count==64{u64::MAX}else{(1u64<<count)-1};
+            let mask=if count==64{u64::MAX}else{low<<shift};
+            let bits=(value>>source)&low;let bits=if count==64{bits}else{bits<<shift};
+            let old=match n.field_update_rule{
+                0=>io.read_indexed(n.field_index_register,n.field_data_register,unit,width)
+                    .map_err(|_|FieldError::IoFailure)?&unit_mask(width),
+                1=>unit_mask(width),2=>0,_=>return Err(FieldError::UnsupportedAccess),
+            };
+            io.write_indexed(n.field_index_register,n.field_data_register,unit,width,
+                ((old&!mask)|(bits&mask))&unit_mask(width)).map_err(|_|FieldError::IoFailure)?;
+            unit=unit.checked_add(width as u64).ok_or(FieldError::AddressOverflow)?;
+        }
+        Ok(())
+    })();
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
+fn bank_field_node(ns:&AmlNamespace,id:u16)->Result<&crate::aml::AmlNode,FieldError>{
+    let n=ns.nodes.get(id as usize).filter(|_|(id as usize)<ns.count).ok_or(FieldError::InvalidNode)?;
+    if n.object_type!=AmlObjectType::Field{return Err(FieldError::NotField)}
+    if n.field_mode!=2||n.field_connection{return Err(FieldError::UnsupportedAccess)}
+    if n.field_region==u16::MAX||n.field_bank_register==u16::MAX{return Err(FieldError::InvalidNode)}
+    if n.body_length==0{return Err(FieldError::InvalidLength)}
+    if n.body_length>MAX_FIELD_BITS{return Err(FieldError::FieldTooWide)}
+    Ok(n)
+}
+fn decode_bank_value(aml:&[u8],n:&crate::aml::AmlNode)->Result<u64,FieldError>{
+    let start=n.field_bank_value_start as usize;
+    let end=start.checked_add(n.field_bank_value_length as usize).filter(|end|*end<=aml.len()).ok_or(FieldError::InvalidLength)?;
+    if start==end{return Err(FieldError::InvalidLength)}
+    let (value,used)=crate::aml_exec::evaluate_term_argument(&aml[start..end]).map_err(|_|FieldError::InvalidLength)?;
+    if used!=end-start{return Err(FieldError::InvalidLength)}Ok(value)
+}
+/// Read a BankField after evaluating its BankFieldValue TermArg and selecting the bank.
+pub fn read_bank_field<I:FieldIo>(aml:&[u8],ns:&AmlNamespace,id:u16,io:&mut I)->Result<u64,FieldError>{
+    let n=bank_field_node(ns,id)?;let bank=decode_bank_value(aml,n)?;
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=io.select_bank(n.field_bank_register,bank).map_err(|_|FieldError::IoFailure)
+        .and_then(|_|read_unlocked(n,io));
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
+/// Write a BankField after selecting its firmware-defined bank.
+pub fn write_bank_field<I:FieldIo>(aml:&[u8],ns:&AmlNamespace,id:u16,value:u64,io:&mut I)->Result<(),FieldError>{
+    let n=bank_field_node(ns,id)?;let bank=decode_bank_value(aml,n)?;
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=io.select_bank(n.field_bank_register,bank).map_err(|_|FieldError::IoFailure)
+        .and_then(|_|write_unlocked(n,value,io));
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
+/// Unified mode-aware Field access for Field, IndexField and BankField declarations.
+pub fn read_field_with_aml<I:FieldIo>(aml:&[u8],ns:&AmlNamespace,id:u16,io:&mut I)->Result<u64,FieldError>{
+    let n=ns.nodes.get(id as usize).filter(|_|(id as usize)<ns.count).ok_or(FieldError::InvalidNode)?;
+    match n.field_mode{0=>read_field(ns,id,io),1=>read_index_field(ns,id,io),2=>read_bank_field(aml,ns,id,io),_=>Err(FieldError::UnsupportedAccess)}
+}
+/// Unified mode-aware Field write dispatch.
+pub fn write_field_with_aml<I:FieldIo>(aml:&[u8],ns:&AmlNamespace,id:u16,value:u64,io:&mut I)->Result<(),FieldError>{
+    let n=ns.nodes.get(id as usize).filter(|_|(id as usize)<ns.count).ok_or(FieldError::InvalidNode)?;
+    match n.field_mode{0=>write_field(ns,id,value,io),1=>write_index_field(ns,id,value,io),2=>write_bank_field(aml,ns,id,value,io),_=>Err(FieldError::UnsupportedAccess)}
+}
+
+/// Read a bounded Field of up to MAX_FIELD_BITS into a caller-owned little-endian bit buffer.
+/// This supports AML fields wider than an Integer while retaining strict output bounds.
+pub fn read_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,io:&mut I,output:&mut [u8])->Result<usize,FieldError>{
+    let n=field_node(ns,id)?;
+    let required=(n.body_length as usize+7)/8;
+    if output.len()<required{return Err(FieldError::InvalidLength)}
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
+    let width=access_bytes(n.field_access_type)?;
+    let unit_bits=width as u64*8;
+    let start=n.body_start as u64;
+    let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=(||{
+        output[..required].fill(0);
+        let mut cached_unit=u64::MAX;let mut cached_value=0u64;
+        for bit in start..end{
+            let unit=(bit/unit_bits)*width as u64;
+            if unit!=cached_unit{
+                cached_value=io.read(n.field_region,unit,width).map_err(|_|FieldError::IoFailure)?&unit_mask(width);
+                cached_unit=unit;
+            }
+            let value=(cached_value>>((bit%unit_bits) as u32))&1;
+            let relative=(bit-start) as usize;
+            if value!=0{output[relative/8]|=1<<(relative%8);}
+        }
+        Ok(required)
+    })();
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
+
+/// Write a bounded little-endian bit buffer into a Field wider than an AML Integer.
+/// Uncovered bits in each access unit follow the Field's declared update rule.
+pub fn write_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,input:&[u8],io:&mut I)->Result<(),FieldError>{
+    let n=field_node(ns,id)?;
+    let required=(n.body_length as usize+7)/8;
+    if input.len()<required{return Err(FieldError::InvalidLength)}
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
+    let width=access_bytes(n.field_access_type)?;
+    let unit_bits=width as u64*8;
+    let start=n.body_start as u64;
+    let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=(||{
+        let first=(start/unit_bits)*width as u64;
+        let last=((end-1)/unit_bits)*width as u64;
+        let mut unit=first;
+        while unit<=last{
+            let unit_start=unit.checked_mul(8).ok_or(FieldError::AddressOverflow)?;
+            let unit_end=unit_start.checked_add(unit_bits).ok_or(FieldError::AddressOverflow)?;
+            let overlap_start=start.max(unit_start);let overlap_end=end.min(unit_end);
+            let shift=(overlap_start-unit_start) as u32;let count=(overlap_end-overlap_start) as u32;
+            let field_shift=(overlap_start-start) as usize;
+            let low_mask=if count==64{u64::MAX}else{(1u64<<count)-1};
+            let mask=if count==64{u64::MAX}else{low_mask<<shift};
+            let mut incoming=0u64;
+            for bit in 0..count as usize{
+                let source=field_shift+bit;
+                if input[source/8]&(1<<(source%8))!=0{incoming|=1u64<<bit;}
+            }
+            let incoming=if count==64{incoming}else{incoming<<shift};
+            let old=match n.field_update_rule{
+                0=>io.read(n.field_region,unit,width).map_err(|_|FieldError::IoFailure)?&unit_mask(width),
+                1=>unit_mask(width),2=>0,_=>return Err(FieldError::UnsupportedAccess),
+            };
+            io.write(n.field_region,unit,width,((old&!mask)|(incoming&mask))&unit_mask(width))
+                .map_err(|_|FieldError::IoFailure)?;
+            unit=unit.checked_add(width as u64).ok_or(FieldError::AddressOverflow)?;
+        }
+        Ok(())
+    })();
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -266,4 +457,68 @@ mod tests{
         assert_eq!(mem.bytes[0]&0b1110_0000,0b1010_0000);
         assert!(!mem.locked);
     }
+
+    struct CompositeMemory { value:u64, bank:u64, indexed_reads:u32, indexed_writes:u32 }
+    impl FieldIo for CompositeMemory {
+        fn read(&mut self,_:u16,_:u64,_:u8)->Result<u64,()>{Ok(self.value)}
+        fn write(&mut self,_:u16,_:u64,_:u8,value:u64)->Result<(),()>{self.value=value;Ok(())}
+        fn read_indexed(&mut self,index:u16,data:u16,offset:u64,_:u8)->Result<u64,()>{
+            if index!=2||data!=3||offset!=0{return Err(())} self.indexed_reads+=1;Ok(self.value)
+        }
+        fn write_indexed(&mut self,index:u16,data:u16,offset:u64,_:u8,value:u64)->Result<(),()>{
+            if index!=2||data!=3||offset!=0{return Err(())} self.indexed_writes+=1;self.value=value;Ok(())
+        }
+        fn select_bank(&mut self,register:u16,value:u64)->Result<(),()>{if register!=4{return Err(())}self.bank=value;Ok(())}
+    }
+
+    #[test]
+    fn index_field_read_and_write_use_index_data_pair(){
+        let mut ns=AmlNamespace::new();
+        let mut node=crate::aml::AmlNode::ROOT;
+        node.object_type=AmlObjectType::Field;node.field_mode=1;node.field_index_register=2;
+        node.field_data_register=3;node.body_length=8;node.field_access_type=0;
+        ns.nodes[1]=node;ns.count=2;
+        let mut io=CompositeMemory{value:0x5a,bank:0,indexed_reads:0,indexed_writes:0};
+        assert_eq!(read_index_field(&ns,1,&mut io),Ok(0x5a));
+        assert_eq!(write_index_field(&ns,1,0xa5,&mut io),Ok(()));
+        assert_eq!(io.value,0xa5);assert_eq!(io.indexed_reads,1);assert_eq!(io.indexed_writes,1);
+    }
+
+    #[test]
+    fn bank_field_selects_firmware_bank_before_region_access(){
+        let aml=[0x0a,0x02];
+        let mut ns=AmlNamespace::new();
+        let mut node=crate::aml::AmlNode::ROOT;
+        node.object_type=AmlObjectType::Field;node.field_mode=2;node.field_region=5;
+        node.field_bank_register=4;node.field_bank_value_start=0;node.field_bank_value_length=2;
+        node.body_length=8;node.field_access_type=0;
+        ns.nodes[1]=node;ns.count=2;
+        let mut io=CompositeMemory{value:0x6c,bank:0,indexed_reads:0,indexed_writes:0};
+        assert_eq!(read_field_with_aml(&aml,&ns,1,&mut io),Ok(0x6c));
+        assert_eq!(io.bank,2);
+        assert_eq!(write_field_with_aml(&aml,&ns,1,0xc6,&mut io),Ok(()));
+        assert_eq!(io.bank,2);assert_eq!(io.value,0xc6);
+    }
+
+
+
+
+
+    #[test]
+    fn wide_field_buffer_round_trips_more_than_one_aml_integer(){
+        let mut ns=AmlNamespace::new();
+        let mut node=crate::aml::AmlNode::ROOT;
+        node.object_type=AmlObjectType::Field;node.field_region=5;node.body_start=8;
+        node.body_length=80;node.field_access_type=0;node.field_update_rule=0;
+        ns.nodes[1]=node;ns.count=2;
+        let mut mem=Memory{bytes:[0x33;32],locked:false};
+        let mut output=[0u8;10];
+        assert_eq!(read_field_buffer(&ns,1,&mut mem,&mut output),Ok(10));
+        assert_eq!(output,[0x33;10]);
+        let input=[0xa5;10];
+        assert_eq!(write_field_buffer(&ns,1,&input,&mut mem),Ok(()));
+        assert_eq!(&mem.bytes[1..11],&input);
+        assert_eq!(mem.bytes[0],0x33);assert_eq!(mem.bytes[11],0x33);
+    }
+
 }
