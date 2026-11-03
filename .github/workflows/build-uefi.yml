@@ -754,6 +754,8 @@ jobs:
           rm -f build/beep.wav build/gdb-first-user-fault.txt
           command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
           cp scripts/gdb/first-fault.gdb build/gdb-first-fault.gdb
+          # Dedicated blank primary-slave disk for the PCI IDE PIO round-trip test.
+          truncate -s 8M build/ata-test.img
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine q35,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
@@ -765,6 +767,8 @@ jobs:
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
             -device ide-hd,drive=osdisk,bus=legacyide.0,unit=0 \
+            -drive if=none,id=atatest,format=raw,file=build/ata-test.img \
+            -device ide-hd,drive=atatest,bus=legacyide.0,unit=1 \
             -boot order=c -display none -monitor unix:build/qemu-monitor.sock,server=on,wait=off \
             -serial file:build/serial.log -gdb tcp::12345 \
             -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
@@ -825,6 +829,7 @@ jobs:
           grep -F 'VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.' build/serial.log
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
           grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
+          grep -F 'pciide: ATA PIO read/write/flush round-trip passed' build/serial.log
           cleanup_qemu
           trap - EXIT
           cat build/serial.log
