@@ -37,12 +37,15 @@ pub struct AmlNode {
     pub field_access_length:u8,
     pub field_lock_rule:u8,
     pub field_update_rule:u8,
+    pub field_index_register:u16, pub field_data_register:u16, pub field_bank_register:u16,
+    pub field_bank_value_start:u32, pub field_bank_value_length:u32,
+    pub field_connection_start:u32, pub field_connection_length:u32,
     pub processor_id:u8, pub processor_pblk_address:u32, pub processor_pblk_length:u8,
     pub power_resource_system_level:u8, pub power_resource_order:u16,
     pub external_placeholder:bool, pub external_owner:u32, pub external_object_type:u8, pub external_method_flags:u8,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,field_index_register:u16::MAX,field_data_register:u16::MAX,field_bank_register:u16::MAX,field_bank_value_start:0,field_bank_value_length:0,field_connection_start:0,field_connection_length:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u32 }
 impl AmlNamespace {
@@ -68,7 +71,7 @@ impl AmlNamespace {
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
         if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:self.count+1})}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,field_index_register:u16::MAX,field_data_register:u16::MAX,field_bank_register:u16::MAX,field_bank_value_start:0,field_bank_value_length:0,field_connection_start:0,field_connection_length:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
         self.count+=1;Ok(i as u16)
     }
 }
@@ -308,12 +311,14 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
     Ok(value)
 }
 
-fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:u16,mode:u8,flags:u8)->Result<(),AmlError>{
+fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:u16,mode:u8,flags:u8,index_register:u16,data_register:u16,bank_register:u16,bank_value_start:u32,bank_value_length:u32)->Result<(),AmlError>{
     let mut bit_offset=0usize;
     let mut access_type=0u8;
     let mut access_attribute=0u8;
     let mut access_length=0u8;
     let mut connection=false;
+    let mut connection_start=0u32;
+    let mut connection_length=0u32;
     while c.pos<c.end{
         let op=c.byte()?;
         match op{
@@ -321,7 +326,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
                 bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
             }
             0x01=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=0;if access_type>5||access_attribute>0x0b{return Err(AmlError::UnsupportedOpcode)}} // AccessField
-            0x02=>{skip_data_object(c)?;connection=true;} // ConnectField
+            0x02=>{let start=c.pos;skip_data_object(c)?;connection=true;connection_start=u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?;connection_length=u32::try_from(c.pos-start).map_err(|_|AmlError::BadDefinitionBlock)?;} // ConnectField
             0x03=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=c.byte()?;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // ExtendedAccessField
             _=>{
                 c.pos-=1;
@@ -335,13 +340,20 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
                 let id=ns.insert(container,name,AmlObjectType::Field,0,bit_offset,bit_length)?;
                 ns.nodes[id as usize].field_region=region;
                 ns.nodes[id as usize].field_mode=mode;
+                ns.nodes[id as usize].field_index_register=index_register;
+                ns.nodes[id as usize].field_data_register=data_register;
+                ns.nodes[id as usize].field_bank_register=bank_register;
+                ns.nodes[id as usize].field_bank_value_start=bank_value_start;
+                ns.nodes[id as usize].field_bank_value_length=bank_value_length;
+                ns.nodes[id as usize].field_connection_start=connection_start;
+                ns.nodes[id as usize].field_connection_length=connection_length;
                 ns.nodes[id as usize].field_connection=connection;
                 ns.nodes[id as usize].field_access_type=access_type;
                 ns.nodes[id as usize].field_access_attribute=access_attribute;
                 ns.nodes[id as usize].field_access_length=access_length;
                 ns.nodes[id as usize].field_lock_rule=flags&1;
                 ns.nodes[id as usize].field_update_rule=(flags>>1)&3;
-                connection=false;
+                connection=false;connection_start=0;connection_length=0;
                 bit_offset=bit_offset.checked_add(bit_length).ok_or(AmlError::BadPackageLength)?;
             }
         }
@@ -398,8 +410,22 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         let plen=package_length_bytes(c.bytes,c.pos,c.end)?;
                         let mut sub=Cursor{bytes:c.bytes,pos:c.pos+plen,end};
                         let region=parse_name(&mut sub)?;
-                        if ext==0x86{let _index=parse_name(&mut sub)?;let _data=parse_name(&mut sub)?;}
-                        if ext==0x87{let _=parse_name(&mut sub)?;skip_data_object(&mut sub)?;}
+                        let mut index_register=u16::MAX;let mut data_register=u16::MAX;let mut bank_register=u16::MAX;
+                        let mut bank_value_start=0u32;let mut bank_value_length=0u32;
+                        if ext==0x86{
+                            let index=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
+                            let data_name=parse_name(&mut sub)?;
+                            let data=lookup_path(ns,parent,&data_name).map_err(|_|AmlError::InvalidParent)?;
+                            index_register=ns.resolve_alias(index)?;data_register=ns.resolve_alias(data)?;
+                        }
+                        if ext==0x87{
+                            let bank_name=parse_name(&mut sub)?;
+                            let bank=lookup_path(ns,parent,&bank_name).map_err(|_|AmlError::InvalidParent)?;
+                            bank_register=ns.resolve_alias(bank)?;
+                            let start=sub.pos;skip_data_object(&mut sub)?;
+                            bank_value_start=u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?;
+                            bank_value_length=u32::try_from(sub.pos-start).map_err(|_|AmlError::BadDefinitionBlock)?;
+                        }
                         let flags=sub.byte()?;
                         if flags&0xf8!=0||((flags>>1)&3)==3{return Err(AmlError::UnsupportedOpcode)}
                         let (region_node,mode)=if ext==0x81{
@@ -407,8 +433,13 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                             let id=ns.resolve_alias(found)?;
                             if ns.nodes[id as usize].object_type!=AmlObjectType::OperationRegion{return Err(AmlError::InvalidParent)}
                             (id,0)
-                        }else{(u16::MAX,if ext==0x86{1}else{2})};
-                        parse_field_list(&mut sub,ns,parent,region_node,mode,flags)?;
+                        }else if ext==0x87{
+                            let found=lookup_path(ns,parent,&region).map_err(|_|AmlError::InvalidParent)?;
+                            let id=ns.resolve_alias(found)?;
+                            if ns.nodes[id as usize].object_type!=AmlObjectType::OperationRegion{return Err(AmlError::InvalidParent)}
+                            (id,2)
+                        }else{(u16::MAX,1)};
+                        parse_field_list(&mut sub,ns,parent,region_node,mode,flags,index_register,data_register,bank_register,bank_value_start,bank_value_length)?;
                         c.pos=end;
                     }
                     0x88=>{
