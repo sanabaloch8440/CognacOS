@@ -260,6 +260,44 @@ fn encode_extended_irq(output:&mut [u8],cursor:&mut usize,flags:u8,interrupts:&[
     put_resource_bytes(output,cursor,&descriptor[..3+payload])
 }
 
+#[cfg(test)]
+mod assigned_resource_encoding_tests{
+ use super::*;
+ #[test]
+ fn selects_arbiter_allocation_and_round_trips_srs_template(){
+  let mut requirement=ResourceList::EMPTY;
+  requirement.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  requirement.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[5,9,0,0,0,0,0,0],count:2});
+  requirement.count=2;
+  let mut alternatives=ResourceAlternatives::EMPTY;
+  alternatives.entries[0]=requirement;alternatives.count=1;
+
+  let mut allocated=ResourceList::EMPTY;
+  allocated.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:1,length:0x100,decode_16_bit:true});
+  allocated.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[9,0,0,0,0,0,0,0],count:1});
+  allocated.count=2;
+  let selected=select_assigned_resources(&alternatives,&allocated).unwrap();
+  assert_eq!(selected,allocated);
+
+  let mut bytes=[0u8;128];
+  let length=encode_resource_template(&selected,&mut bytes).unwrap();
+  let parsed=parse_resource_template(&bytes[..length]).unwrap();
+  assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x1100,maximum:0x1100,length:0x100,..})));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
+ }
+ #[test]
+ fn rejects_allocations_outside_every_prs_alternative(){
+  let mut required=ResourceList::EMPTY;
+  required.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  required.count=1;
+  let mut alternatives=ResourceAlternatives::EMPTY;alternatives.entries[0]=required;alternatives.count=1;
+  let mut allocated=ResourceList::EMPTY;
+  allocated.entries[0]=Some(Resource::Io{minimum:0x1081,maximum:0x1081,alignment:1,length:0x100,decode_16_bit:true});
+  allocated.count=1;
+  assert_eq!(select_assigned_resources(&alternatives,&allocated),Err(ResourceError::InvalidDescriptor));
+ }
+}
+
 #[cfg(test)] extern crate std;
 #[cfg(test)] mod tests{
  use super::*;
