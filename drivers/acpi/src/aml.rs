@@ -325,7 +325,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
             0x00=>{ // ReservedField: advance by encoded bit length.
                 bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
             }
-            0x01=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=0;if access_type>5||access_attribute>0x0b{return Err(AmlError::UnsupportedOpcode)}} // AccessField
+            0x01=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=0;if access_type>5||access_attribute>0x0f{return Err(AmlError::UnsupportedOpcode)}} // AccessField
             0x02=>{let start=c.pos;skip_data_object(c)?;connection=true;connection_start=u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?;connection_length=u32::try_from(c.pos-start).map_err(|_|AmlError::BadDefinitionBlock)?;} // ConnectField
             0x03=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=c.byte()?;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // ExtendedAccessField
             _=>{
