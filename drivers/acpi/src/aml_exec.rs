@@ -801,7 +801,7 @@ mod tests{
   let allowed=[0x14,0x08,b'I',b'N',b'N',b'R',0x38,0xa4,0x01,
    0x14,0x0b,b'O',b'U',b'T',b'R',0x28,0xa4,b'I',b'N',b'N',b'R'];
   let mut ns=AmlNamespace::new();load_definition_block(&allowed,&mut ns).unwrap();
-  let id=ns.find_child(0,*b'OUTR').unwrap();let sync=RecordingSync::new();
+  let id=ns.find_child(0,*b"OUTR").unwrap();let sync=RecordingSync::new();
   assert_eq!(execute_method_typed_with_sync(&allowed,&ns,id,&[],64,&sync).unwrap().integer,1);
   assert_eq!(sync.acquires.load(Ordering::SeqCst),2);
   assert_eq!(sync.releases.load(Ordering::SeqCst),2);
@@ -809,7 +809,7 @@ mod tests{
   let denied=[0x14,0x08,b'I',b'N',b'N',b'R',0x28,0xa4,0x01,
    0x14,0x0b,b'O',b'U',b'T',b'R',0x38,0xa4,b'I',b'N',b'N',b'R'];
   let mut ns=AmlNamespace::new();load_definition_block(&denied,&mut ns).unwrap();
-  let id=ns.find_child(0,*b'OUTR').unwrap();let sync=RecordingSync::new();
+  let id=ns.find_child(0,*b"OUTR").unwrap();let sync=RecordingSync::new();
   assert_eq!(execute_method_typed_with_sync(&denied,&ns,id,&[],64,&sync),Err(ExecError::SyncLevelViolation));
   assert_eq!(sync.acquires.load(Ordering::SeqCst),1);
   assert_eq!(sync.releases.load(Ordering::SeqCst),1);
