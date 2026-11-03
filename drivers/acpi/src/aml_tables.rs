@@ -534,11 +534,11 @@ mod tests {
 
     #[test]
     fn rejected_ssdt_restores_mutated_external_placeholder(){
-        let dsdt=definition_table(*b"DSDT",&[0x15,b'D',b'E',b'V',b'0',0x06]);
-        // Scope(DEV0) refines the DSDT External placeholder to a Device, then
-        // encounters an unsupported term after inserting TEST.
-        let ssdt=definition_table(*b"SSDT",&[0x10,0x0d,b'D',b'E',b'V',b'0',
-            0x08,b'T',b'E',b'S',b'T',0x0a,1,0x99]);
+        let dsdt=definition_table(*b"DSDT",&[0x15,b'D',b'E',b'V',b'0',8,0]);
+        // A Method declaration promotes the DSDT External placeholder. The
+        // unsupported term after the method body forces rollback after that
+        // in-place mutation has occurred.
+        let ssdt=definition_table(*b"SSDT",&[0x14,0x07,b'D',b'E',b'V',b'0',0,0x99]);
         let mut manager=AmlTableManager::new();let gate=gate();
         manager.load_dsdt(&dsdt,&gate).unwrap();
         let dev=manager.namespace().find_child(0,*b"DEV0").unwrap();
