@@ -582,10 +582,8 @@ mod tests{
         assert_eq!(multi.count,2);assert_eq!(end,10);
     }
     #[test]fn loads_device_and_name_namespace(){
-        // Device(PCI0) { Name(_HID, EisaId("PNP0A08")) } -- the name value
-        // is deliberately a simple AML string in this initial parser slice.
-        let aml=[0x5b,0x82,0x13,0x50,b'P',b'C',b'I',b'0',0x08,b'_',
-            b'H',b'I',b'D',0x0d,b'P',b'N',b'P',b'0',b'A',b'0',b'8',0];
+        // Device(PCI0) { Name(_STA, One) } -- a simple integer-valued namespace object.
+        let aml=[0x5b,0x82,0x0b,0x50,b'P',b'C',b'I',b'0',0x08,b'_',b'S',b'T',b'A',0x01];
         let mut ns=AmlNamespace::new();
         assert_eq!(load_definition_block(&aml,&mut ns),Ok(()));
         assert_eq!(ns.find_child(0,*b"PCI0"),Some(1));
