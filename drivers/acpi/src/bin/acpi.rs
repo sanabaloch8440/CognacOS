@@ -536,7 +536,7 @@ unsafe fn read_start_allocated_resources(
 )->Result<acpi::acpi_resources::ResourceList,i32>{
  if stack.is_null(){return Err(STATUS_INVALID_PARAMETER)}
  let list=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<*const u8>())};
- if list.is_null(){return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
+ if list.is_null(){return Ok(acpi::acpi_resources::ResourceList::EMPTY)}
  let full_count=unsafe{core::ptr::read_unaligned(list.cast::<u32>())};
  if full_count!=1{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
  let partial_count=unsafe{core::ptr::read_unaligned(list.add(16).cast::<u32>())} as usize;
