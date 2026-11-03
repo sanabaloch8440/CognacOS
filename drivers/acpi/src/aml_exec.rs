@@ -753,6 +753,42 @@ mod tests{
   assert_eq!(evaluate_term_argument(&[0x7d,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
   assert_eq!(evaluate_term_argument(&[0x77,0x0a,7,0x0a,6,0x00]),Ok((42,6)));
  }
+ #[test]fn evaluates_logical_and_all_bitwise_operator_families(){
+  assert_eq!(evaluate_term_argument(&[0x7b,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0,6)));
+  assert_eq!(evaluate_term_argument(&[0x7c,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((u64::MAX,6)));
+  assert_eq!(evaluate_term_argument(&[0x7d,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
+  assert_eq!(evaluate_term_argument(&[0x7e,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((!0xffu64,6)));
+  assert_eq!(evaluate_term_argument(&[0x7f,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
+  assert_eq!(evaluate_term_argument(&[0x90,0x01,0x00]),Ok((0,3)));
+  assert_eq!(evaluate_term_argument(&[0x91,0x00,0x01]),Ok((1,3)));
+  assert_eq!(evaluate_term_argument(&[0x92,0x00]),Ok((1,2)));
+  assert_eq!(evaluate_term_argument(&[0x93,0x01,0x01]),Ok((1,3)));
+  assert_eq!(evaluate_term_argument(&[0x94,0x0a,2,0x0a,1]),Ok((1,4)));
+  assert_eq!(evaluate_term_argument(&[0x95,0x0a,1,0x0a,2]),Ok((1,4)));
+ }
+ #[test]fn arithmetic_operator_targets_apply_named_object_result_conversion(){
+  let aml=[0x08,b'S',b'T',b'R',b'0',0x0d,b'0',b'0',0,
+   0x14,0x13,b'T',b'E',b'S',b'T',0,
+   0x72,0x01,0x0a,2,b'S',b'T',b'R',b'0',
+   0xa4,b'S',b'T',b'R',b'0'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&aml,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::String);
+  assert_eq!(value.byte_length,16);
+  assert_eq!(&value.bytes[..16],b"0000000000000003");
+ }
+ #[test]fn explicit_conversion_target_replaces_existing_name_type(){
+  let aml=[0x08,b'S',b'T',b'R',b'0',0x0d,b'4',b'2',0,
+   0x08,b'V',b'A',b'L',b'0',0x0d,b'x',0,
+   0x14,0x14,b'T',b'E',b'S',b'T',0,
+   0x99,b'S',b'T',b'R',b'0',b'V',b'A',b'L',b'0',
+   0xa4,b'V',b'A',b'L',b'0'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&aml,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::Integer);assert_eq!(value.integer,42);
+ }
  #[test]fn term_argument_decoder_reports_truncation_and_unsupported_names(){
   assert_eq!(evaluate_term_argument(&[0x0c,0x11,0x22]),Err(ExecError::Truncated));
   assert_eq!(evaluate_term_argument(&[b'V',b'A',b'L',b'0']),Err(ExecError::NameNotFound));
