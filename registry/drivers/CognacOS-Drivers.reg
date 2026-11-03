@@ -9,6 +9,14 @@ Windows Registry Editor Version 5.00
 "Failed"=dword:00000000
 "LastKnownGood"=dword:00000001
 
+; The native boot scheduler requires both Windows service-order keys. Keep the
+; REG_MULTI_SZ double terminator and the GroupOrderList DWORD count/IDs exact.
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\ServiceGroupOrder]
+"List"=hex(7):42,00,6f,00,6f,00,74,00,20,00,42,00,75,00,73,00,20,00,45,00,78,00,74,00,65,00,6e,00,64,00,65,00,72,00,00,00,53,00,79,00,73,00,74,00,65,00,6d,00,20,00,42,00,75,00,73,00,20,00,45,00,78,00,74,00,65,00,6e,00,64,00,65,00,72,00,00,00,53,00,43,00,53,00,49,00,20,00,6d,00,69,00,6e,00,69,00,70,00,6f,00,72,00,74,00,00,00,50,00,6f,00,72,00,74,00,00,00,50,00,72,00,69,00,6d,00,61,00,72,00,79,00,20,00,44,00,69,00,73,00,6b,00,00,00,53,00,46,00,53,00,00,00,46,00,69,00,6c,00,65,00,20,00,53,00,79,00,73,00,74,00,65,00,6d,00,00,00,42,00,6f,00,6f,00,74,00,20,00,46,00,69,00,6c,00,65,00,20,00,53,00,79,00,73,00,74,00,65,00,6d,00,00,00,42,00,61,00,73,00,65,00,00,00,00,00
+
+[HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\GroupOrderList]
+"Boot Bus Extender"=hex:05,00,00,00,01,00,00,00,02,00,00,00,03,00,00,00,04,00,00,00,05,00,00,00
+
 ; ACPI.sys validates firmware tables and publishes the ACPI firmware interface.
 [HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\ACPI]
 "Type"=dword:00000001
