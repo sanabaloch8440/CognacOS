@@ -40,7 +40,7 @@ const IRP_MN_USER_FS_REQUEST: u8 = 0;
 const FILE_USE_FILE_POINTER_POSITION: i64 = -2;
 const IRP_MJ_FLUSH_BUFFERS: usize = 9;
 
-type MountedFat = FatFilesystem<crate::ata_disk::IoManagerBlockDevice>;
+type MountedFat = FatFilesystem<crate::io::storage::IoManagerBlockDevice>;
 
 static DRIVER_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static DRIVER_INIT: AtomicUsize = AtomicUsize::new(0);
@@ -82,10 +82,10 @@ fn map_mount_error(_: MountError) -> i32 { STATUS_UNRECOGNIZED_VOLUME }
 
 fn with_mounted<T>(
     writable: bool,
-    operation: impl FnOnce(&cognacos_fat32::fatfs::FileSystem<DiskStream<crate::ata_disk::IoManagerBlockDevice>>) -> Result<T, i32>,
+    operation: impl FnOnce(&cognacos_fat32::fatfs::FileSystem<DiskStream<crate::io::storage::IoManagerBlockDevice>>) -> Result<T, i32>,
 ) -> Result<T, i32> {
     let _resource = VOLUME_RESOURCE.lock();
-    let disk = crate::ata_disk::fat32_block_device().map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+    let disk = crate::io::storage::fat32_block_device().map_err(|_| STATUS_IO_DEVICE_ERROR)?;
     let sectors = disk.sector_count();
     let mounted = if writable {
         FatFilesystem::mount_read_write(disk, 0, sectors)
