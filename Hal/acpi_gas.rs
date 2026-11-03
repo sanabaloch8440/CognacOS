@@ -11,7 +11,6 @@ const SPACE_SYSTEM_MEMORY:u8=0;
 const SPACE_SYSTEM_IO:u8=1;
 static MAP_LOCK:AtomicBool=AtomicBool::new(false);
 static RMW_LOCK:AtomicBool=AtomicBool::new(false);
-static RMW_LOCK:AtomicBool=AtomicBool::new(false);
 static MAPPED_PHYSICAL:[AtomicU64;MAX_GAS_MAPPINGS]=[const{AtomicU64::new(0)};MAX_GAS_MAPPINGS];
 static MAPPED_VIRTUAL:[AtomicU64;MAX_GAS_MAPPINGS]=[const{AtomicU64::new(0)};MAX_GAS_MAPPINGS];
 
@@ -21,6 +20,7 @@ pub enum GasError{UnsupportedAddressSpace,InvalidAddress,InvalidWidth,InvalidAcc
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 struct Access{bytes:u8,field_width:u8,bit_offset:u8,mask:u64}
 fn access(gas:crate::acpi::AcpiGas)->Result<Access,GasError>{
+    if !matches!(gas.address_space_id,SPACE_SYSTEM_MEMORY|SPACE_SYSTEM_IO){return Err(GasError::UnsupportedAddressSpace)}
     if gas.address==0{return Err(GasError::InvalidAddress)}
     if gas.bit_width==0||gas.bit_width>64||gas.bit_offset>63
         ||gas.bit_offset as u16+gas.bit_width as u16>64{return Err(GasError::InvalidWidth)}
@@ -31,6 +31,8 @@ fn access(gas:crate::acpi::AcpiGas)->Result<Access,GasError>{
     };
     if minimum>bytes as u16*1{return Err(GasError::InvalidWidth)}
     if gas.address%(bytes as u64)!=0{return Err(GasError::Unaligned)}
+    if gas.address_space_id==SPACE_SYSTEM_IO&&(bytes==8||gas.address>u16::MAX as u64||gas.address+bytes as u64>0x1_0000){return Err(GasError::InvalidAddress)}
+    if gas.address_space_id==SPACE_SYSTEM_MEMORY&&gas.address%PAGE_SIZE+bytes as u64>PAGE_SIZE{return Err(GasError::CrossesPage)}
     let field_mask=if gas.bit_width==64{u64::MAX}else{(1u64<<gas.bit_width)-1};
     Ok(Access{bytes,field_width:gas.bit_width,bit_offset:gas.bit_offset,mask:field_mask<<gas.bit_offset})
 }
@@ -167,7 +169,7 @@ mod tests{
         assert_eq!(access(gas(0,0x1000,8,0,5)),Err(GasError::InvalidAccessSize));
     }
     #[test]fn rejects_unknown_spaces_and_invalid_port_ranges(){
-        assert_eq!(access(gas(0x7f,0x1000,8,0,1)).map(|_|()),Ok(()));
+        assert_eq!(access(gas(0x7f,0x1000,8,0,1)),Err(GasError::UnsupportedAddressSpace));
         assert_eq!(access(gas(0,0,8,0,1)),Err(GasError::InvalidAddress));
         assert_eq!(access(gas(1,0x10000,8,0,1)).map(|_|()),Ok(()));
     }
