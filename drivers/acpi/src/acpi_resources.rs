@@ -193,7 +193,7 @@ fn allocation_satisfies(requirement:Resource,allocated:Resource)->bool{
                 &&level_triggered==a_level&&active_low==a_low&&shared==a_shared,
         (Resource::Irq{mask,level_triggered,active_low,shared,..},
          Resource::ExtendedIrq{flags,interrupts,count}) =>
-            count==1&&mask&(1u16.checked_shl(interrupts[0]).unwrap_or(0) as u16)!=0
+            count==1&&interrupts[0]<16&&mask&(1u16<<interrupts[0])!=0
                 &&level_triggered==(flags&2!=0)&&active_low==(flags&4!=0)&&shared==(flags&8!=0),
         (Resource::ExtendedIrq{flags,interrupts,count},
          Resource::ExtendedIrq{flags:actual_flags,interrupts:actual,count:actual_count}) =>
