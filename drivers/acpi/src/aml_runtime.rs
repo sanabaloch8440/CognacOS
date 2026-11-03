@@ -384,15 +384,23 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
 /// AML-style scalar conversion. Integer strings are interpreted as
 /// hexadecimal text; buffers are little-endian and limited to eight bytes.
 pub fn to_integer(value:&AmlRuntimeValue)->Result<u64,RuntimeError>{
+    to_integer_with_width(value,64)
+}
+
+/// Explicit ToInteger conversion using the AML DefinitionBlock's integer
+/// width. Revision 1 uses 32-bit values; revision 2 and later use 64-bit.
+pub fn to_integer_with_width(value:&AmlRuntimeValue,width_bits:u8)->Result<u64,RuntimeError>{
+    if !matches!(width_bits,32|64){return Err(RuntimeError::TypeMismatch)}
+    let max=if width_bits==32{u32::MAX as u64}else{u64::MAX};
     match value.kind{
-        AmlValueKind::Integer=>Ok(value.integer),
+        AmlValueKind::Integer=>Ok(value.integer&max),
         AmlValueKind::Buffer=>{
             let length=checked_byte_length(value)?;
             if length==0{return Err(RuntimeError::EmptyBuffer)}
-            // ACPI ToInteger consumes at most the least-significant eight
-            // bytes; the first buffer byte is the least-significant byte.
+            // Buffer byte zero is the least-significant byte. Excess high
+            // bytes are truncated to the AML integer width.
             let mut out=0u64;
-            for i in 0..core::cmp::min(length,8){out|=(value.bytes[i] as u64)<<(i*8)}
+            for i in 0..core::cmp::min(length,(width_bits/8) as usize){out|=(value.bytes[i] as u64)<<(i*8)}
             Ok(out)
         }
         AmlValueKind::String=>{
@@ -413,6 +421,7 @@ pub fn to_integer(value:&AmlRuntimeValue)->Result<u64,RuntimeError>{
                 };
                 if digit>=radix{return Err(RuntimeError::InvalidIntegerString)}
                 out=out.checked_mul(radix).and_then(|v|v.checked_add(digit)).ok_or(RuntimeError::ValueTooLarge)?;
+                if out>max{return Err(RuntimeError::ValueTooLarge)}
             }
             Ok(out)
         }
@@ -452,6 +461,21 @@ pub fn integer_to_string(value:u64)->AmlRuntimeValue{
 mod tests{
     use super::*;
     use crate::aml::load_definition_block;
+    #[test]fn explicit_to_integer_obeys_definition_block_width(){
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=8;buffer.bytes[..8].copy_from_slice(&[0x78,0x56,0x34,0x12,0xff,0xff,0xff,0xff]);
+        assert_eq!(to_integer_with_width(&buffer,32),Ok(0x12345678));
+        assert_eq!(to_integer_with_width(&buffer,64),Ok(0xffffffff12345678));
+        let mut decimal=AmlRuntimeValue::EMPTY;decimal.kind=AmlValueKind::String;
+        decimal.byte_length=10;decimal.bytes[..10].copy_from_slice(b"4294967295");
+        assert_eq!(to_integer_with_width(&decimal,32),Ok(u32::MAX as u64));
+        decimal.bytes[..10].copy_from_slice(b"4294967296");
+        assert_eq!(to_integer_with_width(&decimal,32),Err(RuntimeError::ValueTooLarge));
+        let mut hex=decimal;hex.byte_length=10;hex.bytes[..10].copy_from_slice(b"0x100000000");
+        assert_eq!(to_integer_with_width(&hex,32),Err(RuntimeError::ValueTooLarge));
+        assert_eq!(to_integer_with_width(&hex,16),Err(RuntimeError::TypeMismatch));
+    }
+
     #[test]fn package_target_store_deep_copies_nested_values(){
         let aml=[0x08,b'P',b'K',b'G',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
