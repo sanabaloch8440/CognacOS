@@ -379,3 +379,33 @@ unsafe extern "win64" fn filesystem_dispatch(device: *mut DeviceObject, irp: *mu
 pub fn flush_volume() -> i32 {
     with_mounted(true, |_| Ok(())).map(|_| STATUS_SUCCESS).unwrap_or(STATUS_IO_DEVICE_ERROR)
 }
+
+
+/// QEMU storage integration probe. The image builder places a fixed-size
+/// COGNACOS.TST file on the FAT32 data partition. The test writes a deterministic
+/// marker through the filesystem, reads it back, and flushes the partition.
+pub fn fat32_storage_round_trip_test() -> i32 {
+    const PATH:&[u8]=b"\\COGNACOS.TST";
+    const EXPECTED:&[u8;32]=b"COGNACOS FAT32 PIO PASS 00000000";
+    let size=match file_size(PATH){Ok(v)=>v,Err(status)=>return status};
+    if size!=32{return STATUS_INVALID_PARAMETER}
+    let mut original=[0u8;32];
+    if read_file(PATH,0,&mut original).ok()!=Some(32){return STATUS_IO_DEVICE_ERROR}
+    if write_file(PATH,0,EXPECTED).ok()!=Some(32){
+        let _=write_file(PATH,0,&original);
+        return STATUS_IO_DEVICE_ERROR
+    }
+    let mut verify=[0u8;32];
+    let read=read_file(PATH,0,&mut verify);
+    if read.ok()!=Some(32)||&verify!=EXPECTED{
+        let _=write_file(PATH,0,&original);
+        let _=flush_volume();
+        return STATUS_IO_DEVICE_ERROR
+    }
+    flush_volume()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoFAT32StorageRoundTripTest()->i32{
+    fat32_storage_round_trip_test()
+}
