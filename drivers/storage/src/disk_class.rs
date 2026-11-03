@@ -17,6 +17,7 @@ pub const PARTITION_MBR_TYPE_EXTENDED: u8 = 0x05;
 pub const PARTITION_MBR_TYPE_EXTENDED_LBA: u8 = 0x0f;
 pub const PARTITION_MBR_TYPE_PROTECTIVE: u8 = 0xee;
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiskIdentity {
     /// ATA IDENTIFY serial number, decoded from words 10..=19.
@@ -29,6 +30,7 @@ pub struct DiskIdentity {
     pub stable_id: u64,
 }
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiskDescriptor {
     pub identity: DiskIdentity,
