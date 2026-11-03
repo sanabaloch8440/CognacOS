@@ -97,7 +97,7 @@ static LAST_RSDP_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::At
 pub fn rsdp_address() -> u64 { LAST_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Acquire) }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEntries, MalformedEntry, MissingRoot, MissingMadt, AddressOutOfRange }
+pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEntries, MalformedEntry, MissingRoot, MissingMadt, AddressOutOfRange, DuplicateTable }
 
 /// Convert ACPI discovery failures to the shared NTSTATUS ABI at the driver boundary.
 pub const fn error_to_ntstatus(error: AcpiError) -> nt_abi::ntstatus::NTSTATUS {
@@ -107,7 +107,7 @@ pub const fn error_to_ntstatus(error: AcpiError) -> nt_abi::ntstatus::NTSTATUS {
         AcpiError::TooManyEntries => STATUS_INSUFFICIENT_RESOURCES,
         AcpiError::MissingRoot | AcpiError::MissingMadt => STATUS_UNSUCCESSFUL,
         AcpiError::BadSignature | AcpiError::BadLength | AcpiError::BadChecksum
-        | AcpiError::MalformedEntry | AcpiError::AddressOutOfRange => STATUS_INVALID_PARAMETER,
+        | AcpiError::MalformedEntry | AcpiError::AddressOutOfRange | AcpiError::DuplicateTable => STATUS_INVALID_PARAMETER,
     }
 }
 
@@ -378,6 +378,7 @@ pub fn find_table_with_mapper<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address
     for offset in (36..root_length).step_by(width){
         let address=if width==8{u64::from_le_bytes(root[offset..offset+8].try_into().map_err(|_|AcpiError::Truncated)?)}else{u32le(root,offset)? as u64};
         if address==0{continue}
+        if address & 3 != 0 { return Err(AcpiError::MalformedEntry); }
         let header=mapped_range(mapper,address,36)?;
         if header.get(0..4)!=Some(&signature[..]){continue}
         let length=u32le(header,4)? as usize;
@@ -410,6 +411,62 @@ pub fn find_dsdt_with_mapper<'a, M: AcpiPhysicalMapper>(
     validate_sdt(dsdt, Some(*b"DSDT"))?;
     Ok(dsdt)
 }
+/// Resolve an SSDT by its zero-based occurrence in root-table order. Multiple
+/// SSDTs are expected and are intentionally not treated as duplicate singleton
+/// tables; callers load them in the returned instance order.
+pub fn find_ssdt_with_mapper<'a, M: AcpiPhysicalMapper>(mapper: &'a M, rsdp_address: u64, instance: usize) -> Result<&'a [u8], AcpiError> {
+    find_table_with_mapper(mapper, rsdp_address, *b"SSDT", instance)
+}
+
+/// Return a singleton table only when exactly one matching instance exists.
+pub fn find_unique_table_with_mapper<'a, M: AcpiPhysicalMapper>(mapper: &'a M, rsdp_address: u64, signature: [u8; 4]) -> Result<&'a [u8], AcpiError> {
+    let first = find_table_with_mapper(mapper, rsdp_address, signature, 0)?;
+    match find_table_with_mapper(mapper, rsdp_address, signature, 1) {
+        Ok(_) => Err(AcpiError::DuplicateTable),
+        Err(AcpiError::MissingRoot) => Ok(first),
+        Err(error) => Err(error),
+    }
+}
+
+/// Validated table identity and firmware provenance. Mapping lifetime remains
+/// owned by the HAL; this record does not extend the lifetime of mapped bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AcpiTableProvenance {
+    pub rsdp_address: u64, pub physical_address: u64, pub signature: [u8; 4],
+    pub revision: u8, pub length: u32, pub checksum: u8, pub instance: usize,
+    pub validated: bool,
+}
+
+/// Return the physical address and validated header metadata for a table.
+pub fn table_provenance_with_mapper<M: AcpiPhysicalMapper>(mapper: &M, rsdp_address: u64, signature: [u8; 4], instance: usize) -> Result<AcpiTableProvenance, AcpiError> {
+    let prefix = mapped_range(mapper, rsdp_address, 20)?;
+    let revision = prefix[15];
+    let rsdp_len = if revision >= 2 { let x = mapped_range(mapper, rsdp_address, 36)?; let n = u32le(x, 20)? as usize; if !(36..=MAX_RSDP_LENGTH).contains(&n) { return Err(AcpiError::BadLength); } n } else { 20 };
+    let roots = parse_rsdp(mapped_range(mapper, rsdp_address, rsdp_len)?)?;
+    let (root_address, root_sig, width) = if revision >= 2 && roots.xsdt_address != 0 { (roots.xsdt_address, *b"XSDT", 8usize) } else if roots.rsdt_address != 0 { (roots.rsdt_address as u64, *b"RSDT", 4usize) } else { return Err(AcpiError::MissingRoot); };
+    let h = mapped_range(mapper, root_address, 36)?;
+    let n = u32le(h, 4)? as usize;
+    if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&n) { return Err(AcpiError::BadLength); }
+    let root = mapped_range(mapper, root_address, n)?;
+    let rh = validate_sdt(root, Some(root_sig))?;
+    if (rh.length as usize - 36) % width != 0 { return Err(AcpiError::MalformedEntry); }
+    let mut seen = 0usize;
+    for off in (36..n).step_by(width) {
+        let address = if width == 8 { u64::from_le_bytes(root[off..off+8].try_into().map_err(|_|AcpiError::Truncated)?) } else { u32le(root, off)? as u64 };
+        if address == 0 { continue; }
+        if address & 3 != 0 { return Err(AcpiError::MalformedEntry); }
+        let th = mapped_range(mapper, address, 36)?;
+        if th.get(0..4) != Some(&signature[..]) { continue; }
+        let length = u32le(th, 4)? as usize;
+        if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&length) { return Err(AcpiError::BadLength); }
+        let table = mapped_range(mapper, address, length)?;
+        let parsed = validate_sdt(table, Some(signature))?;
+        if seen == instance { return Ok(AcpiTableProvenance { rsdp_address, physical_address: address, signature, revision: parsed.revision, length: parsed.length, checksum: parsed.checksum, instance, validated: true }); }
+        seen += 1;
+    }
+    Err(AcpiError::MissingRoot)
+}
+
 /// Discover and parse MADT through the platform mapper, without assuming a
 /// low identity mapping. The remembered RSDP is published only after success.
 pub fn discover_madt_with_mapper<M:AcpiPhysicalMapper>(mapper:&M,rsdp_address:u64)->Result<MadtInfo,AcpiError>{
@@ -1458,7 +1515,6 @@ mod dsdt_resolution_tests {
     fn finish(bytes: &mut [u8], checksum_index: usize) {
         bytes[checksum_index] = 0;
         bytes[checksum_index] = 0u8.wrapping_sub(bytes.iter().fold(0u8, |s, b| s.wrapping_add(*b)));
-    }
     }
     #[test]
     fn resolves_dsdt_from_extended_fadt_pointer() {
