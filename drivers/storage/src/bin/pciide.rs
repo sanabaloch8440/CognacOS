@@ -381,8 +381,7 @@ unsafe extern "win64" fn pnp_complete(
                 if ext.controller.state == ControllerState::Started {
                     let _ = ext.controller.stop_succeeded();
                 }
-                // Do not leave stale channel state visible after stop/removal.
-                let _ = unregister_ataport_miniport(extension);
+                // The miniport was unregistered before forwarding STOP/REMOVE.
                 ext.channels = [None; 4];
                 ext.active_channels = 0;
                 ext.present_drives = 0;
@@ -390,7 +389,6 @@ unsafe extern "win64" fn pnp_complete(
         }
         IRP_MN_REMOVE_DEVICE => {
             let ext = unsafe { &mut *extension };
-            let _ = unregister_ataport_miniport(extension);
             let lower = ext.lower_device;
             unsafe { (*extension).magic = 0; }
             if !lower.is_null() { unsafe { IoDetachDevice(lower); } }
@@ -425,7 +423,12 @@ unsafe extern "win64" fn dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> 
                 }
                 unsafe { (*extension).previous_state = previous; }
             }
-            IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE | IRP_MN_SURPRISE_REMOVAL => {}
+            IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE | IRP_MN_SURPRISE_REMOVAL => {
+                let status = unsafe { unregister_ataport_miniport(extension) };
+                if status != STATUS_SUCCESS && status != STATUS_DEVICE_NOT_READY {
+                    return status;
+                }
+            }
             _ => {}
         }
         unsafe {
