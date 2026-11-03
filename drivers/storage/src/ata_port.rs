@@ -297,3 +297,145 @@ mod request_validation_tests {
         assert!(validate_request(&flush).is_err());
     }
 }
+
+
+/// PASSIVE_LEVEL request scheduling metadata for the port driver. This is a
+/// bounded, allocation-free queue; the caller must protect it with the port's
+/// queue lock and invoke dequeue/dispatch only from a PASSIVE_LEVEL work item.
+/// It deliberately does not execute miniport callbacks or provide a scheduler.
+pub const ATA_PASSIVE_QUEUE_CAPACITY: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassiveRequestState { Free, Queued, Running, CancelRequested, Completed, Cancelled, TimedOut }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PassiveRequest {
+    pub request_id: u64,
+    pub enqueue_sequence: u64,
+    pub deadline_ms: u64,
+    pub state: PassiveRequestState,
+}
+impl PassiveRequest {
+    pub const EMPTY: Self = Self {
+        request_id: 0, enqueue_sequence: 0, deadline_ms: 0,
+        state: PassiveRequestState::Free,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassiveQueueError { InvalidRequest, Full, Duplicate, NotFound, InvalidState, Overflow }
+
+pub struct PassiveRequestQueue {
+    entries: [PassiveRequest; ATA_PASSIVE_QUEUE_CAPACITY],
+    next_sequence: u64,
+}
+impl PassiveRequestQueue {
+    pub const fn new() -> Self {
+        Self { entries: [PassiveRequest::EMPTY; ATA_PASSIVE_QUEUE_CAPACITY], next_sequence: 1 }
+    }
+
+    /// Enqueue a request with an absolute monotonic deadline. now_ms must
+    /// come from the kernel monotonic clock, not wall-clock time.
+    pub fn enqueue(&mut self, request_id: u64, now_ms: u64, timeout_ms: u32) -> Result<(), PassiveQueueError> {
+        if request_id == 0 || timeout_ms == 0 { return Err(PassiveQueueError::InvalidRequest); }
+        if self.entries.iter().any(|entry| entry.state != PassiveRequestState::Free && entry.request_id == request_id) {
+            return Err(PassiveQueueError::Duplicate);
+        }
+        let deadline_ms = now_ms.checked_add(timeout_ms as u64).ok_or(PassiveQueueError::Overflow)?;
+        let slot = self.entries.iter_mut().find(|entry| entry.state == PassiveRequestState::Free
+            || matches!(entry.state, PassiveRequestState::Completed | PassiveRequestState::Cancelled | PassiveRequestState::TimedOut))
+            .ok_or(PassiveQueueError::Full)?;
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1).max(1);
+        *slot = PassiveRequest { request_id, enqueue_sequence: sequence, deadline_ms, state: PassiveRequestState::Queued };
+        Ok(())
+    }
+
+    /// Select the oldest queued request. Expired queued requests are marked
+    /// TimedOut and are never returned for miniport execution.
+    pub fn dequeue(&mut self, now_ms: u64) -> Option<u64> {
+        for entry in &mut self.entries {
+            if entry.state == PassiveRequestState::Queued && now_ms >= entry.deadline_ms {
+                entry.state = PassiveRequestState::TimedOut;
+            }
+        }
+        let index = self.entries.iter().enumerate()
+            .filter(|(_, entry)| entry.state == PassiveRequestState::Queued)
+            .min_by_key(|(_, entry)| entry.enqueue_sequence)
+            .map(|(index, _)| index)?;
+        self.entries[index].state = PassiveRequestState::Running;
+        Some(self.entries[index].request_id)
+    }
+
+    /// Cancellation of queued work is immediate. Running work is marked for
+    /// cancellation; the worker must observe the flag at a safe checkpoint.
+    pub fn cancel(&mut self, request_id: u64) -> Result<PassiveRequestState, PassiveQueueError> {
+        let entry = self.entries.iter_mut().find(|entry| entry.state != PassiveRequestState::Free
+            && entry.request_id == request_id).ok_or(PassiveQueueError::NotFound)?;
+        match entry.state {
+            PassiveRequestState::Queued => entry.state = PassiveRequestState::Cancelled,
+            PassiveRequestState::Running => entry.state = PassiveRequestState::CancelRequested,
+            PassiveRequestState::CancelRequested => {},
+            _ => return Err(PassiveQueueError::InvalidState),
+        }
+        Ok(entry.state)
+    }
+
+    /// Complete a running request only if it was not cancelled or timed out.
+    pub fn complete(&mut self, request_id: u64, now_ms: u64) -> Result<PassiveRequestState, PassiveQueueError> {
+        let entry = self.entries.iter_mut().find(|entry| entry.state != PassiveRequestState::Free
+            && entry.request_id == request_id).ok_or(PassiveQueueError::NotFound)?;
+        match entry.state {
+            PassiveRequestState::Running if now_ms >= entry.deadline_ms => {
+                entry.state = PassiveRequestState::TimedOut;
+            }
+            PassiveRequestState::Running => entry.state = PassiveRequestState::Completed,
+            PassiveRequestState::CancelRequested => entry.state = PassiveRequestState::Cancelled,
+            _ => return Err(PassiveQueueError::InvalidState),
+        }
+        Ok(entry.state)
+    }
+
+    pub fn state(&self, request_id: u64) -> Option<PassiveRequestState> {
+        self.entries.iter().find(|entry| entry.state != PassiveRequestState::Free && entry.request_id == request_id)
+            .map(|entry| entry.state)
+    }
+
+    pub fn queued(&self) -> usize {
+        self.entries.iter().filter(|entry| entry.state == PassiveRequestState::Queued).count()
+    }
+}
+
+#[cfg(test)]
+mod passive_queue_tests {
+    use super::*;
+
+    #[test]
+    fn passive_queue_is_fifo_and_timeout_is_enforced_before_dispatch() {
+        let mut queue = PassiveRequestQueue::new();
+        queue.enqueue(11, 100, 50).unwrap();
+        queue.enqueue(12, 100, 500).unwrap();
+        assert_eq!(queue.dequeue(150), Some(12));
+        assert_eq!(queue.state(11), Some(PassiveRequestState::TimedOut));
+        assert_eq!(queue.complete(12, 151), Ok(PassiveRequestState::Completed));
+    }
+
+    #[test]
+    fn cancellation_distinguishes_queued_and_running_requests() {
+        let mut queue = PassiveRequestQueue::new();
+        queue.enqueue(21, 0, 100).unwrap();
+        assert_eq!(queue.cancel(21), Ok(PassiveRequestState::Cancelled));
+        queue.enqueue(22, 0, 100).unwrap();
+        assert_eq!(queue.dequeue(1), Some(22));
+        assert_eq!(queue.cancel(22), Ok(PassiveRequestState::CancelRequested));
+        assert_eq!(queue.complete(22, 2), Ok(PassiveRequestState::Cancelled));
+    }
+
+    #[test]
+    fn queue_rejects_duplicate_ids_and_deadline_overflow() {
+        let mut queue = PassiveRequestQueue::new();
+        queue.enqueue(31, 0, 10).unwrap();
+        assert_eq!(queue.enqueue(31, 0, 10), Err(PassiveQueueError::Duplicate));
+        assert_eq!(queue.enqueue(32, u64::MAX, 1), Err(PassiveQueueError::Overflow));
+    }
+}
