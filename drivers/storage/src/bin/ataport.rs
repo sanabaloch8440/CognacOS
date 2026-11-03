@@ -104,9 +104,14 @@ struct AtaPortFdoExtension {
 }
 const _:()=assert!(core::mem::size_of::<AtaPortFdoExtension>()<=256);
 
-struct PortLock(UnsafeCell<()>);
-unsafe impl Sync for PortLock {}
 static PORT_LOCK:AtomicBool=AtomicBool::new(false);
+struct ActiveRequest(*mut AtaPortFdoExtension);
+impl Drop for ActiveRequest {
+ fn drop(&mut self) {
+  let _guard=Guard::acquire();
+  unsafe{if (*self.0).active_requests>0{(*self.0).active_requests-=1;}}
+ }
+}
 struct Guard;
 impl Guard {
  fn acquire()->Self { while PORT_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();} Self }
@@ -132,19 +137,43 @@ unsafe fn register_miniport(ext:*mut AtaPortFdoExtension,table:*const AtaPortMin
  if table.is_null(){return STATUS_INVALID_PARAMETER}
  let candidate=unsafe{core::ptr::read_unaligned(table)};
  if candidate.size as usize!=core::mem::size_of::<AtaPortMiniportInterface>()||candidate.version!=ATA_PORT_INTERFACE_VERSION||candidate.submit.is_none(){return STATUS_REVISION_MISMATCH}
+ {
+  let _guard=Guard::acquire();
+  if unsafe{(*ext).started==0||(*ext).removing!=0}{return STATUS_DEVICE_NOT_READY}
+  if unsafe{(*ext).miniport.is_some()}{return STATUS_DEVICE_BUSY}
+  // Reserve registration without invoking controller callbacks under the spin lock.
+  unsafe{(*ext).started=2;}
+ }
+ let mut status=STATUS_SUCCESS;
+ if let Some(init)=candidate.initialize {status=unsafe{init(candidate.miniport_context,core::ptr::null())};}
+ if status==STATUS_SUCCESS {
+  if let Some(start)=candidate.start {status=unsafe{start(candidate.miniport_context)};}
+ }
  let _guard=Guard::acquire();
- if unsafe{(*ext).started==0||(*ext).removing!=0}{return STATUS_DEVICE_NOT_READY}
- if unsafe{(*ext).miniport.is_some()}{return STATUS_DEVICE_BUSY}
- if let Some(init)=candidate.initialize {let status=unsafe{init(candidate.miniport_context,core::ptr::null())};if status!=STATUS_SUCCESS{return status}}
- if let Some(start)=candidate.start {let status=unsafe{start(candidate.miniport_context)};if status!=STATUS_SUCCESS{if let Some(stop)=candidate.stop{let _=unsafe{stop(candidate.miniport_context)};}return status}}
- unsafe{(*ext).miniport=Some(candidate);}
- STATUS_SUCCESS
+ if status==STATUS_SUCCESS {
+  unsafe{(*ext).miniport=Some(candidate);(*ext).started=1;}
+ } else {
+  unsafe{(*ext).started=1;}
+ }
+ status
 }
 unsafe fn unregister_miniport(ext:*mut AtaPortFdoExtension,context:*mut c_void)->i32{
- let current={let _guard=Guard::acquire();let Some(current)= (unsafe{(*ext).miniport}) else{return STATUS_DEVICE_NOT_READY};if current.miniport_context!=context{return STATUS_ACCESS_DENIED}if unsafe{(*ext).active_requests!=0}{return STATUS_DEVICE_BUSY}unsafe{(*ext).miniport=None;}current};
- if let Some(stop)=current.stop {let status=unsafe{stop(current.miniport_context)};if status!=STATUS_SUCCESS{return status}}
- if let Some(unload)=current.unload{unsafe{unload(current.miniport_context)}}
- STATUS_SUCCESS
+ let current={
+  let _guard=Guard::acquire();
+  let Some(current)= (unsafe{(*ext).miniport}) else{return STATUS_DEVICE_NOT_READY};
+  if current.miniport_context!=context{return STATUS_ACCESS_DENIED}
+  unsafe{(*ext).started=2;(*ext).miniport=None;}
+  current
+ };
+ // No new requests can enter after the miniport pointer is cleared. Drain the
+ // bounded synchronous PIO rundown before the controller context is released.
+ while unsafe{(*ext).active_requests}!=0 {core::hint::spin_loop();}
+ let mut status=STATUS_SUCCESS;
+ if let Some(stop)=current.stop {status=unsafe{stop(current.miniport_context)};}
+ if let Some(unload)=current.unload {unsafe{unload(current.miniport_context)};}
+ let _guard=Guard::acquire();
+ unsafe{(*ext).started=1;}
+ status
 }
 
 unsafe extern "win64" fn pnp_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,context:PVOID)->i32{
@@ -186,8 +215,8 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  if major==IRP_MJ_INTERNAL_DEVICE_CONTROL{
   // DeviceIoControl: output length +0, input length +4, IOCTL code +16,
   // METHOD_NEITHER Type3InputBuffer +24 relative to Parameters.
-  let code=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(16).cast::<u32>())};
-  let input=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(24).cast::<*const c_void>())};
+  let code=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<u32>())};
+  let input=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(16).cast::<*const c_void>())};
   let status=match code{
    IOCTL_ATA_PORT_REGISTER_MINIPORT=>unsafe{register_miniport(ext,input.cast())},
    IOCTL_ATA_PORT_UNREGISTER_MINIPORT=>unsafe{unregister_miniport(ext,input.cast_mut())},
@@ -207,6 +236,7 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
   } else { None }
  };
  let Some(miniport)=miniport else{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}};
+ let _active=ActiveRequest(ext);
  let mut request=AtaPortRequest{size:core::mem::size_of::<AtaPortRequest>() as u32,operation,request_id:1,lba:0,sector_count:0,flags:0,system_buffer:core::ptr::null_mut(),sg_list:core::ptr::null(),sg_count:0,timeout_ms:30_000,packet_cdb:core::ptr::null(),packet_cdb_length:0,reserved:[0;7]};
  let expected=if operation==AtaPortOperation::Flush{0}else{
   let length=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
@@ -219,7 +249,6 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  let Some(submit)=miniport.submit else{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}};
  let mut transferred=0u32;
  let status=unsafe{submit(miniport.miniport_context,&request,&mut transferred)};
- {let _guard=Guard::acquire();unsafe{(*ext).active_requests=(*ext).active_requests.saturating_sub(1);}}
  if status!=STATUS_SUCCESS{return unsafe{complete(irp,status,0)}}
  if transferred!=expected{return unsafe{complete(irp,STATUS_DEVICE_DATA_ERROR,0)}}
  unsafe{complete(irp,STATUS_SUCCESS,transferred as usize)}
