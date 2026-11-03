@@ -141,7 +141,7 @@ impl PowerResourceGraph{
   if self.find(node).is_some(){return Err(PowerResourceError::DuplicateNode)}
   if self.count==MAX_POWER_RESOURCES{return Err(PowerResourceError::Capacity)}
   self.entries[self.count]=PowerResource{node,system_level,order,enabled,
-   references:if enabled{1}else{0},..PowerResource::EMPTY};
+   references:0,..PowerResource::EMPTY};
   self.count+=1;Ok(())
  }
  /// Replace dependencies only after every referenced PowerResource is known.
@@ -178,6 +178,11 @@ impl PowerResourceGraph{
     return Err(error)
    }
    acquired+=1;
+  }
+  if self.entries[index].enabled{
+   // Firmware may leave a resource on before OS ownership. Acquire its
+   // dependency references without redundantly invoking _ON.
+   self.entries[index].references=1;return Ok(())
   }
   if !backend.set_power_resource(node,true){
    while acquired>0{acquired-=1;let rollback=self.find(dependencies[acquired]).ok_or(PowerResourceError::MissingDependency)?;
@@ -302,6 +307,12 @@ mod power_resource_graph_tests{
   graph.register(1,0,0,false).unwrap();graph.register(2,0,1,false).unwrap();
   graph.register(3,0,2,false).unwrap();graph.set_dependencies(2,&[1]).unwrap();
   graph.set_dependencies(3,&[2]).unwrap();graph
+ }
+ #[test]fn firmware_enabled_resource_is_adopted_without_duplicate_on(){
+  let mut graph=PowerResourceGraph::new();graph.register(8,0,0,true).unwrap();
+  let mut backend=Backend::new();graph.acquire(8,&mut backend).unwrap();
+  assert_eq!(backend.count,0);assert_eq!(graph.resource(8).unwrap().references,1);
+  graph.release(8,&mut backend).unwrap();assert_eq!(backend.calls[0],(8,false));
  }
  #[test]fn dependencies_power_on_before_dependent_and_off_after(){
   let mut graph=graph();let mut backend=Backend::new();graph.acquire(3,&mut backend).unwrap();
