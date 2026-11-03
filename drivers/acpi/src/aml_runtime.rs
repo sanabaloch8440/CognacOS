@@ -365,6 +365,30 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
     Ok(converted)
 }
 
+/// Apply implicit source conversion when an AML operator requires Integer.
+/// Unlike explicit ToInteger, String operands are hexadecimal without a 0x
+/// prefix and terminate at the first non-hexadecimal character.
+pub fn to_integer_implicit(value:&AmlRuntimeValue,width_bits:u8)->Result<u64,RuntimeError>{
+    if !matches!(width_bits,32|64){return Err(RuntimeError::TypeMismatch)}
+    match value.kind{
+        AmlValueKind::Integer=>{
+            let mask=if width_bits==32{u32::MAX as u64}else{u64::MAX};
+            Ok(value.integer&mask)
+        }
+        AmlValueKind::Buffer=>{
+            let length=checked_byte_length(value)?;
+            if length==0{return Err(RuntimeError::EmptyBuffer)}
+            let mut result=0u64;
+            for i in 0..core::cmp::min(length,(width_bits/8) as usize){
+                result|=(value.bytes[i] as u64)<<(i*8);
+            }
+            Ok(result)
+        }
+        AmlValueKind::String=>implicit_string_to_integer(value,width_bits),
+        _=>Err(RuntimeError::TypeMismatch),
+    }
+}
+
 /// Convert an AML source operand to the data type required by an operator.
 /// This is intentionally separate from explicit ToInteger: implicit
 /// String-to-Integer conversion uses unprefixed hexadecimal text, while
@@ -639,6 +663,19 @@ pub fn integer_to_string(value:u64)->AmlRuntimeValue{
 mod tests{
     use super::*;
     use crate::aml::load_definition_block;
+    #[test]fn implicit_integer_source_conversion_uses_hex_and_definition_width(){
+        let mut text=AmlRuntimeValue::EMPTY;text.kind=AmlValueKind::String;
+        text.byte_length=4;text.bytes[..4].copy_from_slice(b"2aZ9");
+        assert_eq!(to_integer_implicit(&text,32),Ok(0x2a));
+        text.byte_length=10;text.bytes[..10].copy_from_slice(b"123456789A");
+        assert_eq!(to_integer_implicit(&text,32),Ok(0x12345678));
+        assert_eq!(to_integer_implicit(&text,64),Ok(0x123456789a));
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=8;buffer.bytes[..8].copy_from_slice(&[1,2,3,4,5,6,7,8]);
+        assert_eq!(to_integer_implicit(&buffer,32),Ok(0x04030201));
+        assert_eq!(to_integer_implicit(&buffer,64),Ok(0x0807060504030201));
+    }
+
     #[test]fn explicit_to_integer_obeys_definition_block_width(){
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
         buffer.byte_length=8;buffer.bytes[..8].copy_from_slice(&[0x78,0x56,0x34,0x12,0xff,0xff,0xff,0xff]);
