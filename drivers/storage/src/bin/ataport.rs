@@ -33,6 +33,7 @@ const PCI_SUBCLASS_IDE:u8=1;
 const FDO_MAGIC:u64=0x434f_474e_4154_4150;
 const IOCTL_ATA_PORT_REGISTER_MINIPORT:u32=(FILE_DEVICE_CONTROLLER<<16)|(0x800<<2)|3;
 const IOCTL_ATA_PORT_UNREGISTER_MINIPORT:u32=(FILE_DEVICE_CONTROLLER<<16)|(0x801<<2)|3;
+const IOCTL_ATA_PORT_SUBMIT_MINIPORT:u32=(FILE_DEVICE_CONTROLLER<<16)|(0x802<<2)|3;
 const IRP_BUFFERED_IO:u32=0x10;
 const SECTOR_SIZE:u32=512;
 const MAX_PIO_SECTORS:u32=256;
@@ -193,6 +194,26 @@ unsafe extern "win64" fn remove_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,
  STATUS_SUCCESS
 }
 
+unsafe fn execute_request(ext:*mut AtaPortFdoExtension,request_ptr:*const AtaPortRequest)->(i32,u32){
+ if request_ptr.is_null(){return (STATUS_INVALID_PARAMETER,0)}
+ let request=unsafe{core::ptr::read_unaligned(request_ptr)};
+ let expected=match validate_request(&request){Ok(n)=>n,Err(status)=>return(status,0)};
+ let miniport={
+  let _guard=Guard::acquire();
+  if unsafe{(*ext).started!=1||(*ext).removing!=0}{return(STATUS_DEVICE_NOT_READY,0)}
+  let Some(current)=(unsafe{(*ext).miniport}) else{return(STATUS_DEVICE_NOT_READY,0)};
+  unsafe{(*ext).active_requests=(*ext).active_requests.saturating_add(1);}
+  current
+ };
+ let _active=ActiveRequest(ext);
+ let Some(submit)=miniport.submit else{return(STATUS_DEVICE_NOT_READY,0)};
+ let mut transferred=0u32;
+ let status=unsafe{submit(miniport.miniport_context,&request,&mut transferred)};
+ if status!=STATUS_SUCCESS{return(status,0)}
+ if transferred!=expected{return(STATUS_DEVICE_DATA_ERROR,0)}
+ (STATUS_SUCCESS,transferred)
+}
+
 unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
  let Some(ext)=extension(device) else{return STATUS_DELETE_PENDING};
@@ -210,45 +231,41 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  }
  if major==IRP_MJ_CREATE||major==IRP_MJ_CLOSE{return unsafe{complete(irp,STATUS_SUCCESS,0)}}
  if major==IRP_MJ_INTERNAL_DEVICE_CONTROL{
-  // DeviceIoControl: output length +0, input length +4, IOCTL code +16,
-  // METHOD_NEITHER Type3InputBuffer +24 relative to Parameters.
-  let code=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<u32>())};
-  let input=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(16).cast::<*const c_void>())};
-  let status=match code{
-   IOCTL_ATA_PORT_REGISTER_MINIPORT=>unsafe{register_miniport(ext,input.cast())},
-   IOCTL_ATA_PORT_UNREGISTER_MINIPORT=>unsafe{unregister_miniport(ext,input.cast_mut())},
-   _=>STATUS_INVALID_DEVICE_REQUEST,
+  // DeviceIoControl: IOCTL code +16 and METHOD_NEITHER Type3InputBuffer +24
+  // relative to Parameters, matching the x64 WDM IO_STACK_LOCATION layout.
+  let code=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(16).cast::<u32>())};
+  let input=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(24).cast::<*const c_void>())};
+  let (status,information)=match code{
+   IOCTL_ATA_PORT_REGISTER_MINIPORT=>(unsafe{register_miniport(ext,input.cast())},0),
+   IOCTL_ATA_PORT_UNREGISTER_MINIPORT=>(unsafe{unregister_miniport(ext,input.cast_mut())},0),
+   IOCTL_ATA_PORT_SUBMIT_MINIPORT=>unsafe{execute_request(ext,input.cast())},
+   _=>(STATUS_INVALID_DEVICE_REQUEST,0),
   };
-  return unsafe{complete(irp,status,0)}
+  return unsafe{complete(irp,status,information as usize)}
  }
- let operation=match major{IRP_MJ_READ=>AtaPortOperation::Read,IRP_MJ_WRITE=>AtaPortOperation::Write,IRP_MJ_FLUSH_BUFFERS=>AtaPortOperation::Flush,_=>return unsafe{complete(irp,STATUS_INVALID_DEVICE_REQUEST,0)}};
- let miniport={
-  let _guard=Guard::acquire();
-  if unsafe{(*ext).started==1&&(*ext).removing==0} {
-   let current=unsafe{(*ext).miniport};
-   if let Some(current)=current {
-    unsafe{(*ext).active_requests=(*ext).active_requests.saturating_add(1);}
-    Some(current)
-   } else { None }
-  } else { None }
+ let operation=match major{
+  IRP_MJ_READ=>AtaPortOperation::Read,
+  IRP_MJ_WRITE=>AtaPortOperation::Write,
+  IRP_MJ_FLUSH_BUFFERS=>AtaPortOperation::Flush,
+  _=>return unsafe{complete(irp,STATUS_INVALID_DEVICE_REQUEST,0)}
  };
- let Some(miniport)=miniport else{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}};
- let _active=ActiveRequest(ext);
- let mut request=AtaPortRequest{size:core::mem::size_of::<AtaPortRequest>() as u32,operation,request_id:1,lba:0,sector_count:0,flags:0,system_buffer:core::ptr::null_mut(),sg_list:core::ptr::null(),sg_count:0,timeout_ms:30_000,packet_cdb:core::ptr::null(),packet_cdb_length:0,reserved:[0;7]};
- let expected=if operation==AtaPortOperation::Flush{0}else{
+ let mut request=AtaPortRequest{
+  size:core::mem::size_of::<AtaPortRequest>() as u32,operation,request_id:1,
+  lba:0,sector_count:0,flags:0,system_buffer:core::ptr::null_mut(),
+  sg_list:core::ptr::null(),sg_count:0,timeout_ms:30_000,
+  packet_cdb:core::ptr::null(),packet_cdb_length:0,reserved:[0;7],
+ };
+ if operation!=AtaPortOperation::Flush {
   let length=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
   let offset=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<i64>())};
   let buffer=unsafe{(*irp).associated_irp[0] as *mut u8};let flags=unsafe{(*irp).flags};
   if flags&IRP_BUFFERED_IO==0||buffer.is_null()||offset<0||offset as u64%SECTOR_SIZE as u64!=0||length==0||length%SECTOR_SIZE!=0||length/SECTOR_SIZE>MAX_PIO_SECTORS{return unsafe{complete(irp,STATUS_INVALID_PARAMETER,0)}}
-  request.lba=offset as u64/SECTOR_SIZE as u64;request.sector_count=length/SECTOR_SIZE;request.system_buffer=buffer;length
- };
- if let Err(status)=validate_request(&request){return unsafe{complete(irp,status,0)}}
- let Some(submit)=miniport.submit else{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}};
- let mut transferred=0u32;
- let status=unsafe{submit(miniport.miniport_context,&request,&mut transferred)};
- if status!=STATUS_SUCCESS{return unsafe{complete(irp,status,0)}}
- if transferred!=expected{return unsafe{complete(irp,STATUS_DEVICE_DATA_ERROR,0)}}
- unsafe{complete(irp,STATUS_SUCCESS,transferred as usize)}
+  request.lba=offset as u64/SECTOR_SIZE as u64;
+  request.sector_count=length/SECTOR_SIZE;
+  request.system_buffer=buffer;
+ }
+ let (status,information)=unsafe{execute_request(ext,&request)};
+ unsafe{complete(irp,status,if status==STATUS_SUCCESS{information as usize}else{0})}
 }
 
 unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->i32{
