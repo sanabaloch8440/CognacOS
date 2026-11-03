@@ -877,7 +877,8 @@ pub fn set_time_zone_bias_minutes(bias_minutes: i32) -> bool {
 pub fn named_export_count() -> usize { exports().count() }
 pub fn ordinal_only_export_count() -> usize { manifest_26100::ORDINAL_ONLY.len() }
 pub fn self_test() -> bool {
- named_export_count()==3352 && ordinal_only_export_count()==37 && exports().all(|e|!e.name.is_empty())
+ named_export_count()==3352 && ordinal_only_export_count()==37
+ && exports().all(|e|!e.name.is_empty() && is_pinned_export_name(e.name.as_bytes()))
  && resolve(b"ntoskrnl.exe",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"kernel32.dll",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmMapIoSpace")) == Some(mm::runtime::mm_map_io_space as usize as u64)
