@@ -7,6 +7,11 @@
 //! Keep this layer as an adapter: do not duplicate parsers or touch APIC/PCI
 //! hardware directly. Every unsafe block must document the kernel contract
 //! that makes its pointers, IRQL, object references, and lifetime valid.
+/*
+ * FIXME(ACPI-PRODUCTION) — ACPI WDM bus driver and PnP integration
+ * FIXME(ACPI-PRODUCTION): This entry point wires table loading, AML identity evaluation, bus FDO/PDO publication, resource queries, and firmware-table interface callbacks together, but several lifecycle paths intentionally fail closed or remain incomplete. Intended completion: transactional DriverEntry rollback, complete IRP/PnP state machine and completion ownership, reference-counted PDO/relations lifetime, correct _PRS/_SRS/_CRS resource programming and verification, dependency/hotplug notifications, interface reference/dereference, unload synchronization, and robust status mapping. Do not claim production readiness until all allocations/registrations unwind on failure and QEMU plus hardware lifecycle tests pass.
+ */
+
 #![no_std]
 #![no_main]
 
