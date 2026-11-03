@@ -1,11 +1,10 @@
-//! WDM FILE_OBJECT provider. Immutable boot assets and ext4 files share one
-//! IRP dispatch path; ext4 data operations are delegated to the ext4 filesystem
-//! implementation through the partition's WDM block-device adapter.
+//! Generic NT I/O Manager FILE_OBJECT and process-handle services. Filesystem
+//! semantics live in registered filesystem drivers; this module only owns
+//! object lifetime, path-provider records, and synchronous IRP submission.
 
 use crate::hal::IrqSpinLock;
 use crate::wdm::{self, DriverObject, DeviceObject, Irp, IRP_MJ_CREATE, IRP_MJ_READ, IRP_MJ_WRITE, IRP_MJ_CLEANUP, IRP_MJ_CLOSE};
-use crate::nt_abi::io::{FILE_OBJECT, IO_STATUS_BLOCK, IO_STATUS_BLOCK_STATUS};
-use cognacos_ext4 as extfs;
+use crate::nt_abi::io::FILE_OBJECT;
 use crate::ntoskrnl::ob::runtime as ob;
 use crate::nt_abi::object::UNICODE_STRING;
 use core::ffi::c_void;
@@ -23,12 +22,6 @@ pub const STATUS_END_OF_FILE: i32 = 0xC000_0011u32 as i32;
 pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009Au32 as i32;
 pub const STATUS_DEVICE_BUSY: i32 = 0x8000_0011u32 as i32;
 pub const STATUS_MEDIA_WRITE_PROTECTED: i32 = 0xC000_00A2u32 as i32;
-const STATUS_UNSUCCESSFUL: i32 = 0xC000_0001u32 as i32;
-const STATUS_UNRECOGNIZED_VOLUME:i32=0xC000_014F_u32 as i32;
-const FILE_DEVICE_DISK_FILE_SYSTEM:u32=8;
-const IRP_MN_MOUNT_VOLUME:u8=1;
-const IRP_MN_VERIFY_VOLUME:u8=0;
-const IRP_MN_USER_FS_REQUEST:u8=0;
 const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010u32 as i32;
 const IO_TYPE_FILE: i16 = 5;
 const FILE_DEVICE_DISK: u32 = 7;
@@ -109,10 +102,7 @@ static STATE: IrqSpinLock<State> = IrqSpinLock::new(State::new());
 static BOOT_INIT: AtomicUsize = AtomicUsize::new(0);
 static DEVICE_INIT: AtomicUsize = AtomicUsize::new(0);
 static FILE_DEVICE: AtomicUsize = AtomicUsize::new(0);
-static FILE_SYSTEM_DEVICE:AtomicUsize=AtomicUsize::new(0);
-static FILE_SYSTEM_INIT:AtomicUsize=AtomicUsize::new(0);
 static FILE_OBJECT_TYPE: AtomicUsize = AtomicUsize::new(0);
-static VOLUME_DEVICE:AtomicUsize=AtomicUsize::new(0);
 
 unsafe extern "win64" fn file_dispatch(device: *mut DeviceObject, irp: *mut Irp) -> i32 {
     if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -193,7 +183,6 @@ const fn make_file_driver() -> DriverObject {
     major[IRP_MJ_WRITE as usize] = Some(file_dispatch);
     major[IRP_MJ_CLEANUP as usize] = Some(file_dispatch);
     major[IRP_MJ_CLOSE as usize] = Some(file_dispatch);
-    major[wdm::IRP_MJ_FILE_SYSTEM_CONTROL as usize] = Some(file_system_control_dispatch);
     DriverObject {
         object_type: 4,
         size: core::mem::size_of::<DriverObject>() as i16,
