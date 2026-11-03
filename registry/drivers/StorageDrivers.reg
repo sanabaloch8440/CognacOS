@@ -3,6 +3,15 @@ Windows Registry Editor Version 5.00
 ; Storage stack metadata is PnP-deferred until the relevant PE driver images and
 ; device resources are available. The current build does not claim these drivers
 ; are loadable just because their service entries exist.
+; ATA port driver is loaded early so the PCI IDE function driver can bind
+; controller miniports through the common port/miniport interface.
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\ataport]
+"Type"=dword:00000001
+"Start"=dword:00000000
+"ErrorControl"=dword:00000001
+"Group"="SCSI Miniport"
+"ImagePath"="\\SystemRoot\\System32\\drivers\\ataport.sys"
+
 [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\storahci]
 "Type"=dword:00000001
 "Start"=dword:00000003
