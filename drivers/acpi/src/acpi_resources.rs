@@ -333,8 +333,8 @@ pub fn encode_resource_template(resources:&ResourceList,output:&mut [u8])->Resul
     let mut cursor=0usize;
     for resource in resources.entries[..resources.count].iter().flatten(){
         match *resource{
-            Resource::Io{minimum,maximum,alignment,length,decode_16_bit:_}=>{
-                encode_qword_address(output,&mut cursor,1,0,0,alignment,minimum,maximum,length)?;
+            Resource::Io{minimum,maximum,alignment,length,decode_16_bit}=>{
+                encode_qword_address(output,&mut cursor,1,if decode_16_bit{1}else{0},0,alignment,minimum,maximum,length)?;
             }
             Resource::Memory{minimum,maximum,alignment,length,writeable,cacheable,..}=>{
                 encode_qword_address(output,&mut cursor,0,0,(if writeable{1}else{0})|(if cacheable{2}else{0}),alignment,minimum,maximum,length)?;
