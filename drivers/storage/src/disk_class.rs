@@ -51,7 +51,7 @@ fn decode_ata_string(words: &[u16], output: &mut [u8]) {
     }
     let mut start = 0;
     while start < output.len() && output[start] == b' ' { start += 1; }
-    if start != 0 { output.copy_within(start.., 0); output[output.len() - start..].fill(b' '); }
+    if start != 0 { let output_len = output.len(); output.copy_within(start.., 0); output[output_len - start..].fill(b' '); }
     let mut end=output.len();
     while end>0&&output[end-1]==b' '{end-=1;}
     output[end..].fill(0);
