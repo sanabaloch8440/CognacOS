@@ -17,6 +17,12 @@ pub enum RuntimeError {
     TypeMismatch,ValueTooLarge,InvalidObjectLength,InvalidIntegerString,Arena(ObjectError),
 }
 /// Validate a caller-constructed runtime object's declared byte extent.
+fn checked_element_count(value:&AmlRuntimeValue)->Result<usize,RuntimeError>{
+    let count=value.element_count as usize;
+    if count>crate::aml_objects::MAX_PACKAGE_ELEMENTS{return Err(RuntimeError::InvalidObjectLength)}
+    Ok(count)
+}
+
 fn checked_byte_length(value:&AmlRuntimeValue)->Result<usize,RuntimeError>{
     let length=value.byte_length as usize;
     if length>MAX_AML_BYTES{return Err(RuntimeError::InvalidObjectLength)}
@@ -65,7 +71,8 @@ pub fn index_reference(arena:&AmlObjectArena,source:u16,index:u16)->Result<AmlRe
     let value=arena.get(source).ok_or(RuntimeError::InvalidReference)?;
     match value.kind{
         AmlValueKind::Package=>{
-            if index>=value.element_count as u16{return Err(RuntimeError::IndexOutOfRange)}
+            let count=checked_element_count(value)?;
+            if index as usize>=count{return Err(RuntimeError::IndexOutOfRange)}
             Ok(AmlReference::PackageElement{package:source,index:index as u8})
         }
         AmlValueKind::Buffer=>{
@@ -84,7 +91,7 @@ pub fn dereference(reference:AmlReference,bindings:&AmlBindings,arena:&AmlObject
         AmlReference::NamespaceNode(node)=>Ok(*arena.get(bindings.value_id(node)?).ok_or(RuntimeError::InvalidReference)?),
         AmlReference::PackageElement{package,index}=>{
             let p=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
-            if p.kind!=AmlValueKind::Package||index>=p.element_count{return Err(RuntimeError::InvalidReference)}
+            if p.kind!=AmlValueKind::Package||index as usize>=checked_element_count(p)?{return Err(RuntimeError::InvalidReference)}
             Ok(*arena.get(p.elements[index as usize]).ok_or(RuntimeError::InvalidReference)?)
         }
         AmlReference::BufferByte{buffer,index}=>{
@@ -109,7 +116,7 @@ pub fn store_reference(reference:AmlReference,value:u16,bindings:&mut AmlBinding
         }
         AmlReference::PackageElement{package,index}=>{
             let p=arena.get_mut(package).ok_or(RuntimeError::InvalidReference)?;
-            if p.kind!=AmlValueKind::Package||index>=p.element_count{return Err(RuntimeError::InvalidReference)}
+            if p.kind!=AmlValueKind::Package||index as usize>=checked_element_count(p)?{return Err(RuntimeError::InvalidReference)}
             p.elements[index as usize]=value;Ok(())
         }
         AmlReference::BufferByte{buffer,index}=>{
@@ -271,6 +278,16 @@ mod tests{
         let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
         string.byte_length=17;string.bytes[..17].fill(b'f');
         assert_eq!(to_integer(&string),Err(RuntimeError::ValueTooLarge));
+    }
+
+    #[test]fn malformed_package_element_counts_are_rejected_without_indexing(){
+        let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
+        package.element_count=(crate::aml_objects::MAX_PACKAGE_ELEMENTS+1) as u8;
+        let mut arena=AmlObjectArena::new();let id=arena.allocate(package).unwrap();
+        assert_eq!(index_reference(&arena,id,0),Err(RuntimeError::InvalidObjectLength));
+        let reference=AmlReference::PackageElement{package:id,index:0};
+        let bindings=AmlBindings::new();
+        assert_eq!(dereference(reference,&bindings,&arena),Err(RuntimeError::InvalidReference));
     }
 
 }
