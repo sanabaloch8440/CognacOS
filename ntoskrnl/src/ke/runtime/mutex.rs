@@ -108,7 +108,10 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
             }
             record.owner=waiter.thread;record.recursion=1;
             let was_abandoned=record.abandoned;record.abandoned=false;
-            unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+            unsafe{
+                object.cast::<u8>().add(48).write(0);
+                (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
+            }
             break (old,Some(waiter.thread),if was_abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
         }
     };
@@ -182,7 +185,10 @@ pub fn thread_exit_cleanup(thread:u64){
         if let Some(id)=owner_waiter{
             let mut table=MUTANTS.lock();
             if let Some(record)=table.records.iter_mut().find(|r|r.object==object){record.owner=id;record.recursion=1;record.abandoned=false;}
-            unsafe{(&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+            unsafe{
+                header.cast::<u8>().add(48).write(0);
+                (&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
+            }
             let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_ABANDONED_WAIT_0,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_ABANDONED_WAIT_0);
             let _=crate::thread::complete_wait(id,status);
         }
@@ -193,10 +199,15 @@ pub fn thread_exit_cleanup(thread:u64){
     // The next waiter reconstructs the record from the caller-owned object.
     // (The loop may have handled several objects; scan only the abandoned,
     // unowned records rather than retaining driver-image addresses forever.)
-    let mut table=MUTANTS.lock();
-    for record in table.records.iter_mut() {
-        if record.object!=0&&record.owner==0&&record.recursion==0&&record.abandoned
-            && !crate::dispatcher::has_wait_all_object(record.object as u64) {
+    for index in 0..2048 {
+        let object={
+            let table=MUTANTS.lock();
+            table.records[index].object
+        };
+        if object==0||crate::dispatcher::has_wait_all_object(object as u64){continue}
+        let mut table=MUTANTS.lock();
+        let record=&mut table.records[index];
+        if record.object==object&&record.owner==0&&record.recursion==0&&record.abandoned {
             *record=MutantRecord::EMPTY;
         }
     }
