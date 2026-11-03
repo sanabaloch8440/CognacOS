@@ -35,6 +35,58 @@ static mut ACPI_BUS_DEVICE:*mut cognacos_nt_abi::io::DEVICE_OBJECT=core::ptr::nu
 static mut ACPI_PDOS:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS]=[core::ptr::null_mut();MAX_ACPI_PDOS];
 static mut ACPI_PDO_COUNT:usize=0;
 static mut ACPI_BUS_RELATIONS:AcpiDeviceRelations=AcpiDeviceRelations{count:0,objects:[core::ptr::null_mut();MAX_ACPI_PDOS]};
+// Windows x64 dispatcher-object ABI: the common DISPATCHER_HEADER is
+// 24 bytes. The kernel owns mutant bookkeeping and wait queues; ACPI.sys
+// stores one header per AML method and never implements its own lock protocol.
+const MAX_ACPI_METHOD_MUTEXES:usize=acpi::aml::MAX_NAMESPACE_NODES;
+#[repr(C,align(8))]
+struct KernelAmlMutex { initialized:core::sync::atomic::AtomicU8, header:core::cell::UnsafeCell<[u64;3]> }
+impl KernelAmlMutex {
+ const fn new()->Self{Self{initialized:core::sync::atomic::AtomicU8::new(0),header:core::cell::UnsafeCell::new([0;3])}}
+ fn object(&self)->*mut core::ffi::c_void{self.header.get().cast()}
+}
+unsafe impl Sync for KernelAmlMutex {}
+struct KernelAmlMethodSynchronizer;
+static KERNEL_AML_METHOD_MUTEXES:[KernelAmlMutex;MAX_ACPI_METHOD_MUTEXES]=
+ [const{KernelAmlMutex::new()};MAX_ACPI_METHOD_MUTEXES];
+static KERNEL_AML_METHOD_SYNCHRONIZER:KernelAmlMethodSynchronizer=KernelAmlMethodSynchronizer;
+unsafe extern "win64" {
+ fn KeInitializeMutex(mutex:*mut core::ffi::c_void,level:u32);
+ fn KeWaitForSingleObject(object:*mut core::ffi::c_void,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
+ fn KeReleaseMutex(mutex:*mut core::ffi::c_void,wait:u8)->i32;
+}
+impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
+ fn acquire(&self,method_index:u16,_sync_level:u8)->Result<(),acpi::aml_exec::ExecError>{
+  let mutex=KERNEL_AML_METHOD_MUTEXES.get(method_index as usize)
+   .ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
+  loop {
+   match mutex.initialized.load(Ordering::Acquire) {
+    2=>break,
+    0=>if mutex.initialized.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+     // KeInitializeMutex initializes the kernel dispatcher header and registers
+     // this address with the kernel's mutant owner/recursion table.
+     unsafe{KeInitializeMutex(mutex.object(),0);}
+     mutex.initialized.store(2,Ordering::Release);
+     break;
+    },
+    _=>core::hint::spin_loop(),
+   }
+  }
+  // Executive/KernelMode, non-alertable, infinite wait. The kernel performs
+  // owner transfer and recursive acquisition; a non-success status fails closed.
+  let status=unsafe{KeWaitForSingleObject(mutex.object(),0,0,0,core::ptr::null())};
+  if status==STATUS_SUCCESS||status==0x0000_0080{Ok(())}
+  else{Err(acpi::aml_exec::ExecError::ExecutionBusy)}
+ }
+ fn release(&self,method_index:u16){
+  if let Some(mutex)=KERNEL_AML_METHOD_MUTEXES.get(method_index as usize){
+   if mutex.initialized.load(Ordering::Acquire)==2{
+    unsafe{let _=KeReleaseMutex(mutex.object(),0);}
+   }
+  }
+ }
+}
+
 unsafe extern "win64" {
  fn IoCreateDevice(driver:*mut DRIVER_OBJECT,extension_size:u32,device_name:*mut cognacos_nt_abi::object::UNICODE_STRING,device_type:u32,characteristics:u32,exclusive:u8,output:*mut *mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn IoMarkBusEnumeratedPdo(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
@@ -76,6 +128,31 @@ ExAllocatePoolWithTag:
 ExFreePoolWithTag:
  jmp QWORD PTR [rip + __imp_ex_ExFreePoolWithTag]
 .size ExFreePoolWithTag, .-ExFreePoolWithTag
+.section .data.imports.ke,"aw",@progbits
+.p2align 3
+.global __imp_ke_KeInitializeMutex
+__imp_ke_KeInitializeMutex: .quad 0
+.global __imp_ke_KeWaitForSingleObject
+__imp_ke_KeWaitForSingleObject: .quad 0
+.global __imp_ke_KeReleaseMutex
+__imp_ke_KeReleaseMutex: .quad 0
+.section .text.import_thunks,"ax",@progbits
+.global KeInitializeMutex
+.type KeInitializeMutex,@function
+KeInitializeMutex:
+ jmp QWORD PTR [rip + __imp_ke_KeInitializeMutex]
+.size KeInitializeMutex, .-KeInitializeMutex
+.global KeWaitForSingleObject
+.type KeWaitForSingleObject,@function
+KeWaitForSingleObject:
+ jmp QWORD PTR [rip + __imp_ke_KeWaitForSingleObject]
+.size KeWaitForSingleObject, .-KeWaitForSingleObject
+.global KeReleaseMutex
+.type KeReleaseMutex,@function
+KeReleaseMutex:
+ jmp QWORD PTR [rip + __imp_ke_KeReleaseMutex]
+.size KeReleaseMutex, .-KeReleaseMutex
+
 .section .data.imports.io,"aw",@progbits
 .p2align 3
 .global __imp_io_IoCreateDevice
@@ -500,7 +577,7 @@ fn collect_device_identities(
     for index in info.namespace_start..info.namespace_end{
         let node=&namespace.nodes[index as usize];
         if !matches!(node.object_type,acpi::aml::AmlObjectType::Device|acpi::aml::AmlObjectType::Processor|acpi::aml::AmlObjectType::PowerResource|acpi::aml::AmlObjectType::ThermalZone){continue}
-        let mut methods=acpi::acpi_device::IntegerMethodInvoker;
+        let mut methods=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
         match manager.evaluate_device_identity(handle,table_sources,index,gate,&mut methods){
             Ok(identity)=>{
                 if *count>=records.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
