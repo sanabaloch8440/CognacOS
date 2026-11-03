@@ -5,6 +5,8 @@ name: Build and boot-test CognacOS Rust UEFI kernel
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
