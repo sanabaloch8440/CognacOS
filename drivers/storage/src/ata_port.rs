@@ -185,9 +185,12 @@ impl AtaRequestTable {
         Ok((s.request_context, s.expected_bytes))
     }
     pub fn begin_completion(&mut self, id: u64, bytes: u32) -> Result<*mut c_void, i32> {
-        let (context, expected) = self.take_for_completion(id)?;
-        if bytes > expected { return Err(0xC000_000Du32 as i32); }
-        Ok(context)
+        let s = self.find_mut(id)?;
+        if s.state != AtaRequestState::Submitted || bytes > s.expected_bytes {
+            return Err(0xC000_000Du32 as i32);
+        }
+        s.state = AtaRequestState::Completing;
+        Ok(s.request_context)
     }
     /// Release a request rejected by the miniport before it accepted ownership.
     pub fn abort(&mut self, id: u64) -> Result<(), i32> {
