@@ -347,10 +347,15 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
             if target.kind!=AmlValueKind::Buffer{return Err(RuntimeError::InvalidReference)}
             let length=checked_byte_length(target)?;
             if index as usize>=length{return Err(RuntimeError::InvalidReference)}
-            let byte=match source.kind{
-                AmlValueKind::Integer=>source.integer as u8,
-                AmlValueKind::Buffer=>if checked_byte_length(&source)?==0{0}else{source.bytes[0]},
-                AmlValueKind::String=>if checked_byte_length(&source)?==0{0}else{source.bytes[0]},
+            let byte=match (mode,source.kind){
+                (StoreMode::Store,AmlValueKind::Integer)|(StoreMode::CopyObject,AmlValueKind::Integer)=>source.integer as u8,
+                (StoreMode::Store,AmlValueKind::Buffer)|(StoreMode::CopyObject,AmlValueKind::Buffer)=>{
+                    if checked_byte_length(&source)?==0{0}else{source.bytes[0]}
+                }
+                (StoreMode::Store,AmlValueKind::String)=>{
+                    if checked_byte_length(&source)?==0{0}else{source.bytes[0]}
+                }
+                // CopyObject does not apply String-to-BufferField conversion.
                 _=>return Err(RuntimeError::TypeMismatch),
             };
             let target=arena.get_mut(buffer).ok_or(RuntimeError::InvalidReference)?;
@@ -607,6 +612,24 @@ mod tests{
         buffer.byte_length=0;
         assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
+    #[test]fn copy_object_to_buffer_byte_rejects_string_without_mutation(){
+        let mut arena=AmlObjectArena::new();
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=1;buffer.bytes[0]=0xaa;
+        let buffer_id=arena.allocate(buffer).unwrap();
+        let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
+        string.byte_length=1;string.bytes[0]=b'X';
+        let string_id=arena.allocate(string).unwrap();
+        let reference=AmlReference::BufferByte{buffer:buffer_id,index:0};
+        let mut bindings=AmlBindings::new();let namespace=AmlNamespace::new();
+        assert_eq!(store_reference_with_mode(reference,string_id,StoreMode::CopyObject,
+            &mut bindings,&namespace,&mut arena),Err(RuntimeError::TypeMismatch));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0xaa);
+        assert_eq!(store_reference_with_mode(reference,string_id,StoreMode::Store,
+            &mut bindings,&namespace,&mut arena),Ok(()));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],b'X');
+    }
+
     #[test]fn buffer_byte_store_rejects_wrong_types_without_mutating_target(){
         let mut arena=AmlObjectArena::new();
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;buffer.byte_length=1;buffer.bytes[0]=0xaa;
