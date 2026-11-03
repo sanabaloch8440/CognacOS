@@ -874,16 +874,10 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).\r\n");
 
-        // Exercise the actual QEMU IDE boot disk, not a synthetic parser fixture.
-        // Failure is fatal so CI cannot confuse host-side debugfs checks with a
-        // successful guest storage/filesystem read.
-        if !ata_disk::run_ext4_readme_test() {
-            serial_write(b"FATAL: guest ATA/GPT/ext4 read/write end-to-end test failed.\r\n");
-            halt();
-        }
+        // Storage discovery and filesystem validation belong to the loaded
+        // storage and filesystem drivers. The kernel-owned ATA/ext4 smoke test
+        // was removed with the in-kernel ATA transport.
         let _ = platform_drivers::mark_ready(platform_drivers::Stage::Storage);
-        let _ = platform_drivers::mark_ready(platform_drivers::Stage::ExtFilesystem);
-        serial_write(b"Guest ATA/GPT/ext4 read/write end-to-end test passed.\r\n");
 
         // APIC registers are intentionally not enabled here: no firmware MADT
         // handoff, AP startup trampoline, timer calibration, or complete IRQ
