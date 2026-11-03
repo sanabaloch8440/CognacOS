@@ -537,10 +537,10 @@ jobs:
           set -euo pipefail
           mkdir -p build
           cargo build --manifest-path drivers/acpi/Cargo.toml --lib
-          acpi_rlib="$(find target/debug -type f -name 'libcognacos_acpi*.rlib' -print -quit)"
+          acpi_rlib="$(find target -type f -name 'libcognacos_acpi*.rlib' -print -quit)"
           test -n "$acpi_rlib"
           rustc --edition=2021 --test ntoskrnl/src/mm/topology.rs \
-            --extern cognacos_acpi="$acpi_rlib" -L dependency=target/debug/deps -L dependency=target/debug \
+            --extern cognacos_acpi="$acpi_rlib" -L dependency="$(dirname "$acpi_rlib")" \
             -o build/mm-topology-tests
           build/mm-topology-tests
       - name: Run host-side Ke timer-generation regression tests
