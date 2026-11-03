@@ -91,8 +91,8 @@ impl cognacos_fat32::BlockDevice for IoManagerBlockDevice{
         if input.is_empty()||input.len()%SECTOR_SIZE as usize!=0{return Err(DiskError::InvalidGeometry)}
         let offset=lba.checked_mul(SECTOR_SIZE as u64).ok_or(DiskError::Overflow)?;
         let length=u32::try_from(input.len()).map_err(|_|DiskError::OutOfRange)?;
-        // The buffered I/O manager owns the system buffer for the duration of
-        // this synchronous call; the input is copied into a mutable kernel buffer.
+        // This manually-built buffered IRP points its system-buffer slot at the
+        // caller-owned kernel slice; the lower PIO path reads it synchronously.
         self.submit(IRP_MJ_WRITE,offset,input.as_ptr() as *mut u8,length,0).map(|_|())
     }
     fn flush(&mut self)->Result<(),DiskError>{
