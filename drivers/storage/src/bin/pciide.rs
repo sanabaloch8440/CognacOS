@@ -15,9 +15,7 @@ use cognacos_nt_abi::{
     types::PVOID,
 };
 use cognacos_storage::{
-    ata_port::{AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, ATA_PORT_INTERFACE_VERSION, ATA_PORT_REQUEST_DEVICE_INDEX_MASK},
-    error_to_ntstatus,
-    StorageError,
+    ata_port::{AtaPortOperation, AtaPortRequest, ATA_PORT_REQUEST_DEVICE_INDEX_MASK},
     ide::{Channel, RegisterIo, MAX_LBA28}, pciidex::{
     parse_translated_resources, ControllerState, IdeResourceSet,
     PciIdeController, PciIdeIdentity, ResourceKind,
@@ -293,7 +291,7 @@ unsafe fn register_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
         stop: None,
         unload: None,
     };
-    unsafe { send_port_control((*extension).lower_device, IOCTL_ATA_PORT_REGISTER_MINIPORT, (&table as *const _).cast()) }
+    unsafe { send_port_control((*extension).lower_device, IOCTL_ATA_PORT_REGISTER_MINIPORT, (&table as *const cognacos_storage::ata_port::AtaPortMiniportInterface).cast::<c_void>()) }
 }
 
 unsafe fn unregister_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
