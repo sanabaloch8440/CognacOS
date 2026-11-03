@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `acpi-production-batch-1-table-validation`  
-**Status:** tasks 1–26 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
+**Status:** tasks 1–27 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -40,7 +40,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 ## AML execution and runtime objects
 
 26. [x] Implement exact AML operand/target typing and conversion rules. Verified by AML runtime, method-executor, parser, and table-lifecycle regression suites; see `AML_OPERAND_TARGET_CONVERSIONS.md`.
-27. [ ] Complete arithmetic, logical, bitwise, conversion, and target-store opcode semantics.
+27. [x] Complete arithmetic, logical, bitwise, conversion, and target-store opcode semantics.
 28. [ ] Implement If/Else/While/Break/Continue/Return with package-boundary-safe control flow.
 29. [ ] Correct method argument/local lifetime, recursion, and serialization-flag behavior.
 30. [ ] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
@@ -171,3 +171,10 @@ Task 24 was verified on commit `96520689707d3bf20c2405fa79b4597861c01582` by ACP
 ## AML conformance corpus verification
 
 Task 25 was verified on commit `d9f460432dfecc134cb9a6dcafbd6fa8a9202540` by ACPI Rust unit-test workflow run `41577872796`. The workflow compiled all ACPI library tests and passed the firmware discovery and AML parser suites; the job log explicitly reports `aml::tests::specification_derived_conformance_corpus ... ok`. The corpus is independently authored from public ACPI grammar references and documents its provenance in `drivers/acpi/AML_CONFORMANCE_CORPUS.md`; it is not ACPICA/iASL-derived.
+
+
+## AML opcode semantics task 27 evidence
+
+Task 27 was completed and verified on PR branch commit `b663d80eed8aa5a6d23a0e8a9587fedb463a4fa2` by ACPI workflow run [`41587243631`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587243631). The workflow compiled all ACPI library tests and passed the focused firmware suites, including **45 AML method-executor tests**, **37 AML runtime tests**, **42 AML parser tests**, and **11 AML table-lifecycle tests**.
+
+The independently authored executor implements the arithmetic, logical, bitwise, explicit data-conversion, BCD-conversion, and target-store semantics listed in `AML_OPCODE_SEMANTICS.md`. The task is checked only for these defined opcode families; it does not imply full AML interpreter or ACPI driver production readiness. The separate UEFI/QEMU workflow remains a distinct acceptance gate.
