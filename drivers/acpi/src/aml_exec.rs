@@ -187,7 +187,7 @@ impl<'a,'b> Machine<'a,'b>{
    }
    0x75|0x76=>{
     let t=self.target(r)?;
-    let current=match t{Target::Null=>0,Target::Local(i)=>self.operand_integer(&self.locals[i])?,Target::Arg(i)=>self.operand_integer(&self.args[i])?,Target::Reference(reference)=>{let value=dereference(reference,&self.bindings,&self.arena).map_err(|_|ExecError::NonIntegerName)?;self.operand_integer(&value)?}};
+    let current=match t{Target::Null=>0,Target::Local(i)=>self.operand_integer(&self.locals[i])?,Target::Arg(i)=>{let value=self.argument_value(i)?;self.operand_integer(&value)?},Target::Reference(reference)=>{let value=dereference(reference,&self.bindings,&self.arena).map_err(|_|ExecError::NonIntegerName)?;self.operand_integer(&value)?}};
     let value=if op==0x75{current.wrapping_add(1)}else{current.wrapping_sub(1)};
     let value=self.normalize(value);self.store(t,value)?;Ok(value)
    }
@@ -387,6 +387,13 @@ mod tests{
   let node=ns.find_child(0,*b"NAM0").unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   let reference=make_object_reference(AmlReference::NamespaceNode(node));
   assert_eq!(execute_method_with_values(&aml,&ns,id,&[reference],64).unwrap(),AmlValue::Integer(43));
+
+  let read_aml=[0x08,b'N',b'A',b'M',b'0',0x01,
+      0x14,0x0b,b'T',b'E',b'S',b'T',1,0xa4,0x72,0x68,0x01,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&read_aml,&mut ns).unwrap();
+  let node=ns.find_child(0,*b"NAM0").unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  let reference=make_object_reference(AmlReference::NamespaceNode(node));
+  assert_eq!(execute_method_with_values(&read_aml,&ns,id,&[reference],64).unwrap(),AmlValue::Integer(2));
  }
 
  #[test]fn refof_and_derefof_preserve_namespace_object_references(){
