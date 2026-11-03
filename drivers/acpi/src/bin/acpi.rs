@@ -982,7 +982,11 @@ fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager
    return Err(STATUS_DEVICE_CONFIGURATION_ERROR)
   }
   let order=u8::try_from(node.power_resource_order).map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
-  graph.register(index as u16,node.power_resource_system_level,order,false)
+  let records=unsafe{(*STATE.device_records.get()).assume_init_ref()};
+  let record_count=STATE.device_count.load(Ordering::Acquire);
+  let initially_enabled=records[..record_count].iter().find(|record|record.node==index as u16)
+   .map(|record|record.identity.sta&1!=0).unwrap_or(false);
+  graph.register(index as u16,node.power_resource_system_level,order,initially_enabled)
    .map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
  }
  // Evaluate each ThermalZone's temperature and trip points at PASSIVE_LEVEL.
