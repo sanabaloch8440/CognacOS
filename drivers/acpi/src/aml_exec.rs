@@ -797,12 +797,12 @@ mod tests{
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&to_integer_buffer,&ns,id,&[]).unwrap(),AmlValue::Integer(0x12345678));
 
-  let bcd32=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+  let bcd32=[0x14,0x0f,b'T',b'E',b'S',b'T',0,
    0xa4,0x5b,0x29,0x0c,0x00,0xe1,0xf5,0x05,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&bcd32,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
-  assert_eq!(execute_method_with_integer_width(&bcd32,&ns,id,&[],32).unwrap(),AmlValue::Integer(0x99999999));
-  assert_eq!(execute_method_with_integer_width(&bcd32,&ns,id,&[],64).unwrap(),AmlValue::Integer(0x0000000005f5e100));
+  assert_eq!(execute_method_with_integer_width(&bcd32,&ns,id,&[],32),Err(ExecError::TargetTypeMismatch));
+  assert_eq!(execute_method_with_integer_width(&bcd32,&ns,id,&[],64).unwrap(),AmlValue::Integer(0x100000000));
  }
  #[test]fn evaluates_composite_logical_comparisons_from_their_aml_encoding(){
   // LNot(LEqual(1, 2)) == LNotEqual(1, 2).
