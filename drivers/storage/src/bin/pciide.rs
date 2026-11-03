@@ -312,7 +312,7 @@ unsafe extern "win64" fn miniport_submit(
     }
     let request = unsafe { &*request };
     let slot = (request.flags & 0x3) as usize;
-    let Some(channel) = (unsafe { (*ext).channels[slot] }) else { return STATUS_DEVICE_DOES_NOT_EXIST; };
+    let Some(channel) = (unsafe { (*ext).channels[slot] }) else { return STATUS_NOT_FOUND; };
     let mut io = X86PortIo;
     let result = match request.operation {
         cognacos_storage::ata_port::AtaPortOperation::Read => {
