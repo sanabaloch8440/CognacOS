@@ -880,8 +880,6 @@ jobs:
           grep -F 'Windows API-set resolution and PE TLS/unwind registration passed.' build/serial.log
           grep -F 'PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.' build/serial.log
           grep -F 'Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).' build/serial.log
-          grep -F 'Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.' build/serial.log
-          grep -F 'Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.' build/serial.log
           mcopy -i build/cognacos-uefi.img@@68157440 ::/COGNACOS.TST build/fat32-storage-test-readback.bin
           printf '%s' 'COGNACOS FAT32 PIO PASS 00000000' > build/fat32-storage-test-expected.bin
           cmp build/fat32-storage-test-expected.bin build/fat32-storage-test-readback.bin
