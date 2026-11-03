@@ -1,4 +1,9 @@
 //! ACPI-6 hotplug, eject, removal and wake lifecycle primitives.
+/*
+ * FIXME(ACPI-PRODUCTION) — ACPI hotplug lifecycle
+ * Intended functionality still to complete: Complete Notify/GPE-driven arrival/removal, status reevaluation, dependency ordering, resource rebalancing, and PnP synchronization. Defer work from interrupt context, tolerate duplicate notifications, and preserve PDO lifetime.
+ */
+
 #![no_std]
 pub const MAX_HOTPLUG_EVENTS:usize=128;
 pub const NOTIFY_BUS_CHECK:u8=0;
