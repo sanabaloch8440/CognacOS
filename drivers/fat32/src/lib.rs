@@ -242,6 +242,39 @@ mod tests {
         let mut s=DiskStream::new(MemoryDisk::new(128,512),0,128,false).unwrap();
         assert_eq!(validate_fat32(&mut s),Err(MountError::InvalidBootSector));
     }
+    #[cfg(feature = "write-support")]
+    #[test]
+    fn writable_mount_creates_writes_flushes_and_reads_back_a_file() {
+        let mut stream = DiskStream::new(MemoryDisk::new(70_000, 512), 0, 70_000, true).unwrap();
+        fatfs::format_volume(
+            &mut stream,
+            fatfs::FormatVolumeOptions::new()
+                .fat_type(FatType::Fat32)
+                .total_sectors(70_000),
+        )
+        .unwrap();
+        let disk = stream.into_device();
+        let mounted = FatFilesystem::mount_read_write(disk, 0, 70_000).unwrap();
+        assert!(mounted.is_writable());
+
+        let root = mounted.filesystem().root_dir();
+        let expected = b"CognacOS FAT32 WDM file read/write round-trip";
+        let mut created = root.create_file("OSRWTEST.TXT").unwrap();
+        assert_eq!(created.write(expected).unwrap(), expected.len());
+        created.flush().unwrap();
+        drop(created);
+        mounted.flush().unwrap();
+
+        let mut reopened = root.open_file("OSRWTEST.TXT").unwrap();
+        reopened.seek(SeekFrom::Start(0)).unwrap();
+        let mut actual = [0u8; 64];
+        assert_eq!(reopened.read(&mut actual).unwrap(), expected.len());
+        assert_eq!(&actual[..expected.len()], expected);
+        drop(reopened);
+        drop(root);
+        mounted.flush().unwrap();
+    }
+
     #[test] fn mounts_a_fat32_volume_formatted_by_upstream_fatfs(){
         let mut stream=DiskStream::new(MemoryDisk::new(70_000,512),0,70_000,true).unwrap();
         fatfs::format_volume(&mut stream,
