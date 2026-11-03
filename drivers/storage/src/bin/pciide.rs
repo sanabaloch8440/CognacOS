@@ -67,6 +67,9 @@ unsafe extern "win64" {
     fn IoQueryDriverInterface(name: *const u8, name_length: u16, output: PVOID, size: u32) -> i32;
     fn IoPnPRegisterDeviceDriver(driver: *mut c_void,
         add_device: Option<unsafe extern "win64" fn(*mut c_void, *mut DEVICE_OBJECT) -> i32>) -> i32;
+    fn IoAllocateIrp(stack_size: i8, charge_quota: u8) -> *mut IRP;
+    fn IoGetNextIrpStackLocation(irp: *mut IRP) -> *mut IO_STACK_LOCATION;
+    fn IoFreeIrp(irp: *mut IRP);
 }
 
 core::arch::global_asm!(r#"
@@ -90,6 +93,9 @@ IMPORT IoSetCompletionRoutine
 IMPORT IoPnPQueryBusInterface
 IMPORT IoQueryDriverInterface
 IMPORT IoPnPRegisterDeviceDriver
+IMPORT IoAllocateIrp
+IMPORT IoGetNextIrpStackLocation
+IMPORT IoFreeIrp
 
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -110,6 +116,9 @@ IAT IoSetCompletionRoutine
 IAT IoPnPQueryBusInterface
 IAT IoQueryDriverInterface
 IAT IoPnPRegisterDeviceDriver
+IAT IoAllocateIrp
+IAT IoGetNextIrpStackLocation
+IAT IoFreeIrp
 "#);
 
 unsafe fn resource_list_bytes(list: *const u8) -> Option<&'static [u8]> {
@@ -284,6 +293,89 @@ fn assigned_port_resource(resources: &IdeResourceSet, ordinal: usize) -> Option<
     None
 }
 
+const IRP_MJ_INTERNAL_DEVICE_CONTROL: u8 = 0x0f;
+const IOCTL_ATA_PORT_REGISTER_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x800 << 2) | 3;
+const IOCTL_ATA_PORT_UNREGISTER_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x801 << 2) | 3;
+
+unsafe extern "win64" fn miniport_submit(
+    context: *mut c_void,
+    request: *const cognacos_storage::ata_port::AtaPortRequest,
+    bytes_transferred: *mut u32,
+) -> i32 {
+    if context.is_null() || request.is_null() || bytes_transferred.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { bytes_transferred.write(0); }
+    let ext = context.cast::<PciIdeFdoExtension>();
+    if unsafe { (*ext).magic != FDO_EXTENSION_MAGIC || (*ext).controller.state != ControllerState::Started } {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    let request = unsafe { &*request };
+    let slot = (request.flags & 0x3) as usize;
+    let Some(channel) = (unsafe { (*ext).channels[slot] }) else { return STATUS_DEVICE_DOES_NOT_EXIST; };
+    let mut io = X86PortIo;
+    let result = match request.operation {
+        cognacos_storage::ata_port::AtaPortOperation::Read => {
+            let Some(bytes) = request.sector_count.checked_mul(512) else { return STATUS_INVALID_PARAMETER; };
+            if request.system_buffer.is_null() || bytes == 0 || bytes as usize > 256 * 512 {
+                return STATUS_INVALID_PARAMETER;
+            }
+            let output = unsafe { core::slice::from_raw_parts_mut(request.system_buffer, bytes as usize) };
+            channel.read_sectors(&mut io, request.lba, output).map(|_| bytes)
+        }
+        cognacos_storage::ata_port::AtaPortOperation::Write => {
+            let Some(bytes) = request.sector_count.checked_mul(512) else { return STATUS_INVALID_PARAMETER; };
+            if request.system_buffer.is_null() || bytes == 0 || bytes as usize > 256 * 512 {
+                return STATUS_INVALID_PARAMETER;
+            }
+            let input = unsafe { core::slice::from_raw_parts(request.system_buffer, bytes as usize) };
+            channel.write_sectors(&mut io, request.lba, input).map(|_| bytes)
+        }
+        cognacos_storage::ata_port::AtaPortOperation::Flush => channel.flush(&mut io).map(|_| 0),
+        _ => return STATUS_INVALID_DEVICE_REQUEST,
+    };
+    match result {
+        Ok(bytes) => { unsafe { bytes_transferred.write(bytes); } STATUS_SUCCESS }
+        Err(error) => cognacos_storage::error_to_ntstatus(error),
+    }
+}
+
+unsafe fn send_port_control(lower: *mut DEVICE_OBJECT, code: u32, input: *const c_void) -> i32 {
+    if lower.is_null() { return STATUS_DEVICE_NOT_READY; }
+    let irp = unsafe { IoAllocateIrp((*lower).stack_size as i8, 0) };
+    if irp.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+    let stack = unsafe { IoGetNextIrpStackLocation(irp) };
+    if stack.is_null() { unsafe { IoFreeIrp(irp); } return STATUS_INVALID_PARAMETER; }
+    unsafe {
+        (*stack).major_function = IRP_MJ_INTERNAL_DEVICE_CONTROL;
+        (*stack).parameters.fill(0);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u32>(), code);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<*const c_void>(), input);
+    }
+    let status = unsafe { IoCallDriver(lower, irp) };
+    unsafe { IoFreeIrp(irp); }
+    status
+}
+
+unsafe fn register_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
+    let table = cognacos_storage::ata_port::AtaPortMiniportInterface {
+        size: core::mem::size_of::<cognacos_storage::ata_port::AtaPortMiniportInterface>() as u32,
+        version: cognacos_storage::ata_port::ATA_PORT_INTERFACE_VERSION,
+        miniport_context: extension.cast(),
+        initialize: None,
+        start: None,
+        submit: Some(miniport_submit),
+        reset: None,
+        stop: None,
+        unload: None,
+    };
+    unsafe { send_port_control((*extension).lower_device, IOCTL_ATA_PORT_REGISTER_MINIPORT, (&table as *const _).cast()) }
+}
+
+unsafe fn unregister_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
+    unsafe { send_port_control((*extension).lower_device, IOCTL_ATA_PORT_UNREGISTER_MINIPORT, extension.cast()) }
+}
+
 /// Resolve command/control register windows from PnP-translated resources.
 /// Native-mode BARs are consumed in PCI IDE BAR order (command/control pairs);
 /// compatibility mode uses the legacy ranges only when those exact ranges
@@ -360,6 +452,16 @@ unsafe extern "win64" fn pnp_complete(
             } else { status };
             if hardware_status == STATUS_SUCCESS {
                 let _ = unsafe { (*extension).controller.start_succeeded() };
+                let registration = unsafe { register_ataport_miniport(extension) };
+                if registration != STATUS_SUCCESS {
+                    unsafe {
+                        (*extension).controller.stop_succeeded();
+                        (*extension).channels = [None; 4];
+                        (*extension).active_channels = 0;
+                        (*extension).present_drives = 0;
+                        (*irp).io_status.status.status = registration;
+                    }
+                }
             } else {
                 unsafe {
                     (*irp).io_status.status.status = hardware_status;
