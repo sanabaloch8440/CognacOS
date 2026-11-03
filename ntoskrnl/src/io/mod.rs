@@ -8,6 +8,8 @@ pub(crate) mod wdm_requirements;
 pub(crate) mod wdm;
 #[path = "file_services.rs"]
 pub(crate) mod file_services;
+#[path = "fat32_driver.rs"]
+pub(crate) mod fat32_driver;
 #[path = "ata_disk.rs"]
 pub(crate) mod ata_disk;
 #[path = "pnp.rs"]
