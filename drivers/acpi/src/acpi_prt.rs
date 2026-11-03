@@ -58,6 +58,7 @@ pub fn build_prt_table(elements: &[EvaluatedPrtElement<'_>]) -> Result<PrtTable,
 /// The platform resolver must consult selected link-device resources and the
 /// resource arbiter before returning a concrete GSI.
 pub trait LinkDeviceResolver { fn resolve_gsi(&self, canonical_path: &[u8], source_index: u32) -> Result<u32, PrtError>; }
+/// Resolve a validated _PRT entry through its link-device source and return the selected GSI.
 pub fn resolve_route<R: LinkDeviceResolver>(table: &PrtTable, address: u32, pin: u8, resolver: &R) -> Result<u32, PrtError> {
     let route = table.find(address, pin).ok_or(PrtError::MissingRoute)?;
     match route.source {
