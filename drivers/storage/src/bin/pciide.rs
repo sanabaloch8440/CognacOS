@@ -80,6 +80,7 @@ unsafe extern "win64" {
     fn IoAllocateIrp(stack_size: i8, charge_quota: u8) -> *mut IRP;
     fn IoGetNextIrpStackLocation(irp: *mut IRP) -> *mut IO_STACK_LOCATION;
     fn IoFreeIrp(irp: *mut IRP);
+    fn DbgPrint(format: *const u8) -> i32;
 }
 
 core::arch::global_asm!(r#"
@@ -105,6 +106,7 @@ IMPORT IoPnPRegisterDeviceDriver
 IMPORT IoAllocateIrp
 IMPORT IoGetNextIrpStackLocation
 IMPORT IoFreeIrp
+IMPORT DbgPrint
 
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -127,6 +129,7 @@ IAT IoPnPRegisterDeviceDriver
 IAT IoAllocateIrp
 IAT IoGetNextIrpStackLocation
 IAT IoFreeIrp
+IAT DbgPrint
 "#);
 
 unsafe fn resource_list_bytes(list: *const u8) -> Option<&'static [u8]> {
@@ -215,6 +218,7 @@ fn assigned_port_resource(resources: &IdeResourceSet, ordinal: usize) -> Option<
 const IRP_MJ_INTERNAL_DEVICE_CONTROL: u8 = 0x0f;
 const IOCTL_ATA_PORT_REGISTER_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x800 << 2) | 3;
 const IOCTL_ATA_PORT_UNREGISTER_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x801 << 2) | 3;
+const IOCTL_ATA_PORT_SUBMIT_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x802 << 2) | 3;
 
 unsafe extern "win64" fn miniport_submit(
     context: *mut c_void,
@@ -269,8 +273,8 @@ unsafe fn send_port_control(lower: *mut DEVICE_OBJECT, code: u32, input: *const 
     unsafe {
         (*stack).major_function = IRP_MJ_INTERNAL_DEVICE_CONTROL;
         (*stack).parameters.fill(0);
-        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u32>(), code);
-        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<*const c_void>(), input);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<u32>(), code);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(24).cast::<*const c_void>(), input);
     }
     let status = unsafe { IoCallDriver(lower, irp) };
     unsafe { IoFreeIrp(irp); }
@@ -294,6 +298,83 @@ unsafe fn register_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
 
 unsafe fn unregister_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
     unsafe { send_port_control((*extension).lower_device, IOCTL_ATA_PORT_UNREGISTER_MINIPORT, extension.cast()) }
+}
+
+unsafe fn submit_test_request(
+    extension: *mut PciIdeFdoExtension,
+    operation: AtaPortOperation,
+    lba: u64,
+    sectors: u32,
+    flags: u32,
+    buffer: *mut u8,
+) -> i32 {
+    let request = AtaPortRequest {
+        size: core::mem::size_of::<AtaPortRequest>() as u32,
+        operation,
+        request_id: 0x5155_454d_5550,
+        lba,
+        sector_count: sectors,
+        flags,
+        system_buffer: buffer,
+        sg_list: core::ptr::null(),
+        sg_count: 0,
+        timeout_ms: 30_000,
+        packet_cdb: core::ptr::null(),
+        packet_cdb_length: 0,
+        reserved: [0; 7],
+    };
+    unsafe {
+        send_port_control(
+            (*extension).lower_device,
+            IOCTL_ATA_PORT_SUBMIT_MINIPORT,
+            (&request as *const AtaPortRequest).cast(),
+        )
+    }
+}
+
+/// QEMU integration test against the dedicated primary-slave test disk.
+/// It snapshots two sectors, writes a deterministic pattern, flushes, reads
+/// them back, compares, and restores the original bytes before reporting pass.
+unsafe fn qemu_pio_round_trip(extension: *mut PciIdeFdoExtension) -> i32 {
+    if unsafe { (*extension).channels[1].is_none() } { return STATUS_SUCCESS; }
+    let mut original = [0u8; 1024];
+    let mut verify = [0u8; 1024];
+    let mut pattern = [0u8; 1024];
+    for (index, byte) in pattern.iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(37).wrapping_add(0xa5);
+    }
+    let read_original = unsafe {
+        submit_test_request(extension, AtaPortOperation::Read, 1, 2, 1, original.as_mut_ptr())
+    };
+    if read_original != STATUS_SUCCESS { return read_original; }
+
+    let write_status = unsafe {
+        submit_test_request(extension, AtaPortOperation::Write, 1, 2, 1, pattern.as_mut_ptr())
+    };
+    if write_status != STATUS_SUCCESS {
+        let _ = unsafe { submit_test_request(extension, AtaPortOperation::Write, 1, 2, 1, original.as_mut_ptr()) };
+        let _ = unsafe { submit_test_request(extension, AtaPortOperation::Flush, 0, 0, 1, core::ptr::null_mut()) };
+        return write_status;
+    }
+    let flush_status = unsafe {
+        submit_test_request(extension, AtaPortOperation::Flush, 0, 0, 1, core::ptr::null_mut())
+    };
+    let read_status = if flush_status == STATUS_SUCCESS {
+        unsafe { submit_test_request(extension, AtaPortOperation::Read, 1, 2, 1, verify.as_mut_ptr()) }
+    } else { flush_status };
+    let matched = read_status == STATUS_SUCCESS && verify == pattern;
+
+    // Always restore the test disk's previous contents, even when verification
+    // fails, so repeated QEMU runs do not leave a modified test image.
+    let restore_status = unsafe {
+        submit_test_request(extension, AtaPortOperation::Write, 1, 2, 1, original.as_mut_ptr())
+    };
+    let restore_flush = if restore_status == STATUS_SUCCESS {
+        unsafe { submit_test_request(extension, AtaPortOperation::Flush, 0, 0, 1, core::ptr::null_mut()) }
+    } else { restore_status };
+    if restore_flush != STATUS_SUCCESS { return restore_flush; }
+    if !matched { return if read_status == STATUS_SUCCESS { STATUS_DEVICE_DATA_ERROR } else { read_status }; }
+    STATUS_SUCCESS
 }
 
 /// Resolve command/control register windows from PnP-translated resources.
@@ -372,13 +453,18 @@ unsafe extern "win64" fn pnp_complete(
             if hardware_status == STATUS_SUCCESS {
                 let _ = unsafe { (*extension).controller.start_succeeded() };
                 let registration = unsafe { register_ataport_miniport(extension) };
-                if registration != STATUS_SUCCESS {
+                let test_status = if registration == STATUS_SUCCESS { unsafe { qemu_pio_round_trip(extension) } } else { registration };
+                if test_status == STATUS_SUCCESS && unsafe { (*extension).channels[1].is_some() } {
+                    unsafe { DbgPrint(b"pciide: ATA PIO read/write/flush round-trip passed\\r\\n\\0".as_ptr()); }
+                }
+                if test_status != STATUS_SUCCESS {
                     unsafe {
                         (*extension).controller.stop_succeeded();
                         (*extension).channels = [None; 4];
                         (*extension).active_channels = 0;
                         (*extension).present_drives = 0;
-                        (*irp).io_status.status.status = registration;
+                        let _ = unregister_ataport_miniport(extension);
+                        (*irp).io_status.status.status = test_status;
                     }
                 }
             } else {
