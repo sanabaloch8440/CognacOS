@@ -21,3 +21,11 @@
 These are `include!` fragments, not independent Rust modules. Moving to true submodules would require a separate visibility/API refactor and is deliberately not mixed into this source-organization change. WDM behavior is otherwise unchanged.
 
 The file-service layer is not modified here. Its migration to FILE_OBJECT and IRP-based Windows-style create/read/cleanup/close flows is the next step.
+
+## Filesystem boundary audit
+
+The WDM fragment `filesystem.rs` is I/O-manager infrastructure, not a filesystem implementation. It owns the generic registered-filesystem device list, registration-change notifications, referenced snapshots, mount/verify/dismount IRP coordination, VPB lifetime/commit rules, and dispatch to registered filesystem drivers. It must not parse FAT/exFAT/NTFS metadata, own filesystem-specific block adapters, or implement file/directory semantics.
+
+Filesystem-specific code belongs under `drivers/filesystem/*` (currently `drivers/fat32`). The FAT32 driver owns its `BlockDevice` adapter and filesystem engine calls; it reaches storage through the generic `io/block_io.rs` IRP helper. The I/O manager helper constructs and submits generic IRPs only and has no dependency on `cognacos_fat32`.
+
+DMA ownership is similarly split: `io/dma.rs` retains Windows DMA_ADAPTER / DMA_OPERATIONS ABI, adapter lifetime, MDL/SG bookkeeping, and generic IOMMU mapping contracts; Intel VT-d register programming and platform-specific translation machinery live in `Hal/vtd.rs`. The IOMMU module re-exports the HAL backend for compatibility with existing internal call sites.
