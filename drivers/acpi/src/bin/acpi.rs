@@ -705,7 +705,9 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     }
     // Create an ACPI bus device and real WDM PDOs for firmware devices
     // reported present and enabled. Each PDO owns an immutable identity copy.
-    if identity_count>MAX_ACPI_PDOS { return STATUS_INSUFFICIENT_RESOURCES; }
+    // Namespace records include devices that are disabled or absent; only
+    // present+enabled devices consume PDO slots. Enforce the PDO limit at the
+    // point of publication rather than rejecting a larger namespace up front.
     let mut bus_device=core::ptr::null_mut();
     let create_bus=unsafe{IoCreateDevice(object,0,core::ptr::null_mut(),FILE_DEVICE_BUS_EXTENDER,0,0,&mut bus_device)};
     if create_bus!=STATUS_SUCCESS || bus_device.is_null() { return if create_bus==STATUS_SUCCESS {STATUS_INSUFFICIENT_RESOURCES} else {create_bus}; }
@@ -715,6 +717,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         let status=record.identity.sta;
         if status&(acpi::acpi_device::DEVICE_PRESENT|acpi::acpi_device::DEVICE_ENABLED)
             !=(acpi::acpi_device::DEVICE_PRESENT|acpi::acpi_device::DEVICE_ENABLED) { continue; }
+        if pdo_count>=MAX_ACPI_PDOS { return STATUS_INSUFFICIENT_RESOURCES; }
         let mut pdo=core::ptr::null_mut();
         let create=unsafe{IoCreateDevice(object,core::mem::size_of::<AcpiPdoExtension>() as u32,
             core::ptr::null_mut(),FILE_DEVICE_BUS_EXTENDER,0,0,&mut pdo)};
