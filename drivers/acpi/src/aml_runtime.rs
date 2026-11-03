@@ -30,7 +30,7 @@ fn checked_byte_length(value:&AmlRuntimeValue)->Result<usize,RuntimeError>{
 }
 
 /// Validate the internal extents and references of a public runtime value.
-fn validate_runtime_value(value:&AmlRuntimeValue,arena:&AmlObjectArena)->Result<(),RuntimeError>{
+pub fn validate_runtime_value(value:&AmlRuntimeValue,arena:&AmlObjectArena)->Result<(),RuntimeError>{
     match value.kind{
         AmlValueKind::String|AmlValueKind::Buffer=>{checked_byte_length(value)?;}
         AmlValueKind::Package=>{
