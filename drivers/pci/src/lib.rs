@@ -775,10 +775,28 @@ mod config_transaction_lock_tests {
     use super::*;
     #[test]
     fn transaction_lock_is_exclusive_and_released_on_drop() {
-        let guard = try_acquire_config_transaction().unwrap();
+        // Other PCI unit tests also exercise the process-global transaction
+        // lock. Rust runs tests in parallel by default, so wait for unrelated
+        // transactions to finish instead of treating legitimate contention
+        // as a test failure.
+        let guard = loop {
+            match try_acquire_config_transaction() {
+                Ok(guard) => break guard,
+                Err(ConfigLockError::Busy) => std::thread::yield_now(),
+            }
+        };
         assert_eq!(try_acquire_config_transaction().err(), Some(ConfigLockError::Busy));
         drop(guard);
-        assert!(try_acquire_config_transaction().is_ok());
+
+        // Another parallel test may acquire the lock immediately after drop;
+        // verify eventual release rather than requiring an uncontended instant.
+        let guard = loop {
+            match try_acquire_config_transaction() {
+                Ok(guard) => break guard,
+                Err(ConfigLockError::Busy) => std::thread::yield_now(),
+            }
+        };
+        drop(guard);
     }
 
     #[test]
