@@ -61,6 +61,62 @@ fn address_space(p:&[u8],width:u8)->Result<Resource,ResourceError>{
     }
 }
 
+/// Parse the raw CM_RESOURCE_LIST supplied in IRP_MN_START_DEVICE.
+/// This parser accepts one FULL_RESOURCE_DESCRIPTOR (the ACPI bus PDO's
+/// resource set) and the Windows x64 20-byte PARTIAL_RESOURCE_DESCRIPTOR ABI.
+pub fn parse_cm_resource_list(bytes:&[u8])->Result<ResourceList,ResourceError>{
+    if bytes.len()<20||u32le(bytes,0)?!=1{return Err(ResourceError::InvalidLength)}
+    let count=u32le(bytes,16)? as usize;
+    if count>MAX_RESOURCES{return Err(ResourceError::TooManyResources)}
+    let required=20usize.checked_add(count.checked_mul(20).ok_or(ResourceError::IntegerOverflow)?)
+        .ok_or(ResourceError::IntegerOverflow)?;
+    if required>bytes.len(){return Err(ResourceError::Truncated)}
+    let mut out=ResourceList::EMPTY;
+    for index in 0..count{
+        let offset=20+index*20;
+        let kind=bytes[offset];
+        let share=bytes[offset+1];
+        let flags=u16le(bytes,offset+2)?;
+        let resource=match kind{
+            1=>{
+                let base=u64le(bytes,offset+4)?;
+                let length=u32le(bytes,offset+12)? as u64;
+                validate_range(base,base,length)?;
+                Resource::Io{minimum:base,maximum:base,alignment:1,length,decode_16_bit:flags&2!=0}
+            }
+            2=>{
+                let vector=u32le(bytes,offset+8)?;
+                let mut interrupts=[0u32;8];interrupts[0]=vector;
+                let mut irq_flags=if flags&1==0{2}else{0};
+                if share==3{irq_flags|=8;}
+                Resource::ExtendedIrq{flags:irq_flags,interrupts,count:1}
+            }
+            3=>{
+                let base=u64le(bytes,offset+4)?;
+                let length=u32le(bytes,offset+12)? as u64;
+                validate_range(base,base,length)?;
+                Resource::Memory{minimum:base,maximum:base,alignment:1,length,
+                    writeable:flags&1==0,cacheable:flags&0x20!=0,kind:2}
+            }
+            4=>{
+                let channel=u32le(bytes,offset+4)?;
+                if channel>=8{return Err(ResourceError::InvalidDescriptor)}
+                Resource::Dma{channels:1u8<<(channel as u8),transfer_size:0,bus_master:false}
+            }
+            6=>{
+                let base=u32le(bytes,offset+4)? as u64;
+                let length=u32le(bytes,offset+8)? as u64;
+                if length==0{return Err(ResourceError::InvalidDescriptor)}
+                let maximum=base.checked_add(length-1).ok_or(ResourceError::IntegerOverflow)?;
+                Resource::BusNumber{minimum:base,maximum,length}
+            }
+            _=>return Err(ResourceError::UnsupportedDescriptor),
+        };
+        out.push(resource)?;
+    }
+    Ok(out)
+}
+
 /// Parse one complete `_CRS` resource template. No result escapes on failure.
 /// Unknown descriptor kinds fail closed; EndTag must be present and final.
 /// A zero EndTag checksum means checksum validation is not required by firmware.
