@@ -1,0 +1,29 @@
+name: ACPI Rust unit tests
+
+on:
+  pull_request:
+    paths:
+      - 'drivers/acpi/**'
+      - 'shared/nt-abi/**'
+      - '.github/workflows/acpi-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'drivers/acpi/**'
+      - 'shared/nt-abi/**'
+      - '.github/workflows/acpi-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  acpi-unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run ACPI library tests
+        run: cargo test --manifest-path drivers/acpi/Cargo.toml --lib
