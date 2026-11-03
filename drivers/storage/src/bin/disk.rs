@@ -86,11 +86,6 @@ unsafe extern "win64" {
     fn IoDetachDevice(target:*mut DEVICE_OBJECT);
     fn IoCallDriver(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32;
     fn IoCompleteRequest(irp:*mut IRP,priority_boost:i8);
- fn IoAllocateIrp(stack_size:i8,charge_quota:u8)->*mut IRP;
- fn IoFreeIrp(irp:*mut IRP);
- fn KeInitializeEvent(event:PVOID,event_type:i32,state:u8);
- fn KeSetEvent(event:PVOID,increment:i32,wait:u8)->i32;
- fn KeWaitForSingleObject(event:PVOID,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -106,11 +101,6 @@ IMPORT IoDeleteDevice
 IMPORT IoAttachDeviceToDeviceStack
 IMPORT IoDetachDevice
 IMPORT IoCallDriver
-IMPORT KeWaitForSingleObject
-IMPORT KeSetEvent
-IMPORT KeInitializeEvent
-IMPORT IoFreeIrp
-IMPORT IoAllocateIrp
 
 IMPORT IoCompleteRequest
 .section .data.imports.ntoskrnl,"aw",@progbits
@@ -126,11 +116,6 @@ IAT IoDeleteDevice
 IAT IoAttachDeviceToDeviceStack
 IAT IoDetachDevice
 IAT IoCallDriver
-IAT KeWaitForSingleObject
-IAT KeSetEvent
-IAT KeInitializeEvent
-IAT IoFreeIrp
-IAT IoAllocateIrp
 
 IAT IoCompleteRequest
 "#);
@@ -163,35 +148,6 @@ unsafe fn set_completion_routine(
  let mut control=0u8;
  if success!=0{control|=0x40} if error!=0{control|=0x80} if cancel!=0{control|=0x20}
  unsafe{(*next).completion_routine=routine;(*next).context=context;(*next).control|=control;}
-}
-unsafe extern "win64" fn query_interface_complete(_device:*mut DEVICE_OBJECT,_irp:*mut IRP,context:PVOID)->i32 {
- if !context.is_null(){let _=unsafe{KeSetEvent(context,0,0)};}
- 0xC0000016u32 as i32
-}
-/// Windows IRP_MN_QUERY_INTERFACE path; no private kernel export is required.
-unsafe fn query_pci_bus_interface(device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,size:u16,version:u16,output:PVOID)->i32 {
- if device.is_null()||guid.is_null()||output.is_null(){return STATUS_INVALID_PARAMETER}
- let irp=unsafe{IoAllocateIrp((*device).stack_size.max(1) as i8,0)};
- if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
- let mut event=[0u64;3];unsafe{KeInitializeEvent(event.as_mut_ptr().cast(),0,0);}
- let stack=next_stack_location(irp);
- if stack.is_null(){unsafe{IoFreeIrp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
- unsafe{
-  (*stack).major_function=0x1b;(*stack).minor_function=0x08;
-  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<*const cognacos_nt_abi::bus::GUID>(),guid);
-  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u16>(),size);
-  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(10).cast::<u16>(),version);
-  core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<PVOID>(),output);
-  set_completion_routine(irp,Some(query_interface_complete),event.as_mut_ptr().cast(),1,1,1);
- }
- let status=unsafe{IoCallDriver(device,irp)};
- if status==STATUS_PENDING{
-  let wait=unsafe{KeWaitForSingleObject(event.as_mut_ptr().cast(),0,0,0,core::ptr::null())};
-  if wait<0{unsafe{IoFreeIrp(irp)};return wait}
- }
- let io_status=unsafe{(*irp).io_status.status.status};
- unsafe{IoFreeIrp(irp)}
- if status==STATUS_PENDING{io_status}else if status<0{status}else{io_status}
 }
 
 fn extension(device:*mut DEVICE_OBJECT)->Option<*mut DiskFdoExtension>{
