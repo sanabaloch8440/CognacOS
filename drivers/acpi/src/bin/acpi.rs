@@ -419,7 +419,7 @@ unsafe extern "win64" fn power_dispatch(
      }
     }
    }
-   else if state_type==0&&(1..=6).contains(&state){STATUS_SUCCESS}
+   else if state_type==0&&(1..=6).contains(&state){STATUS_NOT_SUPPORTED}
    else{STATUS_INVALID_DEVICE_REQUEST}
   }
   IRP_MN_SET_POWER if state_type==1=>{
