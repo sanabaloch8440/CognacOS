@@ -107,6 +107,16 @@ struct GroupTable { groups:[WaitGroup;MAX_WAIT_GROUPS] }
 impl GroupTable { const fn new()->Self{Self{groups:[WaitGroup::EMPTY;MAX_WAIT_GROUPS]}} }
 static GROUPS:IrqSpinLock<GroupTable>=IrqSpinLock::new(GroupTable::new());
 
+/// Whether an active wait-all group still refers to this dispatcher object.
+/// Mutant records must remain available while such a group is pending, even
+/// when no single-object waiter is queued on the mutant itself.
+pub fn has_wait_all_object(object:u64)->bool{
+    if object==0{return false}
+    let groups=GROUPS.lock();
+    groups.groups.iter().any(|group|group.active&&group.wait_all
+        && group.objects[..group.count].contains(&object))
+}
+
 /// Register a wait-any group after all per-object queue entries have been inserted.
 /// The caller must serialize object signal transitions during this registration.
 pub fn register_wait_any(thread:u64,objects:&[u64],tokens:&[WaitToken],deadline:u64)->Result<(),WaitError>{
