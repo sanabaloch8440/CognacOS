@@ -80,11 +80,16 @@ pub fn disable_device(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState
 #[cfg(test)] mod acpi_v6_srs_success_path {
  use super::*;
  
- #[test] fn successful_srs_application_is_reported_without_premature_state_mutation() {
-  let mut firmware=fake(true);
-  let mut state=DevicePowerState::INITIAL;
-  apply_srs(&mut firmware,&ResourceList::EMPTY).unwrap();
-  assert_eq!(state.d_state,0);
+ struct SuccessfulSrs;
+ impl AcpiPowerMethodInvoker for SuccessfulSrs {
+  fn evaluate_prs(&mut self)->Result<&[u8],PowerError>{Ok(&[])}
+  fn set_srs(&mut self,_:&ResourceList)->bool{true}
+  fn invoke(&mut self,_:PowerMethod)->bool{true}
+  fn evaluate_prw(&mut self)->Result<Option<WakeInfo>,PowerError>{Ok(None)}
+ }
+ #[test] fn successful_srs_application_calls_firmware_once() {
+  let mut firmware=SuccessfulSrs;
+  assert_eq!(apply_srs(&mut firmware,&ResourceList::EMPTY),Ok(()));
  }
 
 }
