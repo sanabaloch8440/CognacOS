@@ -1647,3 +1647,17 @@ mod remaining_firmware_table_tests {
  #[test] fn validates_gtdt_fixed_fields_and_timer_offset(){let mut b=sdt(*b"GTDT",100);b[88..92].copy_from_slice(&1u32.to_le_bytes());b[92..96].copy_from_slice(&96u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b).unwrap().platform_timer_count,1);b[92..96].copy_from_slice(&95u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_pptt_variable_node_bounds(){let mut b=sdt(*b"PPTT",40);b[36]=0;b[37]=4;finish(&mut b);assert!(validate_pptt(&b).is_ok());b[37]=8;finish(&mut b);assert_eq!(validate_pptt(&b),Err(AcpiError::MalformedEntry));}
 }
+
+
+#[cfg(test)]
+mod fadt_gas_tests {
+ use super::*;
+ #[test] fn prefers_valid_extended_pm1a_gas_and_keeps_legacy_fallback(){
+  let mut b=std::vec![0u8;244];b[..4].copy_from_slice(b"FACP");b[4..8].copy_from_slice(&244u32.to_le_bytes());b[8]=6;b[40..44].copy_from_slice(&0x1234u32.to_le_bytes());b[64..68].copy_from_slice(&0x404u32.to_le_bytes());
+  b[172]=1;b[173]=16;b[175]=1;b[176..184].copy_from_slice(&0x404u64.to_le_bytes());
+  b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));
+  let f=parse_fadt(&b).unwrap();assert_eq!(f.effective_pm1a_control_address(),0x404);assert_eq!(f.x_pm1a_control_block.unwrap().address,0x404);
+  b[172]=0;b[173]=0;b[175]=0;b[176..184].fill(0);b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));
+  assert_eq!(parse_fadt(&b).unwrap().effective_pm1a_control_address(),0x404);
+ }
+}
