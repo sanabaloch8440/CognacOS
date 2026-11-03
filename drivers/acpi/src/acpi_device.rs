@@ -564,3 +564,46 @@ pub fn decode_power_resource_package(
  if pos!=package_end{return Err(PowerResourcePackageError::MalformedPackage)}
  Ok(count)
 }
+
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct AcpiThermalZoneData{
+ pub node:u16,pub temperature_deci_kelvin:u32,pub passive_trip:Option<u32>,
+ pub hot_trip:Option<u32>,pub critical_trip:Option<u32>,
+ pub active_trip:[Option<u32>;8],pub active_count:u8,
+}
+impl AcpiThermalZoneData{
+ pub const EMPTY:Self=Self{node:u16::MAX,temperature_deci_kelvin:0,passive_trip:None,
+  hot_trip:None,critical_trip:None,active_trip:[None;8],active_count:0};
+}
+/// Evaluate the ACPI thermal-zone objects used by Windows thermal policy:
+/// _TMP, _PSV, _HOT, _CRT and _AC0.._AC7. All temperatures are 0.1 Kelvin.
+pub fn evaluate_thermal_zone(
+ ns:&AmlNamespace,aml_tables:&[&[u8]],zone:u16,invoker:&mut impl AcpiMethodInvoker,
+)->Result<AcpiThermalZoneData,IdentityError>{
+ let node=ns.nodes.get(zone as usize).filter(|_|(zone as usize)<ns.count)
+  .ok_or(IdentityError::InvalidDevice)?;
+ if node.object_type!=AmlObjectType::ThermalZone{return Err(IdentityError::InvalidDevice)}
+ let integer=|name:[u8;4],invoker:&mut _|->Result<Option<u32>,IdentityError>{
+  match eval_optional(ns,aml_tables,zone,name,invoker)?{
+   None=>Ok(None),
+   Some(IdentityValue::Integer(value)) if value<=u32::MAX as u64=>Ok(Some(value as u32)),
+   _=>Err(IdentityError::UnsupportedObject),
+  }
+ };
+ let temperature=integer(*b"_TMP",invoker)?.ok_or(IdentityError::MissingRequiredObject)?;
+ if !(1000..=20000).contains(&temperature){return Err(IdentityError::UnsupportedObject)}
+ let passive=integer(*b"_PSV",invoker)?;
+ let hot=integer(*b"_HOT",invoker)?;
+ let critical=integer(*b"_CRT",invoker)?;
+ for trip in [passive,hot,critical].iter().flatten(){if !(1000..=20000).contains(trip){return Err(IdentityError::UnsupportedObject)}}
+ let mut active=[None;8];let mut count=0usize;let mut previous=u32::MAX;
+ for index in 0..8{
+  let name=[b'_',b'A',b'C',b'0'+index as u8];
+  let Some(value)=integer(name,invoker)? else{break};
+  if !(1000..=20000).contains(&value)||value>previous{return Err(IdentityError::UnsupportedObject)}
+  active[index]=Some(value);previous=value;count+=1;
+ }
+ Ok(AcpiThermalZoneData{node:zone,temperature_deci_kelvin:temperature,
+  passive_trip:passive,hot_trip:hot,critical_trip:critical,active_trip:active,active_count:count as u8})
+}
