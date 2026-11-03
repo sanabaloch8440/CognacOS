@@ -273,8 +273,8 @@ unsafe fn send_port_control(lower: *mut DEVICE_OBJECT, code: u32, input: *const 
     unsafe {
         (*stack).major_function = IRP_MJ_INTERNAL_DEVICE_CONTROL;
         (*stack).parameters.fill(0);
-        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<u32>(), code);
-        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(24).cast::<*const c_void>(), input);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u32>(), code);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<*const c_void>(), input);
     }
     let status = unsafe { IoCallDriver(lower, irp) };
     unsafe { IoFreeIrp(irp); }
