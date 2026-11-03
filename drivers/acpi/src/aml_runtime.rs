@@ -204,7 +204,7 @@ fn integer_to_hex_string(value:u64,width_bits:u8)->AmlRuntimeValue{
 /// Convert a source value to the already-established type of a named object.
 /// This covers only runtime scalar/container kinds; field-unit and reference
 /// conversions require their own execution context and are not guessed here.
-fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:&AmlObjectArena,width_bits:u8)
+fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:&AmlObjectArena,width_bits:u8,target_exists:bool)
     ->Result<AmlRuntimeValue,RuntimeError>{
     let mut converted=AmlRuntimeValue::EMPTY;
     match target.kind{
@@ -231,7 +231,7 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
                 AmlValueKind::Integer=>{
                     let width_bytes=(width_bits/8) as usize;
                     let target_length=checked_byte_length(target)?;
-                    let bytes=if target.kind==AmlValueKind::Buffer{target_length}else{width_bytes};
+                    let bytes=if target_exists{target_length}else{width_bytes};
                     converted.byte_length=bytes as u16;
                     for i in 0..core::cmp::min(bytes,width_bytes){
                         converted.bytes[i]=(source.integer>>(i*8)) as u8;
@@ -241,7 +241,7 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
                     let n=checked_byte_length(source)?;
                     let target_length=checked_byte_length(target)?;
                     let required=n.checked_add(1).ok_or(RuntimeError::ValueTooLarge)?;
-                    let bytes=if target.kind==AmlValueKind::Buffer{target_length}else{required};
+                    let bytes=if target_exists{target_length}else{required};
                     converted.byte_length=bytes as u16;
                     let copied=core::cmp::min(n,bytes);
                     converted.bytes[..copied].copy_from_slice(&source.bytes[..copied]);
@@ -310,7 +310,7 @@ pub fn convert_source_operand(value:&AmlRuntimeValue,expected_kind:AmlValueKind,
     if !matches!(integer_width_bits,32|64){return Err(RuntimeError::TypeMismatch)}
     let mut target=AmlRuntimeValue::EMPTY;
     target.kind=expected_kind;
-    convert_to_target_type(value,&target,arena,integer_width_bits)
+    convert_to_target_type(value,&target,arena,integer_width_bits,false)
 }
 
 /// Store an existing arena value through an AML reference. Named objects use
@@ -334,7 +334,7 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
                 source
             }else if bindings.bound[i]{
                 let old=*arena.get(bindings.values[i]).ok_or(RuntimeError::InvalidReference)?;
-                convert_to_target_type(&source,&old,arena,bindings.integer_width_bits)?
+                convert_to_target_type(&source,&old,arena,bindings.integer_width_bits,true)?
             }else{
                 // A Name without an evaluated initializer has no established
                 // fixed target type yet; first assignment establishes it.
@@ -560,7 +560,7 @@ mod tests{
         assert_eq!(int_value.kind,AmlValueKind::Integer);assert_eq!(int_value.integer,0x2a);
         store_reference(bindings.reference_node(&ns,buf_node).unwrap(),source_id,&mut bindings,&ns,&mut arena).unwrap();
         let buffer=dereference(bindings.reference_node(&ns,buf_node).unwrap(),&bindings,&arena).unwrap();
-        assert_eq!(buffer.kind,AmlValueKind::Buffer);assert_eq!(buffer.byte_length,4);assert_eq!(&buffer.bytes[..4],b"2aZ\0");
+        assert_eq!(buffer.kind,AmlValueKind::Buffer);assert_eq!(buffer.byte_length,1);assert_eq!(buffer.bytes[0],b'2');
         let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=0x2a;
         let integer_id=arena.allocate(integer).unwrap();
         store_reference(bindings.reference_node(&ns,str_node).unwrap(),integer_id,&mut bindings,&ns,&mut arena).unwrap();
@@ -577,7 +577,7 @@ mod tests{
         let mut arena=AmlObjectArena::new();
         let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;
         let int_id=arena.allocate(integer).unwrap();
-        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;buffer.byte_length=1;
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;buffer.byte_length=8;
         let buffer_id=arena.allocate(buffer).unwrap();
         let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;string.byte_length=1;
         let string_id=arena.allocate(string).unwrap();
@@ -589,8 +589,8 @@ mod tests{
         let source_id=arena.allocate(source).unwrap();
         store_reference(bindings.reference_node(&ns,buf_node).unwrap(),source_id,&mut bindings,&ns,&mut arena).unwrap();
         let result=dereference(bindings.reference_node(&ns,buf_node).unwrap(),&bindings,&arena).unwrap();
-        assert_eq!(result.byte_length,4);
-        assert_eq!(&result.bytes[..4],&[0x78,0x56,0x34,0x12]);
+        assert_eq!(result.byte_length,8);
+        assert_eq!(&result.bytes[..8],&[0x78,0x56,0x34,0x12,0,0,0,0]);
         store_reference(bindings.reference_node(&ns,str_node).unwrap(),source_id,&mut bindings,&ns,&mut arena).unwrap();
         let result=dereference(bindings.reference_node(&ns,str_node).unwrap(),&bindings,&arena).unwrap();
         assert_eq!(result.byte_length,8);
@@ -654,7 +654,7 @@ mod tests{
         assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
     #[test]fn named_buffer_result_conversion_preserves_target_extent(){
-        let aml=[0x08,b'B',b'U',b'F',b'0',0x11,0x04,0x0a,2,0,0,0];
+        let aml=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,0,0];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"BUF0").unwrap();
         let mut arena=AmlObjectArena::new();
@@ -679,7 +679,7 @@ mod tests{
     }
 
     #[test]fn copy_object_detaches_mutable_buffer_and_string_values(){
-        let aml=[0x08,b'T',b'A',b'R',b'G',0x11,0x04,0x0a,1,0,0xaa];
+        let aml=[0x08,b'T',b'A',b'R',b'G',0x11,0x04,0x0a,1,0xaa];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"TARG").unwrap();
         let mut arena=AmlObjectArena::new();
