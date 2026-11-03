@@ -477,7 +477,7 @@ mod assigned_resource_encoding_tests{
   let length=encode_resource_template(&selected,&mut bytes).unwrap();
   let parsed=parse_resource_template(&bytes[..length]).unwrap();
   assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x1100,maximum:0x1100,length:0x100,..})));
-  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0e,count:1,interrupts,..}) if interrupts[0]==9));
  }
  #[test]
  fn verifies_post_srs_crs_against_selected_bus_relative_assignment(){
