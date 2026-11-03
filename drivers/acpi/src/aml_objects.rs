@@ -1,6 +1,11 @@
 //! Bounded AML runtime data-object decoder.
 //! Values live in a caller-owned fixed arena; no heap allocation or firmware I/O
 //! occurs here. Package elements reference other arena entries by index.
+/*
+ * FIXME(ACPI-PRODUCTION) — AML runtime objects
+ * FIXME(ACPI-PRODUCTION): Runtime objects use bounded caller-owned storage; complete ACPI AML value/reference behavior and lifetime rules remain a production gate. Intended completion: exact Integer/String/Buffer/Package/VarPackage conversions, reference and index semantics, ownership/aliasing rules, dynamic package evaluation, capacity/size limits, and complete malformed-object handling. Every decoder must enforce enclosing boundaries and checked arithmetic, and failures must leave the arena in a consistent state.
+ */
+
 #![no_std]
 use crate::aml::{decode_package_length,AmlError,AmlNamespace,AmlObjectType};
 use crate::aml_exec::evaluate_term_argument;
