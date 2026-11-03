@@ -31,7 +31,7 @@ fn access(gas:crate::acpi::AcpiGas)->Result<Access,GasError>{
     };
     if minimum>bytes as u16*1{return Err(GasError::InvalidWidth)}
     if gas.address%(bytes as u64)!=0{return Err(GasError::Unaligned)}
-    if gas.address_space_id==SPACE_SYSTEM_IO&&(bytes==8||gas.address>u16::MAX as u64||gas.address+bytes as u64>0x1_0000){return Err(GasError::InvalidAddress)}
+    if gas.address_space_id==SPACE_SYSTEM_IO&&(bytes==8||gas.address>u16::MAX as u64||gas.address.checked_add(bytes as u64).is_none_or(|end|end>0x1_0000)){return Err(GasError::InvalidAddress)}
     if gas.address_space_id==SPACE_SYSTEM_MEMORY&&gas.address%PAGE_SIZE+bytes as u64>PAGE_SIZE{return Err(GasError::CrossesPage)}
     let field_mask=if gas.bit_width==64{u64::MAX}else{(1u64<<gas.bit_width)-1};
     Ok(Access{bytes,field_width:gas.bit_width,bit_offset:gas.bit_offset,mask:field_mask<<gas.bit_offset})
@@ -78,7 +78,7 @@ unsafe fn read_raw(gas:crate::acpi::AcpiGas,a:Access)->Result<u64,GasError>{
         }
         SPACE_SYSTEM_IO=>{
             if a.bytes==8{return Err(GasError::InvalidWidth)}
-            if gas.address>u16::MAX as u64||gas.address+a.bytes as u64>0x1_0000{return Err(GasError::InvalidAddress)}
+            if gas.address>u16::MAX as u64||gas.address.checked_add(a.bytes as u64).is_none_or(|end|end>0x1_0000){return Err(GasError::InvalidAddress)}
             let port=gas.address as u16;
             Ok(unsafe{match a.bytes{1=>read_port_u8(port) as u64,2=>read_port_u16(port) as u64,4=>read_port_u32(port) as u64,_=>return Err(GasError::InvalidWidth)}})
         }
@@ -171,6 +171,9 @@ mod tests{
     #[test]fn rejects_unknown_spaces_and_invalid_port_ranges(){
         assert_eq!(access(gas(0x7f,0x1000,8,0,1)),Err(GasError::UnsupportedAddressSpace));
         assert_eq!(access(gas(0,0,8,0,1)),Err(GasError::InvalidAddress));
-        assert_eq!(access(gas(1,0x10000,8,0,1)).map(|_|()),Ok(()));
+        assert_eq!(access(gas(1,0x10000,8,0,1)),Err(GasError::InvalidAddress));
+        assert_eq!(access(gas(1,u64::MAX,8,0,1)),Err(GasError::Unaligned));
+        assert_eq!(access(gas(1,0xfffc,32,0,3)).map(|_|()),Ok(()));
+        assert_eq!(access(gas(1,0xfffe,32,0,3)),Err(GasError::Unaligned));
     }
 }
