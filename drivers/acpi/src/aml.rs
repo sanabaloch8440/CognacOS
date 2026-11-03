@@ -733,12 +733,12 @@ mod tests{
             0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,16,
             0x5b,0x80,b'I',b'N',b'D',b'X',1,0x0a,0,0x0a,1,
             0x5b,0x80,b'D',b'A',b'T',b'A',1,0x0a,0,0x0a,1,
-            0x5b,0x86,0x13,b'I',b'N',b'D',b'X',b'I',b'N',b'D',b'X',b'D',b'A',b'T',b'A',0,b'F',b'L',b'D',b'0',8,
+            0x5b,0x86,0x18,b'I',b'N',b'D',b'X',b'I',b'N',b'D',b'X',b'D',b'A',b'T',b'A',0,0x02,b'I',b'N',b'D',b'X',b'F',b'L',b'D',b'0',8,
             0x5b,0x87,0x11,b'R',b'E',b'G',b'N',b'I',b'N',b'D',b'X',0x0a,1,0,b'B',b'F',b'L',b'D',8
         ];
         let mut ns=AmlNamespace::new();assert!(load_definition_block(&aml,&mut ns).is_ok());
-        assert_eq!(ns.nodes[4].object_type,AmlObjectType::Field);assert_eq!(ns.nodes[4].field_mode,1);
-        assert_eq!(ns.nodes[5].object_type,AmlObjectType::Field);assert_eq!(ns.nodes[5].field_mode,2);
+        assert_eq!(ns.nodes[4].object_type,AmlObjectType::Field);assert_eq!(ns.nodes[4].field_mode,1);assert_eq!(ns.nodes[4].field_index_register,2);assert_eq!(ns.nodes[4].field_data_register,3);assert!(ns.nodes[4].field_connection);assert_eq!(ns.nodes[4].field_connection_length,4);
+        assert_eq!(ns.nodes[5].object_type,AmlObjectType::Field);assert_eq!(ns.nodes[5].field_mode,2);assert_eq!(ns.nodes[5].field_region,1);assert_eq!(ns.nodes[5].field_bank_register,2);assert_eq!(ns.nodes[5].field_bank_value_length,2);
     }
     #[test]fn loads_operation_region_and_named_field(){
         let aml=[
