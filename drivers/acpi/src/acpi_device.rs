@@ -503,9 +503,9 @@ fn resolve_package_name(ns:&AmlNamespace,scope:u16,bytes:&[u8],pos:&mut usize,en
  let mut first=true;
  let mut resolved=u16::MAX;
  for _ in 0..count{
-  let name=bytes.get(*pos..pos.checked_add(4).ok_or(PowerResourcePackageError::MalformedPackage)?)
-   .filter(|_|pos.checked_add(4).is_some_and(|e|e<=end))
-   .ok_or(PowerResourcePackageError::MalformedPackage)?;
+  let next=(*pos).checked_add(4).ok_or(PowerResourcePackageError::MalformedPackage)?;
+  if next>end{return Err(PowerResourcePackageError::MalformedPackage)}
+  let name=bytes.get(*pos..next).ok_or(PowerResourcePackageError::MalformedPackage)?;
   let segment=[name[0],name[1],name[2],name[3]];*pos+=4;
   if first&&!absolute&&scope!=0{
    let mut candidate=current;let mut found=None;
