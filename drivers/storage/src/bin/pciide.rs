@@ -44,6 +44,7 @@ struct PciIdeFdoExtension {
     // One independently identified ATA device per channel/device position.
     // These channels are the miniport's persistent PIO transport state.
     channels: [Option<Channel>; 4],
+    pio_lock: AtomicBool,
 }
 const _: () = assert!(core::mem::size_of::<PciIdeFdoExtension>() <= 512);
 
