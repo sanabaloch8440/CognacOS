@@ -732,6 +732,13 @@ mod tests{
         assert_eq!(ns.nodes[2].object_type,AmlObjectType::PowerResource);assert_eq!(ns.nodes[2].power_resource_system_level,3);assert_eq!(ns.nodes[2].power_resource_order,0x4567);
         assert_eq!(ns.nodes[3].object_type,AmlObjectType::ThermalZone);
     }
+    #[test]fn zero_width_reserved_field_does_not_corrupt_following_offsets(){
+        let aml=[0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,16,
+            0x5b,0x81,0x0d,b'R',b'E',b'G',b'N',0,0x00,0x00,b'F',b'L',b'D',b'0',8];
+        let mut ns=AmlNamespace::new();assert_eq!(load_definition_block(&aml,&mut ns),Ok(()));
+        let field=ns.find_child(0,*b"FLD0").unwrap() as usize;
+        assert_eq!(ns.nodes[field].body_start,0);assert_eq!(ns.nodes[field].body_length,8);
+    }
     #[test]fn rejects_zero_length_and_malformed_access_fields(){
         let mut ns=AmlNamespace::new();
         // OperationRegion(REGN, SystemMemory, 0, 16); Field(REGN, flags, FLD0, 0)
