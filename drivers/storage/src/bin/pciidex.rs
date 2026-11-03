@@ -256,15 +256,23 @@ unsafe extern "win64" fn query_interface_complete(_device:*mut DEVICE_OBJECT,_ir
  0xC0000016u32 as i32
 }
 /// Windows IRP_MN_QUERY_INTERFACE path; no private kernel export is required.
-unsafe fn query_pci_bus_interface(device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,size:u16,version:u16,output:PVOID)->i32 {
+unsafe fn query_pci_bus_interface(
+ device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,
+ size:u16,version:u16,output:PVOID
+)->i32 {
  if device.is_null()||guid.is_null()||output.is_null(){return STATUS_INVALID_PARAMETER}
- let irp=unsafe{IoAllocateIrp((*device).stack_size.max(1) as i8,0)};
- if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
- let mut event=[0u64;3];unsafe{KeInitializeEvent(event.as_mut_ptr().cast(),0,0);}
+ let target=unsafe{IoGetAttachedDeviceReference(device)};
+ if target.is_null(){return STATUS_DELETE_PENDING}
+ let stack_size=unsafe{(*target).stack_size.max(1)};
+ let irp=unsafe{IoAllocateIrp(stack_size as i8,0)};
+ if irp.is_null(){unsafe{ObDereferenceObject(target.cast())};return STATUS_INSUFFICIENT_RESOURCES}
+ let mut event=[0u64;3];
+ unsafe{KeInitializeEvent(event.as_mut_ptr().cast(),0,0);}
  let stack=next_stack_location(irp);
  if stack.is_null(){unsafe{IoFreeIrp(irp);ObDereferenceObject(target.cast())};return STATUS_INSUFFICIENT_RESOURCES}
  unsafe{
-  (*stack).major_function=0x1b;(*stack).minor_function=0x08;
+  (*stack).major_function=0x1b; // IRP_MJ_PNP
+  (*stack).minor_function=0x08; // IRP_MN_QUERY_INTERFACE
   core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<*const cognacos_nt_abi::bus::GUID>(),guid);
   core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u16>(),size);
   core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(10).cast::<u16>(),version);
@@ -272,13 +280,13 @@ unsafe fn query_pci_bus_interface(device:*mut DEVICE_OBJECT,guid:*const cognacos
   set_completion_routine(irp,Some(query_interface_complete),event.as_mut_ptr().cast(),1,1,1);
  }
  let status=unsafe{IoCallDriver(target,irp)};
- if status==STATUS_PENDING{
+ if status==STATUS_PENDING {
   let wait=unsafe{KeWaitForSingleObject(event.as_mut_ptr().cast(),0,0,0,core::ptr::null())};
   if wait<0{unsafe{IoFreeIrp(irp);ObDereferenceObject(target.cast())};return wait}
  }
  let io_status=unsafe{(*irp).io_status.status.status};
  unsafe{IoFreeIrp(irp);ObDereferenceObject(target.cast())}
- if status==STATUS_PENDING{io_status}else if status<0{status}else{io_status}
+ if status==STATUS_PENDING{io_status}else if status>=0{io_status}else{status}
 }
 
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
