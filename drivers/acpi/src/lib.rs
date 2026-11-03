@@ -1,5 +1,10 @@
 //! Bounded ACPI table parsing primitives for platform discovery.
 //! Callers must pass a readable, mapped byte slice obtained from firmware data.
+/*
+ * FIXME(ACPI-PRODUCTION) — ACPI table and platform primitives
+ * FIXME(ACPI-PRODUCTION): This crate supplies bounded table parsing and platform metadata primitives, not a complete ACPI subsystem by itself. Intended completion: revision/length-aware validation for every supported table, correct FADT/RSDP discovery contracts, explicit mapping/lifetime guarantees, full ACPI 5.0–6.6 fixture coverage, and tests for malformed and conflicting firmware. Keep hardware activation separate from table parsing and document unsupported table families.
+ */
+
 #![no_std]
 
 pub mod aml;
