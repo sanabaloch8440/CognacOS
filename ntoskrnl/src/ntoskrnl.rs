@@ -151,6 +151,10 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::IoPnPProcessBusRelations as usize)
   } else if requested.eq_ignore_ascii_case(b"IoPnPEnumerateBus") {
    Some(crate::io::IoPnPEnumerateBus as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoPnPRegisterBusDevice") {
+   Some(crate::io::pnp::IoPnPRegisterBusDevice as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoMarkBusEnumeratedPdo") {
+   Some(crate::io::io_mark_bus_enumerated_pdo as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCreateDevice") {
    Some(crate::io::io_create_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoDeleteDevice") {
