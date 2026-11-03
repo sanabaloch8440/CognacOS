@@ -119,7 +119,7 @@ pub fn parse_ata_identify(words: &[u16; ATA_IDENTIFY_WORDS]) -> Result<DiskDescr
     })
 }
 
-const fn exponent_shift() -> u16 { 13 }
+const fn exponent_shift() -> u16 { 0 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PartitionStyle { Mbr, Gpt }
