@@ -26,9 +26,11 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu,x86_64-unknown-none
       - name: Compile all ACPI library tests
         run: cargo test --target x86_64-unknown-linux-gnu --manifest-path drivers/acpi/Cargo.toml --lib --no-run
+      - name: Type-check the native ACPI WDM driver
+        run: cargo check --target x86_64-unknown-none --manifest-path drivers/acpi/Cargo.toml --bin acpi
       - name: Run firmware discovery regression suites
         shell: bash
         run: |
