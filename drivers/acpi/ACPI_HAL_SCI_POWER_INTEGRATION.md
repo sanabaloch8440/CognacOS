@@ -79,4 +79,24 @@ Tests: trip conversion/bounds, _ALx/_TZD relationships, callback rundown, therma
 
 ## Status
 
-This document records the integration work required. It does not mark any of the above hardware or kernel integration gates complete. The existing backend contracts remain useful foundations, but they are not substitutes for the live HAL, interrupt manager, executive dispatcher, and power manager.
+### Implemented on this branch
+
+- Added `Hal/acpi_gas.rs` and registered it as a HAL module.
+- SystemMemory GAS access uses the kernel uncached I/O-space mapper; SystemIO uses x86 port I/O.
+- GAS descriptors are checked for address-space support, access-size/width consistency, bitfield bounds, natural alignment, page crossing, and I/O-port extent. Field writes preserve unrelated bits under a serialized read/modify/write operation.
+- Follow-up hardening uses checked arithmetic for both read and write port extents.
+
+### Still not integrated
+
+- The ACPI driver does not yet consume a driver-visible GAS service table. The GAS routines are HAL-internal Rust functions, not an ACPI driver ABI.
+- SCI GSI resolution/registration is not connected to the ACPI driver. The existing generic device interrupt/DPC service table is a foundation, but it does not itself resolve an ACPI SCI or publish the GAS callbacks.
+- No end-to-end ISR → DPC → passive worker → AML event path has been demonstrated.
+- Sleep, WAIT_WAKE, EC OpRegion, and thermal cooling remain unsupported as live hardware features. Keep their power/wake requests fail-closed.
+
+### Validation snapshot
+
+- ACPI unit-test workflow for commit `7cd5aa79a38df97c87fe7a956146c01da005ccac`: passed.
+- UEFI/kernel workflow for that commit: failed before kernel/QEMU boot because the ACPI library test suite reported 308 passed and 7 failed. The failures were in synchronized AML method invocation, GPE deferred re-enable, QWord bus-number resources, assigned-resource/SRS round-trip, CM resource-list IRQ decoding, and IndexField access.
+- Commit `9eafd5a6a7bdefdc6c6de1ba805e01479bfb41dd` additionally hardens the SystemIO write bound check. Its workflow result must be checked independently; the earlier run does not validate this follow-up commit.
+
+This remains an integration workstream, not a claim of ACPI v6 or Windows 11 driver compatibility. The next required architectural change is a versioned ACPI-specific HAL interface that the driver can obtain through a supported kernel interface-discovery path; only then should SCI registration and deferred dispatch be wired end to end.
