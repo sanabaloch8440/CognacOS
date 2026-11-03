@@ -1636,7 +1636,7 @@ mod firmware_table_policy_tests {
         assert_eq!(find_ssdt_with_mapper(&mapper,0x1000,2),Err(AcpiError::MissingRoot));
         let p=table_provenance_with_mapper(&mapper,0x1000,*b"SSDT",1).unwrap();
         assert_eq!(p.physical_address,0x4000);assert_eq!(p.revision,3);assert_eq!(p.length,36);assert!(p.validated);
-        let mapped=map_table_with_provenance(&mapper,0x1000,*b\"SSDT\",1).unwrap();assert_eq!(mapped.bytes[8],3);assert_eq!(mapped.provenance.physical_address,0x4000);
+        let mapped=map_table_with_provenance(&mapper,0x1000,*b"SSDT",1).unwrap();assert_eq!(mapped.bytes[8],3);assert_eq!(mapped.provenance.physical_address,0x4000);
     }
     #[test]
     fn singleton_policy_rejects_multiple_fadt_instances() {
