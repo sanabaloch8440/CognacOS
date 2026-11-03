@@ -8,7 +8,7 @@
 #![no_std]
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
 use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,AmlValueKind};
-use crate::aml_runtime::{to_integer_implicit,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value};
+use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType}
@@ -115,6 +115,49 @@ impl<'a,'b> Machine<'a,'b>{
  }
  /// Evaluate a TermArg without prematurely coercing Local/Arg/Name objects.
  /// Operators fall back to the scalar evaluator and therefore produce Integer.
+ fn conversion_value(&mut self,r:&mut Reader<'_>,op:u8)->Result<AmlRuntimeValue,ExecError>{
+  let source=self.term_value(r)?;
+  let converted=match op{
+   0x96=>{
+    let length=match source.kind{
+     AmlValueKind::Integer=>(self.integer_width_bits/8) as usize,
+     AmlValueKind::String=>(source.byte_length as usize).checked_add(1).ok_or(ExecError::TargetTypeMismatch)?,
+     AmlValueKind::Buffer=>source.byte_length as usize,
+     _=>return Err(ExecError::TargetTypeMismatch),
+    };
+    let mut value=to_buffer(&source,length).map_err(|_|ExecError::TargetTypeMismatch)?;
+    if source.kind==AmlValueKind::String&&length>0{value.bytes[length-1]=0;}
+    value
+   }
+   0x97=>{
+    if source.kind!=AmlValueKind::Integer{return Err(ExecError::TargetTypeMismatch)}
+    integer_to_string(self.normalize(source.integer))
+   }
+   0x98=>{
+    if source.kind!=AmlValueKind::Integer{return Err(ExecError::TargetTypeMismatch)}
+    let digits=(self.integer_width_bits/4) as usize;
+    let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;value.byte_length=digits as u16;
+    let alphabet=b"0123456789ABCDEF";let integer=self.normalize(source.integer);
+    for index in 0..digits{let shift=(digits-1-index)*4;value.bytes[index]=alphabet[((integer>>shift)&0xf) as usize];}
+    value
+   }
+   0x99=>Self::integer_value(to_integer_with_width(&source,self.integer_width_bits).map_err(|_|ExecError::TargetTypeMismatch)?),
+   0x9c=>{
+    if !matches!(source.kind,AmlValueKind::Buffer|AmlValueKind::String){return Err(ExecError::TargetTypeMismatch)}
+    let requested=self.term(r)? as usize;
+    let source_length=source.byte_length as usize;
+    if source_length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
+    let mut length=core::cmp::min(requested,source_length);
+    if let Some(nul)=source.bytes[..length].iter().position(|byte|*byte==0){length=nul;}
+    let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;
+    value.byte_length=length as u16;value.bytes[..length].copy_from_slice(&source.bytes[..length]);value
+   }
+   _=>return Err(ExecError::UnsupportedOpcode),
+  };
+  let target=self.target(r)?;
+  self.store_value(target,converted,StoreMode::Store)?;
+  Ok(converted)
+ }
  fn term_value(&mut self,r:&mut Reader<'_>)->Result<AmlRuntimeValue,ExecError>{
   let start=r.pos;let op=r.byte()?;
   match op{
@@ -157,6 +200,7 @@ impl<'a,'b> Machine<'a,'b>{
     match target{Target::Reference(reference)=>Ok(make_object_reference(reference)),
         _=>Err(ExecError::UnsupportedOpcode)}
    }
+   0x96..=0x99|0x9c=>self.conversion_value(r,op),
    0x83=>{
     let source=self.term_value(r)?;
     let reference=reference_from_value(&source).map_err(|_|ExecError::TargetTypeMismatch)?;
@@ -173,7 +217,8 @@ impl<'a,'b> Machine<'a,'b>{
   self.step()?;let op=r.byte()?;
   match op{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
-   0x71|0x83=>{let value=self.term_value(r)?;self.operand_integer(&value)},0x0a=>Ok(r.byte()? as u64),
+   0x71|0x83=>{let value=self.term_value(r)?;self.operand_integer(&value)},
+   0x96..=0x99|0x9c=>{let value=self.conversion_value(r,op)?;self.operand_integer(&value)},0x0a=>Ok(r.byte()? as u64),
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
@@ -356,6 +401,42 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
 #[cfg(test)]
 mod tests{
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
+ #[test]fn executes_explicit_aml_conversion_opcodes_and_stores_typed_targets(){
+  let decimal=[0x08,b'S',b'T',b'R',b'0',0x0d,b'4',b'2',0,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x99,b'S',b'T',b'R',b'0',0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&decimal,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&decimal,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+
+  let dec=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x97,0x0a,42,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&dec,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&dec,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::String);assert_eq!(&value.bytes[..2],b"42");
+
+  let hex=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x98,0x0a,42,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&hex,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&hex,&ns,id,&[],32).unwrap();
+  assert_eq!(value.kind,AmlValueKind::String);assert_eq!(value.byte_length,8);
+  assert_eq!(&value.bytes[..8],b"0000002A");
+
+  let to_buffer=[0x08,b'S',b'T',b'R',b'0',0x0d,b'O',b'K',0,
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x96,b'S',b'T',b'R',b'0',0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&to_buffer,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&to_buffer,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::Buffer);assert_eq!(value.byte_length,3);
+  assert_eq!(&value.bytes[..3],b"OK\0");
+
+  let to_string=[0x08,b'B',b'U',b'F',b'0',0x11,0x06,0x0a,3,b'O',b'K',0,
+   0x14,0x10,b'T',b'E',b'S',b'T',0,0xa4,0x9c,b'B',b'U',b'F',b'0',0x0a,3];
+  let mut ns=AmlNamespace::new();load_definition_block(&to_string,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&to_string,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::String);assert_eq!(value.byte_length,2);
+  assert_eq!(&value.bytes[..2],b"OK");
+ }
  #[test]fn implicit_source_conversion_reads_string_and_buffer_name_objects(){
   let string_aml=[
    0x08,b'S',b'T',b'R',b'0',0x0d,b'2',b'A',0,
