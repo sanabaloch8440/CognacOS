@@ -67,6 +67,25 @@ fn clone_value_tree_inner(value_id:u16,arena:&mut AmlObjectArena,
 
 /// Clone transactionally: a malformed/cyclic package or full arena leaves the
 /// arena exactly as it was before the attempted copy.
+/// Deep-copy the contents of a Package into an existing Package object,
+/// preserving the target object's identity for outstanding PackageElement
+/// references. The temporary cloned root is discarded after its children
+/// have been installed; failures leave both target and arena unchanged.
+fn clone_package_into_existing(source_id:u16,target_id:u16,
+    arena:&mut AmlObjectArena)->Result<(),RuntimeError>{
+    let target=*arena.get(target_id).ok_or(RuntimeError::InvalidReference)?;
+    if target.kind!=AmlValueKind::Package{return Err(RuntimeError::TypeMismatch)}
+    let cloned_id=clone_value_tree(source_id,arena)?;
+    let cloned=*arena.get(cloned_id).ok_or(RuntimeError::InvalidReference)?;
+    if cloned.kind!=AmlValueKind::Package||cloned_id as usize+1!=arena.count{
+        return Err(RuntimeError::InvalidReference)
+    }
+    // clone_value_tree appends the root after every recursively copied child.
+    arena.count-=1;
+    *arena.get_mut(target_id).ok_or(RuntimeError::InvalidReference)?=cloned;
+    Ok(())
+}
+
 fn clone_value_tree(value_id:u16,arena:&mut AmlObjectArena)->Result<u16,RuntimeError>{
     let checkpoint=arena.count;
     let mut path=[u16::MAX;32];
@@ -426,19 +445,24 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
             let canonical=namespace.resolve_alias(node).map_err(|_|RuntimeError::InvalidNode)?;
             let i=canonical as usize;
             if i>=namespace.count||namespace.nodes[i].object_type!=AmlObjectType::Name{return Err(RuntimeError::TypeMismatch)}
+            let old_id=if bindings.bound[i]{Some(bindings.values[i])}else{None};
+            let old=if let Some(id)=old_id{Some(*arena.get(id).ok_or(RuntimeError::InvalidReference)?)}else{None};
             let stored=if mode==StoreMode::CopyObject{
                 source
-            }else if bindings.bound[i]{
-                let old=*arena.get(bindings.values[i]).ok_or(RuntimeError::InvalidReference)?;
-                convert_to_target_type(&source,&old,arena,bindings.integer_width_bits,true)?
+            }else if let Some(target)=old{
+                convert_to_target_type(&source,&target,arena,bindings.integer_width_bits,true)?
             }else{
                 // A Name without an evaluated initializer has no established
                 // fixed target type yet; first assignment establishes it.
                 source
             };
-            // A named target owns its stored object. Never retain a mutable
-            // alias to the caller's source, including CopyObject of Buffer
-            // and String values.
+            if mode==StoreMode::Store&&stored.kind==AmlValueKind::Package
+                &&old.map(|target|target.kind==AmlValueKind::Package).unwrap_or(false){
+                clone_package_into_existing(value,old_id.ok_or(RuntimeError::InvalidReference)?,arena)?;
+                return Ok(())
+            }
+            // Named objects own their stored value; mutable data never aliases
+            // the caller's source object.
             let stored_id=if stored.kind==AmlValueKind::Package{
                 clone_value_tree(value,arena)?
             }else{arena.allocate(stored)?};
@@ -447,9 +471,9 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
         AmlReference::PackageElement{package,index}=>{
             let p=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
             if p.kind!=AmlValueKind::Package||index as usize>=checked_element_count(p)?{return Err(RuntimeError::InvalidReference)}
-            let stored_id=if mode==StoreMode::CopyObject||source.kind==AmlValueKind::Package{
-                clone_value_tree(value,arena)?
-            }else{value};
+            // Package elements are dynamically typed targets. Store and
+            // CopyObject both replace the element with an owned value copy.
+            let stored_id=clone_value_tree(value,arena)?;
             let p=arena.get_mut(package).ok_or(RuntimeError::InvalidReference)?;
             p.elements[index as usize]=stored_id;Ok(())
         }
@@ -695,6 +719,51 @@ mod tests{
         let mut hex=decimal;hex.byte_length=11;hex.bytes[..11].copy_from_slice(b"0x100000000");
         assert_eq!(to_integer_with_width(&hex,32),Err(RuntimeError::ValueTooLarge));
         assert_eq!(to_integer_with_width(&hex,16),Err(RuntimeError::TypeMismatch));
+    }
+
+    #[test]fn package_store_preserves_named_target_identity_and_copies_contents(){
+        let aml=[0x08,b'P',b'K',b'G',b'0',0x01];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"PKG0").unwrap();
+        let mut arena=AmlObjectArena::new();
+        let mut one=AmlRuntimeValue::EMPTY;one.kind=AmlValueKind::Integer;one.integer=1;
+        let source_child=arena.allocate(one).unwrap();
+        let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Package;source.element_count=1;
+        source.elements[0]=source_child;
+        let source_id=arena.allocate(source).unwrap();
+        let mut old_child=one;old_child.integer=9;
+        let old_child_id=arena.allocate(old_child).unwrap();
+        let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Package;target.element_count=1;
+        target.elements[0]=old_child_id;
+        let target_id=arena.allocate(target).unwrap();
+        let mut bindings=AmlBindings::new();bindings.bind(&namespace,node,target_id).unwrap();
+        store_reference(bindings.reference_node(&namespace,node).unwrap(),source_id,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        assert_eq!(bindings.value_id(node).unwrap(),target_id);
+        let updated=*arena.get(target_id).unwrap();
+        assert_ne!(updated.elements[0],source_child);
+        assert_eq!(arena.get(updated.elements[0]).unwrap().integer,1);
+        assert_eq!(arena.get(source_child).unwrap().integer,1);
+        assert_eq!(arena.get(old_child_id).unwrap().integer,9);
+    }
+
+    #[test]fn package_element_store_owns_non_package_source_values(){
+        let mut arena=AmlObjectArena::new();
+        let mut original=AmlRuntimeValue::EMPTY;original.kind=AmlValueKind::Buffer;
+        original.byte_length=1;original.bytes[0]=0x11;
+        let original_id=arena.allocate(original).unwrap();
+        let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
+        package.element_count=1;package.elements[0]=original_id;
+        let package_id=arena.allocate(package).unwrap();
+        let mut changed=original;changed.bytes[0]=0x22;
+        let changed_id=arena.allocate(changed).unwrap();
+        let namespace=AmlNamespace::new();let mut bindings=AmlBindings::new();
+        store_reference(AmlReference::PackageElement{package:package_id,index:0},
+            changed_id,&mut bindings,&namespace,&mut arena).unwrap();
+        let element=arena.get(arena.get(package_id).unwrap().elements[0]).unwrap();
+        assert_eq!(element.bytes[0],0x22);
+        assert_eq!(arena.get(changed_id).unwrap().bytes[0],0x22);
+        assert_ne!(arena.get(package_id).unwrap().elements[0],changed_id);
     }
 
     #[test]fn package_target_store_deep_copies_nested_values(){
