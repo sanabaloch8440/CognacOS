@@ -33,7 +33,7 @@ struct DeviceRelations{count:u32,objects:[*mut DEVICE_OBJECT;64]}
 impl DeviceRelations{const EMPTY:Self=Self{count:0,objects:[core::ptr::null_mut();64]};}
 #[repr(C)]
 struct PartMgrFdoExtension{
- magic:u64,lower:*mut DEVICE_OBJECT,physical:*mut DEVICE_OBJECT,driver:*mut DRIVER_OBJECT,
+ magic:u64,lower:*mut DEVICE_OBJECT,physical:*mut DEVICE_OBJECT,self_device:*mut DEVICE_OBJECT,driver:*mut DRIVER_OBJECT,
  descriptor:DiskDescriptor,relations:DeviceRelations,
 }
 #[repr(C)]
@@ -184,7 +184,7 @@ unsafe fn scan_partitions(ext:*mut PartMgrFdoExtension)->i32{
   if status!=STATUS_SUCCESS||child.is_null(){continue}
   let child_ext=unsafe{(*child).device_extension.cast::<PartitionPdoExtension>()};
   unsafe{
-   child_ext.write(PartitionPdoExtension{magic:PARTITION_PDO_MAGIC,parent:ext.cast::<u8>().cast::<DEVICE_OBJECT>(),partition,geometry:descriptor.geometry});
+   child_ext.write(PartitionPdoExtension{magic:PARTITION_PDO_MAGIC,parent:unsafe{(*ext).self_device},partition,geometry:descriptor.geometry});
    (*child).flags|=0x0000_1004;
   }
   let identity=partition_identity(descriptor.identity.stable_id,partition);
@@ -299,7 +299,7 @@ unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->
  if lower.is_null(){unsafe{IoDeleteDevice(fdo)};return STATUS_DEVICE_NOT_READY}
  let ext=unsafe{(*fdo).device_extension.cast::<PartMgrFdoExtension>()};
  unsafe{
-  ext.write(PartMgrFdoExtension{magic:FDO_MAGIC,lower,physical:pdo,driver:driver.cast(),descriptor,relations:DeviceRelations::EMPTY});
+  ext.write(PartMgrFdoExtension{magic:FDO_MAGIC,lower,physical:pdo,self_device:fdo,driver:driver.cast(),descriptor,relations:DeviceRelations::EMPTY});
   (*fdo).flags=(((*fdo).flags&!0x80)|((*lower).flags&(0x02|0x04)))|0x04;
  }
  STATUS_SUCCESS
