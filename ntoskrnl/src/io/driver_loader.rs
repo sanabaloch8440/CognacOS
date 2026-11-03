@@ -321,6 +321,13 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
  // never import a CognacOS-private IoPnPRegisterDeviceDriver export.
  let extension=unsafe{(*driver_object).driver_extension.cast::<crate::nt_abi::io::DRIVER_EXTENSION>()};
  if !extension.is_null() {
+  // Mirror the standard DRIVER_OBJECT entry points into their corresponding
+  // DRIVER_EXTENSION fields, preserving the Windows x64 structure contract.
+  unsafe {
+   (*extension).driver_init=core::mem::transmute::<_,crate::nt_abi::io::PDRIVER_INITIALIZE>((*driver_object).driver_init);
+   (*extension).driver_start_io=core::mem::transmute::<_,crate::nt_abi::io::PDRIVER_STARTIO>((*driver_object).driver_start_io);
+   (*extension).driver_unload=core::mem::transmute::<_,crate::nt_abi::io::PDRIVER_UNLOAD>((*driver_object).driver_unload);
+  }
   if let Some(add_device)=unsafe{(*extension).add_device} {
    let callback:crate::io::wdm::PnpAddDeviceRoutine=unsafe{core::mem::transmute(add_device)};
    let pnp_status=unsafe{crate::io::wdm::IoPnPRegisterDeviceDriver(driver_object.cast(),Some(callback))};
