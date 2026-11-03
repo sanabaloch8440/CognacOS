@@ -165,7 +165,6 @@ pub struct AtaRequestTable { slots: [AtaRequestSlot; ATA_PORT_MAX_OUTSTANDING], 
 impl AtaRequestTable {
     pub const fn new() -> Self { Self { slots: [AtaRequestSlot::EMPTY; ATA_PORT_MAX_OUTSTANDING], next_id: 1 } }
     pub fn reserve(&mut self, context: *mut c_void, expected_bytes: u32) -> Result<u64, i32> {
-        if expected_bytes == 0 { return Err(0xC000_000Du32 as i32); }
         let slot = self.slots.iter_mut().find(|s| s.state == AtaRequestState::Free).ok_or(0xC000_009Au32 as i32)?;
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
@@ -177,10 +176,18 @@ impl AtaRequestTable {
         if s.state != AtaRequestState::Queued { return Err(0xC000_0184u32 as i32); }
         s.state = AtaRequestState::Submitted; Ok(())
     }
-    pub fn begin_completion(&mut self, id: u64, bytes: u32) -> Result<*mut c_void, i32> {
+    /// Atomically claim a submitted request for its one completion callback.
+    /// The caller validates byte count/status and releases the slot afterwards.
+    pub fn take_for_completion(&mut self, id: u64) -> Result<(*mut c_void, u32), i32> {
         let s = self.find_mut(id)?;
-        if s.state != AtaRequestState::Submitted || bytes > s.expected_bytes { return Err(0xC000_000Du32 as i32); }
-        s.state = AtaRequestState::Completing; Ok(s.request_context)
+        if s.state != AtaRequestState::Submitted { return Err(0xC000_0184u32 as i32); }
+        s.state = AtaRequestState::Completing;
+        Ok((s.request_context, s.expected_bytes))
+    }
+    pub fn begin_completion(&mut self, id: u64, bytes: u32) -> Result<*mut c_void, i32> {
+        let (context, expected) = self.take_for_completion(id)?;
+        if bytes > expected { return Err(0xC000_000Du32 as i32); }
+        Ok(context)
     }
     /// Release a request rejected by the miniport before it accepted ownership.
     pub fn abort(&mut self, id: u64) -> Result<(), i32> {
@@ -216,10 +223,11 @@ mod request_table_tests {
     fn request_lifetime_is_ordered_and_bounded() {
         let mut q = AtaRequestTable::new();
         let id = q.reserve(core::ptr::null_mut(), 4096).unwrap();
-        assert!(q.begin_completion(id, 512).is_err());
         q.mark_submitted(id).unwrap();
         assert!(q.begin_completion(id, 4097).is_err());
-        assert!(q.begin_completion(id, 512).is_ok());
+        assert!(q.release(id).is_err());
+        let (context, expected) = q.take_for_completion(id).unwrap();
+        assert!(context.is_null()); assert_eq!(expected, 4096);
         q.release(id).unwrap();
         assert_eq!(q.outstanding(), 0);
         assert!(q.mark_submitted(id).is_err());
