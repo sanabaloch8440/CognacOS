@@ -63,6 +63,7 @@ impl<'a,'b> Machine<'a,'b>{
   }
  }
  fn integer_value(value:u64)->AmlRuntimeValue{let mut out=AmlRuntimeValue::EMPTY;out.kind=AmlValueKind::Integer;out.integer=value;out}
+ fn uninitialized_value()->AmlRuntimeValue{let mut out=AmlRuntimeValue::EMPTY;out.kind=AmlValueKind::Uninitialized;out}
  fn integer_mask(&self)->u64{if self.integer_width_bits==32{u32::MAX as u64}else{u64::MAX}}
  fn normalize(&self,value:u64)->u64{value&self.integer_mask()}
  fn operand_integer(&self,value:&AmlRuntimeValue)->Result<u64,ExecError>{to_integer_implicit(value,self.integer_width_bits).map_err(|_|ExecError::NonIntegerName)}
@@ -251,9 +252,9 @@ impl<'a,'b> Machine<'a,'b>{
 /// evaluate BufferSize expressions without guessing their encoded length.
 pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
  let namespace=AmlNamespace::new();
- let zero=Machine::integer_value(0);
+ let empty=Machine::uninitialized_value();
  let mut arena=AmlObjectArena::new();let mut bindings=AmlBindings::with_aml_revision(2);
- let mut machine=Machine{locals:[zero;8],args:[zero;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
+ let mut machine=Machine{locals:[empty;8],args:[empty;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
  let mut reader=Reader{bytes,pos:0,end:bytes.len()};
  let value=machine.term(&mut reader)?;
  Ok((value,reader.pos))
@@ -273,8 +274,8 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
  if end>aml.len(){return Err(ExecError::InvalidMethod)}
  if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
- let zero=Machine::integer_value(0);
- let mut m=Machine{locals:[zero;8],args:[zero;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
+ let empty=Machine::uninitialized_value();
+ let mut m=Machine{locals:[empty;8],args:[empty;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
  for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
  let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>Machine::integer_value(0),ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};
  if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
@@ -346,6 +347,18 @@ mod tests{
   // Existing public entry point passes Integer args; typed Name operands are
   // exercised above while Local/Arg scalar values remain width-aware.
   assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn uninitialized_locals_and_unused_arguments_are_not_integer_zero(){
+  let local=[0x14,0x08,b'T',b'E',b'S',b'T',0,0xa4,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&local,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&local,&ns,id,&[]),Err(ExecError::NonIntegerName));
+
+  let argument=[0x14,0x08,b'T',b'E',b'S',b'T',0,0xa4,0x68];
+  let mut ns=AmlNamespace::new();load_definition_block(&argument,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&argument,&ns,id,&[]),Err(ExecError::NonIntegerName));
  }
 
  #[test]fn method_return_preserves_string_and_buffer_object_types(){
