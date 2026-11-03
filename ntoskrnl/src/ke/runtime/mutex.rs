@@ -15,7 +15,10 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
     let current=crate::thread::current_thread_id().unwrap_or(0);
     let owns=initial_owner!=0&&current!=0;
     unsafe{
-        object.write(DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:if owns{0}else{1},wait_list_flink:object as u64+8,wait_list_blink:object as u64+8});
+        // Windows 10/11 x64 mutant header uses MutantSize at byte 1,
+        // DpcActive at byte 2, and MutantReserved at byte 3 (not the generic
+        // event-header Size byte at offset 2).
+        object.write(DispatcherHeader{kind:MUTANT_OBJECT,absolute:14,size:0,inserted:0,signal_state:if owns{0}else{1},wait_list_flink:object as u64+8,wait_list_blink:object as u64+8});
         // KMUTANT tail: MutantListEntry, OwnerThread, MutantFlags, ApcDisable.
         // The side table owns thread identity; keep the public list node valid
         // and the ABI-visible abandoned flag synchronized with that metadata.
