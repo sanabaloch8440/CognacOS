@@ -185,3 +185,10 @@ The independently authored executor implements the arithmetic, logical, bitwise,
 Task 28 was completed on PR branch code commit `444ac7506d752a5647610f868469fe9ead7d092a` and verified by ACPI workflow [`41587859995`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587859995). The workflow passed all configured suites, including 49 AML method-executor tests, 37 AML runtime tests, 42 AML parser tests, and 11 AML table-lifecycle tests. Documentation-only follow-up commit `8e4077dfab7a9b2f505bde7d6bcfade4fd37cc00` also passed [workflow `41587872679`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587872679).
 
 Control-flow execution is bounded by the enclosing Reader's package end. If and Else are handled as sibling packages, While re-evaluates its predicate each iteration, Break/Continue are consumed by the nearest While, and Return propagates to the method boundary. Regression tests cover malformed If/Else/While package lengths and standalone Else rejection. This milestone does not implement method serialization or synchronization semantics (task 29).
+
+
+## AML method-frame task 29 progress (not yet complete)
+
+The executor now creates independent Local0–Local7 and Arg0–Arg6 frames, validates argument extents and arena handles, enforces the 16-level recursion limit, and honors MethodFlags SerializeFlag/SyncLevel through the `AmlMethodSynchronizer` host interface. Serialized methods fail closed when no provider is supplied; successful acquisition is released on normal and error exits. Regression coverage passed in [ACPI workflow `41588745530`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41588745530): 55 AML executor tests, 37 runtime tests, 42 parser tests, and 11 table-lifecycle tests, plus all configured firmware suites.
+
+Task 29 remains unchecked until CognacOS supplies a concrete kernel-backed synchronizer integrated with scheduler/wait primitives and concurrent execution tests. See `AML_METHOD_FRAMES.md` for the API contract and remaining boundary.
