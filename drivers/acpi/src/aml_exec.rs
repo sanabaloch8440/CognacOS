@@ -481,7 +481,7 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 }
 
 /// Execute one loaded method against the exact AML definition-block byte slice.
-/// Only integer arguments and scalar operations are currently supported.
+/// Execute a method using bounded AML runtime objects and an explicit context.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
 fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,current_sync_level:u8)->Result<AmlRuntimeValue,ExecError>{
