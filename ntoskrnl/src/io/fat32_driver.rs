@@ -197,18 +197,8 @@ fn ensure_driver_device() -> Result<*mut DeviceObject, i32> {
     }
 }
 
-/// Ask the I/O Manager to verify and mount the partition through registered
-/// filesystem drivers. The FAT32 mount IRP publishes the resulting volume device.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoMountFAT32Volume(real_device: *mut DeviceObject) -> i32 {
-    mount_volume(real_device)
-}
-
-// Keep the private driver-loader entry visible to the PE export linker; the
-// caller is partmgr.sys, which resolves this name from ntoskrnl at load time.
-#[used]
-static FAT32_MOUNT_ENTRY: unsafe extern "win64" fn(*mut DeviceObject) -> i32 = IoMountFAT32Volume;
-
+/// Internal mount coordinator. This is a kernel-private Rust entry point,
+/// not an ntoskrnl PE export; filesystem mounting uses the filesystem-control IRP path.
 pub fn mount_volume(real_device: *mut DeviceObject) -> i32 {
     if real_device.is_null() { return STATUS_INVALID_PARAMETER; }
     let active = ACTIVE_PARTITION_DEVICE.load(Ordering::Acquire);
