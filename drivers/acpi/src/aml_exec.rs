@@ -217,7 +217,7 @@ mod tests{
 
  #[test]fn method_local_and_argument_targets_store_integer_values_without_type_aliasing(){
   let mut namespace=AmlNamespace::new();
-  let aml=[0x14,0x0f,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
   load_definition_block(&aml,&mut namespace).unwrap();
   let id=namespace.find_child(0,*b"TEST").unwrap();
   // Existing public entry point passes Integer args; typed Name operands are
@@ -320,7 +320,7 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
  }
  #[test]fn executes_increment_decrement_and_bitwise_complements(){
-  let aml=[0x14,0x13,b'T',b'E',b'S',b'T',0,0x70,0x0a,7,0x60,0x75,0x60,0x76,0x60,0xa4,0x7e,0x60,0x0a,0];
+  let aml=[0x14,0x14,b'T',b'E',b'S',b'T',0,0x70,0x0a,7,0x60,0x75,0x60,0x76,0x60,0xa4,0x7e,0x60,0x0a,0];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(!7u64));
  }
