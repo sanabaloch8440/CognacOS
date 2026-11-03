@@ -4,7 +4,7 @@
 //! publishes one PDO per partition, and translates partition-relative I/O to
 //! the parent disk FDO. It never accesses controller registers.
 use core::ffi::c_void;
-use cognacos_nt_abi::{io::{DEVICE_OBJECT,DRIVER_OBJECT,IRP,IO_STACK_LOCATION},ntstatus::*,types::PVOID};
+use cognacos_nt_abi::{io::{DEVICE_OBJECT,DRIVER_EXTENSION,DRIVER_OBJECT,IRP,IO_STACK_LOCATION},ntstatus::*,types::PVOID};
 use cognacos_storage::{disk_class::{parse_mbr,parse_gpt,DiskDescriptor,Partition},Geometry};
 
 const IRP_MJ_READ:usize=3;
@@ -29,13 +29,6 @@ const SL_INVOKE_ON_CANCEL:u8=0x20;
 const SL_INVOKE_ON_SUCCESS:u8=0x40;
 const SL_INVOKE_ON_ERROR:u8=0x80;
 
-#[repr(C)]
-struct DriverExtension {
- driver_object:*mut DRIVER_OBJECT,
- add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>,
- count:u32,
- service_key_name:cognacos_nt_abi::object::UNICODE_STRING,
-}
 #[repr(C)]
 struct AtaDiskPdoExtension{magic:u64,parent:*mut DEVICE_OBJECT,slot:u8,reserved:[u8;7],descriptor:DiskDescriptor}
 #[repr(C)]
@@ -321,7 +314,7 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  let lower=unsafe{(*ext).lower};unsafe{IoSkipCurrentIrpStackLocation(irp);IoCallDriver(lower,irp)}
 }
 
-unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->i32{
+unsafe extern "win64" fn add_device(driver:*mut DRIVER_OBJECT,pdo:*mut DEVICE_OBJECT)->i32{
  if driver.is_null()||pdo.is_null(){return STATUS_INVALID_PARAMETER}
  let pdo_ext=unsafe{(*pdo).device_extension.cast::<AtaDiskPdoExtension>()};
  if pdo_ext.is_null()||unsafe{(*pdo_ext).magic!=DISK_PDO_MAGIC}{return STATUS_NOT_SUPPORTED}
