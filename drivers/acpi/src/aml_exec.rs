@@ -239,7 +239,7 @@ mod tests{
   assert_eq!(execute_method_with_integer_width(&add,&ns,id,&[],32).unwrap(),AmlValue::Integer(0));
   assert_eq!(execute_method_with_integer_width(&add,&ns,id,&[],64).unwrap(),AmlValue::Integer(0x1_0000_0000));
 
-  let qword=[0x14,0x11,b'T',b'E',b'S',b'T',0,0xa4,0x0e,1,0,0,0,0,0,0,0];
+  let qword=[0x14,0x10,b'T',b'E',b'S',b'T',0,0xa4,0x0e,1,0,0,0,0,0,0,0];
   let mut ns=AmlNamespace::new();load_definition_block(&qword,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method_with_integer_width(&qword,&ns,id,&[],32),Err(ExecError::UnsupportedOpcode));
