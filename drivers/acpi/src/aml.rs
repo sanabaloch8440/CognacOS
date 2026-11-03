@@ -37,9 +37,11 @@ pub struct AmlNode {
     pub field_access_length:u8,
     pub field_lock_rule:u8,
     pub field_update_rule:u8,
+    pub processor_id:u8, pub processor_pblk_address:u32, pub processor_pblk_length:u8,
+    pub power_resource_system_level:u8, pub power_resource_order:u16,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u32 }
 impl AmlNamespace {
@@ -65,7 +67,7 @@ impl AmlNamespace {
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
         if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:self.count+1})}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0};
         self.count+=1;Ok(i as u16)
     }
 }
@@ -421,7 +423,18 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                         let name=parse_name(&mut sub)?;
                         let kind=match ext{0x82=>AmlObjectType::Device,0x83=>AmlObjectType::Processor,0x84=>AmlObjectType::PowerResource,_=>AmlObjectType::ThermalZone};
                         let node=resolve_path(ns,parent,&name,true,kind,0,0,0)?;
-                        match ext{0x83=>{sub.take(6)?;},0x84=>{sub.take(3)?;},_=>{}}
+                        match ext{
+                            0x83=>{
+                                ns.nodes[node as usize].processor_id=sub.byte()?;
+                                ns.nodes[node as usize].processor_pblk_address=u32::from_le_bytes(sub.take(4)?.try_into().map_err(|_|AmlError::Truncated)?);
+                                ns.nodes[node as usize].processor_pblk_length=sub.byte()?;
+                            },
+                            0x84=>{
+                                ns.nodes[node as usize].power_resource_system_level=sub.byte()?;
+                                ns.nodes[node as usize].power_resource_order=u16::from_le_bytes(sub.take(2)?.try_into().map_err(|_|AmlError::Truncated)?);
+                            },
+                            _=>{}
+                        }
                         parse_terms(&mut sub,ns,node,depth+1)?;
                         c.pos=end;
                     }
@@ -604,8 +617,8 @@ mod tests{
             0x5b,0x85,0x05,b'T',b'Z',b'0',b'_'
         ];
         let mut ns=AmlNamespace::new();assert!(load_definition_block(&aml,&mut ns).is_ok());
-        assert_eq!(ns.nodes[1].object_type,AmlObjectType::Processor);
-        assert_eq!(ns.nodes[2].object_type,AmlObjectType::PowerResource);
+        assert_eq!(ns.nodes[1].object_type,AmlObjectType::Processor);assert_eq!(ns.nodes[1].processor_id,0);assert_eq!(ns.nodes[1].processor_pblk_address,0);assert_eq!(ns.nodes[1].processor_pblk_length,0);
+        assert_eq!(ns.nodes[2].object_type,AmlObjectType::PowerResource);assert_eq!(ns.nodes[2].power_resource_system_level,0);assert_eq!(ns.nodes[2].power_resource_order,0);
         assert_eq!(ns.nodes[3].object_type,AmlObjectType::ThermalZone);
     }
     #[test]fn rejects_zero_length_and_malformed_access_fields(){
