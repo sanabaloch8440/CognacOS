@@ -12,7 +12,7 @@ pub const MAX_NAMESPACE_NODES:usize=2048;
 pub const MAX_NAME_SEGMENTS:usize=8;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum AmlError { Truncated, BadPackageLength, BadName, UnsupportedOpcode, NamespaceFull, DuplicateName, InvalidParent, BadDefinitionBlock }
+pub enum AmlError { Truncated, BadPackageLength, BadName, UnsupportedOpcode, NamespaceFull, NamespaceCapacity { capacity:usize, requested:usize }, DuplicateName, InvalidParent, BadDefinitionBlock }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlName { pub segments:[[u8;4];MAX_NAME_SEGMENTS], pub count:u8, pub rooted:bool, pub parents:u8 }
@@ -41,9 +41,9 @@ pub struct AmlNode {
 impl AmlNode {
     pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
 }
-pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize }
+pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u8 }
 impl AmlNamespace {
-    pub const fn new()->Self { Self{nodes:[AmlNode::ROOT;MAX_NAMESPACE_NODES],count:1} }
+    pub const fn new()->Self { Self{nodes:[AmlNode::ROOT;MAX_NAMESPACE_NODES],count:1,loading_table:0} }
 /// Find a direct namespace child by its four-byte AML NameSeg without resolving aliases.
     pub fn find_child(&self,parent:u16,name:[u8;4])->Option<u16>{
         self.nodes.iter().take(self.count).enumerate().skip(1)
@@ -64,8 +64,8 @@ impl AmlNamespace {
     fn insert(&mut self,parent:u16,name:[u8;4],kind:AmlObjectType,flags:u8,start:usize,len:usize)->Result<u16,AmlError>{
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
-        if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceFull)}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:0,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
+        if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:self.count+1})}
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
         self.count+=1;Ok(i as u16)
     }
 }
@@ -79,6 +79,7 @@ impl<'a> Cursor<'a>{
 }
 /// Decode AML PkgLength and return the package end while enforcing the caller's byte limit.
 pub fn decode_package_length(bytes:&[u8],offset:usize,limit:usize)->Result<(usize,usize),AmlError>{
+    if limit>bytes.len()||offset>limit{return Err(AmlError::Truncated)}
     let lead=*bytes.get(offset).filter(|_|offset<limit).ok_or(AmlError::Truncated)?;
     let follow=(lead>>6) as usize;
     let encoded=1+follow;
@@ -418,16 +419,63 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
 /// Load a validated DSDT/SSDT definition block body into a bounded namespace.
 /// The caller must validate the SDT signature, length and checksum first.
 pub fn load_definition_block(aml:&[u8],namespace:&mut AmlNamespace)->Result<(),AmlError>{
+    load_definition_block_owned(aml,namespace,0)
+}
+
+/// Load one DSDT/SSDT with a stable table-owner ID. All namespace objects
+/// introduced by this block carry the ID and can be removed independently.
+pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_id:u8)->Result<(),AmlError>{
     // Namespace insertion is append-only. Restoring the original count on
     // failure makes each definition-block load atomic without copying the
     // large fixed-capacity namespace onto the kernel stack.
     let original_count=namespace.count;
+    let original_owner=namespace.loading_table;
+    namespace.loading_table=table_id;
     let mut c=Cursor{bytes:aml,pos:0,end:aml.len()};
     match parse_terms(&mut c,namespace,0,0){
-        Ok(())=>Ok(()),
-        Err(error)=>{namespace.count=original_count;Err(error)}
+        Ok(())=>{namespace.loading_table=original_owner;Ok(())},
+        Err(error)=>{namespace.count=original_count;namespace.loading_table=original_owner;Err(error)}
     }
 }
+
+/// Remove only objects owned by one definition block. Descendants whose
+/// parent disappears are also removed; surviving aliases/fields are invalidated
+/// if their referenced target belonged to the unloaded table.
+pub fn unload_definition_block(namespace:&mut AmlNamespace,table_id:u8)->usize{
+    if table_id==0{return 0}
+    let old_count=namespace.count;
+    let mut remap=[u16::MAX;MAX_NAMESPACE_NODES];
+    remap[0]=0;
+    let mut write=1usize;
+    for read in 1..old_count {
+        let node=namespace.nodes[read];
+        let parent=node.parent as usize;
+        if node.source_table==table_id || parent>=old_count || remap[parent]==u16::MAX {continue}
+        let mut kept=node;
+        kept.parent=remap[parent];
+        remap[read]=write as u16;
+        namespace.nodes[write]=kept;
+        write+=1;
+    }
+    for i in 1..write {
+        let node=&mut namespace.nodes[i];
+        if node.alias_target!=u16::MAX {
+            let target=node.alias_target as usize;
+            node.alias_target=if target<old_count {remap[target]} else {u16::MAX};
+        }
+        if node.field_region!=u16::MAX {
+            let target=node.field_region as usize;
+            node.field_region=if target<old_count {remap[target]} else {u16::MAX};
+        }
+    }
+    namespace.count=write;
+    old_count-write
+}
+
+/// Report the fixed namespace capacity and current free slots to callers so
+/// firmware with unusually large namespaces can be diagnosed without logging.
+pub const fn namespace_capacity()->usize{MAX_NAMESPACE_NODES}
+pub fn namespace_remaining(namespace:&AmlNamespace)->usize{MAX_NAMESPACE_NODES.saturating_sub(namespace.count)}
 
 #[cfg(test)]
 mod tests{
