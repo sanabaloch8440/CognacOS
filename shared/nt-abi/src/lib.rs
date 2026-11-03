@@ -159,8 +159,22 @@ pub mod bus {
     };
     pub type PINTERFACE_REFERENCE = Option<unsafe extern "win64" fn(context: PVOID)>;
     pub type PINTERFACE_DEREFERENCE = Option<unsafe extern "win64" fn(context: PVOID)>;
-    pub type PTRANSLATE_BUS_ADDRESS = PVOID;
-    pub type PGET_DMA_ADAPTER = PVOID;
+    pub type PTRANSLATE_BUS_ADDRESS = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            bus_address: i64,
+            address_space: u32,
+            translated_address_space: *mut u32,
+            translated_address: *mut i64,
+        ) -> u8,
+    >;
+    pub type PGET_DMA_ADAPTER = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            device_description: PVOID,
+            number_of_map_registers: *mut u32,
+        ) -> PVOID,
+    >;
     pub type PGET_SET_DEVICE_DATA = Option<
         unsafe extern "win64" fn(
             context: PVOID,
