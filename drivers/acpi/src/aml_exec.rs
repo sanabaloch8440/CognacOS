@@ -853,6 +853,39 @@ mod tests{
   assert_eq!(sync.acquires.load(Ordering::SeqCst),17);
   assert_eq!(sync.releases.load(Ordering::SeqCst),17);
  }
+ struct ConcurrentMethodSync{held:core::sync::atomic::AtomicBool,active:AtomicUsize,max_active:AtomicUsize}
+ impl ConcurrentMethodSync{fn new()->Self{Self{held:core::sync::atomic::AtomicBool::new(false),active:AtomicUsize::new(0),max_active:AtomicUsize::new(0)}}}
+ impl AmlMethodSynchronizer for ConcurrentMethodSync{
+  fn acquire(&self,_method_index:u16,_sync_level:u8)->Result<(),ExecError>{
+   while self.held.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){std::thread::yield_now();}
+   let active=self.active.fetch_add(1,Ordering::AcqRel)+1;
+   self.max_active.fetch_max(active,Ordering::AcqRel);
+   // Keep the lock held long enough for the competing host threads to contend.
+   std::thread::sleep(std::time::Duration::from_millis(2));
+   Ok(())
+  }
+  fn release(&self,_method_index:u16){
+   self.active.fetch_sub(1,Ordering::AcqRel);
+   self.held.store(false,Ordering::Release);
+  }
+ }
+ #[test]fn serialized_method_invocations_are_exclusive_across_host_threads(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0x08,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let sync=ConcurrentMethodSync::new();
+  std::thread::scope(|scope|{
+   for _ in 0..6{
+    scope.spawn(||{
+     let result=execute_method_typed_with_sync(&aml,&ns,id,&[],64,&sync).unwrap();
+     assert_eq!(result.kind,AmlValueKind::Integer);
+     assert_eq!(result.integer,1);
+    });
+   }
+  });
+  assert_eq!(sync.max_active.load(Ordering::Acquire),1);
+  assert_eq!(sync.active.load(Ordering::Acquire),0);
+ }
  #[test]fn serialized_nested_methods_enforce_monotonic_sync_levels(){
   let allowed=[0x14,0x08,b'I',b'N',b'N',b'R',0x38,0xa4,0x01,
    0x14,0x0b,b'O',b'U',b'T',b'R',0x28,0xa4,b'I',b'N',b'N',b'R'];
