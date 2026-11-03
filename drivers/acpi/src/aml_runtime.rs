@@ -471,7 +471,7 @@ mod tests{
         assert_eq!(to_integer_with_width(&decimal,32),Ok(u32::MAX as u64));
         decimal.bytes[..10].copy_from_slice(b"4294967296");
         assert_eq!(to_integer_with_width(&decimal,32),Err(RuntimeError::ValueTooLarge));
-        let mut hex=decimal;hex.byte_length=10;hex.bytes[..10].copy_from_slice(b"0x100000000");
+        let mut hex=decimal;hex.byte_length=11;hex.bytes[..11].copy_from_slice(b"0x100000000");
         assert_eq!(to_integer_with_width(&hex,32),Err(RuntimeError::ValueTooLarge));
         assert_eq!(to_integer_with_width(&hex,16),Err(RuntimeError::TypeMismatch));
     }
