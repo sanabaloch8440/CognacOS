@@ -12,6 +12,24 @@ Windows Registry Editor Version 5.00
 "Group"="SCSI Miniport"
 "ImagePath"="\\SystemRoot\\System32\\drivers\\ataport.sys"
 
+; PCI IDE framework attaches between the port and hardware-specific miniport.
+; Load order is significant: ataport -> pciidex -> pciide.
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\pciidex]
+"Type"=dword:00000001
+"Start"=dword:00000000
+"ErrorControl"=dword:00000001
+"Group"="SCSI Miniport"
+"Tag"=dword:00000002
+"ImagePath"="\\SystemRoot\\System32\\drivers\\pciidex.sys"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\pciide]
+"Type"=dword:00000001
+"Start"=dword:00000000
+"ErrorControl"=dword:00000001
+"Group"="SCSI Miniport"
+"Tag"=dword:00000003
+"ImagePath"="\\SystemRoot\\System32\\drivers\\pciide.sys"
+
 [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\storahci]
 "Type"=dword:00000001
 "Start"=dword:00000003
