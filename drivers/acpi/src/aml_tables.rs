@@ -274,7 +274,14 @@ impl AmlTableManager {
         }
         if self.namespace.count>=MAX_NAMESPACE_NODES{return Err(TableError::NamespaceCapacity)}
         let before=self.namespace.count;
-        load_definition_block_owned(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,self.count as u32)?;
+        // A DefinitionBlock is one namespace transaction. The parser can have
+        // inserted valid declarations before encountering an unsupported or
+        // malformed later term; never leave those partial declarations visible
+        // when the table itself is rejected.
+        if let Err(error)=load_definition_block_owned(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,self.count as u32){
+            self.namespace.count=before;
+            return Err(TableError::Parse(error));
+        }
         if self.namespace.count>u16::MAX as usize{
             self.namespace.count=before;
             return Err(TableError::NamespaceCapacity)
@@ -490,6 +497,20 @@ mod tests {
         let aml=[0x10,0x0f,b'D',b'E',b'V',b'0',0x14,0x09,b'_',b'S',b'T',b'A',0,0xa4,0x0a,5];
         definition_table(*b"SSDT",&aml)
     }
+    #[test]
+    fn rejected_definition_block_rolls_back_partial_namespace(){
+        // The Name declaration is valid, but the following opcode is outside
+        // the supported grammar. Rejecting the table must not retain TEST.
+        let aml=[0x08,b'T',b'E',b'S',b'T',0x0a,1,0x99];
+        let dsdt=definition_table(*b"DSDT",&aml);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        assert_eq!(manager.load_dsdt(&dsdt,&gate),Err(TableError::Parse(AmlError::UnsupportedOpcode)));
+        assert_eq!(manager.namespace().count,1);
+        assert_eq!(manager.namespace().find_child(0,*b"TEST"),None);
+        assert_eq!(manager.table_count(),0);
+        assert!(!manager.dsdt_loaded());
+    }
+
     #[test]
     fn table_manager_evaluates_identity_with_table_ownership_and_method_gate(){
         let dsdt=identity_dsdt();let mut manager=AmlTableManager::new();let gate=gate();
