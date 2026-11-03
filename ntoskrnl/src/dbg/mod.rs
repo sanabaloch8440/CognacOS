@@ -44,7 +44,7 @@ unsafe fn write_c_string(value: *const c_char) -> ULONG {
 /// Windows exports this routine from ntoskrnl; callers may supply varargs,
 /// which are ignored by this initial transport implementation.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn DbgPrint(format: *const c_char) -> ULONG {
+pub unsafe extern "win64" fn DbgPrint(format: *const c_char) -> ULONG {
     crate::ntoskrnl::debug::record_unfiltered(
         crate::ntoskrnl::debug::COMPONENT_DEFAULT,
         crate::ntoskrnl::debug::LEVEL_WARNING,
