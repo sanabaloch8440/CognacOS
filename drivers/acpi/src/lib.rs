@@ -1327,3 +1327,49 @@ mod numa_table_tests {
         assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
     }
 }
+
+#[cfg(test)]
+mod rsdp_validation_regression_tests {
+    use super::*;
+    fn checksum(bytes: &mut [u8], index: usize, end: usize) {
+        bytes[index] = 0;
+        let sum = bytes[..end].iter().fold(0u8, |a, b| a.wrapping_add(*b));
+        bytes[index] = 0u8.wrapping_sub(sum);
+    }
+    fn rsdp_v2() -> [u8; 36] {
+        let mut b = [0u8; 36];
+        b[..8].copy_from_slice(b"RSD PTR ");
+        b[15] = 2;
+        b[20..24].copy_from_slice(&36u32.to_le_bytes());
+        b[24..32].copy_from_slice(&0x1000u64.to_le_bytes());
+        checksum(&mut b, 8, 20);
+        checksum(&mut b, 32, 36);
+        b
+    }
+    #[test]
+    fn accepts_valid_v2_rsdp_and_rejects_corrupt_checksums() {
+        assert_eq!(validate_rsdp(&rsdp_v2()), Ok(2));
+        let mut b = rsdp_v2();
+        b[8] ^= 1;
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadChecksum));
+        let mut b = rsdp_v2();
+        b[35] ^= 1;
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadChecksum));
+    }
+    #[test]
+    fn rejects_extended_rsdp_lengths_outside_supported_bounds() {
+        let mut b = rsdp_v2();
+        b[20..24].copy_from_slice(&35u32.to_le_bytes());
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadLength));
+        let mut b = rsdp_v2();
+        b[20..24].copy_from_slice(&((MAX_RSDP_LENGTH + 1) as u32).to_le_bytes());
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadLength));
+    }
+    #[test]
+    fn rejects_bad_signature_and_short_rsdp() {
+        assert_eq!(validate_rsdp(&[0u8; 19]), Err(AcpiError::Truncated));
+        let mut b = rsdp_v2();
+        b[0] = b'X';
+        assert_eq!(validate_rsdp(&b), Err(AcpiError::BadSignature));
+    }
+}
