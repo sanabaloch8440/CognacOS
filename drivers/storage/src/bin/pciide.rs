@@ -254,6 +254,23 @@ unsafe extern "win64" fn miniport_submit(
             channel.write_sectors(&mut io, request.lba, input).map(|_| bytes)
         }
         cognacos_storage::ata_port::AtaPortOperation::Flush => channel.flush(&mut io).map(|_| 0),
+        cognacos_storage::ata_port::AtaPortOperation::Identify => {
+            if request.system_buffer.is_null() || request.sector_count != 1 {
+                return STATUS_INVALID_PARAMETER;
+            }
+            let mut identified = channel;
+            match identified.identify(&mut io) {
+                Ok(words) => {
+                    let output = unsafe { core::slice::from_raw_parts_mut(request.system_buffer, 512) };
+                    for (index, word) in words.iter().copied().enumerate() {
+                        output[index * 2..index * 2 + 2].copy_from_slice(&word.to_le_bytes());
+                    }
+                    unsafe { (*ext).channels[slot] = Some(identified); }
+                    Ok(512)
+                }
+                Err(error) => Err(error),
+            }
+        }
         _ => return STATUS_INVALID_DEVICE_REQUEST,
     };
     match result {
