@@ -269,7 +269,7 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
   }
  }
  if major==IRP_MJ_PNP&&unsafe{(*stack).minor_function}==IRP_MN_REMOVE_DEVICE{
-  unsafe{set_completion_routine(irp,Some(remove_complete),device.cast(),1,1,1);copy_current_irp_stack_location_to_next(irp);return IoCallDriver(lower,irp);}
+  unsafe{copy_current_irp_stack_location_to_next(irp);set_completion_routine(irp,Some(remove_complete),device.cast(),1,1,1);return IoCallDriver(lower,irp);}
  }
  unsafe{skip_current_irp_stack_location(irp);IoCallDriver(lower,irp)}
 }
