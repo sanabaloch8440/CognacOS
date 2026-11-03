@@ -820,6 +820,23 @@ mod tests{
   // A 64-bit BCD result cannot encode more than sixteen decimal digits.
   assert_eq!(evaluate_term_argument(&[0x5b,0x29,0x0e,0x00,0x00,0xc1,0x6f,0xf2,0x86,0x23,0x00]),Err(ExecError::TargetTypeMismatch));
  }
+ #[test]fn covers_subtract_and_explicit_prefixed_hex_to_integer(){
+  assert_eq!(evaluate_term_argument(&[0x74,0x0a,5,0x0a,2,0x00]),Ok((3,6)));
+  let aml=[0x08,b'S',b'T',b'R',b'0',0x0d,b'0',b'x',b'2',b'A',0,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x99,b'S',b'T',b'R',b'0',0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+ }
+ #[test]fn to_string_stops_at_nul_when_length_is_ones(){
+  let aml=[0x08,b'B',b'U',b'F',b'0',0x11,0x06,0x0a,3,b'A',0,b'B',
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x9c,b'B',b'U',b'F',b'0',0xff,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&aml,&ns,id,&[],64).unwrap();
+  assert_eq!(value.kind,AmlValueKind::String);assert_eq!(value.byte_length,1);
+  assert_eq!(value.bytes[0],b'A');
+ }
  #[test]fn evaluates_logical_and_all_bitwise_operator_families(){
   assert_eq!(evaluate_term_argument(&[0x7b,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0,6)));
   assert_eq!(evaluate_term_argument(&[0x7c,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((u64::MAX,6)));
