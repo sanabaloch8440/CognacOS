@@ -100,7 +100,7 @@ unsafe fn write_raw(gas:crate::acpi::AcpiGas,a:Access,value:u64)->Result<(),GasE
             Ok(())
         }
         SPACE_SYSTEM_IO=>{
-            if gas.address>u16::MAX as u64||gas.address+a.bytes as u64>0x1_0000{return Err(GasError::InvalidAddress)}
+            if gas.address>u16::MAX as u64||gas.address.checked_add(a.bytes as u64).is_none_or(|end|end>0x1_0000){return Err(GasError::InvalidAddress)}
             let port=gas.address as u16;
             unsafe{match a.bytes{1=>write_port_u8(port,value as u8),2=>write_port_u16(port,value as u16),4=>write_port_u32(port,value as u32),_=>return Err(GasError::InvalidWidth)}}
             Ok(())
