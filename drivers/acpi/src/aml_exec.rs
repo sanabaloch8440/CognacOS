@@ -763,8 +763,8 @@ mod tests{
   assert_eq!(evaluate_term_argument(&[0x91,0x00,0x01]),Ok((1,3)));
   assert_eq!(evaluate_term_argument(&[0x92,0x00]),Ok((1,2)));
   assert_eq!(evaluate_term_argument(&[0x93,0x01,0x01]),Ok((1,3)));
-  assert_eq!(evaluate_term_argument(&[0x94,0x0a,2,0x0a,1]),Ok((1,4)));
-  assert_eq!(evaluate_term_argument(&[0x95,0x0a,1,0x0a,2]),Ok((1,4)));
+  assert_eq!(evaluate_term_argument(&[0x94,0x0a,2,0x0a,1]),Ok((1,5)));
+  assert_eq!(evaluate_term_argument(&[0x95,0x0a,1,0x0a,2]),Ok((1,5)));
  }
  #[test]fn arithmetic_operator_targets_apply_named_object_result_conversion(){
   let aml=[0x08,b'S',b'T',b'R',b'0',0x0d,b'0',b'0',0,
