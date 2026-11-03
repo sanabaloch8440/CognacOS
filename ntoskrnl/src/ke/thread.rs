@@ -754,13 +754,20 @@ pub fn apc_region_depths()->(u16,u16){
     table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty)
         .map(|t|(t.critical_region_depth,t.guarded_region_depth)).unwrap_or((0,0))
 }
-pub fn adjust_apc_region(guarded:bool,enter:bool)->bool{
-    let Some(id)=current_thread_id() else{return false};
+/// Adjust APC-disable nesting for a specific live thread. Mutant ownership
+/// can be transferred to a waiter before that waiter is scheduled, so the
+/// dispatcher must be able to publish the APC-disable increment on its behalf.
+pub fn adjust_apc_region_for_thread(id:u64,guarded:bool,enter:bool)->bool{
+    if id==0{return false}
     let mut table=THREADS.lock();
     let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty) else{return false};
     let depth=if guarded{&mut t.guarded_region_depth}else{&mut t.critical_region_depth};
     if enter { *depth=depth.saturating_add(1); } else { *depth=depth.saturating_sub(1); }
     true
+}
+pub fn adjust_apc_region(guarded:bool,enter:bool)->bool{
+    let Some(id)=current_thread_id() else{return false};
+    adjust_apc_region_for_thread(id,guarded,enter)
 }
 pub fn thread_id_from_object(object:*mut c_void)->Option<u64>{
     if object.is_null(){return None}
