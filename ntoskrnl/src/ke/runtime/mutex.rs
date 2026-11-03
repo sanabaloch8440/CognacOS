@@ -42,35 +42,47 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
         // do not inherit an abandoned state from a previous driver image.
         *record=MutantRecord::EMPTY;
     }
+    drop(table);
+    if owns { let _=crate::thread::adjust_apc_region_for_thread(current,false,true); }
 }
 pub unsafe extern "win64" fn ke_initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){unsafe{initialize_mutant(object,initial_owner)}}
 pub unsafe extern "win64" fn ke_initialize_mutex(object:*mut DispatcherHeader,_level:u32){unsafe{initialize_mutant(object,0)}}
 fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
     if object.is_null(){return None}
     let thread=crate::thread::current_thread_id()?;
-    let mut table=MUTANTS.lock();
-    // Register lazily on first wait rather than at KeInitializeMutex time.
-    // Idle dispatcher objects therefore leave no kernel-side address behind.
-    let slot=table.records.iter().position(|r|r.object==object as usize)
-        .or_else(||table.records.iter().position(|r|r.object==0))?;
-    if table.records[slot].object==0 {
-        let abandoned=unsafe{object.cast::<u8>().add(48).read()&1!=0};
-        table.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned};
+    let result={
+        let mut table=MUTANTS.lock();
+        // Register lazily on first wait rather than at KeInitializeMutex time.
+        // Idle dispatcher objects therefore leave no kernel-side address behind.
+        let slot=table.records.iter().position(|r|r.object==object as usize)
+            .or_else(||table.records.iter().position(|r|r.object==0))?;
+        if table.records[slot].object==0 {
+            let abandoned=unsafe{object.cast::<u8>().add(48).read()&1!=0};
+            table.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned};
+        }
+        let record=&mut table.records[slot];
+        if record.owner==thread{
+            record.recursion=record.recursion.saturating_add(1);
+            unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-(record.recursion as i32),Ordering::Release);}
+            Some(STATUS_SUCCESS)
+        }else if record.owner!=0{
+            None
+        }else{
+            record.owner=thread;record.recursion=1;
+            let abandoned=record.abandoned;record.abandoned=false;
+            unsafe{
+                object.cast::<u8>().add(48).write(0);
+                (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
+            }
+            Some(if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
+        }
+    };
+    if result.is_some(){
+        // Kernel mutex ownership implicitly enters a critical region, disabling
+        // normal kernel APCs until the matching recursive release.
+        let _=crate::thread::adjust_apc_region_for_thread(thread,false,true);
     }
-    let record=&mut table.records[slot];
-    if record.owner==thread{
-        record.recursion=record.recursion.saturating_add(1);
-        unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-(record.recursion as i32),Ordering::Release);}
-        return Some(STATUS_SUCCESS)
-    }
-    if record.owner!=0{return None}
-    record.owner=thread;record.recursion=1;
-    let abandoned=record.abandoned;record.abandoned=false;
-    unsafe{
-        object.cast::<u8>().add(48).write(0);
-        (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
-    }
-    Some(if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
+    result
 }
 fn try_acquire_mutant(object:*mut DispatcherHeader)->bool{try_acquire_mutant_status(object).is_some()}
 /// Distinguish a registered-but-owned mutant from an object that could not be
