@@ -143,3 +143,17 @@ mod multiple_alternative_tests{
  }
  #[test]fn rejects_empty_alternative_set(){assert_eq!(required_size_alternatives(&ResourceAlternatives::EMPTY),Err(RequirementsError::InvalidResourceList));}
 }
+
+
+#[cfg(test)] mod acpi_v6_requirements_output_atomicity {
+ use super::*;
+ 
+ #[test] fn rejects_invalid_alternative_count_before_writing_output() {
+  let mut alternatives=crate::acpi_resources::ResourceAlternatives::EMPTY;
+  alternatives.count=alternatives.entries.len()+1;
+  let mut output=[0xa5u8;64];
+  assert_eq!(unsafe{serialize_alternatives(&alternatives,output.as_mut_ptr(),output.len())},Err(RequirementsError::InvalidResourceList));
+  assert_eq!(output,[0xa5u8;64]);
+ }
+
+}
