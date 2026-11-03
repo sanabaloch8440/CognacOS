@@ -506,8 +506,27 @@ pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
         if base == 0 || base & 0xfffff != 0 || end_bus < start_bus {
             return Err(AcpiError::MalformedEntry);
         }
-        let span = ((end_bus as u64 - start_bus as u64) + 1).checked_mul(1 << 20).ok_or(AcpiError::BadLength)?;
-        base.checked_add(span).ok_or(AcpiError::AddressOutOfRange)?;
+        // ECAM consumes one MiB for every bus in the inclusive bus interval.
+        // Compute an exclusive physical end so both arithmetic overflow and
+        // overlapping firmware windows can be rejected before PCI maps them.
+        let span = ((end_bus as u64 - start_bus as u64) + 1)
+            .checked_mul(1 << 20).ok_or(AcpiError::BadLength)?;
+        let physical_end = base.checked_add(span).ok_or(AcpiError::AddressOutOfRange)?;
+        for previous in out.allocations.iter().take(out.count) {
+            let previous_span = ((previous.end_bus as u64 - previous.start_bus as u64) + 1)
+                .checked_mul(1 << 20).ok_or(AcpiError::BadLength)?;
+            let previous_end = previous.base_address.checked_add(previous_span)
+                .ok_or(AcpiError::AddressOutOfRange)?;
+            // A segment cannot describe the same bus number twice, and two
+            // ECAM apertures cannot alias the same physical MMIO pages even
+            // when firmware assigns them to different PCI segments.
+            let bus_overlap = previous.segment == segment
+                && start_bus <= previous.end_bus && previous.start_bus <= end_bus;
+            let physical_overlap = base < previous_end && previous.base_address < physical_end;
+            if bus_overlap || physical_overlap {
+                return Err(AcpiError::MalformedEntry);
+            }
+        }
         out.allocations[out.count] = McfgAllocation { base_address: base, segment, start_bus, end_bus };
         out.count += 1;
     }
@@ -1203,6 +1222,40 @@ mod numa_table_tests {
         rsdp[8]=0u8.wrapping_sub(rsdp[..20].iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));rsdp[32]=0u8.wrapping_sub(rsdp.iter().fold(0u8,|sum,b|sum.wrapping_add(*b)));
         let mapper=TestMapper{rsdp_address:0x1000,rsdp:&rsdp,root_address:0x1_0000_1000,root:&root,table_address:0x1_0000_3000,table:&table};
         assert_eq!(find_table_with_mapper(&mapper,0x1000,*b"FACP",0),Err(AcpiError::BadChecksum));
+    }
+
+    #[test]
+    fn rejects_overlapping_mcfg_bus_ranges_within_a_segment() {
+        let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
+        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
+        b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
+        b[60..68].copy_from_slice(&0x9000_0000u64.to_le_bytes());
+        b[68..70].copy_from_slice(&0u16.to_le_bytes());b[70]=7;b[71]=15;
+        finish(&mut b);
+        assert_eq!(parse_mcfg(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_physical_ecam_alias_even_across_segments() {
+        let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
+        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
+        b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
+        b[60..68].copy_from_slice(&0x8070_0000u64.to_le_bytes());
+        b[68..70].copy_from_slice(&1u16.to_le_bytes());b[70]=0;b[71]=7;
+        finish(&mut b);
+        assert_eq!(parse_mcfg(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn accepts_disjoint_mcfg_ranges_and_segments() {
+        let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
+        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
+        b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
+        b[60..68].copy_from_slice(&0x9000_0000u64.to_le_bytes());
+        b[68..70].copy_from_slice(&1u16.to_le_bytes());b[70]=0;b[71]=7;
+        finish(&mut b);
+        assert_eq!(parse_mcfg(&b).unwrap().count,2);
     }
 
     #[test]
