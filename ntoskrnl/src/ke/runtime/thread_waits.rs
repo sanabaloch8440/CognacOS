@@ -507,6 +507,7 @@ fn consume_wait_all_object(thread_id:u64,object_id:u64)->i32{
     let object=object_id as *mut DispatcherHeader;
     if object.is_null(){return STATUS_INVALID_PARAMETER}
     if unsafe{(*object).kind}==MUTANT_OBJECT{
+        let owner_object=crate::thread::thread_object_from_id(thread_id) as u64;
         let (abandoned,recursion)={
             let mut table=MUTANTS.lock();
             let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) else{return STATUS_INVALID_PARAMETER};
@@ -516,6 +517,7 @@ fn consume_wait_all_object(thread_id:u64,object_id:u64)->i32{
             (abandoned,record.recursion)
         };
         unsafe{
+            object.cast::<u8>().add(40).cast::<u64>().write(owner_object);
             object.cast::<u8>().add(48).write(0);
             (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-recursion as i32,Ordering::Release);
         }
@@ -671,6 +673,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
         // Mutants are available when unowned or recursively owned by this
         // thread. Queue objects are excluded above because entry transfer is
         // consumptive and cannot participate in wait-all reservation.
+        let owner_object=current_id.map(crate::thread::thread_object_from_id).unwrap_or(core::ptr::null_mut()) as u64;
         let mut mutants=MUTANTS.lock();
         // Register idle mutants when a wait-all operation first encounters
         // them. The ordinary single-object wait path performs the same lazy
@@ -702,6 +705,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
                         else{record.owner=id;record.recursion=1;}
                         if record.abandoned{if abandoned_index.is_none(){abandoned_index=Some(index);}record.abandoned=false;}
                         unsafe{
+                            object.cast::<u8>().add(40).cast::<u64>().write(owner_object);
                             object.cast::<u8>().add(48).write(0);
                             (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);
                         }
