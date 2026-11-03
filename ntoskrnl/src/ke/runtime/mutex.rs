@@ -15,9 +15,15 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
     let current=crate::thread::current_thread_id().unwrap_or(0);
     let owns=initial_owner!=0&&current!=0;
     unsafe{object.write(DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:if owns{0}else{1},wait_list_flink:object as u64+8,wait_list_blink:object as u64+8});}
-    let mut table=MUTANTS.lock();
-    let slot=table.records.iter().position(|r|r.object==object as usize).or_else(||table.records.iter().position(|r|r.object==0));
-    if let Some(i)=slot{table.records[i]=MutantRecord{object:object as usize,owner:if owns{current}else{0},recursion:if owns{1}else{0},abandoned:false};}
+    // An unowned initialized mutant is not retained in the kernel registry.
+    // This prevents the dispatcher from keeping a persistent address into a
+    // driver image after its final release. Initial ownership needs a record.
+    if owns {
+        let mut table=MUTANTS.lock();
+        let slot=table.records.iter().position(|r|r.object==object as usize)
+            .or_else(||table.records.iter().position(|r|r.object==0));
+        if let Some(i)=slot{table.records[i]=MutantRecord{object:object as usize,owner:current,recursion:1,abandoned:false};}
+    }
 }
 pub unsafe extern "win64" fn ke_initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){unsafe{initialize_mutant(object,initial_owner)}}
 pub unsafe extern "win64" fn ke_initialize_mutex(object:*mut DispatcherHeader,_level:u32){unsafe{initialize_mutant(object,0)}}
@@ -25,7 +31,14 @@ fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
     if object.is_null(){return None}
     let thread=crate::thread::current_thread_id()?;
     let mut table=MUTANTS.lock();
-    let record=table.records.iter_mut().find(|r|r.object==object as usize)?;
+    // Register lazily on first wait rather than at KeInitializeMutex time.
+    // Idle dispatcher objects therefore leave no kernel-side address behind.
+    let slot=table.records.iter().position(|r|r.object==object as usize)
+        .or_else(||table.records.iter().position(|r|r.object==0))?;
+    if table.records[slot].object==0 {
+        table.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned:false};
+    }
+    let record=&mut table.records[slot];
     if record.owner==thread{
         record.recursion=record.recursion.saturating_add(1);
         unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-(record.recursion as i32),Ordering::Release);}
@@ -62,7 +75,13 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         record.owner=0;record.recursion=0;record.abandoned=abandoned;
         unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
         loop{
-            let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{break (old,None,STATUS_SUCCESS)};
+            let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{
+                // No owner and no queued waiter: retire the registry entry.
+                // The caller-owned header remains initialized and is registered
+                // again on its next wait operation.
+                if !record.abandoned { *record=MutantRecord::EMPTY; }
+                break (old,None,STATUS_SUCCESS)
+            };
             if waiter.timed_out{
                 if timed_count<timed_out.len(){timed_out[timed_count]=waiter.thread;timed_count+=1;}
                 continue
