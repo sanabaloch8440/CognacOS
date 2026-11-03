@@ -58,7 +58,8 @@ pub enum AcpiMethodValue {
     Integer(u64),
     String(AcpiId),
     Buffer{bytes:[u8;MAX_AML_BYTES],length:u16},
-    CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8}
+    CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8},
+    NamespacePackage{nodes:[u16;8],count:u8}
 }
 pub trait AcpiMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>;
@@ -142,11 +143,10 @@ fn evaluate_method_value_with_args(
   .filter(|_|(method as usize)<namespace.count)
   .ok_or(ExecError::InvalidMethod)?;
  if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
- let value=aml_exec::execute_method_typed_with_sync(aml,namespace,method,args,64,sync)?;
+ let mut arena=crate::aml_objects::AmlObjectArena::new();
+ let mut bindings=crate::aml_runtime::AmlBindings::with_aml_revision(2);
+ let value=aml_exec::execute_method_in_context(aml,namespace,method,args,64,&mut arena,&mut bindings,sync)?;
  match value.kind{
-  // AML methods without an explicit Return have an Empty result. The
-  // caller of programming methods such as _SRS treats successful execution
-  // as the operation result and does not interpret this placeholder value.
   AmlValueKind::Empty=>Ok(AcpiMethodValue::Integer(0)),
   AmlValueKind::Integer=>Ok(AcpiMethodValue::Integer(value.integer)),
   AmlValueKind::String=>{
@@ -158,6 +158,19 @@ fn evaluate_method_value_with_args(
    let length=value.byte_length as usize;
    if length>MAX_AML_BYTES{return Err(ExecError::UnsupportedReturnType)}
    Ok(AcpiMethodValue::Buffer{bytes:value.bytes,length:length as u16})
+  }
+  AmlValueKind::Package=>{
+   if value.element_count as usize>8{return Err(ExecError::UnsupportedReturnType)}
+   let mut nodes=[u16::MAX;8];
+   for (index,element) in value.elements[..value.element_count as usize].iter().enumerate(){
+    let item=arena.get(*element).ok_or(ExecError::UnsupportedReturnType)?;
+    if item.kind!=AmlValueKind::ObjectReference||item.reference_kind!=0{return Err(ExecError::UnsupportedReturnType)}
+    let node=item.reference_id;
+    if namespace.nodes.get(node as usize).filter(|_|(node as usize)<namespace.count)
+      .is_none_or(|n|n.object_type!=AmlObjectType::PowerResource){return Err(ExecError::UnsupportedReturnType)}
+    nodes[index]=node;
+   }
+   Ok(AcpiMethodValue::NamespacePackage{nodes,count:value.element_count})
   }
   _=>Err(ExecError::UnsupportedReturnType),
  }
@@ -238,7 +251,7 @@ fn evaluate_object(ns:&AmlNamespace,aml_tables:&[&[u8]],node:u16,invoker:&mut im
         AmlObjectType::Method=>{match invoker.evaluate_value(ns,aml,node).map_err(IdentityError::Method)?{
             AcpiMethodValue::Integer(v)=>Ok(IdentityValue::Integer(v)),
             AcpiMethodValue::String(v)=>Ok(IdentityValue::String(v)),
-            AcpiMethodValue::Buffer{..}=>Err(IdentityError::UnsupportedObject),
+            AcpiMethodValue::Buffer{..}|AcpiMethodValue::NamespacePackage{..}=>Err(IdentityError::UnsupportedObject),
             AcpiMethodValue::CompatibleIds{ids,count}=>{if count as usize>MAX_COMPATIBLE_IDS{return Err(IdentityError::TooManyCompatibleIds)}Ok(IdentityValue::CompatibleIds{ids,count})}
         }},
         _=>Err(IdentityError::UnsupportedObject),
