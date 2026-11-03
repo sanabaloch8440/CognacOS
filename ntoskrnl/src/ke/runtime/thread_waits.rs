@@ -545,7 +545,15 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
     if alertable != 0 && has_pending_user_apc(thread_id) { let _=crate::thread::set_user_apc_delivery_pending(thread_id,true); return STATUS_USER_APC; }
     if unsafe{(*object).kind}==MUTANT_OBJECT{
-        let acquired={let _guard=DISPATCHER_OBJECT_LOCK.lock();try_acquire_mutant_status(object)};
+        let acquired={
+            let _guard=DISPATCHER_OBJECT_LOCK.lock();
+            let status=try_acquire_mutant_status(object);
+            // KeInitializeMutex has a void ABI. If its internal bounded
+            // registry is exhausted, do not enqueue forever on an object that
+            // can never acquire ownership or be released by the mutant path.
+            if status.is_none()&&!mutant_is_registered(object){return STATUS_INSUFFICIENT_RESOURCES;}
+            status
+        };
         if let Some(status)=acquired{return status}
     }else if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
     let deadline = if timeout.is_null() { 0 } else {
