@@ -837,7 +837,7 @@ mod tests{
         let package_id=arena.allocate(package).unwrap();
         arena.get_mut(package_id).unwrap().elements[0]=u16::MAX;
         let checkpoint=arena.count;
-        assert_eq!(AmlMethodFrame::new(&[package_id],&mut arena),Err(RuntimeError::InvalidReference));
+        assert!(matches!(AmlMethodFrame::new(&[package_id],&mut arena),Err(RuntimeError::InvalidReference)));
         assert_eq!(arena.count,checkpoint);
     }
 
