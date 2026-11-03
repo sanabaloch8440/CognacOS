@@ -18,11 +18,15 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
     // An unowned initialized mutant is not retained in the kernel registry.
     // This prevents the dispatcher from keeping a persistent address into a
     // driver image after its final release. Initial ownership needs a record.
+    let mut table=MUTANTS.lock();
     if owns {
-        let mut table=MUTANTS.lock();
         let slot=table.records.iter().position(|r|r.object==object as usize)
             .or_else(||table.records.iter().position(|r|r.object==0));
         if let Some(i)=slot{table.records[i]=MutantRecord{object:object as usize,owner:current,recursion:1,abandoned:false};}
+    } else if let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) {
+        // Reinitialization at a reused virtual address starts a fresh mutant;
+        // do not inherit an abandoned state from a previous driver image.
+        *record=MutantRecord::EMPTY;
     }
 }
 pub unsafe extern "win64" fn ke_initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){unsafe{initialize_mutant(object,initial_owner)}}
