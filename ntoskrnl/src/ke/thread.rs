@@ -769,6 +769,16 @@ pub fn adjust_apc_region(guarded:bool,enter:bool)->bool{
     let Some(id)=current_thread_id() else{return false};
     adjust_apc_region_for_thread(id,guarded,enter)
 }
+/// Resolve an opaque thread token for dispatcher ownership transfer. The
+/// returned pointer is the same stable per-thread record exposed by
+/// PsGetCurrentThread while the thread remains live.
+pub fn thread_object_from_id(id:u64)->*mut c_void{
+    if id==0{return core::ptr::null_mut()}
+    let table=THREADS.lock();
+    table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty)
+        .map(|record|(record as *const ThreadRecord as *mut c_void))
+        .unwrap_or(core::ptr::null_mut())
+}
 pub fn thread_id_from_object(object:*mut c_void)->Option<u64>{
     if object.is_null(){return None}
     let table=THREADS.lock();
