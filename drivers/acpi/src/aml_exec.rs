@@ -782,6 +782,36 @@ mod tests{
   assert_eq!(evaluate_term_argument(&[0x7d,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
   assert_eq!(evaluate_term_argument(&[0x77,0x0a,7,0x0a,6,0x00]),Ok((42,6)));
  }
+ #[test]fn covers_conversion_integer_buffer_and_width_boundaries(){
+  let to_buffer_integer=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+   0xa4,0x96,0x0c,0x34,0x12,0x00,0x00,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&to_buffer_integer,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&to_buffer_integer,&ns,id,&[],32).unwrap();
+  assert_eq!(value.kind,AmlValueKind::Buffer);assert_eq!(value.byte_length,4);
+  assert_eq!(&value.bytes[..4],&[0x34,0x12,0,0]);
+
+  let to_integer_buffer=[0x08,b'B',b'U',b'F',b'0',0x11,0x07,0x0a,4,0x78,0x56,0x34,0x12,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x99,b'B',b'U',b'F',b'0',0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&to_integer_buffer,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&to_integer_buffer,&ns,id,&[]).unwrap(),AmlValue::Integer(0x12345678));
+
+  let bcd32=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+   0xa4,0x5b,0x29,0x0c,0x00,0xe1,0xf5,0x05,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&bcd32,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method_with_integer_width(&bcd32,&ns,id,&[],32).unwrap(),AmlValue::Integer(0x99999999));
+  assert_eq!(execute_method_with_integer_width(&bcd32,&ns,id,&[],64).unwrap(),AmlValue::Integer(0x0000000005f5e100));
+ }
+ #[test]fn evaluates_composite_logical_comparisons_from_their_aml_encoding(){
+  // LNot(LEqual(1, 2)) == LNotEqual(1, 2).
+  assert_eq!(evaluate_term_argument(&[0x92,0x93,0x01,0x0a,2]),Ok((1,5)));
+  // LNot(LLess(2, 1)) == LGreaterEqual(2, 1).
+  assert_eq!(evaluate_term_argument(&[0x92,0x95,0x0a,2,0x01]),Ok((1,5)));
+  // LNot(LGreater(1, 2)) == LLessEqual(1, 2).
+  assert_eq!(evaluate_term_argument(&[0x92,0x94,0x01,0x0a,2]),Ok((1,5)));
+ }
  #[test]fn executes_to_bcd_and_from_bcd_extended_conversion_opcodes(){
   // Decimal 305419896 is packed as nine BCD digits: 0x305419896.
   assert_eq!(evaluate_term_argument(&[0x5b,0x29,0x0c,0x78,0x56,0x34,0x12,0x00]),Ok((0x305419896,8)));
