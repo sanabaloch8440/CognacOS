@@ -196,6 +196,41 @@ mod tests{
         let byte_id=arena.allocate(byte).unwrap();store_reference(br,byte_id,&mut bindings,&ns,&mut arena).unwrap();
         assert_eq!(dereference(br,&bindings,&arena).unwrap().integer,0x55);
     }
+    #[test]fn buffer_integer_conversion_is_little_endian_and_width_bounded(){
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=8;buffer.bytes[..8].copy_from_slice(&[0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef]);
+        assert_eq!(to_integer(&buffer),Ok(0xefcd_ab8967452301));
+        buffer.byte_length=9;
+        assert_eq!(to_integer(&buffer),Err(RuntimeError::ValueTooLarge));
+    }
+    #[test]fn buffer_byte_store_rejects_wrong_types_without_mutating_target(){
+        let mut arena=AmlObjectArena::new();
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;buffer.byte_length=1;buffer.bytes[0]=0xaa;
+        let buffer_id=arena.allocate(buffer).unwrap();
+        let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;string.byte_length=1;string.bytes[0]=b'1';
+        let string_id=arena.allocate(string).unwrap();
+        let mut wide=AmlRuntimeValue::EMPTY;wide.kind=AmlValueKind::Integer;wide.integer=0x100;
+        let wide_id=arena.allocate(wide).unwrap();
+        let reference=AmlReference::BufferByte{buffer:buffer_id,index:0};
+        let namespace=AmlNamespace::new();let mut bindings=AmlBindings::new();
+        assert_eq!(store_reference(reference,string_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::TypeMismatch));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0xaa);
+        assert_eq!(store_reference(reference,wide_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::TypeMismatch));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0xaa);
+        let mut byte=AmlRuntimeValue::EMPTY;byte.kind=AmlValueKind::Integer;byte.integer=0x55;
+        let byte_id=arena.allocate(byte).unwrap();
+        assert_eq!(store_reference(reference,byte_id,&mut bindings,&namespace,&mut arena),Ok(()));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0x55);
+    }
+    #[test]fn integer_to_buffer_uses_little_endian_and_fixed_zero_filled_length(){
+        let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=0x1234;
+        let bytes=to_buffer(&integer,4).unwrap();
+        assert_eq!(bytes.kind,AmlValueKind::Buffer);
+        assert_eq!(bytes.byte_length,4);
+        assert_eq!(&bytes.bytes[..4],&[0x34,0x12,0,0]);
+        assert_eq!(to_buffer(&integer,MAX_AML_BYTES+1),Err(RuntimeError::ValueTooLarge));
+    }
+
     #[test]fn conversions_are_bounded_and_checked(){
         let mut s=AmlRuntimeValue::EMPTY;s.kind=AmlValueKind::String;s.bytes[..4].copy_from_slice(b"1a2f");s.byte_length=4;
         assert_eq!(to_integer(&s),Ok(0x1a2f));
