@@ -37,14 +37,13 @@ mod registry_init;
 static BOOT_COORDINATOR: boot_orchestration::BootCoordinator = boot_orchestration::BootCoordinator::new();
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
-use cognacos_ext4 as extfs;
 pub(crate) use ntoskrnl::rtl_runtime::nls;
 #[path = "ntoskrnl.rs"]
 mod ntoskrnl;
 pub(crate) use ntoskrnl::ps::process;
 pub(crate) use ntoskrnl::ke::syscall;
 pub(crate) use ntoskrnl::io as io;
-pub(crate) use ntoskrnl::io::{ata_disk, dma, file_services, wdm};
+pub(crate) use ntoskrnl::io::{dma, file_services, wdm};
 #[path = "dbg/console.rs"]
 mod debug_console;
 
