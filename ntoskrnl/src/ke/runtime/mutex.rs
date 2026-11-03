@@ -14,7 +14,18 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
     if object.is_null(){return}
     let current=crate::thread::current_thread_id().unwrap_or(0);
     let owns=initial_owner!=0&&current!=0;
-    unsafe{object.write(DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:if owns{0}else{1},wait_list_flink:object as u64+8,wait_list_blink:object as u64+8});}
+    unsafe{
+        object.write(DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:if owns{0}else{1},wait_list_flink:object as u64+8,wait_list_blink:object as u64+8});
+        // KMUTANT tail: MutantListEntry, OwnerThread, MutantFlags, ApcDisable.
+        // The side table owns thread identity; keep the public list node valid
+        // and the ABI-visible abandoned flag synchronized with that metadata.
+        let bytes=object.cast::<u8>();
+        bytes.add(24).cast::<u64>().write(object as u64+24);
+        bytes.add(32).cast::<u64>().write(object as u64+24);
+        bytes.add(40).cast::<u64>().write(0);
+        bytes.add(48).write(0);
+        bytes.add(49).write(0);
+    }
     // An unowned initialized mutant is not retained in the kernel registry.
     // This prevents the dispatcher from keeping a persistent address into a
     // driver image after its final release. Initial ownership needs a record.
@@ -40,7 +51,8 @@ fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
     let slot=table.records.iter().position(|r|r.object==object as usize)
         .or_else(||table.records.iter().position(|r|r.object==0))?;
     if table.records[slot].object==0 {
-        table.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned:false};
+        let abandoned=unsafe{object.cast::<u8>().add(48).read()&1!=0};
+        table.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned};
     }
     let record=&mut table.records[slot];
     if record.owner==thread{
@@ -51,7 +63,10 @@ fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
     if record.owner!=0{return None}
     record.owner=thread;record.recursion=1;
     let abandoned=record.abandoned;record.abandoned=false;
-    unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+    unsafe{
+        object.cast::<u8>().add(48).write(0);
+        (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
+    }
     Some(if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
 }
 fn try_acquire_mutant(object:*mut DispatcherHeader)->bool{try_acquire_mutant_status(object).is_some()}
@@ -77,7 +92,10 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
             return old;
         }
         record.owner=0;record.recursion=0;record.abandoned=abandoned;
-        unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
+        unsafe{
+            object.cast::<u8>().add(48).write(abandoned as u8);
+            (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);
+        }
         loop{
             let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{
                 // Retirement is deferred until wait-all groups have been
@@ -106,7 +124,9 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
     if !crate::dispatcher::has_wait_all_object(object as u64) {
         let mut table=MUTANTS.lock();
         if let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) {
-            if record.owner==0&&record.recursion==0&&!record.abandoned {
+            if record.owner==0&&record.recursion==0 {
+                // The ABI-visible KMUTANT.Abandoned byte carries the state
+                // after the temporary ownership record is retired.
                 *record=MutantRecord::EMPTY;
             }
         }
@@ -144,7 +164,10 @@ pub fn thread_exit_cleanup(thread:u64){
             record.object
         };
         let header=object as *mut DispatcherHeader;
-        unsafe{(&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
+        unsafe{
+            header.cast::<u8>().add(48).write(1);
+            (&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);
+        }
         let mut timed_out=[0u64;crate::dispatcher::MAX_WAITERS];let mut timed_count=0usize;
         let mut owner_waiter=None;
         loop{
@@ -165,6 +188,18 @@ pub fn thread_exit_cleanup(thread:u64){
         }
     }
     complete_ready_wait_all_groups();
+    // With no remaining wait-all reservation, an unowned abandoned state now
+    // lives in KMUTANT.Abandoned and no longer needs a kernel pointer record.
+    // The next waiter reconstructs the record from the caller-owned object.
+    // (The loop may have handled several objects; scan only the abandoned,
+    // unowned records rather than retaining driver-image addresses forever.)
+    let mut table=MUTANTS.lock();
+    for record in table.records.iter_mut() {
+        if record.object!=0&&record.owner==0&&record.recursion==0&&record.abandoned
+            && !crate::dispatcher::has_wait_all_object(record.object as u64) {
+            *record=MutantRecord::EMPTY;
+        }
+    }
 }
 
 // ---- FAST_MUTEX ABI entry points -------------------------------------------
