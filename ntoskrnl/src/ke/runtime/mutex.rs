@@ -14,6 +14,7 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
     if object.is_null(){return}
     let current=crate::thread::current_thread_id().unwrap_or(0);
     let owns=initial_owner!=0&&current!=0;
+    let owner_object=if owns{crate::thread::current_thread_object() as u64}else{0};
     unsafe{
         // Windows 10/11 x64 mutant header uses MutantSize at byte 1,
         // DpcActive at byte 2, and MutantReserved at byte 3 (not the generic
@@ -25,7 +26,7 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
         let bytes=object.cast::<u8>();
         bytes.add(24).cast::<u64>().write(object as u64+24);
         bytes.add(32).cast::<u64>().write(object as u64+24);
-        bytes.add(40).cast::<u64>().write(0);
+        bytes.add(40).cast::<u64>().write(owner_object);
         bytes.add(48).write(0);
         bytes.add(49).write(0);
     }
@@ -50,6 +51,7 @@ pub unsafe extern "win64" fn ke_initialize_mutex(object:*mut DispatcherHeader,_l
 fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
     if object.is_null(){return None}
     let thread=crate::thread::current_thread_id()?;
+    let owner_object=crate::thread::current_thread_object() as u64;
     let result={
         let mut table=MUTANTS.lock();
         // Register lazily on first wait rather than at KeInitializeMutex time.
@@ -71,6 +73,7 @@ fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
             record.owner=thread;record.recursion=1;
             let abandoned=record.abandoned;record.abandoned=false;
             unsafe{
+                object.cast::<u8>().add(40).cast::<u64>().write(owner_object);
                 object.cast::<u8>().add(48).write(0);
                 (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
             }
@@ -108,6 +111,7 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         } else {
             record.owner=0;record.recursion=0;record.abandoned=abandoned;
             unsafe{
+                object.cast::<u8>().add(40).cast::<u64>().write(0);
                 object.cast::<u8>().add(48).write(abandoned as u8);
                 (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);
             }
@@ -135,6 +139,8 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
     if recursion_only{return old}
     for id in timed_out[..timed_count].iter().copied(){let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_TIMEOUT,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_TIMEOUT);let _=crate::thread::complete_wait(id,status);}
     if let Some(id)=waiter_id{
+        let owner_object=crate::thread::thread_object_from_id(id) as u64;
+        unsafe{object.cast::<u8>().add(40).cast::<u64>().write(owner_object);}
         let _=crate::thread::adjust_apc_region_for_thread(id,false,true);
         let status=crate::dispatcher::complete_wait_group(id,object as u64,final_status,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(final_status);
         let _=crate::thread::complete_wait(id,status);
@@ -187,6 +193,7 @@ pub fn thread_exit_cleanup(thread:u64){
         };
         let header=object as *mut DispatcherHeader;
         unsafe{
+            header.cast::<u8>().add(40).cast::<u64>().write(0);
             header.cast::<u8>().add(48).write(1);
             (&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);
         }
@@ -206,7 +213,9 @@ pub fn thread_exit_cleanup(thread:u64){
                 let mut table=MUTANTS.lock();
                 if let Some(record)=table.records.iter_mut().find(|r|r.object==object){record.owner=id;record.recursion=1;record.abandoned=false;}
             }
+            let owner_object=crate::thread::thread_object_from_id(id) as u64;
             unsafe{
+                header.cast::<u8>().add(40).cast::<u64>().write(owner_object);
                 header.cast::<u8>().add(48).write(0);
                 (&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
             }
