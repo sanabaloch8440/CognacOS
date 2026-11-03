@@ -15,7 +15,7 @@ use cognacos_nt_abi::{
     types::PVOID,
 };
 use cognacos_storage::{
-    ata_port::{AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, ATA_PORT_INTERFACE_VERSION},
+    ata_port::{AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, ATA_PORT_INTERFACE_VERSION, ATA_PORT_REQUEST_DEVICE_INDEX_MASK},
     error_to_ntstatus,
     StorageError,
     ide::{Channel, RegisterIo, MAX_LBA28}, pciidex::{
@@ -234,7 +234,7 @@ unsafe extern "win64" fn miniport_submit(
         return STATUS_DEVICE_NOT_READY;
     }
     let request = unsafe { &*request };
-    let slot = (request.flags & 0x3) as usize;
+    let slot = (request.flags & ATA_PORT_REQUEST_DEVICE_INDEX_MASK) as usize;
     let Some(channel) = (unsafe { (*ext).channels[slot] }) else { return STATUS_NOT_FOUND; };
     let _pio_guard = PioGuard::acquire(unsafe { &(*ext).pio_lock });
     let mut io = X86PortIo;
