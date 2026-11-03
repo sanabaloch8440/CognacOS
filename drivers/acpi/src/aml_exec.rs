@@ -121,7 +121,11 @@ impl<'a,'b> Machine<'a,'b>{
    0x96=>{
     let length=match source.kind{
      AmlValueKind::Integer=>(self.integer_width_bits/8) as usize,
-     AmlValueKind::String=>(source.byte_length as usize).checked_add(1).ok_or(ExecError::TargetTypeMismatch)?,
+     AmlValueKind::String=>{
+      let length=source.byte_length as usize;
+      if length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
+      if length==0{0}else{length.checked_add(1).ok_or(ExecError::TargetTypeMismatch)?}
+     }
      AmlValueKind::Buffer=>source.byte_length as usize,
      _=>return Err(ExecError::TargetTypeMismatch),
     };
@@ -129,23 +133,51 @@ impl<'a,'b> Machine<'a,'b>{
     if source.kind==AmlValueKind::String&&length>0{value.bytes[length-1]=0;}
     value
    }
-   0x97=>{
-    if source.kind!=AmlValueKind::Integer{return Err(ExecError::TargetTypeMismatch)}
-    integer_to_string(self.normalize(source.integer))
-   }
-   0x98=>{
-    if source.kind!=AmlValueKind::Integer{return Err(ExecError::TargetTypeMismatch)}
-    let digits=(self.integer_width_bits/4) as usize;
-    let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;value.byte_length=digits as u16;
-    let alphabet=b"0123456789ABCDEF";let integer=self.normalize(source.integer);
-    for index in 0..digits{let shift=(digits-1-index)*4;value.bytes[index]=alphabet[((integer>>shift)&0xf) as usize];}
-    value
-   }
+   0x97=>match source.kind{
+    AmlValueKind::Integer=>integer_to_string(self.normalize(source.integer)),
+    AmlValueKind::String=>source,
+    AmlValueKind::Buffer=>{
+     let length=source.byte_length as usize;
+     if length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
+     let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;let mut out=0usize;
+     for byte in source.bytes[..length].iter(){
+      if out!=0{value.bytes[out]=b',';out+=1;}
+      let mut digits=[0u8;3];let mut count=0usize;let mut number=*byte as usize;
+      if number==0{digits[0]=b'0';count=1;}else{while number!=0{digits[count]=b'0'+(number%10) as u8;count+=1;number/=10;}}
+      for digit in digits[..count].iter().rev(){value.bytes[out]=*digit;out+=1;}
+     }
+     value.byte_length=out as u16;value
+    }
+    _=>return Err(ExecError::TargetTypeMismatch),
+   },
+   0x98=>match source.kind{
+    AmlValueKind::Integer=>{
+     let digits=(self.integer_width_bits/4) as usize;
+     let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;value.byte_length=digits as u16;
+     let alphabet=b"0123456789ABCDEF";let integer=self.normalize(source.integer);
+     for index in 0..digits{let shift=(digits-1-index)*4;value.bytes[index]=alphabet[((integer>>shift)&0xf) as usize];}
+     value
+    }
+    AmlValueKind::String=>source,
+    AmlValueKind::Buffer=>{
+     let length=source.byte_length as usize;
+     if length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
+     let output_length=length.saturating_mul(3).saturating_sub(1);
+     if output_length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
+     let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;
+     let alphabet=b"0123456789ABCDEF";let mut out=0usize;
+     for (index,byte) in source.bytes[..length].iter().enumerate(){
+      if index!=0{value.bytes[out]=b',';out+=1;}
+      value.bytes[out]=alphabet[(byte>>4) as usize];value.bytes[out+1]=alphabet[(byte&0xf) as usize];out+=2;
+     }
+     value.byte_length=out as u16;value
+    }
+    _=>return Err(ExecError::TargetTypeMismatch),
+   },
    0x99=>Self::integer_value(to_integer_with_width(&source,self.integer_width_bits).map_err(|_|ExecError::TargetTypeMismatch)?),
    0x9c=>{
-    if !matches!(source.kind,AmlValueKind::Buffer|AmlValueKind::String){return Err(ExecError::TargetTypeMismatch)}
-    let requested=self.term(r)? as usize;
-    let source_length=source.byte_length as usize;
+    if source.kind!=AmlValueKind::Buffer{return Err(ExecError::TargetTypeMismatch)}
+    let requested=self.term(r)? as usize;let source_length=source.byte_length as usize;
     if source_length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
     let mut length=core::cmp::min(requested,source_length);
     if let Some(nul)=source.bytes[..length].iter().position(|byte|*byte==0){length=nul;}
@@ -154,8 +186,9 @@ impl<'a,'b> Machine<'a,'b>{
    }
    _=>return Err(ExecError::UnsupportedOpcode),
   };
+  // Explicit conversion targets bypass the implicit Store result conversion.
   let target=self.target(r)?;
-  self.store_value(target,converted,StoreMode::Store)?;
+  self.store_value(target,converted,StoreMode::CopyObject)?;
   Ok(converted)
  }
  fn term_value(&mut self,r:&mut Reader<'_>)->Result<AmlRuntimeValue,ExecError>{
