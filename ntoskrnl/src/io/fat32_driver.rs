@@ -56,7 +56,7 @@ const fn make_driver() -> DriverObject {
     major[IRP_MJ_WRITE as usize] = Some(filesystem_dispatch);
     major[IRP_MJ_CLEANUP as usize] = Some(filesystem_dispatch);
     major[IRP_MJ_CLOSE as usize] = Some(filesystem_dispatch);
-    major[IRP_MJ_FLUSH_BUFFERS] = Some(filesystem_dispatch);
+    major[IRP_MJ_FLUSH_BUFFERS as usize] = Some(filesystem_dispatch);
     major[wdm::IRP_MJ_FILE_SYSTEM_CONTROL as usize] = Some(file_system_control_dispatch);
     DriverObject {
         object_type: 4,
