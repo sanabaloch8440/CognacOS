@@ -252,7 +252,7 @@ mod tests {
     fn namespace_load_is_transactional_when_later_region_is_invalid(){
         let aml=[
             0x5b,0x80,b'R',b'E',b'G',b'1',0x00,0x0a,0x10,0x0a,8,
-            0x5b,0x80,b'R',b'E',b'G',b'2',0x00,0x0a,0x20,0x00,0x00
+            0x5b,0x80,b'R',b'E',b'G',b'2',0x00,0x0a,0x20,0x00
         ];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let mut table=OperationRegionTable::new();
