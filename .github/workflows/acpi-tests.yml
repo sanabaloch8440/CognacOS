@@ -5,6 +5,9 @@ on:
     paths:
       - 'drivers/acpi/**'
       - 'shared/nt-abi/**'
+      - 'ntoskrnl/src/ke/**'
+      - 'ntoskrnl/src/ntoskrnl.rs'
+      - 'ntoskrnl/Cargo.toml'
       - '.github/workflows/acpi-tests.yml'
   push:
     branches: [main]
@@ -31,6 +34,8 @@ jobs:
         run: cargo test --target x86_64-unknown-linux-gnu --manifest-path drivers/acpi/Cargo.toml --lib --no-run
       - name: Type-check the native ACPI WDM driver
         run: cargo check --target x86_64-unknown-none --manifest-path drivers/acpi/Cargo.toml --bin acpi
+      - name: Type-check the kernel dispatcher implementation
+        run: cargo check --target x86_64-unknown-none --manifest-path ntoskrnl/Cargo.toml
       - name: Run firmware discovery regression suites
         shell: bash
         run: |
