@@ -118,6 +118,7 @@ struct AtaPortFdoExtension {
  magic:u64,
  lower:*mut DEVICE_OBJECT,
  physical:*mut DEVICE_OBJECT,
+ self_device:*mut DEVICE_OBJECT,
  driver:*mut DRIVER_OBJECT,
  miniport:Option<AtaPortMiniportInterface>,
  started:u8,
@@ -198,7 +199,7 @@ unsafe fn publish_disk_child(ext:*mut AtaPortFdoExtension,slot:u8,descriptor:Dis
  if child.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
  let child_ext=unsafe{(*child).device_extension.cast::<AtaDiskPdoExtension>()};
  unsafe{
-  child_ext.write(AtaDiskPdoExtension{magic:DISK_PDO_MAGIC,parent:ext.cast::<u8>().cast::<DEVICE_OBJECT>(),slot,reserved:[0;7],descriptor});
+  child_ext.write(AtaDiskPdoExtension{magic:DISK_PDO_MAGIC,parent:unsafe{(*ext).self_device},slot,reserved:[0;7],descriptor});
   (*child).flags|=0x0000_1004;
  }
  let mut devnode=0u32;
@@ -444,7 +445,7 @@ unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->
  let lower=unsafe{IoAttachDeviceToDeviceStack(fdo,pdo)};
  if lower.is_null(){unsafe{IoDeleteDevice(fdo)};return STATUS_DEVICE_NOT_READY}
  let ext=unsafe{(*fdo).device_extension.cast::<AtaPortFdoExtension>()};
- unsafe{ext.write(AtaPortFdoExtension{magic:FDO_MAGIC,lower,physical:pdo,driver:driver.cast(),miniport:None,started:0,removing:0,active_requests:0,reserved:[0;2],relations:AtaPortDeviceRelations::EMPTY});(*fdo).flags=(((*fdo).flags&!0x80)|((*lower).flags&(0x02|0x04)))|0x04;}
+ unsafe{ext.write(AtaPortFdoExtension{magic:FDO_MAGIC,lower,physical:pdo,self_device:fdo,driver:driver.cast(),miniport:None,started:0,removing:0,active_requests:0,reserved:[0;2],relations:AtaPortDeviceRelations::EMPTY});(*fdo).flags=(((*fdo).flags&!0x80)|((*lower).flags&(0x02|0x04)))|0x04;}
  STATUS_SUCCESS
 }
 
