@@ -72,6 +72,11 @@ IMPORT IoDeleteDevice
 IMPORT IoAttachDeviceToDeviceStack
 IMPORT IoDetachDevice
 IMPORT IoCallDriver
+IMPORT KeWaitForSingleObject
+IMPORT KeSetEvent
+IMPORT KeInitializeEvent
+IMPORT IoFreeIrp
+IMPORT IoAllocateIrp
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -86,6 +91,11 @@ IAT IoDeleteDevice
 IAT IoAttachDeviceToDeviceStack
 IAT IoDetachDevice
 IAT IoCallDriver
+IAT KeWaitForSingleObject
+IAT KeSetEvent
+IAT KeInitializeEvent
+IAT IoFreeIrp
+IAT IoAllocateIrp
 "#);
 
 #[repr(C)]
