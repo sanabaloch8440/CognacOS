@@ -8,10 +8,10 @@ pub(crate) mod wdm_requirements;
 pub(crate) mod wdm;
 #[path = "file_services.rs"]
 pub(crate) mod file_services;
+#[path = "storage.rs"]
+pub(crate) mod storage;
 #[path = "fat32_driver.rs"]
 pub(crate) mod fat32_driver;
-#[path = "ata_disk.rs"]
-pub(crate) mod ata_disk;
 #[path = "pnp.rs"]
 pub(crate) mod pnp;
 pub use wdm::*;
