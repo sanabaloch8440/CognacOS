@@ -538,7 +538,7 @@ mod tests {
         // A Method declaration promotes the DSDT External placeholder. The
         // unsupported term after the method body forces rollback after that
         // in-place mutation has occurred.
-        let ssdt=definition_table(*b"SSDT",&[0x14,0x07,b'D',b'E',b'V',b'0',0,0x99]);
+        let ssdt=definition_table(*b"SSDT",&[0x14,0x06,b'D',b'E',b'V',b'0',0,0x99]);
         let mut manager=AmlTableManager::new();let gate=gate();
         manager.load_dsdt(&dsdt,&gate).unwrap();
         let dev=manager.namespace().find_child(0,*b"DEV0").unwrap();
