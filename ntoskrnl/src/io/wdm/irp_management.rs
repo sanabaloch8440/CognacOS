@@ -10,7 +10,7 @@ fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
  slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size as u8).wrapping_add(1);
- slot.stack.fill(IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()});
+ slot.stack.fill(IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters_alignment:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()});
  slot.next=next;
  let object=ptr::addr_of_mut!(slot.object);
  let one_past=unsafe{slot.stack.as_mut_ptr().add(stack_size as usize).cast::<c_void>()};
