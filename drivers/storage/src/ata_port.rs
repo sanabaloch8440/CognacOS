@@ -28,6 +28,10 @@ pub struct AtaPortRequest {
     pub lba: u64,
     pub sector_count: u32,
     pub flags: u32,
+    /// Kernel-owned, nonpaged system buffer for PIO transfers. The port driver
+    /// accepts this only for buffered IRPs; miniports must never dereference a
+    /// user virtual address. DMA miniports use the SG list instead.
+    pub system_buffer: *mut u8,
     pub sg_list: *const AtaPortSgElement,
     pub sg_count: u32,
     pub timeout_ms: u32,
@@ -92,6 +96,53 @@ pub struct AtaPortServices {
     pub free_common_buffer: Option<unsafe extern "win64" fn(*mut c_void, *mut c_void, u64, u32)>,
     pub connect_interrupt: Option<unsafe extern "win64" fn(*mut c_void) -> i32>,
     pub disconnect_interrupt: Option<unsafe extern "win64" fn(*mut c_void)>,
+}
+
+/// Validate the transport-independent part of an ATA request before it reaches
+/// a controller miniport. Buffer mapping and device-capacity checks remain
+/// port/controller responsibilities because they require the live device stack.
+pub fn validate_request(request: &AtaPortRequest) -> Result<u32, i32> {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010u32 as i32;
+    if request.size as usize != core::mem::size_of::<AtaPortRequest>()
+        || request.sg_count > ATA_PORT_MAX_SG_ELEMENTS
+    {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    match request.operation {
+        AtaPortOperation::Read | AtaPortOperation::Write => {
+            if request.sector_count == 0 || request.system_buffer.is_null() {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            let bytes = request.sector_count.checked_mul(512)
+                .ok_or(STATUS_INVALID_PARAMETER)?;
+            if request.sg_count != 0 && request.sg_list.is_null() {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            if request.sg_count == 0 && !request.sg_list.is_null() {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            Ok(bytes)
+        }
+        AtaPortOperation::Flush => {
+            if request.sector_count != 0 || request.lba != 0
+                || !request.system_buffer.is_null() || request.sg_count != 0
+                || !request.sg_list.is_null()
+            {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            Ok(0)
+        }
+        AtaPortOperation::Identify => {
+            if request.sector_count != 1 || request.system_buffer.is_null()
+                || request.sg_count != 0 || !request.sg_list.is_null()
+            {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            Ok(512)
+        }
+        AtaPortOperation::Packet => Err(STATUS_INVALID_DEVICE_REQUEST),
+    }
 }
 
 /// Bounded request ownership table for ataport. Queue slots are reserved before
