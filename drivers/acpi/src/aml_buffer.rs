@@ -1,6 +1,11 @@
 //! Bounded extraction of AML Buffer initializers from namespace Name objects
 //! and direct control-method Return(Buffer(...)) results. BufferSize TermArgs
 //! are evaluated by the independent bounded scalar expression evaluator.
+/*
+ * FIXME(ACPI-PRODUCTION) — AML buffer operations
+ * FIXME(ACPI-PRODUCTION): Complete AML Buffer and BufferField semantics, including exact bit offsets, resizing/conversion behavior, overflow handling, and object lifetime. Intended functionality must enforce source/destination bounds and return distinct malformed/unsupported/capacity errors; add round-trip and fuzz tests.
+ */
+
 #![no_std]
 
 use crate::aml::{AmlNamespace,AmlObjectType};

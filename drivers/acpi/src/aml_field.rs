@@ -1,6 +1,11 @@
 //! AML-5 field access and synchronization primitives.
 //! Field I/O is delegated to the ACPI address-space layer. This module never
 //! maps firmware addresses or performs privileged I/O itself.
+/*
+ * FIXME(ACPI-PRODUCTION) — AML Field and BankField access
+ * FIXME(ACPI-PRODUCTION): Complete bit-accurate Field/IndexField/BankField access, access attributes, lock/update rules, bank selection, connection handling, and alignment semantics. Check every bit-range calculation and preserve the Global Lock/interpreter lock ordering contract.
+ */
+
 #![no_std]
 
 use core::sync::atomic::{AtomicBool,AtomicU16,AtomicU64,Ordering};

@@ -1,6 +1,11 @@
 //! WDM IO_RESOURCE_REQUIREMENTS_LIST serialization for ACPI _PRS templates.
 //! One parsed template becomes one alternative; arbitration and _SRS programming
 //! remain owned by kernel PnP/resource-arbiter layers.
+/*
+ * FIXME(ACPI-PRODUCTION) — WDM resource requirements serialization
+ * FIXME(ACPI-PRODUCTION): Complete IO_RESOURCE_REQUIREMENTS_LIST serialization for every supported ACPI alternative and descriptor, with correct option/priority flags, alignment, ABI layout, and checked sizing. Test empty, maximal, conflicting, and malformed alternatives against kernel consumers.
+ */
+
 #![no_std]
 use crate::acpi_resources::{Resource,ResourceList};
 pub const IO_RESOURCE_DESCRIPTOR_SIZE:usize=32;

@@ -1,6 +1,11 @@
 //! Bounded AML definition-block parser and namespace loader.
 //! This module deliberately separates AML parsing from AML execution. Method
 //! bodies are retained as validated byte ranges; they are never executed here.
+/*
+ * FIXME(ACPI-PRODUCTION) — AML parser and namespace
+ * FIXME(ACPI-PRODUCTION): This module currently parses a bounded AML subset and stores namespace metadata; it is not a complete ACPI AML implementation. Intended completion: full NameString/namespace semantics, table ownership and unload, forward references, complete declaration/Field parsing, comprehensive opcode coverage, robust error offsets, conformance fixtures, and malformed-input fuzzing. Keep all cursor arithmetic checked and preserve the invariant that parser code never executes AML or performs firmware I/O. Unsupported constructs must fail closed and be reported distinctly from malformed input.
+ */
+
 #![no_std]
 
 pub const MAX_NAMESPACE_NODES:usize=2048;

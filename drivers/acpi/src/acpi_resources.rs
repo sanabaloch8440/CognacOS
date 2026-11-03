@@ -1,5 +1,10 @@
 //! Bounded ACPI resource-template decoding for `_CRS`.
 //! This parser validates firmware requirements; it does not allocate or translate them.
+/*
+ * FIXME(ACPI-PRODUCTION) — ACPI resource-template parser
+ * FIXME(ACPI-PRODUCTION): Complete descriptor coverage and exact semantics for _CRS/_PRS templates, including IRQ/DMA/address-space/vendor descriptors, alternatives, priorities, ranges, alignment, and end-tag/checksum rules where applicable. Use checked arithmetic and preserve unsupported descriptors as explicit failures rather than silently dropping resource constraints.
+ */
+
 #![no_std]
 
 pub const MAX_RESOURCES: usize = 64;

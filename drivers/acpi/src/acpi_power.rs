@@ -1,4 +1,9 @@
 //! ACPI-5 resource selection and device power policy.
+/*
+ * FIXME(ACPI-PRODUCTION) — ACPI power policy
+ * FIXME(ACPI-PRODUCTION): Complete device/system power-state evaluation and sequencing, power-resource dependencies, rollback, wake handling, and coordination with kernel power IRPs. Parsing a power method is not proof that suspend/resume is safe; require transition tests and hardware-specific gates.
+ */
+
 #![no_std]
 use crate::acpi_resources::{parse_resource_template,ResourceError,ResourceList};
 pub const MAX_WAKE_RESOURCES:usize=8;
