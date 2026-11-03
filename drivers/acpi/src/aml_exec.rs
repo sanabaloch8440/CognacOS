@@ -7,6 +7,7 @@
 
 #![no_std]
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
+use crate::aml_osi::windows_11_x64_osi;
 use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,AmlValueKind};
 use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value,validate_runtime_value};
 pub const MAX_AML_STEPS:usize=100_000;
@@ -263,12 +264,30 @@ impl<'a,'b> Machine<'a,'b>{
     if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}
     let b=r.take(8)?;Ok(Self::integer_value(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?)))
    }
+   0x0d=>{
+    let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;
+    loop { let byte=r.byte()?; if byte==0 { break; }
+     let length=value.byte_length as usize;
+     if length>=value.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
+     value.bytes[length]=byte;value.byte_length+=1;
+    }
+    Ok(value)
+   }
    0x60..=0x67=>Ok(self.locals[(op-0x60) as usize]),
    0x68..=0x6e=>self.argument_value((op-0x68) as usize),
    0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
     r.pos=start;
     let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;
     r.pos=next;
+    // _OSI is an interpreter-predefined interface, not a firmware namespace
+    // method. Resolve it before namespace lookup so firmware need not define it.
+    if name.count==1 && name.segments[0]==*b"_OSI" {
+     let argument=self.term_value(r)?;
+     let supported=if argument.kind==AmlValueKind::String {
+      windows_11_x64_osi(&argument.bytes[..argument.byte_length as usize])
+     } else { 0 };
+     return Ok(Self::integer_value(supported));
+    }
     let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;
     let entry=*self.namespace.nodes.get(canonical as usize)
@@ -366,6 +385,12 @@ impl<'a,'b> Machine<'a,'b>{
     r.pos-=1;
     let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;
     r.pos=next;
+    if name.count==1 && name.segments[0]==*b"_OSI" {
+     let argument=self.term_value(r)?;
+     return Ok(if argument.kind==AmlValueKind::String {
+      windows_11_x64_osi(&argument.bytes[..argument.byte_length as usize])
+     } else { 0 });
+    }
     let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;
     let entry=*self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::NameNotFound)?;
@@ -1127,6 +1152,18 @@ mod tests{
   let value=execute_method_typed_with_values(&aml,&ns,id,&[],64).unwrap();
   assert_eq!(value.kind,AmlValueKind::Integer);assert_eq!(value.integer,42);
  }
+ #[test]fn evaluates_predefined_osi_for_windows_11_firmware_profiles(){
+  // Return(_OSI("Windows 2021")) and Return(_OSI("Windows 2022")).
+  let windows_11=[0x14,0x1a,b'T',b'E',b'S',b'T',0,0xa4,b'_',b'O',b'S',b'I',0x0d,b'W',b'i',b'n',b'd',b'o',b'w',b's',b' ',b'2',b'0',b'2',b'1',0];
+  let mut ns=AmlNamespace::new();load_definition_block(&windows_11,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&windows_11,&ns,id,&[]).unwrap(),AmlValue::Integer(0xFFFF_FFFF));
+  let windows_22=[0x14,0x1a,b'T',b'E',b'S',b'T',0,0xa4,b'_',b'O',b'S',b'I',0x0d,b'W',b'i',b'n',b'd',b'o',b'w',b's',b' ',b'2',b'0',b'2',b'2',0];
+  let mut ns=AmlNamespace::new();load_definition_block(&windows_22,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&windows_22,&ns,id,&[]).unwrap(),AmlValue::Integer(0xFFFF_FFFF));
+ }
+
  #[test]fn term_argument_decoder_reports_truncation_and_unsupported_names(){
   assert_eq!(evaluate_term_argument(&[0x0c,0x11,0x22]),Err(ExecError::Truncated));
   assert_eq!(evaluate_term_argument(&[b'V',b'A',b'L',b'0']),Err(ExecError::NameNotFound));
