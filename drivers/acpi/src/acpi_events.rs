@@ -90,7 +90,7 @@ impl GpeRegisterBlock{
  }
  fn register_gas(&self,enable:bool,index:u16)->AcpiGas{
   let half=(self.length/2) as u64;
-  AcpiGas{address:self.gas.address+if enable{half}else{0}+index as u64,
+  AcpiGas{address:self.gas.address+(if enable{half}else{0})+index as u64,
    address_space_id:self.gas.address_space_id,bit_width:8,bit_offset:0,access_size:1}
  }
  fn bit(&self,event:u16)->Result<(u16,u8),EventError>{
@@ -163,7 +163,7 @@ impl GpeController{
      let event=block.event_base as u16+index*8+bit as u16;
      let Some(registration)=self.events[..self.event_count].iter().find(|e|e.number==event).copied() else{
       io.write(enable_gas,1,(enabled&!mask) as u64)?;
-      io.clear_status_w1c(io,block.register_gas(false,index),mask)?;
+      io.clear_status_w1c(block.register_gas(false,index),mask)?;
       continue
      };
      if self.queued==MAX_DEFERRED_EVENTS{return Err(EventError::QueueFull)}
