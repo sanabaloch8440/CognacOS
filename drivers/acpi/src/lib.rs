@@ -1545,3 +1545,39 @@ mod dsdt_resolution_tests {
         assert_eq!(found.get(0..4), Some(&b"DSDT"[..]));
     }
 }
+
+
+#[cfg(test)]
+mod firmware_table_policy_tests {
+    use super::*;
+    struct Mapper<'a> { rsdp: &'a [u8], root: &'a [u8], first: &'a [u8], second: &'a [u8], rsdp_addr:u64, root_addr:u64, first_addr:u64, second_addr:u64 }
+    impl AcpiPhysicalMapper for Mapper<'_> {
+        fn map_physical<'a>(&'a self, address:u64, length:usize)->Result<&'a [u8],AcpiError> {
+            let bytes=if address==self.rsdp_addr {self.rsdp} else if address==self.root_addr {self.root} else if address==self.first_addr {self.first} else if address==self.second_addr {self.second} else {return Err(AcpiError::AddressOutOfRange)};
+            if length>bytes.len(){return Err(AcpiError::Truncated)} Ok(&bytes[..length])
+        }
+    }
+    fn finish(b:&mut [u8], at:usize) { b[at]=0; b[at]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v))); }
+    fn make_rsdp()->[u8;36] { let mut b=[0u8;36];b[..8].copy_from_slice(b"RSD PTR ");b[15]=2;b[20..24].copy_from_slice(&36u32.to_le_bytes());b[24..32].copy_from_slice(&0x2000u64.to_le_bytes());finish(&mut b,8);finish(&mut b,32);b }
+    fn make_sdt(sig:[u8;4],revision:u8)->[u8;36] { let mut b=[0u8;36];b[..4].copy_from_slice(&sig);b[4..8].copy_from_slice(&36u32.to_le_bytes());b[8]=revision;finish(&mut b,9);b }
+    #[test]
+    fn ssdt_instances_are_enumerated_in_root_order_and_provenance_is_retained() {
+        let rsdp=make_rsdp();let first=make_sdt(*b"SSDT",2);let second=make_sdt(*b"SSDT",3);
+        let mut root=[0u8;52];root[..4].copy_from_slice(b"XSDT");root[4..8].copy_from_slice(&52u32.to_le_bytes());
+        root[36..44].copy_from_slice(&0x3000u64.to_le_bytes());root[44..52].copy_from_slice(&0x4000u64.to_le_bytes());finish(&mut root,9);
+        let mapper=Mapper{rsdp:&rsdp,root:&root,first:&first,second:&second,rsdp_addr:0x1000,root_addr:0x2000,first_addr:0x3000,second_addr:0x4000};
+        assert_eq!(find_ssdt_with_mapper(&mapper,0x1000,0).unwrap()[8],2);
+        assert_eq!(find_ssdt_with_mapper(&mapper,0x1000,1).unwrap()[8],3);
+        assert_eq!(find_ssdt_with_mapper(&mapper,0x1000,2),Err(AcpiError::MissingRoot));
+        let p=table_provenance_with_mapper(&mapper,0x1000,*b"SSDT",1).unwrap();
+        assert_eq!(p.physical_address,0x4000);assert_eq!(p.revision,3);assert_eq!(p.length,36);assert!(p.validated);
+    }
+    #[test]
+    fn singleton_policy_rejects_multiple_fadt_instances() {
+        let rsdp=make_rsdp();let fadt=make_sdt(*b"FACP",6);
+        let mut root=[0u8;52];root[..4].copy_from_slice(b"XSDT");root[4..8].copy_from_slice(&52u32.to_le_bytes());
+        root[36..44].copy_from_slice(&0x3000u64.to_le_bytes());root[44..52].copy_from_slice(&0x3000u64.to_le_bytes());finish(&mut root,9);
+        let mapper=Mapper{rsdp:&rsdp,root:&root,first:&fadt,second:&fadt,rsdp_addr:0x1000,root_addr:0x2000,first_addr:0x3000,second_addr:0x4000};
+        assert_eq!(find_unique_table_with_mapper(&mapper,0x1000,*b"FACP"),Err(AcpiError::DuplicateTable));
+    }
+}
