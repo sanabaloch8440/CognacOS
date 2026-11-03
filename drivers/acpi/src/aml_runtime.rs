@@ -466,6 +466,90 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
     }
 }
 
+/// AML method result target. LocalX and ArgX slots replace their stored
+/// object without implicit result conversion; reference targets use the
+/// fixed-type Store/CopyObject rules implemented by the runtime.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum AmlTarget { Null,Local(u8),Argument(u8),Reference(AmlReference) }
+
+/// Per-invocation typed Local/Arg storage. Values live in the caller-owned
+/// arena, so Package trees can be copied without heap allocation.
+pub struct AmlMethodFrame {
+    locals:[u16;8],
+    arguments:[u16;7],
+    local_bound:[bool;8],
+    argument_bound:[bool;7],
+}
+impl AmlMethodFrame {
+    /// Create a fresh frame. All LocalX values begin Uninitialized; arguments
+    /// are copied into the frame and must be live runtime arena objects.
+    pub fn new(arguments:&[u16],arena:&mut AmlObjectArena)->Result<Self,RuntimeError>{
+        if arguments.len()>7{return Err(RuntimeError::InvalidReference)}
+        let mut uninitialized=AmlRuntimeValue::EMPTY;
+        uninitialized.kind=AmlValueKind::Uninitialized;
+        let empty=arena.allocate(uninitialized)?;
+        let mut frame=Self{
+            locals:[empty;8],arguments:[empty;7],
+            local_bound:[true;8],argument_bound:[false;7],
+        };
+        for (index,id) in arguments.iter().copied().enumerate(){
+            let value=arena.get(id).ok_or(RuntimeError::InvalidReference)?;
+            validate_runtime_value(value,arena)?;
+            frame.arguments[index]=clone_value_tree(id,arena)?;
+            frame.argument_bound[index]=true;
+        }
+        Ok(frame)
+    }
+
+    /// Read a typed LocalX or ArgX object. An unused ArgX is rejected.
+    pub fn read(&self,target:AmlTarget,bindings:&AmlBindings,
+        namespace:&AmlNamespace,arena:&AmlObjectArena)->Result<AmlRuntimeValue,RuntimeError>{
+        let id=match target{
+            AmlTarget::Local(index)=>{
+                let slot=index as usize;
+                if slot>=8||!self.local_bound[slot]{return Err(RuntimeError::InvalidReference)}
+                self.locals[slot]
+            }
+            AmlTarget::Argument(index)=>{
+                let slot=index as usize;
+                if slot>=7||!self.argument_bound[slot]{return Err(RuntimeError::InvalidReference)}
+                self.arguments[slot]
+            }
+            AmlTarget::Reference(reference)=>return dereference(reference,bindings,arena),
+            AmlTarget::Null=>return Err(RuntimeError::InvalidReference),
+        };
+        Ok(*arena.get(id).ok_or(RuntimeError::InvalidReference)?)
+    }
+
+    /// Store a value into a method target. LocalX/ArgX replace the complete
+    /// value with no implicit conversion; named/field references use the
+    /// reference-specific rules. ArgX object-reference dereference is handled
+    /// by the caller before invoking this API.
+    pub fn store(&mut self,target:AmlTarget,value:u16,mode:StoreMode,
+        bindings:&mut AmlBindings,namespace:&AmlNamespace,
+        arena:&mut AmlObjectArena)->Result<(),RuntimeError>{
+        let source=*arena.get(value).ok_or(RuntimeError::InvalidReference)?;
+        validate_runtime_value(&source,arena)?;
+        match target{
+            AmlTarget::Null=>Ok(()),
+            AmlTarget::Local(index)=>{
+                let slot=index as usize;
+                if slot>=8{return Err(RuntimeError::InvalidReference)}
+                let stored=clone_value_tree(value,arena)?;
+                self.locals[slot]=stored;self.local_bound[slot]=true;Ok(())
+            }
+            AmlTarget::Argument(index)=>{
+                let slot=index as usize;
+                if slot>=7||!self.argument_bound[slot]{return Err(RuntimeError::InvalidReference)}
+                let stored=clone_value_tree(value,arena)?;
+                self.arguments[slot]=stored;Ok(())
+            }
+            AmlTarget::Reference(reference)=>
+                store_reference_with_mode(reference,value,mode,bindings,namespace,arena),
+        }
+    }
+}
+
 /// AML-style scalar conversion. Integer strings are interpreted as
 /// hexadecimal text; buffers are little-endian and limited to eight bytes.
 pub fn to_integer(value:&AmlRuntimeValue)->Result<u64,RuntimeError>{
@@ -738,6 +822,45 @@ mod tests{
         buffer.byte_length=0;
         assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
+    #[test]fn method_locals_and_arguments_replace_typed_values_without_conversion(){
+        let aml=[0x08,b'N',b'A',b'M',b'0',0x01];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"NAM0").unwrap();
+        let mut arena=AmlObjectArena::new();
+        let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=7;
+        let integer_id=arena.allocate(integer).unwrap();
+        let mut frame=AmlMethodFrame::new(&[integer_id],&mut arena).unwrap();
+        let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
+        string.byte_length=2;string.bytes[..2].copy_from_slice(b"OK");
+        let string_id=arena.allocate(string).unwrap();
+        let mut bindings=AmlBindings::new();bindings.bind(&namespace,node,integer_id).unwrap();
+        let mut unused=AmlBindings::new();
+        frame.store(AmlTarget::Local(0),string_id,StoreMode::Store,
+            &mut unused,&namespace,&mut arena).unwrap();
+        frame.store(AmlTarget::Argument(0),string_id,StoreMode::CopyObject,
+            &mut unused,&namespace,&mut arena).unwrap();
+        assert_eq!(frame.read(AmlTarget::Local(0),&unused,&namespace,&arena).unwrap().kind,AmlValueKind::String);
+        assert_eq!(frame.read(AmlTarget::Argument(0),&unused,&namespace,&arena).unwrap().bytes[..2],*b"OK");
+        assert_eq!(frame.read(AmlTarget::Local(0),&bindings,&namespace,&arena).unwrap().byte_length,2);
+        assert_eq!(dereference(bindings.reference_node(&namespace,node).unwrap(),&bindings,&arena).unwrap().integer,7);
+    }
+
+    #[test]fn method_frame_package_store_copies_nested_package_values(){
+        let mut arena=AmlObjectArena::new();
+        let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=1;
+        let child=arena.allocate(integer).unwrap();
+        let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
+        package.elements[0]=child;
+        let package_id=arena.allocate(package).unwrap();
+        let mut frame=AmlMethodFrame::new(&[],&mut arena).unwrap();
+        let mut bindings=AmlBindings::new();let namespace=AmlNamespace::new();
+        frame.store(AmlTarget::Local(0),package_id,StoreMode::Store,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        let copied=frame.read(AmlTarget::Local(0),&bindings,&namespace,&arena).unwrap();
+        assert_ne!(copied.elements[0],child);
+        assert_eq!(arena.get(child).unwrap().integer,1);
+    }
+
     #[test]fn narrow_buffer_field_uses_integer_typing_and_preserves_neighbor_bits(){
         let mut arena=AmlObjectArena::new();
         let mut backing=AmlRuntimeValue::EMPTY;backing.kind=AmlValueKind::Buffer;
