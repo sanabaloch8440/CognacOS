@@ -371,7 +371,10 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
     let mut connection_start=0u32;
     let mut connection_length=0u32;
     while c.pos<c.end{
+        context.term_offset=c.pos;
+        context.namespace_parent=parent;
         let op=c.byte()?;
+        context.opcode=Some(op);
         match op{
             0x00=>{ // ReservedField: advance by encoded bit length.
                 bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
