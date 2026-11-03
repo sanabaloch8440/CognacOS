@@ -512,7 +512,6 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
    ExecFlow::Return(v)=>v,
    ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl),
   };
-  if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
   Ok(value)
  })();
  if serialized{sync.release(method_index);}
@@ -535,7 +534,11 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     }
     let mut arena=AmlObjectArena::new();
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
-    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,0)
+    let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,0)?;
+    // The convenience wrapper destroys its local arena on return, so it must
+    // not expose Package handles whose elements live in that arena.
+    if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
+    Ok(value)
 }
 
 /// Execute a method in a caller-owned AML object context.
