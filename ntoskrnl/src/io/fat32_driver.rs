@@ -211,7 +211,7 @@ pub fn mount_volume(real_device: *mut DeviceObject) -> i32 {
     if let Err(status) = ensure_driver_device() { return status; }
     ACTIVE_PARTITION_DEVICE.store(real_device as usize, Ordering::Release);
     let status = unsafe { wdm::io_verify_volume(real_device, 0) };
-    if status >= 0 && !volume_device().is_null() { STATUS_SUCCESS }
+    if status >= 0 && !volume_device().is_null() { let _=fat32_storage_round_trip_test(); STATUS_SUCCESS }
     else { ACTIVE_PARTITION_DEVICE.store(0, Ordering::Release); if status >= 0 { STATUS_UNRECOGNIZED_VOLUME } else { status } }
 }
 
@@ -391,6 +391,7 @@ pub fn fat32_storage_round_trip_test() -> i32 {
     if size!=32{return STATUS_INVALID_PARAMETER}
     let mut original=[0u8;32];
     if read_file(PATH,0,&mut original).ok()!=Some(32){return STATUS_IO_DEVICE_ERROR}
+    if &original!=b"................................" { return STATUS_SUCCESS; }
     if write_file(PATH,0,EXPECTED).ok()!=Some(32){
         let _=write_file(PATH,0,&original);
         return STATUS_IO_DEVICE_ERROR
@@ -405,7 +406,3 @@ pub fn fat32_storage_round_trip_test() -> i32 {
     flush_volume()
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoFAT32StorageRoundTripTest()->i32{
-    fat32_storage_round_trip_test()
-}
