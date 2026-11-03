@@ -390,6 +390,26 @@ pub fn find_table_with_mapper<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address
     Err(AcpiError::MissingRoot)
 }
 
+/// Resolve the DSDT through the FADT pointer rather than assuming DSDT is
+/// listed directly in the RSDT/XSDT. Extended X_DSDT is preferred when
+/// non-zero; parse_fadt supplies the legacy DSDT fallback for older tables.
+/// Both the FADT and DSDT are independently length/signature/checksum checked.
+pub fn find_dsdt_with_mapper<'a, M: AcpiPhysicalMapper>(
+    mapper: &'a M,
+    rsdp_address: u64,
+) -> Result<&'a [u8], AcpiError> {
+    let fadt_table = find_table_with_mapper(mapper, rsdp_address, *b"FACP", 0)?;
+    let fadt = parse_fadt(fadt_table)?;
+    let dsdt_address = fadt.effective_dsdt();
+    let dsdt_header = mapped_range(mapper, dsdt_address, 36)?;
+    let dsdt_length = u32le(dsdt_header, 4)? as usize;
+    if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&dsdt_length) {
+        return Err(AcpiError::BadLength);
+    }
+    let dsdt = mapped_range(mapper, dsdt_address, dsdt_length)?;
+    validate_sdt(dsdt, Some(*b"DSDT"))?;
+    Ok(dsdt)
+}
 /// Discover and parse MADT through the platform mapper, without assuming a
 /// low identity mapping. The remembered RSDP is published only after success.
 pub fn discover_madt_with_mapper<M:AcpiPhysicalMapper>(mapper:&M,rsdp_address:u64)->Result<MadtInfo,AcpiError>{
