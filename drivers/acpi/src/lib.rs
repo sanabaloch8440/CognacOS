@@ -24,6 +24,7 @@ pub mod acpi_power;
 pub mod acpi_hotplug;
 pub mod acpi_prt;
 pub mod acpi_events;
+pub mod acpi_sci;
 
 
 /// Common 36-byte ACPI System Description Table header.
