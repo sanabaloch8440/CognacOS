@@ -986,7 +986,7 @@ mod tests{
         let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Buffer;
         source.byte_length=1;source.bytes[0]=0x11;
         let source_id=arena.allocate(source).unwrap();
-        let mut bindings=AmlBindings::new();let namespace=AmlNamespace::new();
+        let mut bindings=AmlBindings::new();
         // Use a valid Name node so Store follows the fixed-type path.
         let aml=[0x08,b'B',b'U',b'F',b'0',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
