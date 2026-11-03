@@ -199,8 +199,15 @@ fn ensure_driver_device() -> Result<*mut DeviceObject, i32> {
 
 /// Ask the I/O Manager to verify and mount the partition through registered
 /// filesystem drivers. The FAT32 mount IRP publishes the resulting volume device.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn IoMountFAT32Volume(real_device: *mut DeviceObject) -> i32 {
+    mount_volume(real_device)
+}
+
 pub fn mount_volume(real_device: *mut DeviceObject) -> i32 {
     if real_device.is_null() { return STATUS_INVALID_PARAMETER; }
+    let active = ACTIVE_PARTITION_DEVICE.load(Ordering::Acquire);
+    if !volume_device().is_null() && active != real_device as usize { return STATUS_DEVICE_BUSY; }
     if let Err(status) = ensure_driver_device() { return status; }
     ACTIVE_PARTITION_DEVICE.store(real_device as usize, Ordering::Release);
     let status = unsafe { wdm::io_verify_volume(real_device, 0) };
