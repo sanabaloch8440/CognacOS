@@ -11,7 +11,7 @@ use cognacos_nt_abi::{
 };
 use cognacos_storage::ata_port::{
     AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, AtaRequestTable,
-    validate_request, AtaPortServices, AtaPortRegisterMiniport, ATA_PORT_INTERFACE_VERSION,
+    validate_request, AtaPortServices, AtaPortRegisterMiniport, AtaPortUnregisterMiniport, ATA_PORT_INTERFACE_VERSION,
 };
 
 const IRP_MJ_CREATE: usize = 0;
@@ -47,7 +47,7 @@ struct RequestCell(UnsafeCell<AtaRequestTable>);
 unsafe impl Sync for RequestCell {}
 static PORT_LOCK: AtomicBool = AtomicBool::new(false);
 static MINIPORT: MiniportCell = MiniportCell(UnsafeCell::new(None));
-static REQUESTS: RequestCell = RequestCell(UnsafeCell::new(AtaRequestTable::new()));\nstatic PORT_SERVICES: AtaPortServices = AtaPortServices { size: core::mem::size_of::<AtaPortServices>() as u32, version: ATA_PORT_INTERFACE_VERSION, register_miniport: Some(AtaPortRegisterMiniport), allocate_common_buffer: None, free_common_buffer: None, connect_interrupt: None, disconnect_interrupt: None };\nstatic PORT_INTERFACE_NAME: &[u8] = b"CognacOS.AtaPort.Services.v1";
+static REQUESTS: RequestCell = RequestCell(UnsafeCell::new(AtaRequestTable::new()));\nstatic PORT_SERVICES: AtaPortServices = AtaPortServices { size: core::mem::size_of::<AtaPortServices>() as u32, version: ATA_PORT_INTERFACE_VERSION, register_miniport: Some(AtaPortRegisterMiniport), unregister_miniport: Some(AtaPortUnregisterMiniport), allocate_common_buffer: None, free_common_buffer: None, connect_interrupt: None, disconnect_interrupt: None };\nstatic PORT_INTERFACE_NAME: &[u8] = b"CognacOS.AtaPort.Services.v1";
 
 struct PortGuard;
 impl PortGuard {
