@@ -747,7 +747,7 @@ jobs:
           fi
           mkdir -p build/ext4-root
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
-          dd if=/dev/zero of=build/ext4-root/pagefile.sys bs=1M count=64 status=none
+          dd if=/dev/urandom of=build/ext4-root/pagefile.sys bs=1M count=64 status=none
           loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
           cleanup_loop() { sudo losetup -d "$loopdev" 2>/dev/null || true; }
           trap cleanup_loop EXIT
