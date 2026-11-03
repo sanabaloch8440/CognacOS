@@ -22,7 +22,7 @@ pub const MAX_COMPATIBLE_IDS:usize=16;
 pub const MAX_ID_STRING:usize=64;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum IdentityError { InvalidDevice,MissingHid,MalformedObject,UnsupportedObject,InvalidEisaId,TooManyCompatibleIds,Method(ExecError),StringTooLong }
+pub enum IdentityError { InvalidDevice,MissingHid,MalformedObject,UnsupportedObject,InvalidEisaId,TooManyCompatibleIds,Method(ExecError),StringTooLong,MissingRequiredObject }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AcpiId { pub bytes:[u8;MAX_ID_STRING], pub length:u8 }
@@ -58,7 +58,8 @@ pub enum AcpiMethodValue {
     Integer(u64),
     String(AcpiId),
     Buffer{bytes:[u8;MAX_AML_BYTES],length:u16},
-    CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8}
+    CompatibleIds{ids:[AcpiId;MAX_COMPATIBLE_IDS],count:u8},
+    NamespacePackage{nodes:[u16;8],count:u8}
 }
 pub trait AcpiMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>;
@@ -142,11 +143,10 @@ fn evaluate_method_value_with_args(
   .filter(|_|(method as usize)<namespace.count)
   .ok_or(ExecError::InvalidMethod)?;
  if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
- let value=aml_exec::execute_method_typed_with_sync(aml,namespace,method,args,64,sync)?;
+ let mut arena=crate::aml_objects::AmlObjectArena::new();
+ let mut bindings=crate::aml_runtime::AmlBindings::with_aml_revision(2);
+ let value=aml_exec::execute_method_in_context(aml,namespace,method,args,64,&mut arena,&mut bindings,sync)?;
  match value.kind{
-  // AML methods without an explicit Return have an Empty result. The
-  // caller of programming methods such as _SRS treats successful execution
-  // as the operation result and does not interpret this placeholder value.
   AmlValueKind::Empty=>Ok(AcpiMethodValue::Integer(0)),
   AmlValueKind::Integer=>Ok(AcpiMethodValue::Integer(value.integer)),
   AmlValueKind::String=>{
@@ -158,6 +158,19 @@ fn evaluate_method_value_with_args(
    let length=value.byte_length as usize;
    if length>MAX_AML_BYTES{return Err(ExecError::UnsupportedReturnType)}
    Ok(AcpiMethodValue::Buffer{bytes:value.bytes,length:length as u16})
+  }
+  AmlValueKind::Package=>{
+   if value.element_count as usize>8{return Err(ExecError::UnsupportedReturnType)}
+   let mut nodes=[u16::MAX;8];
+   for (index,element) in value.elements[..value.element_count as usize].iter().enumerate(){
+    let item=arena.get(*element).ok_or(ExecError::UnsupportedReturnType)?;
+    if item.kind!=AmlValueKind::ObjectReference||item.reference_kind!=0{return Err(ExecError::UnsupportedReturnType)}
+    let node=item.reference_id;
+    if namespace.nodes.get(node as usize).filter(|_|(node as usize)<namespace.count)
+      .is_none_or(|n|n.object_type!=AmlObjectType::PowerResource){return Err(ExecError::UnsupportedReturnType)}
+    nodes[index]=node;
+   }
+   Ok(AcpiMethodValue::NamespacePackage{nodes,count:value.element_count})
   }
   _=>Err(ExecError::UnsupportedReturnType),
  }
@@ -238,7 +251,7 @@ fn evaluate_object(ns:&AmlNamespace,aml_tables:&[&[u8]],node:u16,invoker:&mut im
         AmlObjectType::Method=>{match invoker.evaluate_value(ns,aml,node).map_err(IdentityError::Method)?{
             AcpiMethodValue::Integer(v)=>Ok(IdentityValue::Integer(v)),
             AcpiMethodValue::String(v)=>Ok(IdentityValue::String(v)),
-            AcpiMethodValue::Buffer{..}=>Err(IdentityError::UnsupportedObject),
+            AcpiMethodValue::Buffer{..}|AcpiMethodValue::NamespacePackage{..}=>Err(IdentityError::UnsupportedObject),
             AcpiMethodValue::CompatibleIds{ids,count}=>{if count as usize>MAX_COMPATIBLE_IDS{return Err(IdentityError::TooManyCompatibleIds)}Ok(IdentityValue::CompatibleIds{ids,count})}
         }},
         _=>Err(IdentityError::UnsupportedObject),
@@ -480,4 +493,117 @@ mod tests{
         assert_eq!(sync.released.load(core::sync::atomic::Ordering::SeqCst),0);
     }
 
+}
+
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PowerResourcePackageError{InvalidDevice,MissingObject,UnsupportedObject,MalformedPackage,TooManyResources,UnresolvedReference,NotPowerResource}
+fn resolve_package_name(ns:&AmlNamespace,scope:u16,bytes:&[u8],pos:&mut usize,end:usize)->Result<u16,PowerResourcePackageError>{
+ let mut current=scope;
+ let mut absolute=false;
+ if bytes.get(*pos)==Some(&0x5c){*pos+=1;current=0;absolute=true;}
+ while bytes.get(*pos)==Some(&0x5e){
+  *pos+=1;
+  current=ns.nodes.get(current as usize).ok_or(PowerResourcePackageError::UnresolvedReference)?.parent;
+ }
+ let prefix=bytes.get(*pos).copied().ok_or(PowerResourcePackageError::MalformedPackage)?;
+ let count=match prefix{
+  0x00=>return Err(PowerResourcePackageError::MalformedPackage),
+  0x2e=>{*pos+=1;2usize},
+  0x2f=>{*pos+=1;let n=*bytes.get(*pos).ok_or(PowerResourcePackageError::MalformedPackage)? as usize;*pos+=1;if n==0||n>8{return Err(PowerResourcePackageError::MalformedPackage)}n},
+  _=>1,
+ };
+ let mut first=true;
+ let mut resolved=u16::MAX;
+ for _ in 0..count{
+  let next=(*pos).checked_add(4).ok_or(PowerResourcePackageError::MalformedPackage)?;
+  if next>end{return Err(PowerResourcePackageError::MalformedPackage)}
+  let name=bytes.get(*pos..next).ok_or(PowerResourcePackageError::MalformedPackage)?;
+  let segment=[name[0],name[1],name[2],name[3]];*pos+=4;
+  if first&&!absolute&&scope!=0{
+   let mut candidate=current;let mut found=None;
+   loop{
+    if let Some(node)=ns.find_child(candidate,segment){found=Some(node);break}
+    if candidate==0{break}
+    candidate=ns.nodes[candidate as usize].parent;
+   }
+   resolved=found.ok_or(PowerResourcePackageError::UnresolvedReference)?;
+  }else{
+   resolved=ns.find_child(current,segment).ok_or(PowerResourcePackageError::UnresolvedReference)?;
+  }
+  current=resolved;first=false;
+ }
+ ns.resolve_alias(resolved).map_err(|_|PowerResourcePackageError::UnresolvedReference)
+}
+/// Decode a static _PR0.._PR3 Name(Package(...)) into namespace PowerResource
+/// node IDs. This deliberately rejects non-reference package members rather
+/// than guessing. Method-valued _PRx is evaluated by the typed runtime adapter.
+pub fn decode_power_resource_package(
+ ns:&AmlNamespace,aml:&[u8],device:u16,name:[u8;4],output:&mut [u16;8],
+)->Result<usize,PowerResourcePackageError>{
+ let device_node=ns.nodes.get(device as usize).filter(|_|(device as usize)<ns.count)
+  .ok_or(PowerResourcePackageError::InvalidDevice)?;
+ if !matches!(device_node.object_type,AmlObjectType::Device|AmlObjectType::Processor){return Err(PowerResourcePackageError::InvalidDevice)}
+ let object=ns.find_child(device,name).ok_or(PowerResourcePackageError::MissingObject)?;
+ let node=&ns.nodes[object as usize];
+ if node.object_type!=AmlObjectType::Name{return Err(PowerResourcePackageError::UnsupportedObject)}
+ let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).filter(|v|*v<=aml.len()).ok_or(PowerResourcePackageError::MalformedPackage)?;
+ let body=&aml[start..end];
+ if body.first()!=Some(&0x12)||body.len()<3{return Err(PowerResourcePackageError::MalformedPackage)}
+ let (_,package_end)=decode_package_length(body,1,body.len()).map_err(|_|PowerResourcePackageError::MalformedPackage)?;
+ let length_bytes=1+((body[1]>>6) as usize);
+ let mut pos=1+length_bytes;
+ let count=*body.get(pos).ok_or(PowerResourcePackageError::MalformedPackage)? as usize;pos+=1;
+ if count>output.len()||count>8{return Err(PowerResourcePackageError::TooManyResources)}
+ for index in 0..count{
+  let resource=resolve_package_name(ns,device,body,&mut pos,package_end)?;
+  if ns.nodes[resource as usize].object_type!=AmlObjectType::PowerResource{return Err(PowerResourcePackageError::NotPowerResource)}
+  if output[..index].contains(&resource){return Err(PowerResourcePackageError::MalformedPackage)}
+  output[index]=resource;
+ }
+ if pos!=package_end{return Err(PowerResourcePackageError::MalformedPackage)}
+ Ok(count)
+}
+
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct AcpiThermalZoneData{
+ pub node:u16,pub temperature_deci_kelvin:u32,pub passive_trip:Option<u32>,
+ pub hot_trip:Option<u32>,pub critical_trip:Option<u32>,
+ pub active_trip:[Option<u32>;8],pub active_count:u8,
+}
+impl AcpiThermalZoneData{
+ pub const EMPTY:Self=Self{node:u16::MAX,temperature_deci_kelvin:0,passive_trip:None,
+  hot_trip:None,critical_trip:None,active_trip:[None;8],active_count:0};
+}
+/// Evaluate the ACPI thermal-zone objects used by Windows thermal policy:
+/// _TMP, _PSV, _HOT, _CRT and _AC0.._AC7. All temperatures are 0.1 Kelvin.
+pub fn evaluate_thermal_zone(
+ ns:&AmlNamespace,aml_tables:&[&[u8]],zone:u16,invoker:&mut impl AcpiMethodInvoker,
+)->Result<AcpiThermalZoneData,IdentityError>{
+ let node=ns.nodes.get(zone as usize).filter(|_|(zone as usize)<ns.count)
+  .ok_or(IdentityError::InvalidDevice)?;
+ if node.object_type!=AmlObjectType::ThermalZone{return Err(IdentityError::InvalidDevice)}
+ let integer=|name:[u8;4],invoker:&mut _|->Result<Option<u32>,IdentityError>{
+  match eval_optional(ns,aml_tables,zone,name,invoker)?{
+   None=>Ok(None),
+   Some(IdentityValue::Integer(value)) if value<=u32::MAX as u64=>Ok(Some(value as u32)),
+   _=>Err(IdentityError::UnsupportedObject),
+  }
+ };
+ let temperature=integer(*b"_TMP",invoker)?.ok_or(IdentityError::MissingRequiredObject)?;
+ if !(1000..=20000).contains(&temperature){return Err(IdentityError::UnsupportedObject)}
+ let passive=integer(*b"_PSV",invoker)?;
+ let hot=integer(*b"_HOT",invoker)?;
+ let critical=integer(*b"_CRT",invoker)?;
+ for trip in [passive,hot,critical].iter().flatten(){if !(1000..=20000).contains(trip){return Err(IdentityError::UnsupportedObject)}}
+ let mut active=[None;8];let mut count=0usize;let mut previous=u32::MAX;
+ for index in 0..8{
+  let name=[b'_',b'A',b'C',b'0'+index as u8];
+  let Some(value)=integer(name,invoker)? else{break};
+  if !(1000..=20000).contains(&value)||value>previous{return Err(IdentityError::UnsupportedObject)}
+  active[index]=Some(value);previous=value;count+=1;
+ }
+ Ok(AcpiThermalZoneData{node:zone,temperature_deci_kelvin:temperature,
+  passive_trip:passive,hot_trip:hot,critical_trip:critical,active_trip:active,active_count:count as u8})
 }

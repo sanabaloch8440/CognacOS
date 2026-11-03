@@ -25,7 +25,7 @@ const MAX_ACPI_PDOS:usize=64;
 const FILE_DEVICE_BUS_EXTENDER:u32=0x0000002a;
 const DEVICE_RELATIONS_BUS:u32=0;
 #[repr(C)]
-struct AcpiPdoExtension { signature:u64, node:u16, devnode_index:u32, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity }
+struct AcpiPdoExtension { signature:u64, node:u16, devnode_index:u32, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity, power_state:UnsafeCell<acpi::acpi_power::DevicePowerState> }
 const ACPI_PDO_SIGNATURE:u64=0x4143504950444f31;
 #[repr(C)]
 struct AcpiDeviceRelations { count:u32, objects:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS] }
@@ -54,6 +54,7 @@ struct KernelAmlMethodSynchronizer;
 static KERNEL_AML_METHOD_MUTEXES:[KernelAmlMutex;MAX_ACPI_METHOD_MUTEXES]=
  [const{KernelAmlMutex::new()};MAX_ACPI_METHOD_MUTEXES];
 static KERNEL_AML_METHOD_SYNCHRONIZER:KernelAmlMethodSynchronizer=KernelAmlMethodSynchronizer;
+static POWER_RESOURCE_MUTEX:KernelAmlMutex=KernelAmlMutex::new();
 unsafe extern "win64" {
  fn KeInitializeMutex(mutex:*mut core::ffi::c_void,level:u32);
  fn KeWaitForSingleObject(object:*mut core::ffi::c_void,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
@@ -186,6 +187,13 @@ struct AcpiState {
     active_operations: core::sync::atomic::AtomicUsize,
     interface_references: core::sync::atomic::AtomicUsize,
     madt: UnsafeCell<MaybeUninit<acpi::MadtInfo>>,
+    fadt: UnsafeCell<MaybeUninit<acpi::FadtInfo>>,
+    platform_registers: UnsafeCell<MaybeUninit<acpi::acpi_events::AcpiPlatformRegisters>>,
+    gpe_controller: UnsafeCell<MaybeUninit<acpi::acpi_events::GpeController>>,
+    power_resources: UnsafeCell<MaybeUninit<acpi::acpi_power::PowerResourceGraph>>,
+    thermal_zones: UnsafeCell<MaybeUninit<[acpi::acpi_events::ThermalZone;acpi::acpi_events::MAX_THERMAL_ZONES]>>,
+    thermal_zone_count: core::sync::atomic::AtomicUsize,
+    ec_query_methods: UnsafeCell<MaybeUninit<[u16;256]>>,
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
     dmar_present: AtomicBool,
@@ -201,6 +209,13 @@ static STATE: AcpiState = AcpiState {
     active_operations: core::sync::atomic::AtomicUsize::new(0),
     interface_references: core::sync::atomic::AtomicUsize::new(0),
     madt: UnsafeCell::new(MaybeUninit::uninit()),
+    fadt: UnsafeCell::new(MaybeUninit::uninit()),
+    platform_registers: UnsafeCell::new(MaybeUninit::uninit()),
+    gpe_controller: UnsafeCell::new(MaybeUninit::new(acpi::acpi_events::GpeController::new())),
+    power_resources: UnsafeCell::new(MaybeUninit::new(acpi::acpi_power::PowerResourceGraph::new())),
+    thermal_zones: UnsafeCell::new(MaybeUninit::new([acpi::acpi_events::ThermalZone::EMPTY;acpi::acpi_events::MAX_THERMAL_ZONES])),
+    thermal_zone_count: core::sync::atomic::AtomicUsize::new(0),
+    ec_query_methods: UnsafeCell::new(MaybeUninit::new([u16::MAX;256])),
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
     dmar_present: AtomicBool::new(false),
@@ -266,6 +281,215 @@ unsafe fn query_hal_table(signature: [u8; 4], instance: u32) -> Result<&'static 
 }
 
 const IRP_MJ_PNP: usize = 0x1b;
+
+const IRP_MJ_POWER:usize=0x16;
+const IRP_MN_WAIT_WAKE:u8=0x00;
+const IRP_MN_SET_POWER:u8=0x02;
+const IRP_MN_QUERY_POWER:u8=0x03;
+
+/// Execute one optional device power method through the owning AML table's
+/// serialized interpreter. Missing _PSx methods are legal and are no-ops.
+fn invoke_pdo_power_method(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,name:[u8;4])->i32{
+ if device.is_null(){return STATUS_INVALID_PARAMETER}
+ let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+ if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{return STATUS_INVALID_PARAMETER}
+ let ext=unsafe{&*ext};
+ let Some(handle)=ext.table else{return STATUS_DEVICE_NOT_READY};
+ if ext.aml_bytes.is_null()||ext.aml_length<36{return STATUS_INVALID_PARAMETER}
+ let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+ let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
+ let Some(method)=manager.namespace().find_child(ext.node,name) else{return STATUS_SUCCESS};
+ if manager.namespace().nodes[method as usize].object_type!=acpi::aml::AmlObjectType::Method{return STATUS_DEVICE_CONFIGURATION_ERROR}
+ let gate=unsafe{&*STATE.aml_barrier.get()};
+ let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+ match manager.invoke_method_value_with_args(handle,aml,method,gate,&mut runtime,&[]){
+  Ok(_)=>STATUS_SUCCESS,
+  Err(error)=>table_error_to_status(error),
+ }
+}
+
+
+fn invoke_aml_child_method_with_args(
+ manager:&acpi::aml_tables::AmlTableManager,gate:&acpi::aml_tables::AmlExecutionBarrier,
+ handle:acpi::aml_tables::TableHandle,aml:&[u8],owner:u16,name:[u8;4],
+ args:&[acpi::aml_objects::AmlRuntimeValue],
+)->Result<bool,i32>{
+ let Some(method)=manager.namespace().find_child(owner,name)else{return Ok(false)};
+ if manager.namespace().nodes[method as usize].object_type!=acpi::aml::AmlObjectType::Method{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
+ let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+ manager.invoke_method_value_with_args(handle,aml,method,gate,&mut runtime,args)
+  .map(|_|true).map_err(table_error_to_status)
+}
+fn invoke_aml_child_method(
+ manager:&acpi::aml_tables::AmlTableManager,gate:&acpi::aml_tables::AmlExecutionBarrier,
+ handle:acpi::aml_tables::TableHandle,aml:&[u8],owner:u16,name:[u8;4],
+)->Result<bool,i32>{
+ invoke_aml_child_method_with_args(manager,gate,handle,aml,owner,name,&[])
+}
+struct NativeAcpiPowerFirmware<'a>{
+ manager:&'a acpi::aml_tables::AmlTableManager,
+ gate:&'a acpi::aml_tables::AmlExecutionBarrier,
+ device_handle:acpi::aml_tables::TableHandle,
+ device_aml:&'a [u8],
+}
+impl acpi::acpi_power::AcpiPowerFirmware for NativeAcpiPowerFirmware<'_>{
+ fn evaluate_prx(&mut self,device_node:u16,state:u8,output:&mut [u16;acpi::acpi_power::MAX_POWER_RESOURCE_DEPENDENCIES])->Result<usize,acpi::acpi_power::PowerResourceError>{
+  let name=match state{0=>*b"_PR0",1=>*b"_PR1",2=>*b"_PR2",3=>*b"_PR3",_=>return Err(acpi::acpi_power::PowerResourceError::InvalidPowerState)};
+  let Some(object)=self.manager.namespace().find_child(device_node,name)else{return Ok(0)};
+  match self.manager.namespace().nodes[object as usize].object_type{
+   acpi::aml::AmlObjectType::Name=>acpi::acpi_device::decode_power_resource_package(
+    self.manager.namespace(),&self.device_aml[36..],device_node,name,output,
+   ).map_err(|_|acpi::acpi_power::PowerResourceError::MissingDependency),
+   acpi::aml::AmlObjectType::Method=>{
+    let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+    match self.manager.evaluate_method_value(self.device_handle,self.device_aml,object,self.gate,&mut runtime){
+     Ok(acpi::acpi_device::AcpiMethodValue::NamespacePackage{nodes,count})=>{
+      let count=count as usize;if count>output.len(){return Err(acpi::acpi_power::PowerResourceError::TooManyDependencies)}
+      output[..count].copy_from_slice(&nodes[..count]);Ok(count)
+     }
+     _=>Err(acpi::acpi_power::PowerResourceError::MissingDependency),
+    }
+   }
+   _=>Err(acpi::acpi_power::PowerResourceError::MissingDependency),
+  }
+ }
+ fn invoke_device_method(&mut self,device_node:u16,method:[u8;4])->Result<(),acpi::acpi_power::PowerResourceError>{
+  invoke_aml_child_method(self.manager,self.gate,self.device_handle,self.device_aml,device_node,method)
+   .map(|_|()).map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)
+ }
+ fn evaluate_integer_method(&mut self,device_node:u16,method:[u8;4])->Result<u64,acpi::acpi_power::PowerResourceError>{
+  let Some(node)=self.manager.namespace().find_child(device_node,method)else{return Ok(0)};
+  if self.manager.namespace().nodes[node as usize].object_type!=acpi::aml::AmlObjectType::Method{return Err(acpi::acpi_power::PowerResourceError::InvalidPowerState)}
+  let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+  match self.manager.evaluate_method_value(self.device_handle,self.device_aml,node,self.gate,&mut runtime){
+   Ok(acpi::acpi_device::AcpiMethodValue::Integer(value))=>Ok(value),
+   _=>Err(acpi::acpi_power::PowerResourceError::InvalidPowerState),
+  }
+ }
+ fn invoke_wake_method(&mut self,device_node:u16,enable:bool,system_state:u8,device_state:u8)->Result<(),acpi::acpi_power::PowerResourceError>{
+  let mut args=[acpi::aml_objects::AmlRuntimeValue::EMPTY;3];
+  for (index,value) in [enable as u64,system_state as u64,device_state as u64].iter().enumerate(){
+   args[index].kind=acpi::aml_objects::AmlValueKind::Integer;args[index].integer=*value;
+  }
+  if invoke_aml_child_method_with_args(self.manager,self.gate,self.device_handle,self.device_aml,
+    device_node,*b"_DSW",&args).map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)?{
+   return Ok(())
+  }
+  let mut legacy=acpi::aml_objects::AmlRuntimeValue::EMPTY;
+  legacy.kind=acpi::aml_objects::AmlValueKind::Integer;legacy.integer=enable as u64;
+  invoke_aml_child_method_with_args(self.manager,self.gate,self.device_handle,self.device_aml,
+    device_node,*b"_PSW",&[legacy])
+   .map(|_|()).map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)
+ }
+ fn invoke_power_resource_method(&mut self,resource_node:u16,enable:bool)->Result<(),acpi::acpi_power::PowerResourceError>{
+  let records=unsafe{(*STATE.device_records.get()).assume_init_ref()};
+  let count=STATE.device_count.load(Ordering::Acquire);
+  let record=records[..count].iter().find(|r|r.node==resource_node&&r.table.is_some())
+   .copied().ok_or(acpi::acpi_power::PowerResourceError::InvalidNode)?;
+  let handle=record.table.ok_or(acpi::acpi_power::PowerResourceError::InvalidNode)?;
+  invoke_aml_child_method(self.manager,self.gate,handle,record.aml_bytes,resource_node,
+   if enable{*b"_ON_"}else{*b"_OFF"})
+   .and_then(|found|if found{Ok(())}else{Err(STATUS_NOT_SUPPORTED)})
+   .map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)
+ }
+}
+fn acquire_power_resource_mutex()->bool{
+ let mutex=&POWER_RESOURCE_MUTEX;
+ loop{match mutex.initialized.load(Ordering::Acquire){
+  2=>break,
+  0=>if mutex.initialized.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+   unsafe{KeInitializeMutex(mutex.object(),0)};mutex.initialized.store(2,Ordering::Release);break
+  },
+  _=>core::hint::spin_loop(),
+ }}
+ let status=unsafe{KeWaitForSingleObject(mutex.object(),0,0,0,core::ptr::null())};
+ status==STATUS_SUCCESS||status==0x0000_0080
+}
+fn release_power_resource_mutex(){unsafe{let _=KeReleaseMutex(POWER_RESOURCE_MUTEX.object(),0);}}
+
+/// WDM power dispatch runs at PASSIVE_LEVEL in this implementation because
+/// AML methods may wait on namespace mutexes. The kernel's PO preamble owns
+/// transition reservation and completion; this routine performs ACPI policy.
+unsafe extern "win64" fn power_dispatch(
+ device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,
+ irp:*mut cognacos_nt_abi::io::IRP,
+)->i32{
+ let Some(_operation)=AcpiOperationGuard::enter() else{return STATUS_DEVICE_NOT_READY};
+ if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+ let stack=unsafe{(*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION};
+ if stack.is_null(){return STATUS_INVALID_PARAMETER}
+ let minor=unsafe{(*stack).minor_function};
+ let raw=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u64>())};
+ let state_type=raw as u32;
+ let state=(raw>>32) as u32;
+ let status=match minor{
+  IRP_MN_QUERY_POWER=>{
+   if state_type==1&&(1..=4).contains(&state){
+    if device==unsafe{ACPI_BUS_DEVICE}{STATUS_SUCCESS}
+    else{
+     let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+     if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{STATUS_INVALID_PARAMETER}
+     else{
+      let ext=unsafe{&*ext};
+      match ext.table{
+       None=>STATUS_DEVICE_NOT_READY,
+       Some(handle)=>{
+        let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+        let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
+        let gate=unsafe{&*STATE.aml_barrier.get()};
+        let mut firmware=NativeAcpiPowerFirmware{manager,gate,device_handle:handle,device_aml:aml};
+        match acpi::acpi_power::query_device_power_policy(&mut firmware,ext.node,8){
+         Ok((_current_dstate,_performance_limit,_external_power))=>STATUS_SUCCESS,
+         Err(_)=>STATUS_DEVICE_CONFIGURATION_ERROR,
+        }
+       }
+      }
+     }
+    }
+   }
+   else if state_type==0&&(1..=6).contains(&state){STATUS_NOT_SUPPORTED}
+   else{STATUS_INVALID_DEVICE_REQUEST}
+  }
+  IRP_MN_SET_POWER if state_type==1=>{
+   if !(1..=4).contains(&state){STATUS_INVALID_DEVICE_REQUEST}
+   else if device==unsafe{ACPI_BUS_DEVICE}{STATUS_SUCCESS}
+   else{
+    let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+    if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{STATUS_INVALID_PARAMETER}
+    else if !acquire_power_resource_mutex(){STATUS_DEVICE_BUSY}
+    else{
+     let ext=unsafe{&*ext};
+     let Some(handle)=ext.table else{release_power_resource_mutex();return STATUS_DEVICE_NOT_READY};
+     let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+     let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
+     let gate=unsafe{&*STATE.aml_barrier.get()};
+     let mut firmware=NativeAcpiPowerFirmware{manager,gate,device_handle:handle,device_aml:aml};
+     let power_state=unsafe{&mut *ext.power_state.get()};
+     let result=acpi::acpi_power::transition_device_with_resources(&mut firmware,
+      unsafe{(*STATE.power_resources.get()).assume_init_mut()},power_state,ext.node,(state-1) as u8);
+     release_power_resource_mutex();
+     match result{Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_DEVICE_CONFIGURATION_ERROR}
+    }
+   }
+  }
+  IRP_MN_WAIT_WAKE=>{
+   // WAIT_WAKE must not be accepted until _PRW/_PSW and platform wake routing
+   // are installed for this PDO. QueryDeviceCapabilities currently advertises
+   // no wake capability, so fail closed rather than leave a false pending IRP.
+   STATUS_NOT_SUPPORTED
+  }
+  IRP_MN_SET_POWER if state_type==0=>{
+   // System sleep requires the platform register backend and coordinated device
+   // stack power-down; never report success without completing that sequence.
+   STATUS_NOT_SUPPORTED
+  }
+  _=>STATUS_INVALID_DEVICE_REQUEST,
+ };
+ unsafe{(*irp).io_status.status.status=status;(*irp).io_status.information=0;}
+ status
+}
+
+
 const IRP_MN_START_DEVICE: u8 = 0x00;
 const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
@@ -719,6 +943,87 @@ fn collect_device_identities(
     Ok(())
 }
 
+
+fn parse_hex_digit(value:u8)->Option<u8>{
+ match value{b'0'..=b'9'=>Some(value-b'0'),b'a'..=b'f'=>Some(value-b'a'+10),b'A'..=b'F'=>Some(value-b'A'+10),_=>None}
+}
+/// Discover fixed-hardware GPE methods and PowerResource namespace objects
+/// after all DSDT/SSDT definition blocks have been loaded.
+fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager,table_sources:&[&[u8]],handles:&[Option<acpi::aml_tables::TableHandle>],gate:&acpi::aml_tables::AmlExecutionBarrier)->Result<(),i32>{
+ let platform=unsafe{(*STATE.platform_registers.get()).assume_init_ref()};
+ let gpe=unsafe{(*STATE.gpe_controller.get()).assume_init_mut()};
+ if let Some((gas,length,base))=platform.gpe0{
+  gpe.configure_block(0,acpi::acpi_events::GpeRegisterBlock{gas,length,event_base:base})
+   .map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+ }
+ if let Some((gas,length,base))=platform.gpe1{
+  gpe.configure_block(1,acpi::acpi_events::GpeRegisterBlock{gas,length,event_base:base})
+   .map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+ }
+ if let Some(scope)=manager.namespace().find_child(0,*b"_GPE"){
+  for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+   if node.parent!=scope||node.object_type!=acpi::aml::AmlObjectType::Method{continue}
+   let name=node.name;
+   if name[0]!=b'_'||!matches!(name[1],b'L'|b'E'){continue}
+   let (Some(hi),Some(lo))=(parse_hex_digit(name[2]),parse_hex_digit(name[3]))else{continue};
+   let event=((hi<<4)|lo) as u16;
+   gpe.register_event(acpi::acpi_events::GpeEvent{
+    number:event,method_node:index as u16,
+    trigger:if name[1]==b'L'{acpi::acpi_events::ACPI_GPE_LEVEL}else{acpi::acpi_events::ACPI_GPE_EDGE},
+    wake_capable:false,enabled:false,
+   }).map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+  }
+ }
+ let graph=unsafe{(*STATE.power_resources.get()).assume_init_mut()};
+ for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+  if node.object_type!=acpi::aml::AmlObjectType::PowerResource{continue}
+  if manager.namespace().find_child(index as u16,*b"_ON_").is_none()
+   ||manager.namespace().find_child(index as u16,*b"_OFF").is_none(){
+   return Err(STATUS_DEVICE_CONFIGURATION_ERROR)
+  }
+  let order=u8::try_from(node.power_resource_order).map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+  let records=unsafe{(*STATE.device_records.get()).assume_init_ref()};
+  let record_count=STATE.device_count.load(Ordering::Acquire);
+  let initially_enabled=records[..record_count].iter().find(|record|record.node==index as u16)
+   .map(|record|record.identity.sta&1!=0).unwrap_or(false);
+  graph.register(index as u16,node.power_resource_system_level,order,initially_enabled)
+   .map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
+ }
+ // Evaluate each ThermalZone's temperature and trip points at PASSIVE_LEVEL.
+ let thermal=unsafe{(*STATE.thermal_zones.get()).assume_init_mut()};
+ let mut thermal_count=0usize;
+ for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+  if node.object_type!=acpi::aml::AmlObjectType::ThermalZone{continue}
+  if thermal_count==acpi::acpi_events::MAX_THERMAL_ZONES{return Err(STATUS_INSUFFICIENT_RESOURCES)}
+  let handle=handles.get(node.source_table as usize).and_then(|h|*h).ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+  let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+  let Ok(data)=manager.evaluate_thermal_zone(handle,table_sources,index as u16,gate,&mut runtime) else{continue};
+  thermal[thermal_count]=acpi::acpi_events::ThermalZone{
+   node:data.node,temperature_deci_kelvin:data.temperature_deci_kelvin,
+   passive_trip:data.passive_trip,hot_trip:data.hot_trip,critical_trip:data.critical_trip,
+   active_trip:data.active_trip,active_count:data.active_count,
+  };
+  thermal_count+=1;
+ }
+ STATE.thermal_zone_count.store(thermal_count,Ordering::Release);
+ // Discover EC query methods by PNP0C09 HID. Query bytes are queued by the
+ // future EC/SCI backend; _Qxx methods are never executed in the SCI ISR.
+ let query_map=unsafe{(*STATE.ec_query_methods.get()).assume_init_mut()};
+ let records=unsafe{(*STATE.device_records.get()).assume_init_ref()};
+ let record_count=STATE.device_count.load(Ordering::Acquire);
+ for record in records[..record_count].iter(){
+  if !record.identity.has_hid||record.identity.hid.as_bytes()!=b"PNP0C09"{continue}
+  for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+   if node.parent!=record.node||node.object_type!=acpi::aml::AmlObjectType::Method||node.name[0]!=b'_'||node.name[1]!=b'Q'{continue}
+   let (Some(hi),Some(lo))=(parse_hex_digit(node.name[2]),parse_hex_digit(node.name[3]))else{continue};
+   let query=((hi<<4)|lo) as usize;
+   if query_map[query]!=u16::MAX{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
+   query_map[query]=index as u16;
+  }
+ }
+ Ok(())
+}
+
 /// Preserve the failure class at the native driver boundary. In particular,
 /// unsupported AML is not a caller-parameter error, and corrupt firmware data
 /// must not be reported as STATUS_INVALID_PARAMETER.
@@ -756,7 +1061,18 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     // installing callbacks only after PDO creation leaves a window in which a
     // valid device object has no driver-owned PnP dispatch path.
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+     object.major_function[IRP_MJ_POWER] = Some(power_dispatch);
     object.driver_unload = Some(driver_unload);
+    // FADT selects the platform programming model. Hardware-reduced systems
+    // must never fall back to legacy PM1 or GPE register blocks.
+    let fadt_bytes=match unsafe{query_hal_table(*b"FACP",0)}{
+        Ok(bytes)=>bytes,Err(status)=>return status,
+    };
+    let fadt=match acpi::parse_fadt(fadt_bytes){Ok(value)=>value,Err(error)=>return acpi::error_to_ntstatus(error)};
+    let platform=match acpi::acpi_events::platform_registers(&fadt){
+        Ok(value)=>value,Err(_)=>return STATUS_DEVICE_CONFIGURATION_ERROR,
+    };
+    unsafe{(*STATE.fadt.get()).write(fadt);(*STATE.platform_registers.get()).write(platform);}
     let madt_bytes = match unsafe { query_hal_table(*b"APIC", 0) } {
         Ok(bytes) => bytes,
         Err(status) => return status,
@@ -840,6 +1156,11 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         let handle=match loaded_ssdts[index]{Some(handle)=>handle,None=>return STATUS_DEVICE_CONFIGURATION_ERROR};
         if let Err(status)=collect_device_identities(manager,handle,&table_sources[..loaded_ssdt_count+1],loaded_ssdt_tables[index],gate,records,&mut identity_count){return status;}
     }
+    STATE.device_count.store(identity_count,Ordering::Release);
+    let mut table_handles:[Option<acpi::aml_tables::TableHandle>;acpi::aml_tables::MAX_AML_TABLES]=[None;acpi::aml_tables::MAX_AML_TABLES];
+    table_handles[0]=Some(dsdt_handle);
+    for index in 0..loaded_ssdt_count{table_handles[index+1]=loaded_ssdts[index];}
+    if let Err(status)=discover_power_and_event_namespace(manager,&table_sources[..loaded_ssdt_count+1],&table_handles[..loaded_ssdt_count+1],gate){return status;}
     // Create an ACPI bus device and real WDM PDOs for firmware devices
     // reported present and enabled. Each PDO owns an immutable identity copy.
     // Namespace records include devices that are disabled or absent; only
@@ -862,7 +1183,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         unsafe {
             let extension=(*pdo).device_extension.cast::<AcpiPdoExtension>();
             if extension.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
-            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,devnode_index:u32::MAX,table:record.table,aml_bytes:record.aml_bytes.as_ptr(),aml_length:record.aml_bytes.len(),identity:record.identity});
+            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,devnode_index:u32::MAX,table:record.table,aml_bytes:record.aml_bytes.as_ptr(),aml_length:record.aml_bytes.len(),identity:record.identity,power_state:UnsafeCell::new(acpi::acpi_power::DevicePowerState::INITIAL)});
         }
         let marked=unsafe{IoMarkBusEnumeratedPdo(pdo)};
         if marked!=STATUS_SUCCESS { return marked; }
