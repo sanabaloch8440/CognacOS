@@ -184,6 +184,9 @@ pub mod bus {
         pub get_bus_data: PGET_SET_DEVICE_DATA,
     }
 
+    const _: () = assert!(core::mem::size_of::<BUS_INTERFACE_STANDARD>() == 0x40);
+    const _: () = assert!(core::mem::offset_of!(BUS_INTERFACE_STANDARD, get_bus_data) == 0x38);
+
     /// ACPI.sys firmware-table access. The provider copies the requested
     /// table into the caller's buffer and reports its required size.
     pub type PACPI_QUERY_TABLE = Option<
