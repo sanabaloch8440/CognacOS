@@ -60,13 +60,22 @@ named target's type.
 - Existing Store and CopyObject target behavior from task 26 remains covered
   separately by the task-26 conversion matrix.
 
+## Task 27 verification
+
+Task 27 is complete for the opcode families defined above. ACPI workflow run
+[41587243631](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587243631)
+passed with 45 AML method-executor tests, 37 AML runtime tests, 42 AML parser
+tests, 11 AML table-lifecycle tests, and all configured firmware regression
+suites.
+
 ## Current limitations
 
-Task 27 remains in progress. This batch does not claim complete support for
-every AML data operator, compound assignment form, reference/field target,
-or hardware-backed FieldUnit operation. Unsupported terms continue to fail
-closed. Package result ownership, OperationRegion handlers, and broader
-namespace mutation remain separate tasks.
+This task does not claim complete support for every AML data operator,
+compound assignment form, reference/field target, or hardware-backed FieldUnit
+operation. Unsupported terms continue to fail closed. Package result
+ownership, OperationRegion handlers, and broader namespace mutation remain
+separate tasks. Task completion is not a production-readiness claim for the
+full AML interpreter or ACPI driver.
 
 ## Verification
 
