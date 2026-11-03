@@ -73,7 +73,7 @@ fn hash_identity(serial: &[u8], model: &[u8]) -> u64 {
 /// LBA48 capacity is preferred; LBA28 is used only when LBA48 is unavailable.
 /// Logical-sector-size words are honored when the device advertises them.
 pub fn parse_ata_identify(words: &[u16; ATA_IDENTIFY_WORDS]) -> Result<DiskDescriptor, StorageError> {
-    let lba48 = words[83] & (1 << 10) != 0;
+    let lba48 = words[83] & 0xc000 == 0x4000 && words[83] & (1 << 10) != 0;
     let sectors = if lba48 {
         (words[100] as u64)
             | ((words[101] as u64) << 16)
@@ -84,7 +84,7 @@ pub fn parse_ata_identify(words: &[u16; ATA_IDENTIFY_WORDS]) -> Result<DiskDescr
     } else {
         return Err(StorageError::Unsupported);
     };
-    if sectors == 0 { return Err(StorageError::InvalidArgument); }
+    if sectors == 0 || (lba48 && sectors >= (1u64 << 48)) || (!lba48 && sectors > (1u64 << 28)) { return Err(StorageError::InvalidArgument); }
 
     let logical_sector_size = if words[106] & 0xc000 == 0x4000 && words[106] & (1 << 12) != 0 {
         let words_per_sector = words[117] as u32 | ((words[118] as u32) << 16);
@@ -283,7 +283,7 @@ mod tests {
     fn identify_prefers_lba48_and_decodes_stable_strings() {
         let mut words = [0u16; 256];
         words[49] = 1 << 9;
-        words[83] = 1 << 10;
+        words[83] = 0x4000 | (1 << 10);
         words[100] = 0x5678; words[101] = 0x1234;
         let serial = b"SN123456";
         for (i, pair) in serial.chunks(2).enumerate() {
@@ -366,7 +366,7 @@ mod tests {
     fn identify_honors_advertised_four_kib_logical_sectors() {
         let mut words=[0u16;256];
         words[49]=1<<9;words[60]=4096;
-        words[83]=1<<10;
+        words[83]=0x4000|(1<<10);
         words[100]=4096;
         words[106]=0x4000|(1<<12);
         words[117]=2048;
