@@ -55,7 +55,6 @@ unsafe extern "win64" {
  fn IoSkipCurrentIrpStackLocation(irp:*mut IRP);
  fn IoSetCompletionRoutine(irp:*mut IRP,routine:Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT,*mut IRP,PVOID)->i32>,context:PVOID,success:u8,error:u8,cancel:u8);
  fn IoPnPQueryBusInterface(device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,size:u16,version:u16,output:PVOID)->i32;
- fn IoPnPProcessBusRelations(bus:*mut DEVICE_OBJECT,relations:*const c_void)->i32;
  fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
  fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
 }
@@ -79,7 +78,6 @@ IMPORT IoSkipCurrentIrpStackLocation
 IMPORT IoSetCompletionRoutine
 IMPORT IoPnPQueryBusInterface
 IMPORT IoPnPRegisterDeviceDriver
-IMPORT IoPnPProcessBusRelations
 IMPORT IoPnPEnumerateBus
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -100,7 +98,6 @@ IAT IoSkipCurrentIrpStackLocation
 IAT IoSetCompletionRoutine
 IAT IoPnPQueryBusInterface
 IAT IoPnPRegisterDeviceDriver
-IAT IoPnPProcessBusRelations
 IAT IoPnPEnumerateBus
 "#);
 
