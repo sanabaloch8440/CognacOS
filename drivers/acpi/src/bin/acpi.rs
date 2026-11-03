@@ -25,7 +25,7 @@ const MAX_ACPI_PDOS:usize=64;
 const FILE_DEVICE_BUS_EXTENDER:u32=0x0000002a;
 const DEVICE_RELATIONS_BUS:u32=0;
 #[repr(C)]
-struct AcpiPdoExtension { signature:u64, node:u16, devnode_index:u32, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity }
+struct AcpiPdoExtension { signature:u64, node:u16, devnode_index:u32, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity, power_state:UnsafeCell<acpi::acpi_power::DevicePowerState> }
 const ACPI_PDO_SIGNATURE:u64=0x4143504950444f31;
 #[repr(C)]
 struct AcpiDeviceRelations { count:u32, objects:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS] }
@@ -54,6 +54,7 @@ struct KernelAmlMethodSynchronizer;
 static KERNEL_AML_METHOD_MUTEXES:[KernelAmlMutex;MAX_ACPI_METHOD_MUTEXES]=
  [const{KernelAmlMutex::new()};MAX_ACPI_METHOD_MUTEXES];
 static KERNEL_AML_METHOD_SYNCHRONIZER:KernelAmlMethodSynchronizer=KernelAmlMethodSynchronizer;
+static POWER_RESOURCE_MUTEX:KernelAmlMutex=KernelAmlMutex::new();
 unsafe extern "win64" {
  fn KeInitializeMutex(mutex:*mut core::ffi::c_void,level:u32);
  fn KeWaitForSingleObject(object:*mut core::ffi::c_void,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
@@ -301,6 +302,83 @@ fn invoke_pdo_power_method(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,name:[
  }
 }
 
+
+fn invoke_aml_child_method(
+ manager:&acpi::aml_tables::AmlTableManager,gate:&acpi::aml_tables::AmlExecutionBarrier,
+ handle:acpi::aml_tables::TableHandle,aml:&[u8],owner:u16,name:[u8;4],
+)->Result<bool,i32>{
+ let Some(method)=manager.namespace().find_child(owner,name)else{return Ok(false)};
+ if manager.namespace().nodes[method as usize].object_type!=acpi::aml::AmlObjectType::Method{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
+ let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+ manager.invoke_method_value_with_args(handle,aml,method,gate,&mut runtime,&[])
+  .map(|_|true).map_err(table_error_to_status)
+}
+struct NativeAcpiPowerFirmware<'a>{
+ manager:&'a acpi::aml_tables::AmlTableManager,
+ gate:&'a acpi::aml_tables::AmlExecutionBarrier,
+ device_handle:acpi::aml_tables::TableHandle,
+ device_aml:&'a [u8],
+}
+impl acpi::acpi_power::AcpiPowerFirmware for NativeAcpiPowerFirmware<'_>{
+ fn evaluate_prx(&mut self,device_node:u16,state:u8,output:&mut [u16;acpi::acpi_power::MAX_POWER_RESOURCE_DEPENDENCIES])->Result<usize,acpi::acpi_power::PowerResourceError>{
+  let name=match state{0=>*b"_PR0",1=>*b"_PR1",2=>*b"_PR2",3=>*b"_PR3",_=>return Err(acpi::acpi_power::PowerResourceError::InvalidPowerState)};
+  let Some(object)=self.manager.namespace().find_child(device_node,name)else{return Ok(0)};
+  match self.manager.namespace().nodes[object as usize].object_type{
+   acpi::aml::AmlObjectType::Name=>acpi::acpi_device::decode_power_resource_package(
+    self.manager.namespace(),&self.device_aml[36..],device_node,name,output,
+   ).map_err(|_|acpi::acpi_power::PowerResourceError::MissingDependency),
+   acpi::aml::AmlObjectType::Method=>{
+    let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+    match self.manager.evaluate_method_value(self.device_handle,self.device_aml,object,self.gate,&mut runtime){
+     Ok(acpi::acpi_device::AcpiMethodValue::NamespacePackage{nodes,count})=>{
+      let count=count as usize;if count>output.len(){return Err(acpi::acpi_power::PowerResourceError::TooManyDependencies)}
+      output[..count].copy_from_slice(&nodes[..count]);Ok(count)
+     }
+     _=>Err(acpi::acpi_power::PowerResourceError::MissingDependency),
+    }
+   }
+   _=>Err(acpi::acpi_power::PowerResourceError::MissingDependency),
+  }
+ }
+ fn invoke_device_method(&mut self,device_node:u16,method:[u8;4])->Result<(),acpi::acpi_power::PowerResourceError>{
+  invoke_aml_child_method(self.manager,self.gate,self.device_handle,self.device_aml,device_node,method)
+   .map(|_|()).map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)
+ }
+ fn evaluate_integer_method(&mut self,device_node:u16,method:[u8;4])->Result<u64,acpi::acpi_power::PowerResourceError>{
+  let Some(node)=self.manager.namespace().find_child(device_node,method)else{return Ok(0)};
+  if self.manager.namespace().nodes[node as usize].object_type!=acpi::aml::AmlObjectType::Method{return Err(acpi::acpi_power::PowerResourceError::InvalidPowerState)}
+  let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+  match self.manager.evaluate_method_value(self.device_handle,self.device_aml,node,self.gate,&mut runtime){
+   Ok(acpi::acpi_device::AcpiMethodValue::Integer(value))=>Ok(value),
+   _=>Err(acpi::acpi_power::PowerResourceError::InvalidPowerState),
+  }
+ }
+ fn invoke_power_resource_method(&mut self,resource_node:u16,enable:bool)->Result<(),acpi::acpi_power::PowerResourceError>{
+  let records=unsafe{(*STATE.device_records.get()).assume_init_ref()};
+  let count=STATE.device_count.load(Ordering::Acquire);
+  let record=records[..count].iter().find(|r|r.node==resource_node&&r.table.is_some())
+   .copied().ok_or(acpi::acpi_power::PowerResourceError::InvalidNode)?;
+  let handle=record.table.ok_or(acpi::acpi_power::PowerResourceError::InvalidNode)?;
+  invoke_aml_child_method(self.manager,self.gate,handle,record.aml_bytes,resource_node,
+   if enable{*b"_ON_"}else{*b"_OFF"})
+   .and_then(|found|if found{Ok(())}else{Err(STATUS_NOT_SUPPORTED)})
+   .map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)
+ }
+}
+fn acquire_power_resource_mutex()->bool{
+ let mutex=&POWER_RESOURCE_MUTEX;
+ loop{match mutex.initialized.load(Ordering::Acquire){
+  2=>break,
+  0=>if mutex.initialized.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+   unsafe{KeInitializeMutex(mutex.object(),0)};mutex.initialized.store(2,Ordering::Release);break
+  },
+  _=>core::hint::spin_loop(),
+ }}
+ let status=unsafe{KeWaitForSingleObject(mutex.object(),0,0,0,core::ptr::null())};
+ status==STATUS_SUCCESS||status==0x0000_0080
+}
+fn release_power_resource_mutex(){unsafe{let _=KeReleaseMutex(POWER_RESOURCE_MUTEX.object(),0);}}
+
 /// WDM power dispatch runs at PASSIVE_LEVEL in this implementation because
 /// AML methods may wait on namespace mutexes. The kernel's PO preamble owns
 /// transition reservation and completion; this routine performs ACPI policy.
@@ -326,9 +404,22 @@ unsafe extern "win64" fn power_dispatch(
    if !(1..=4).contains(&state){STATUS_INVALID_DEVICE_REQUEST}
    else if device==unsafe{ACPI_BUS_DEVICE}{STATUS_SUCCESS}
    else{
-    // WDM DEVICE_POWER_STATE encodes D0..D3 as 1..4.
-    let method=match state{1=>*b"_PS0",2=>*b"_PS1",3=>*b"_PS2",4=>*b"_PS3",_=>*b"____"};
-    invoke_pdo_power_method(device,method)
+    let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+    if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{STATUS_INVALID_PARAMETER}
+    else if !acquire_power_resource_mutex(){STATUS_DEVICE_BUSY}
+    else{
+     let ext=unsafe{&*ext};
+     let Some(handle)=ext.table else{release_power_resource_mutex();return STATUS_DEVICE_NOT_READY};
+     let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+     let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
+     let gate=unsafe{&*STATE.aml_barrier.get()};
+     let mut firmware=NativeAcpiPowerFirmware{manager,gate,device_handle:handle,device_aml:aml};
+     let power_state=unsafe{&mut *ext.power_state.get()};
+     let result=acpi::acpi_power::transition_device_with_resources(&mut firmware,
+      unsafe{(*STATE.power_resources.get()).assume_init_mut()},power_state,ext.node,(state-1) as u8);
+     release_power_resource_mutex();
+     match result{Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_DEVICE_CONFIGURATION_ERROR}
+    }
    }
   }
   IRP_MN_WAIT_WAKE=>{
@@ -1001,7 +1092,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         unsafe {
             let extension=(*pdo).device_extension.cast::<AcpiPdoExtension>();
             if extension.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
-            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,devnode_index:u32::MAX,table:record.table,aml_bytes:record.aml_bytes.as_ptr(),aml_length:record.aml_bytes.len(),identity:record.identity});
+            extension.write(AcpiPdoExtension{signature:ACPI_PDO_SIGNATURE,node:record.node,devnode_index:u32::MAX,table:record.table,aml_bytes:record.aml_bytes.as_ptr(),aml_length:record.aml_bytes.len(),identity:record.identity,power_state:UnsafeCell::new(acpi::acpi_power::DevicePowerState::INITIAL)});
         }
         let marked=unsafe{IoMarkBusEnumeratedPdo(pdo)};
         if marked!=STATUS_SUCCESS { return marked; }
