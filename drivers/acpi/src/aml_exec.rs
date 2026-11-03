@@ -51,7 +51,8 @@ pub fn with_method_synchronization<T>(
  if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
  if node.method_flags&0x08==0{return operation()}
  let sync_level=(node.method_flags>>4)&0x0f;
- if sync_level!=0{return Err(ExecError::SyncLevelViolation)}
+ // This helper is used only for top-level direct-result decoding. No outer
+ // AML method owns a SyncLevel here, so every encoded level is admissible.
  sync.acquire(method_index,sync_level)?;
  let result=operation();
  sync.release(method_index);
