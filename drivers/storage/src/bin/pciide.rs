@@ -10,7 +10,7 @@
 use core::{ffi::c_void, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_nt_abi::{
     bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
-    io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
+    io::{DEVICE_OBJECT, DRIVER_EXTENSION, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
     ntstatus::*,
     types::PVOID,
 };
@@ -89,6 +89,9 @@ IMPORT IoDeleteDevice
 IMPORT IoAttachDeviceToDeviceStack
 IMPORT IoDetachDevice
 IMPORT IoCallDriver
+IMPORT KeWaitForSingleObject
+IMPORT KeSetEvent
+IMPORT KeInitializeEvent
 
 IMPORT IoAllocateIrp
 
@@ -108,6 +111,9 @@ IAT IoDeleteDevice
 IAT IoAttachDeviceToDeviceStack
 IAT IoDetachDevice
 IAT IoCallDriver
+IAT KeWaitForSingleObject
+IAT KeSetEvent
+IAT KeInitializeEvent
 
 IAT IoAllocateIrp
 
