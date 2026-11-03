@@ -912,6 +912,8 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmMapIoSpace")) == Some(mm::runtime::mm_map_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoCreateDevice")) == Some(crate::io::io_create_device as usize as u64)
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoMarkBusEnumeratedPdo")) == Some(crate::io::io_mark_bus_enumerated_pdo as usize as u64)
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoPnPRegisterBusDevice")) == Some(crate::io::pnp::IoPnPRegisterBusDevice as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoDeleteDevice")) == Some(crate::io::io_delete_device as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoGetRelatedDeviceObject")) == Some(crate::io::io_get_related_device_object as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"CcInitializeCacheMap")) == Some(cc::cc_initialize_cache_map as usize as u64)
