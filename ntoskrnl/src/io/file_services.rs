@@ -399,7 +399,7 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     };
     let file_source=STATE.lock().files[file_index].source;
     let device = if file_source == 1 {
-        let d = crate::fat32_driver::volume_device();
+        let d = crate::io::fat32_driver::volume_device();
         if d.is_null() { return Err(STATUS_OBJECT_NAME_NOT_FOUND); }
         d
     } else { ensure_file_device()? };
