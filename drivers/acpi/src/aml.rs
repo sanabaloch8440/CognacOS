@@ -555,8 +555,12 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
 }
 
 /// Load a DefinitionBlock and retain structured context when parsing fails.
-/// The reported offset is the outermost term boundary; nested parser helpers
-/// currently return the error kind without an exact inner-operand cursor.
+/// The offset/opcode identify the innermost term boundary reached by
+/// `parse_terms` (including nested Scope bodies). Errors raised while decoding
+/// an operand are attributed to the term that owns that operand; this is not
+/// an exact byte cursor for every malformed operand. The namespace path is
+/// the enclosing namespace at that term boundary and is truncated only when
+/// it exceeds `MAX_DIAGNOSTIC_PATH`.
 pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32)->Result<(),AmlDiagnostic>{
     let original_count=namespace.count;
     let original_owner=namespace.loading_table;
@@ -793,6 +797,20 @@ mod tests{
         assert_eq!(diagnostic.namespace_parent,1);
         assert_eq!(diagnostic.namespace_depth,1);
         assert_eq!(diagnostic.namespace_path[0],*b"SCP0");
+        assert_eq!(diagnostic.error,AmlError::UnsupportedOpcode);
+        assert_eq!(ns.count,1);
+    }
+    #[test]fn structured_diagnostic_tracks_nested_scope_path(){
+        // The unsupported term is inside SCP0.CH D0 (NameSegs are four bytes).
+        let aml=[0x10,0x0c,b'S',b'C',b'P',b'0',0x10,0x06,b'C',b'H',b'D',b'0',0x99];
+        let mut ns=AmlNamespace::new();
+        let diagnostic=load_definition_block_diagnostic(&aml,&mut ns,0x5678).unwrap_err();
+        assert_eq!(diagnostic.table_id,0x5678);
+        assert_eq!(diagnostic.term_offset,12);
+        assert_eq!(diagnostic.opcode,Some(0x99));
+        assert_eq!(diagnostic.namespace_depth,2);
+        assert_eq!(diagnostic.namespace_path[0],*b"SCP0");
+        assert_eq!(diagnostic.namespace_path[1],*b"CHD0");
         assert_eq!(diagnostic.error,AmlError::UnsupportedOpcode);
         assert_eq!(ns.count,1);
     }
