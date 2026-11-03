@@ -3,6 +3,11 @@
 //! Consumes four-element entries after AML evaluates _PRT to a Package.
 //! AML evaluation and link-device resource selection remain separate; this
 //! module never guesses a GSI or programs an interrupt controller.
+/*
+ * FIXME(ACPI-PRODUCTION) — PCI interrupt routing via _PRT
+ * Intended functionality still to complete: Complete _PRT package evaluation, source/link-device resolution, index validation, direct GSI routing, polarity/trigger conversion, and kernel interrupt integration. Test missing links, malformed packages, shared interrupts, and bridge hierarchies.
+ */
+
 #![no_std]
 pub const MAX_PRT_ENTRIES: usize = 128;
 pub const MAX_SOURCE_PATH: usize = 64;
