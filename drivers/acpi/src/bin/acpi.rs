@@ -761,7 +761,11 @@ unsafe extern "win64" fn acpi_interface_reference(context:PVOID){
 }
 unsafe extern "win64" fn acpi_interface_dereference(context:PVOID){
     if context!=core::ptr::addr_of!(STATE).cast_mut().cast(){return}
+    // A held interface reference keeps the image resident while this callback
+    // runs. Count the callback itself until its final instruction as well.
+    STATE.active_operations.fetch_add(1,Ordering::AcqRel);
     let _=STATE.interface_references.fetch_update(Ordering::AcqRel,Ordering::Acquire,|count|Some(count.saturating_sub(1)));
+    STATE.active_operations.fetch_sub(1,Ordering::AcqRel);
 }
 
 /// Copy a validated firmware table through the versioned ACPI bus interface.
