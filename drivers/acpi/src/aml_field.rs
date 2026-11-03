@@ -32,6 +32,14 @@ pub trait FieldIo {
     /// Implementations may acquire/release the ACPI Global Lock here.
     fn begin_locked_access(&mut self)->Result<(),()>{Err(())}
     fn end_locked_access(&mut self)->Result<(),()>{Err(())}
+    /// Read one access unit through an AML IndexField pair. The backend must
+    /// serialize index-register selection with the matching data-register read.
+    fn read_indexed(&mut self,_index_register:u16,_data_register:u16,_byte_offset:u64,_width:u8)->Result<u64,()>{Err(())}
+    /// Write one access unit through an AML IndexField pair. The backend must
+    /// serialize index-register selection with the matching data-register write.
+    fn write_indexed(&mut self,_index_register:u16,_data_register:u16,_byte_offset:u64,_width:u8,_value:u64)->Result<(),()>{Err(())}
+    /// Select the bank for a BankField before accessing its underlying region.
+    fn select_bank(&mut self,_bank_register:u16,_bank_value:u64)->Result<(),()>{Err(())}
 }
 
 fn field_node(ns:&AmlNamespace,id:u16)->Result<&crate::aml::AmlNode,FieldError>{
