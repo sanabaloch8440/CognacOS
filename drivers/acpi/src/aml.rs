@@ -297,6 +297,7 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
     if follow!=0&&lead&0x30!=0{return Err(AmlError::BadPackageLength)}
     let mut value=if follow==0{(lead&0x3f)as usize}else{(lead&0x0f)as usize};
     for i in 0..follow{value|=(c.byte()? as usize)<<(4+8*i);}
+    if value<1+follow{return Err(AmlError::BadPackageLength)}
     Ok(value)
 }
 
@@ -312,7 +313,7 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
             0x00=>{ // ReservedField: advance by encoded bit length.
                 bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
             }
-            0x01=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=0;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // AccessField
+            0x01=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=0;if access_type>5||access_attribute>0x0b{return Err(AmlError::UnsupportedOpcode)}} // AccessField
             0x02=>{skip_data_object(c)?;connection=true;} // ConnectField
             0x03=>{access_type=c.byte()?;access_attribute=c.byte()?;access_length=c.byte()?;if access_type>5{return Err(AmlError::UnsupportedOpcode)}} // ExtendedAccessField
             _=>{
@@ -321,6 +322,9 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
                 if !valid_name_seg(seg){return Err(AmlError::BadName)}
                 let mut name=[0;4];name.copy_from_slice(seg);
                 let bit_length=read_pkg_value(c)?;
+                if bit_length==0{return Err(AmlError::BadPackageLength)}
+                u32::try_from(bit_offset).map_err(|_|AmlError::BadPackageLength)?;
+                u32::try_from(bit_length).map_err(|_|AmlError::BadPackageLength)?;
                 let id=ns.insert(container,name,AmlObjectType::Field,0,bit_offset,bit_length)?;
                 ns.nodes[id as usize].field_region=region;
                 ns.nodes[id as usize].field_mode=mode;
@@ -594,6 +598,41 @@ mod tests{
         let parent=ns.find_child(0,*b"PAR0").unwrap();let child=ns.find_child(parent,*b"CHD0").unwrap();
         let name=AmlName{segments:[*b"VAL0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:0};
         assert_eq!(resolve_name_string(&ns,child,&name),Ok(ns.find_child(parent,*b"VAL0").unwrap()));
+    }
+    #[test]fn parses_processor_powerresource_and_thermalzone_fixed_prefixes(){
+        let aml=[
+            0x5b,0x83,0x0d,b'C',b'P',b'U',b'0',0,0,0,0,0,0,0,
+            0x5b,0x84,0x0c,b'P',b'W',b'R',b'0',0,0,0,0,
+            0x5b,0x85,0x0b,b'T',b'Z',b'0',b'_',0x00
+        ];
+        let mut ns=AmlNamespace::new();assert!(load_definition_block(&aml,&mut ns).is_ok());
+        assert_eq!(ns.nodes[1].object_type,AmlObjectType::Processor);
+        assert_eq!(ns.nodes[2].object_type,AmlObjectType::PowerResource);
+        assert_eq!(ns.nodes[3].object_type,AmlObjectType::ThermalZone);
+    }
+    #[test]fn rejects_zero_length_and_malformed_access_fields(){
+        let mut ns=AmlNamespace::new();
+        // OperationRegion(REGN, SystemMemory, 0, 16); Field(REGN, flags, FLD0, 0)
+        let zero=[0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,16,
+            0x5b,0x81,0x0b,b'R',b'E',b'G',b'N',0,b'F',b'L',b'D',b'0',0];
+        assert_eq!(load_definition_block(&zero,&mut ns),Err(AmlError::BadPackageLength));
+        assert_eq!(ns.count,1);
+        // AccessField with an out-of-range access attribute.
+        let access=[0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,16,
+            0x5b,0x81,0x0e,b'R',b'E',b'G',b'N',0,0x01,0x00,0xff,b'F',b'L',b'D',b'0',8];
+        assert_eq!(load_definition_block(&access,&mut ns),Err(AmlError::UnsupportedOpcode));
+    }
+    #[test]fn parses_index_and_bank_field_declarations(){
+        let aml=[
+            0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,16,
+            0x5b,0x80,b'I',b'N',b'D',b'X',1,0x0a,0,0x0a,1,
+            0x5b,0x80,b'D',b'A',b'T',b'A',1,0x0a,0,0x0a,1,
+            0x5b,0x86,0x0f,b'I',b'N',b'D',b'X',b'I',b'N',b'D',b'X',b'D',b'A',b'T',b'A',0,b'F',b'L',b'D',b'0',8,
+            0x5b,0x87,0x11,b'R',b'E',b'G',b'N',b'I',b'N',b'D',b'X',0x0a,1,0,b'B',b'F',b'L',b'D',8
+        ];
+        let mut ns=AmlNamespace::new();assert!(load_definition_block(&aml,&mut ns).is_ok());
+        assert_eq!(ns.nodes[4].object_type,AmlObjectType::Field);assert_eq!(ns.nodes[4].field_mode,1);
+        assert_eq!(ns.nodes[5].object_type,AmlObjectType::Field);assert_eq!(ns.nodes[5].field_mode,2);
     }
     #[test]fn loads_operation_region_and_named_field(){
         let aml=[
