@@ -204,7 +204,7 @@ pub fn persist_to_storage() -> bool {
         let crc = checksum(&buf[PERSIST_HEADER..PERSIST_HEADER + written * PERSIST_RECORD]);
         put_u32(buf, 24, crc);
         put_u32(buf, 28, 0);
-        crate::ata_disk::debug_trace_store_write(0, &buf[..PERSIST_HEADER + written * PERSIST_RECORD])
+        crate::io::storage::debug_trace_store_write(0, &buf[..PERSIST_HEADER + written * PERSIST_RECORD])
     };
     PERSIST_BUSY.store(false, Ordering::Release);
     result
@@ -217,14 +217,14 @@ pub fn restore_from_storage() -> bool {
     let result = unsafe {
         let ptr = core::ptr::addr_of_mut!(PERSIST_BUFFER).cast::<u8>();
         let buf = core::slice::from_raw_parts_mut(ptr, PERSIST_BYTES);
-        if !crate::ata_disk::debug_trace_store_read(0, &mut buf[..PERSIST_HEADER]) ||
+        if !crate::io::storage::debug_trace_store_read(0, &mut buf[..PERSIST_HEADER]) ||
             &buf[..8] != PERSIST_MAGIC || get_u32(buf, 8) != 1 {
             false
         } else {
             let count = get_u32(buf, 12) as usize;
             let size = PERSIST_HEADER.saturating_add(count.saturating_mul(PERSIST_RECORD));
             if count > TRACE_CAPACITY || size > PERSIST_BYTES ||
-                !crate::ata_disk::debug_trace_store_read(0, &mut buf[..size]) ||
+                !crate::io::storage::debug_trace_store_read(0, &mut buf[..size]) ||
                 checksum(&buf[PERSIST_HEADER..size]) != get_u32(buf, 24) {
                 false
             } else {
