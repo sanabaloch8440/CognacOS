@@ -96,7 +96,7 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
     let Some(current)=crate::thread::current_thread_id() else{return 0};
     let _object_guard=DISPATCHER_OBJECT_LOCK.lock();
     let mut timed_out=[0u64;crate::dispatcher::MAX_WAITERS];let mut timed_count=0usize;
-    let (old,waiter_id,final_status)={
+    let (old,waiter_id,final_status,recursion_only)={
         let mut table=MUTANTS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) else{return 0};
         if record.owner!=current||record.recursion==0{return unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)}}
@@ -104,34 +104,38 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         if record.recursion>1{
             record.recursion-=1;
             unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);}
-            return old;
-        }
-        record.owner=0;record.recursion=0;record.abandoned=abandoned;
-        unsafe{
-            object.cast::<u8>().add(48).write(abandoned as u8);
-            (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);
-        }
-        loop{
-            let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{
-                // Retirement is deferred until wait-all groups have been
-                // re-evaluated below; they do not use the single-waiter queue.
-                break (old,None,STATUS_SUCCESS)
-            };
-            if waiter.timed_out{
-                if timed_count<timed_out.len(){timed_out[timed_count]=waiter.thread;timed_count+=1;}
-                continue
-            }
-            record.owner=waiter.thread;record.recursion=1;
-            let was_abandoned=record.abandoned;record.abandoned=false;
+            (old,None,STATUS_SUCCESS,true)
+        } else {
+            record.owner=0;record.recursion=0;record.abandoned=abandoned;
             unsafe{
-                object.cast::<u8>().add(48).write(0);
-                (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
+                object.cast::<u8>().add(48).write(abandoned as u8);
+                (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);
             }
-            break (old,Some(waiter.thread),if was_abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
+            loop{
+                let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{
+                    // Retirement is deferred until wait-all groups have been
+                    // re-evaluated below; they do not use the single-waiter queue.
+                    break (old,None,STATUS_SUCCESS,false)
+                };
+                if waiter.timed_out{
+                    if timed_count<timed_out.len(){timed_out[timed_count]=waiter.thread;timed_count+=1;}
+                    continue
+                }
+                record.owner=waiter.thread;record.recursion=1;
+                let was_abandoned=record.abandoned;record.abandoned=false;
+                unsafe{
+                    object.cast::<u8>().add(48).write(0);
+                    (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
+                }
+                break (old,Some(waiter.thread),if was_abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS},false)
+            }
         }
     };
+    let _=crate::thread::adjust_apc_region_for_thread(current,false,false);
+    if recursion_only{return old}
     for id in timed_out[..timed_count].iter().copied(){let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_TIMEOUT,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_TIMEOUT);let _=crate::thread::complete_wait(id,status);}
     if let Some(id)=waiter_id{
+        let _=crate::thread::adjust_apc_region_for_thread(id,false,true);
         let status=crate::dispatcher::complete_wait_group(id,object as u64,final_status,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(final_status);
         let _=crate::thread::complete_wait(id,status);
     }
