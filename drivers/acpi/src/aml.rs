@@ -39,9 +39,10 @@ pub struct AmlNode {
     pub field_update_rule:u8,
     pub processor_id:u8, pub processor_pblk_address:u32, pub processor_pblk_length:u8,
     pub power_resource_system_level:u8, pub power_resource_order:u16,
+    pub external_placeholder:bool, pub external_owner:u32, pub external_object_type:u8, pub external_method_flags:u8,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
 }
 pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u32 }
 impl AmlNamespace {
@@ -67,7 +68,7 @@ impl AmlNamespace {
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
         if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:self.count+1})}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0};
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
         self.count+=1;Ok(i as u16)
     }
 }
@@ -183,11 +184,16 @@ fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:
                 if kind==AmlObjectType::Scope {
                     if !matches!(existing,AmlObjectType::Root|AmlObjectType::Scope|AmlObjectType::Device|AmlObjectType::Processor|AmlObjectType::PowerResource|AmlObjectType::ThermalZone){return Err(AmlError::InvalidParent)}
                     
-                } else if existing==AmlObjectType::External {
+                } else if kind==AmlObjectType::External && existing==AmlObjectType::External {
+                    // Repeated External declarations are compatible only when
+                    // the object kind and method argument count agree.
+                    if ns.nodes[found as usize].external_object_type!=flags && ns.nodes[found as usize].external_object_type!=0{return Err(AmlError::DuplicateName)}
+                } else if existing==AmlObjectType::External && ns.nodes[found as usize].external_placeholder {
                     ns.nodes[found as usize].object_type=kind;
                     ns.nodes[found as usize].method_flags=flags;
                     ns.nodes[found as usize].body_start=u32::try_from(body_start).map_err(|_|AmlError::BadDefinitionBlock)?;
                     ns.nodes[found as usize].body_length=u32::try_from(body_len).map_err(|_|AmlError::BadDefinitionBlock)?;
+                    ns.nodes[found as usize].source_table=ns.loading_table;
                 } else {return Err(AmlError::DuplicateName)}
             }
             p=found;continue
@@ -377,7 +383,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                 let alias_index=resolve_path(ns,parent,&alias,true,AmlObjectType::Alias,0,0,0)?;
                 ns.nodes[alias_index as usize].alias_target=target;
             }
-            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;}
+            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};let id=resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;let node=&mut ns.nodes[id as usize];node.external_placeholder=true;node.external_owner=ns.loading_table;node.external_object_type=object_type;node.external_method_flags=flags;}
             0x5b=>{
                 let ext=c.byte()?;
                 match ext{
@@ -475,6 +481,19 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
 pub fn unload_definition_block(namespace:&mut AmlNamespace,table_id:u32)->usize{
     if table_id==0{return 0}
     let old_count=namespace.count;
+    // A real declaration may temporarily satisfy an External placeholder
+    // from an earlier table. When its owning table unloads, restore that
+    // placeholder so the earlier table's namespace remains coherent.
+    for index in 1..old_count {
+        let node=&mut namespace.nodes[index];
+        if node.source_table==table_id && node.external_placeholder && node.external_owner!=table_id {
+            node.object_type=AmlObjectType::External;
+            node.source_table=node.external_owner;
+            node.method_flags=node.external_method_flags;
+            node.body_start=0;
+            node.body_length=0;
+        }
+    }
     let mut needed_as_scope=[false;MAX_NAMESPACE_NODES];
     // Any surviving object needs its Scope ancestors as namespace containers.
     for index in 1..old_count {
@@ -555,6 +574,29 @@ mod tests{
         let id=ns.find_child(0,*b"MET0").unwrap() as usize;
         assert_eq!(ns.nodes[id].object_type,AmlObjectType::Method);
         assert_eq!(ns.nodes[id].method_flags,0);
+    }
+    #[test]fn external_method_definition_is_owned_by_its_table_and_reverts_on_unload(){
+        let mut ns=AmlNamespace::new();
+        let external=[0x15,b'M',b'E',b'T',b'0',8,0];
+        load_definition_block_owned(&external,&mut ns,1).unwrap();
+        let id=ns.find_child(0,*b"MET0").unwrap() as usize;
+        assert_eq!(ns.nodes[id].object_type,AmlObjectType::External);
+        let method=[0x14,0x06,b'M',b'E',b'T',b'0',0];
+        load_definition_block_owned(&method,&mut ns,2).unwrap();
+        assert_eq!(ns.nodes[id].object_type,AmlObjectType::Method);
+        assert_eq!(ns.nodes[id].source_table,2);
+        assert_eq!(unload_definition_block(&mut ns,2),0);
+        assert_eq!(ns.nodes[id].object_type,AmlObjectType::External);
+        assert_eq!(ns.nodes[id].source_table,1);
+        assert_eq!(unload_definition_block(&mut ns,1),1);
+        assert!(ns.find_child(0,*b"MET0").is_none());
+    }
+    #[test]fn table_owner_ids_support_values_above_one_byte(){
+        let mut ns=AmlNamespace::new();
+        load_definition_block_owned(&[0x08,b'H',b'I',b'G',b'H',0x01],&mut ns,300).unwrap();
+        assert_eq!(ns.nodes[1].source_table,300);
+        assert_eq!(unload_definition_block(&mut ns,300),1);
+        assert_eq!(ns.count,1);
     }
     #[test]fn scope_reopen_is_shared_across_table_owners(){
         let mut ns=AmlNamespace::new();
