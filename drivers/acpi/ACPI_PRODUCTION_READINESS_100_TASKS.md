@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `acpi-production-readiness-audit`  
-**Status:** tasks 1–20 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
+**Status:** tasks 1–23 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -31,9 +31,9 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 18. [x] Complete Field, IndexField, BankField, ConnectField, AccessField, and ExtendedAccessField parsing.
 19. [x] Use checked bit-offset arithmetic and validate field lengths and access widths.
 20. [x] Make namespace capacity configurable or return explicit capacity diagnostics.
-21. [ ] Implement integer constants and AML revision-dependent integer width semantics.
-22. [ ] Validate Buffer, Package, and VarPackage payloads and nested package boundaries.
-23. [ ] Reject unterminated strings and malformed encodings without scanning past table bounds.
+21. [x] Implement integer constants and AML revision-dependent integer width semantics.
+22. [x] Validate Buffer, Package, and VarPackage payloads and nested package boundaries.
+23. [x] Reject unterminated strings and malformed encodings without scanning past table bounds.
 24. [ ] Report unsupported opcode with table, byte offset, opcode, and enclosing namespace object.
 25. [ ] Create an iASL/ACPICA-derived parser conformance corpus.
 
