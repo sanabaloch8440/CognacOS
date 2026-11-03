@@ -279,11 +279,7 @@ unsafe extern "win64" fn pnp_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,con
 unsafe extern "win64" fn remove_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,context:PVOID)->i32{
  let fdo=context.cast::<DEVICE_OBJECT>();if fdo.is_null()||irp.is_null(){return STATUS_SUCCESS}
  if let Some(ext)=extension(fdo){
-  unsafe{(*ext).removing=1;}
-  let physical=unsafe{(*ext).physical};
-  unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;}
-  if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
-  unsafe{(*ext).magic=0;}
+  unsafe{(*ext).removing=1;(*ext).magic=0;}
   let lower=unsafe{(*ext).lower};if !lower.is_null(){unsafe{IoDetachDevice(lower)}}
  }
  unsafe{IoDeleteDevice(fdo)}
@@ -380,6 +376,9 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
    }
   }
   if minor==IRP_MN_REMOVE_DEVICE {
+   let physical=unsafe{(*ext).physical};
+   unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;}
+   if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
    unsafe{IoSetCompletionRoutine(irp,Some(remove_complete),device.cast(),1,1,1);IoSkipCurrentIrpStackLocation(irp);return IoCallDriver((*ext).lower,irp);}
   }
   if minor==IRP_MN_START_DEVICE||minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL {
