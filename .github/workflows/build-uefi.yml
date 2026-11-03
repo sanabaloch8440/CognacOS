@@ -1,8 +1,10 @@
 name: Build and boot-test CognacOS Rust UEFI kernel
 
-# Temporarily manual-only while ACPI reaches its production-readiness gates.
-# Keep the workflow available for deliberate end-to-end validation.
+# Run the full UEFI build and QEMU smoke test on main updates, while retaining
+# an explicit manual entry point for targeted validation.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
