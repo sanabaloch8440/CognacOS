@@ -22,6 +22,8 @@ const PDO_MAGIC:u64=0x434f_474e_4449_534b;
 const IOCTL_DISK_GET_DRIVE_GEOMETRY:u32=0x0007_0000;
 const IOCTL_DISK_GET_LENGTH_INFO:u32=0x0007_405c;
 const IOCTL_COGNACOS_DISK_QUERY_IDENTITY:u32=0x002d_1c00;
+const IOCTL_STORAGE_QUERY_PROPERTY:u32=0x002d_1400;
+const IOCTL_STORAGE_GET_DEVICE_NUMBER:u32=0x002d_1080;
 
 #[repr(C)]
 struct AtaDiskPdoExtension {
@@ -49,6 +51,18 @@ struct DiskGeometryInformation {
     sectors_per_track:u32,
     bytes_per_sector:u32,
 }
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct StorageDeviceDescriptor {
+    version:u32,size:u32,device_type:u8,device_type_modifier:u8,
+    removable_media:u8,command_queueing:u8,
+    vendor_id_offset:u32,product_id_offset:u32,product_revision_offset:u32,
+    serial_number_offset:u32,bus_type:u32,raw_properties_length:u32,
+}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct StorageDeviceNumber { device_type:u32,device_number:u32,partition_number:u32 }
+
 #[repr(C)]
 #[derive(Clone,Copy)]
 struct DiskIdentityInformation {
@@ -124,6 +138,17 @@ fn extension(device:*mut DEVICE_OBJECT)->Option<*mut DiskFdoExtension>{
 fn current_stack(irp:*mut IRP)->*mut IO_STACK_LOCATION{
  if irp.is_null(){core::ptr::null_mut()}else{unsafe{(*irp).tail[8] as *mut IO_STACK_LOCATION}}
 }
+
+fn identity_string_length(value:&[u8])->usize{
+ value.iter().position(|byte|*byte==0).unwrap_or(value.len())
+}
+unsafe fn write_storage_string(buffer:*mut u8,output_length:usize,offset:usize,value:&[u8])->Option<usize>{
+ let length=identity_string_length(value);
+ let end=offset.checked_add(length)?.checked_add(1)?;
+ if end>output_length{return None}
+ unsafe{core::ptr::copy_nonoverlapping(value.as_ptr(),buffer.add(offset),length);buffer.add(offset+length).write(0);}
+ Some(end)
+}
 unsafe fn complete(irp:*mut IRP,status:i32,information:usize)->i32{
  unsafe{(*irp).io_status.status.status=status;(*irp).io_status.information=information;IoCompleteRequest(irp,0);}
  status
@@ -169,6 +194,38 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
      tracks_per_cylinder:tracks,sectors_per_track,bytes_per_sector:descriptor.geometry.logical_sector_size};
     unsafe{core::ptr::write_unaligned(buffer.cast::<DiskGeometryInformation>(),geometry);}
     return unsafe{complete(irp,STATUS_SUCCESS,core::mem::size_of::<DiskGeometryInformation>())}
+   }
+   IOCTL_STORAGE_GET_DEVICE_NUMBER=>{
+    if buffer.is_null()||output_length<core::mem::size_of::<StorageDeviceNumber>() as u32{return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}}
+    let number=StorageDeviceNumber{device_type:FILE_DEVICE_DISK,device_number:descriptor.identity.stable_id as u32,partition_number:u32::MAX};
+    unsafe{core::ptr::write_unaligned(buffer.cast::<StorageDeviceNumber>(),number);}
+    return unsafe{complete(irp,STATUS_SUCCESS,core::mem::size_of::<StorageDeviceNumber>())}
+   }
+   IOCTL_STORAGE_QUERY_PROPERTY=>{
+    let input_length=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(4).cast::<u32>())};
+    if buffer.is_null()||input_length<8||output_length<core::mem::size_of::<StorageDeviceDescriptor>() as u32{return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}}
+    let property=unsafe{core::ptr::read_unaligned(buffer.cast::<u32>())};
+    let query_type=unsafe{core::ptr::read_unaligned(buffer.add(4).cast::<u32>())};
+    if property!=0||query_type!=0{return unsafe{complete(irp,STATUS_INVALID_DEVICE_REQUEST,0)}}
+    let header_size=core::mem::size_of::<StorageDeviceDescriptor>();
+    unsafe{core::ptr::write_bytes(buffer,0,output_length as usize);}
+    let vendor=b"ATA";
+    let mut cursor=header_size;
+    let vendor_offset=cursor;
+    cursor=match unsafe{write_storage_string(buffer,output_length as usize,cursor,vendor)}{Some(v)=>v,None=>return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}};
+    let product_offset=cursor;
+    cursor=match unsafe{write_storage_string(buffer,output_length as usize,cursor,&descriptor.identity.model)}{Some(v)=>v,None=>return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}};
+    let revision_offset=cursor;
+    cursor=match unsafe{write_storage_string(buffer,output_length as usize,cursor,&descriptor.identity.firmware)}{Some(v)=>v,None=>return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}};
+    let serial_offset=cursor;
+    cursor=match unsafe{write_storage_string(buffer,output_length as usize,cursor,&descriptor.identity.serial)}{Some(v)=>v,None=>return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}};
+    let header=StorageDeviceDescriptor{version:header_size as u32,size:cursor as u32,device_type:0,device_type_modifier:0,
+     removable_media:descriptor.removable as u8,command_queueing:0,
+     vendor_id_offset:vendor_offset as u32,product_id_offset:product_offset as u32,
+     product_revision_offset:revision_offset as u32,serial_number_offset:serial_offset as u32,
+     bus_type:3,raw_properties_length:0};
+    unsafe{core::ptr::write_unaligned(buffer.cast::<StorageDeviceDescriptor>(),header);}
+    return unsafe{complete(irp,STATUS_SUCCESS,cursor)}
    }
    IOCTL_COGNACOS_DISK_QUERY_IDENTITY=>{
     if buffer.is_null()||output_length<core::mem::size_of::<DiskIdentityInformation>() as u32{return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}}
