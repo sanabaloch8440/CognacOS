@@ -336,6 +336,8 @@ mod tests{
     #[test]fn integer_invoker_evaluates_direct_string_and_package_methods(){
         let mut aml=std::vec::Vec::new();aml.extend_from_slice(&[0x5b,0x82,0,b'D',b'E',b'V',b'0']);
         add_method(&mut aml,*b"_HID",&[0xa4,0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0]);
+         let flags_offset=aml.len()-&[0xa4,0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'1',0].len()-1;
+         aml[flags_offset]=0x08; // Exercise failure while acquiring a Serialized method mutex.
         add_method(&mut aml,*b"_CID",&[0xa4,0x12,0x16,2,
             0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'2',0,
             0x0d,b'A',b'C',b'M',b'E',b'0',b'0',b'0',b'3',0]);
