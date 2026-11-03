@@ -538,6 +538,35 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,0)
 }
 
+/// Execute a method in a caller-owned AML object context.
+///
+/// Unlike the convenience wrappers, this API keeps the value arena and
+/// namespace bindings alive across the call. Package arguments, Package
+/// returns, and references into nested runtime objects therefore remain valid
+/// for the caller's context lifetime. The caller must not reset either context
+/// while any returned Package or ObjectReference is still in use.
+pub fn execute_method_in_context(
+    aml:&[u8],
+    namespace:&AmlNamespace,
+    method_index:u16,
+    args:&[AmlRuntimeValue],
+    integer_width_bits:u8,
+    arena:&mut AmlObjectArena,
+    bindings:&mut AmlBindings,
+    sync:&dyn AmlMethodSynchronizer,
+)->Result<AmlRuntimeValue,ExecError>{
+    if args.len()>7{return Err(ExecError::BadArgumentCount)}
+    for argument in args {
+        validate_runtime_value(argument,arena)
+            .map_err(|_|ExecError::UnsupportedArgumentValue)?;
+    }
+    if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
+    execute_method_inner(
+        aml,namespace,method_index,args,0,integer_width_bits,
+        arena,bindings,sync,0,
+    )
+}
+
 /// Convenience entry point for non-Serialized methods. Serialized methods fail
 /// closed unless the caller uses execute_method_typed_with_sync and supplies
 /// the OS's per-thread implicit-mutex provider.
@@ -839,6 +868,27 @@ mod tests{
   let reference=make_object_reference(AmlReference::PackageElement{package:u16::MAX,index:0});
   assert_eq!(execute_method_typed_with_values(&aml,&ns,id,&[reference],64),Err(ExecError::UnsupportedArgumentValue));
  }
+ #[test]fn shared_context_preserves_package_arguments_and_returns(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',1,0xa4,0x68];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let mut arena=AmlObjectArena::new();
+  let mut child=AmlRuntimeValue::EMPTY;child.kind=AmlValueKind::Integer;child.integer=0x1234;
+  let child_id=arena.allocate(child).unwrap();
+  let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
+  package.element_count=1;package.elements[0]=child_id;
+  let package_id=arena.allocate(package).unwrap();
+  let argument=*arena.get(package_id).unwrap();
+  let mut bindings=AmlBindings::with_aml_revision(2);
+  let result=execute_method_in_context(&aml,&ns,id,&[argument],64,
+      &mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(result.kind,AmlValueKind::Package);
+  assert_eq!(result.element_count,1);
+  let returned_child=arena.get(result.elements[0]).unwrap();
+  assert_eq!(returned_child.kind,AmlValueKind::Integer);
+  assert_eq!(returned_child.integer,0x1234);
+ }
+
  #[test]fn serialized_method_requires_host_sync_and_releases_its_implicit_mutex(){
   let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0x38,0xa4,0x01];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
