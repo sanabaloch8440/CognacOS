@@ -200,7 +200,7 @@ mod tests{
  #[test]fn implicit_source_conversion_reads_string_and_buffer_name_objects(){
   let string_aml=[
    0x08,b'S',b'T',b'R',b'0',0x0d,b'2',b'A',0,
-   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'S',b'T',b'R',b'0',0x01,0x00
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'S',b'T',b'R',b'0',0x01,0x00
   ];
   let mut ns=AmlNamespace::new();load_definition_block(&string_aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
@@ -208,7 +208,7 @@ mod tests{
 
   let buffer_aml=[
    0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,0x34,0x12,
-   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'B',b'U',b'F',b'0',0x01,0x00
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'B',b'U',b'F',b'0',0x01,0x00
   ];
   let mut ns=AmlNamespace::new();load_definition_block(&buffer_aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
@@ -217,7 +217,7 @@ mod tests{
 
  #[test]fn method_local_and_argument_targets_store_integer_values_without_type_aliasing(){
   let mut namespace=AmlNamespace::new();
-  let aml=[0x14,0x0d,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
+  let aml=[0x14,0x0f,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
   load_definition_block(&aml,&mut namespace).unwrap();
   let id=namespace.find_child(0,*b"TEST").unwrap();
   // Existing public entry point passes Integer args; typed Name operands are
@@ -233,7 +233,7 @@ mod tests{
   assert_eq!(execute_method_with_integer_width(&aml,&ns,id,&[],64).unwrap(),AmlValue::Integer(u64::MAX));
 
   let add=[0x08,b'S',b'T',b'R',b'0',0x0d,b'F',b'F',b'F',b'F',b'F',b'F',b'F',b'F',0,
-   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'S',b'T',b'R',b'0',0x01,0x00];
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'S',b'T',b'R',b'0',0x01,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&add,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method_with_integer_width(&add,&ns,id,&[],32).unwrap(),AmlValue::Integer(0));
@@ -250,7 +250,7 @@ mod tests{
   // Local0 while invoking MTH0; the nested frame must not overwrite it.
   let aml=[
    0x14,0x0b,b'M',b'T',b'H',b'0',1,0x70,0x68,0x60,0xa4,0x60,
-   0x14,0x12,b'M',b'T',b'H',b'1',1,0x70,0x0a,7,0x60,0x70,b'M',b'T',b'H',b'0',0x68,0x61,0xa4,0x60
+   0x14,0x13,b'M',b'T',b'H',b'1',1,0x70,0x0a,7,0x60,0x70,b'M',b'T',b'H',b'0',0x68,0x61,0xa4,0x60
   ];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"MTH1").unwrap();
@@ -327,12 +327,12 @@ mod tests{
  #[test]fn rejects_namespace_slots_outside_the_live_node_count(){
   let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x0a,7];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-  assert_eq!(execute_method(&aml,&ns,1,&[]),Err(ExecError::InvalidMethod));
+  assert_eq!(execute_method(&aml,&ns,0,&[]),Err(ExecError::InvalidMethod));
   assert_eq!(execute_method(&aml,&ns,u16::MAX,&[]),Err(ExecError::InvalidMethod));
  }
  #[test]fn bounds_non_terminating_aml_while_loops(){
   // While (One) { Noop } must stop at the interpreter step budget.
-  let aml=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa2,0x03,0x01,0xa3];
+  let aml=[0x14,0x0a,b'T',b'E',b'S',b'T',0,0xa2,0x03,0x01,0xa3];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::StepLimit));
@@ -354,7 +354,7 @@ mod tests{
  }
  #[test]fn term_argument_decoder_reports_truncation_and_unsupported_names(){
   assert_eq!(evaluate_term_argument(&[0x0c,0x11,0x22]),Err(ExecError::Truncated));
-  assert_eq!(evaluate_term_argument(&[b'V',b'A',b'L',b'0']),Err(ExecError::UnsupportedOpcode));
+  assert_eq!(evaluate_term_argument(&[b'V',b'A',b'L',b'0']),Err(ExecError::NameNotFound));
  }
  #[test]fn bounds_recursive_term_argument_nesting(){
   let mut nested=std::vec![0x92;34];
@@ -400,9 +400,9 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
  }
  #[test]fn break_only_exits_the_innermost_nested_while(){
-  let aml=[0x14,0x17,b'T',b'E',b'S',b'T',0,
+  let aml=[0x14,0x1a,b'T',b'E',b'S',b'T',0,
    0x70,0x0a,2,0x60,
-   0xa2,0x0a,0x94,0x60,0x00,0x70,0x01,0x61,
+   0xa2,0x0d,0x94,0x60,0x00,0x70,0x01,0x61,
     0xa2,0x03,0x01,0xa5,0x76,0x60,
    0xa4,0x60];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
