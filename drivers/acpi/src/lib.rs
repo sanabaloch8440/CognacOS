@@ -62,7 +62,7 @@ pub fn validate_sdt(bytes:&[u8],expected_signature:Option<[u8;4]>)->Result<AcpiT
 pub struct FadtInfo {
     pub revision:u8,pub preferred_pm_profile:u8,pub firmware_ctrl:u32,pub dsdt:u32,
     pub boot_arch_flags:u16,pub flags:u32,pub minor_version:u8,
-    pub x_firmware_ctrl:u64,pub x_dsdt:u64,
+    pub x_firmware_ctrl:u64,pub x_dsdt:u64,pub pm1a_control_legacy:u32,
     pub reset_register:Option<AcpiGas>, pub x_pm1a_control_block:Option<AcpiGas>,
     pub x_pm1b_control_block:Option<AcpiGas>, pub x_pm2_control_block:Option<AcpiGas>,
     pub x_pm_timer_block:Option<AcpiGas>, pub x_gpe0_block:Option<AcpiGas>, pub x_gpe1_block:Option<AcpiGas>,
@@ -71,7 +71,6 @@ impl FadtInfo {
     pub fn effective_firmware_ctrl(&self)->u64{if self.x_firmware_ctrl!=0{self.x_firmware_ctrl}else{self.firmware_ctrl as u64}}
     pub fn effective_dsdt(&self)->u64{if self.x_dsdt!=0{self.x_dsdt}else{self.dsdt as u64}}
     pub fn effective_pm1a_control_address(&self)->u64{self.x_pm1a_control_block.map(|g|g.address).filter(|a|*a!=0).unwrap_or(self.pm1a_control_legacy as u64)}
-    pub pm1a_control_legacy:u32,
 }
 /// Parse the stable ACPI 5.0+ FADT fields, checking each field against the
 /// actual table length. Short legacy FADTs remain valid with absent fields zero.
