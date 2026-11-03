@@ -2,22 +2,22 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `acpi-production-readiness-audit`  
-**Status:** audit checklist; listing a task does not mean it is implemented or tested.
+**Status:** tasks 1–10 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
 ## Firmware tables and boot validation
 
-1. [ ] Validate RSDP v1/v2 revision, lengths, checksums, and extended checksum before dereferencing.
-2. [ ] Validate XSDT/RSDT entry alignment, physical ranges, entry counts, and arithmetic overflow.
-3. [ ] Map firmware tables through a validated HAL mapping contract; never cast arbitrary physical addresses into slices.
-4. [ ] Validate every SDT length against mapped extents before checksum traversal.
-5. [ ] Define deterministic policy for duplicate/conflicting singleton tables and table instances.
-6. [ ] Validate FADT revision/length before optional fields and prefer valid extended GAS fields.
-7. [ ] Resolve DSDT through validated FADT pointers with legacy/extended fallback and mapping checks.
-8. [ ] Document and test SSDT enumeration and the HAL contract for contiguous table instances.
-9. [ ] Add table-specific validation for FACS, HPET, MCFG, MADT, SRAT, SLIT, DMAR, GTDT, PPTT, and BGRT.
-10. [ ] Track table provenance, physical address, revision, checksum, and mapping lifetime.
+1. [x] Validate RSDP v1/v2 revision, lengths, checksums, and extended checksum before dereferencing.
+2. [x] Validate XSDT/RSDT entry alignment, physical ranges, entry counts, and arithmetic overflow.
+3. [x] Map firmware tables through a validated HAL mapping contract; never cast arbitrary physical addresses into slices.
+4. [x] Validate every SDT length against mapped extents before checksum traversal.
+5. [x] Define deterministic policy for duplicate/conflicting singleton tables and table instances.
+6. [x] Validate FADT revision/length before optional fields and prefer valid extended GAS fields.
+7. [x] Resolve DSDT through validated FADT pointers with legacy/extended fallback and mapping checks.
+8. [x] Document and test SSDT enumeration and the HAL contract for contiguous table instances.
+9. [x] Add table-specific validation for FACS, HPET, MCFG, MADT, SRAT, SLIT, DMAR, GTDT, PPTT, and BGRT.
+10. [x] Track table provenance, physical address, revision, checksum, and mapping lifetime.
 
 ## AML parser and namespace
 
@@ -139,3 +139,8 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 - [ ] Supported behavior is compared against ACPICA/iASL fixtures; unsupported behavior fails closed.
 - [ ] Suspend/resume, IRQ routing, EC/thermal, NUMA, and DMA-remapping claims are limited to tested features.
 - [ ] Production readiness is withheld until critical-path gates have evidence.
+
+
+## Firmware discovery batch 1 evidence
+
+Tasks 1–10 were checked off after the ACPI test workflow compiled the complete library test suite and passed the focused firmware-discovery regression suites on commit `3abb1b47ea29eb451f5995509b94d93acbb8852d` (workflow run `41571153077`). The test workflow compiles all library tests, then runs RSDP, root-table, DSDT, SSDT/provenance, FADT GAS, FACS/HPET/BGRT/GTDT/PPTT, ACPI 5/6, and NUMA table regression suites. The broader pre-existing AML/PnP/resource tests are compiled but not all executed by this focused workflow; their existing runtime failures are outside this batch and are not claimed fixed.
