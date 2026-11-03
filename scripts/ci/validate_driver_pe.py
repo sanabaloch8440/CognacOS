@@ -10,8 +10,7 @@ EXPECTED_IMPORTS = {
             "IoAttachDeviceToDeviceStack", "IoDetachDevice", "IoCallDriver",
             "IoCopyCurrentIrpStackLocationToNext", "IoSkipCurrentIrpStackLocation",
             "IoSetCompletionRoutine", "IoPnPQueryBusInterface",
-            "IoPnPRegisterDeviceDriver", "IoPnPRegisterBusDevice",
-            "IoPnPProcessBusRelations", "IoPnPEnumerateBus",
+            "IoPnPRegisterDeviceDriver", "IoPnPEnumerateBus",
         ],
     },
     "disk.sys": {
@@ -28,7 +27,7 @@ EXPECTED_IMPORTS = {
             "IoCopyCurrentIrpStackLocationToNext", "IoSetCompletionRoutine",
             "IoAllocateIrp", "IoGetNextIrpStackLocation", "IoFreeIrp",
             "IoCompleteRequest", "IoPnPRegisterDeviceDriver",
-            "IoPnPRegisterBusDevice", "IoPnPEnumerateBus",
+            "IoPnPEnumerateBus",
         ],
     },
     "pciidex.sys": {
