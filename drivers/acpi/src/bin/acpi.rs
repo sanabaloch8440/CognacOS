@@ -186,6 +186,10 @@ struct AcpiState {
     active_operations: core::sync::atomic::AtomicUsize,
     interface_references: core::sync::atomic::AtomicUsize,
     madt: UnsafeCell<MaybeUninit<acpi::MadtInfo>>,
+    fadt: UnsafeCell<MaybeUninit<acpi::FadtInfo>>,
+    platform_registers: UnsafeCell<MaybeUninit<acpi::acpi_events::AcpiPlatformRegisters>>,
+    gpe_controller: UnsafeCell<MaybeUninit<acpi::acpi_events::GpeController>>,
+    power_resources: UnsafeCell<MaybeUninit<acpi::acpi_power::PowerResourceGraph>>,
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
     dmar_present: AtomicBool,
@@ -201,6 +205,10 @@ static STATE: AcpiState = AcpiState {
     active_operations: core::sync::atomic::AtomicUsize::new(0),
     interface_references: core::sync::atomic::AtomicUsize::new(0),
     madt: UnsafeCell::new(MaybeUninit::uninit()),
+    fadt: UnsafeCell::new(MaybeUninit::uninit()),
+    platform_registers: UnsafeCell::new(MaybeUninit::uninit()),
+    gpe_controller: UnsafeCell::new(MaybeUninit::new(acpi::acpi_events::GpeController::new())),
+    power_resources: UnsafeCell::new(MaybeUninit::new(acpi::acpi_power::PowerResourceGraph::new())),
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
     dmar_present: AtomicBool::new(false),
@@ -833,6 +841,16 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
      object.major_function[IRP_MJ_POWER] = Some(power_dispatch);
     object.driver_unload = Some(driver_unload);
+    // FADT selects the platform programming model. Hardware-reduced systems
+    // must never fall back to legacy PM1 or GPE register blocks.
+    let fadt_bytes=match unsafe{query_hal_table(*b"FACP",0)}{
+        Ok(bytes)=>bytes,Err(status)=>return status,
+    };
+    let fadt=match acpi::parse_fadt(fadt_bytes){Ok(value)=>value,Err(error)=>return acpi::error_to_ntstatus(error)};
+    let platform=match acpi::acpi_events::platform_registers(&fadt){
+        Ok(value)=>value,Err(_)=>return STATUS_DEVICE_CONFIGURATION_ERROR,
+    };
+    unsafe{(*STATE.fadt.get()).write(fadt);(*STATE.platform_registers.get()).write(platform);}
     let madt_bytes = match unsafe { query_hal_table(*b"APIC", 0) } {
         Ok(bytes) => bytes,
         Err(status) => return status,
