@@ -202,6 +202,43 @@ impl SciLifecycle {
     }
 }
 
+
+/// Driver-owned callback context. Allocate this in nonpaged, stable storage
+/// before registering the interrupt and retain it until HAL unregister plus
+/// passive-worker rundown have completed.
+#[repr(C)]
+pub struct SciCallbackContext {
+    pub owner_context: u64,
+    /// Reads enabled GPE status, masks/acks pending sources, and appends
+    /// records to the bounded GPE queue. Must be ISR-safe and nonblocking.
+    pub capture_gpes: extern "C" fn(owner_context: u64) -> bool,
+    /// Enqueues a kernel work item. Must not execute the worker inline.
+    pub queue_passive_worker: extern "C" fn(owner_context: u64) -> bool,
+    /// Drains the GPE/EC queues and invokes AML at PASSIVE_LEVEL.
+    pub run_passive_worker: extern "C" fn(owner_context: u64),
+}
+/// HAL ISR callback: capture only. The HAL queues the associated DPC after
+/// interrupt dispatch/EOI; no AML or passive synchronization is permitted here.
+pub extern "C" fn sci_isr_trampoline(context: u64) -> bool {
+    if context == 0 { return false; }
+    let callbacks = unsafe { &*(context as *const SciCallbackContext) };
+    (callbacks.capture_gpes)(callbacks.owner_context)
+}
+/// HAL DPC callback: schedule a PASSIVE_LEVEL work item and return. The kernel
+/// queue routine must be nonblocking and must not invoke AML synchronously.
+pub extern "C" fn sci_dpc_trampoline(context: u64) {
+    if context == 0 { return; }
+    let callbacks = unsafe { &*(context as *const SciCallbackContext) };
+    let _ = (callbacks.queue_passive_worker)(callbacks.owner_context);
+}
+/// Kernel work-item entry point. The caller guarantees PASSIVE_LEVEL and holds
+/// an ACPI operation/rundown reference for the entire worker invocation.
+pub extern "C" fn sci_passive_worker_trampoline(context: u64) {
+    if context == 0 { return; }
+    let callbacks = unsafe { &*(context as *const SciCallbackContext) };
+    (callbacks.run_passive_worker)(callbacks.owner_context);
+}
+
 #[cfg(test)]
 extern crate std;
 #[cfg(test)]
