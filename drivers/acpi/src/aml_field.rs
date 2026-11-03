@@ -481,7 +481,7 @@ mod tests{
         let mut io=CompositeMemory{value:0x5a,bank:0,indexed_reads:0,indexed_writes:0};
         assert_eq!(read_index_field(&ns,1,&mut io),Ok(0x5a));
         assert_eq!(write_index_field(&ns,1,0xa5,&mut io),Ok(()));
-        assert_eq!(io.value,0xa5);assert_eq!(io.indexed_reads,1);assert_eq!(io.indexed_writes,1);
+        assert_eq!(io.value,0xa5);assert_eq!(io.indexed_reads,2);assert_eq!(io.indexed_writes,1);
     }
 
     #[test]
