@@ -38,7 +38,7 @@ struct PartMgrFdoExtension{
 }
 #[repr(C)]
 struct PartitionPdoExtension{
- magic:u64,parent:*mut DEVICE_OBJECT,partition:Partition,geometry:Geometry,
+ magic:u64,parent:*mut DEVICE_OBJECT,partition:Partition,geometry:Geometry,stable_id:u64,
 }
 const _:()=assert!(core::mem::size_of::<PartMgrFdoExtension>()<=1024);
 const _:()=assert!(core::mem::size_of::<PartitionPdoExtension>()<=192);
@@ -57,7 +57,6 @@ unsafe extern "win64"{
  fn IoFreeIrp(irp:*mut IRP);
  fn IoCompleteRequest(irp:*mut IRP,priority_boost:i8);
  fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
- fn IoPnPRegisterBusDevice(enumerator_id:u32,identity_hash:u64,device:*mut DEVICE_OBJECT,output_index:*mut u32)->i32;
  fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
 }
 core::arch::global_asm!(r#"
@@ -82,7 +81,6 @@ IMPORT IoGetNextIrpStackLocation
 IMPORT IoFreeIrp
 IMPORT IoCompleteRequest
 IMPORT IoPnPRegisterDeviceDriver
-IMPORT IoPnPRegisterBusDevice
 IMPORT IoPnPEnumerateBus
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -105,7 +103,6 @@ IAT IoGetNextIrpStackLocation
 IAT IoFreeIrp
 IAT IoCompleteRequest
 IAT IoPnPRegisterDeviceDriver
-IAT IoPnPRegisterBusDevice
 IAT IoPnPEnumerateBus
 "#);
 
@@ -184,13 +181,9 @@ unsafe fn scan_partitions(ext:*mut PartMgrFdoExtension)->i32{
   if status!=STATUS_SUCCESS||child.is_null(){continue}
   let child_ext=unsafe{(*child).device_extension.cast::<PartitionPdoExtension>()};
   unsafe{
-   child_ext.write(PartitionPdoExtension{magic:PARTITION_PDO_MAGIC,parent:unsafe{(*ext).self_device},partition,geometry:descriptor.geometry});
+   child_ext.write(PartitionPdoExtension{magic:PARTITION_PDO_MAGIC,parent:unsafe{(*ext).self_device},partition,geometry:descriptor.geometry,stable_id:partition_identity(descriptor.identity.stable_id,partition)});
    (*child).flags|=0x0000_1004;
   }
-  let identity=partition_identity(descriptor.identity.stable_id,partition);
-  let mut devnode=0u32;
-  let status=unsafe{IoPnPRegisterBusDevice(PARTITION_ENUMERATOR_ID,identity,child,&mut devnode)};
-  if status!=STATUS_SUCCESS{unsafe{(*child_ext).magic=0;IoDeleteDevice(child)};continue}
   let relations=unsafe{&mut (*ext).relations};
   let index=relations.count as usize;relations.objects[index]=child;relations.count+=1;
  }
