@@ -129,26 +129,6 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 
 ## Security, reliability, performance, and CI
 
-101. [ ] Use checked arithmetic for all firmware lengths, offsets, counts, allocation sizes, and serialization.
-102. [ ] Centralize physical mapping validation and prevent stale pointers after unmapping.
-103. [ ] Audit unsafe blocks for alignment, lifetime, aliasing, and bounds invariants; document safety contracts.
-104. [ ] Replace spin-only locks in paths that may run at elevated IRQL with IRQL-safe primitives.
-105. [ ] Prevent lock-order cycles between AML, PnP callbacks, events, and power transitions.
-106. [ ] Prevent untrusted AML from arbitrary port/MMIO access before ownership and policy checks.
-107. [ ] Add quotas for namespace nodes, AML objects, tables, buffers, method calls, and notifications.
-108. [ ] Make DriverEntry transactional and unwind every device, allocation, handle, and registration on failure.
-109. [ ] Make unload safe with active PDOs, IRPs, callbacks, and AML execution.
-110. [ ] Map errors consistently to NTSTATUS for malformed firmware, unsupported AML, exhaustion, timeout, and not-ready.
-111. [ ] Use structured error context and tests rather than excessive boot-time diagnostic prints.
-112. [ ] Synchronize PDO arrays, relation storage, table manager, readiness, and callbacks against races.
-113. [ ] Fuzz table headers, package lengths, NameStrings, resource templates, and namespace operations.
-114. [ ] Run Miri or equivalent host-side checks where feasible and sanitizer-enabled parser tests.
-115. [ ] Add property tests for parser bounds, serialization round trips, alias cycles, and nested packages.
-116. [ ] Add regression tests for prior bugs without relying on diagnostic-print output.
-117. [ ] Add CI for formatting, lint, unit tests, fuzz smoke tests, target build, and QEMU boot.
-118. [ ] Track ACPI 5.0–6.6 table and AML support separately as implemented/partial/unsupported/tested.
-119. [ ] Compare supported behavior with iASL/AcpiExec fixtures and fail closed for unsupported behavior.
-120. [ ] Withhold production-ready status until hardware, suspend/resume, resource arbitration, AML, and failure-injection gates pass.
 
 ## Acceptance gates
 
