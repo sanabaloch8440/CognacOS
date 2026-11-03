@@ -232,7 +232,7 @@ pub unsafe extern "win64" fn io_reuse_irp(irp:*mut Irp, status:i32) {
  let count=slot.object.bytes[0x42] as usize;
  if count==0||count>slot.stack.len()||slot.active_ops!=0||slot.outstanding_count!=0{return}
  slot.completion_state=0;slot.suspended_completion=false;slot.free_requested=false;
- slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
+ slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters_alignment:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
  slot.object.bytes[0x08..0x30].fill(0);
  slot.object.bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());
  slot.object.bytes[IRP_INFORMATION_OFFSET..IRP_INFORMATION_OFFSET+8].fill(0);
