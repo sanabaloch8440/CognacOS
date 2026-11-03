@@ -6,9 +6,8 @@
 //! closed until the kernel PASSIVE_LEVEL work-item/rundown path is enabled.
 use cognacos_fat32::DiskError;
 use crate::nt_abi::io::IRP as AbiIrp;
-use crate::wdm::{self, DeviceObject, Irp, IoStackLocation};
+use crate::wdm::{self, DeviceObject, Irp};
 
-const STATUS_SUCCESS:i32=0;
 const STATUS_PENDING:i32=0x0000_0103;
 const IRP_MJ_READ:u8=3;
 const IRP_MJ_WRITE:u8=4;
@@ -94,10 +93,7 @@ impl cognacos_fat32::BlockDevice for IoManagerBlockDevice{
         let length=u32::try_from(input.len()).map_err(|_|DiskError::OutOfRange)?;
         // The buffered I/O manager owns the system buffer for the duration of
         // this synchronous call; the input is copied into a mutable kernel buffer.
-        let mut buffer=[0u8;4096];
-        if input.len()>buffer.len(){return Err(DiskError::OutOfRange)}
-        buffer[..input.len()].copy_from_slice(input);
-        self.submit(IRP_MJ_WRITE,offset,buffer.as_mut_ptr(),length,0).map(|_|())
+        self.submit(IRP_MJ_WRITE,offset,input.as_ptr() as *mut u8,length,0).map(|_|())
     }
     fn flush(&mut self)->Result<(),DiskError>{
         self.submit(IRP_MJ_FLUSH_BUFFERS,0,core::ptr::null_mut(),0,0).map(|_|())
