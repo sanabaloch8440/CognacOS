@@ -51,7 +51,10 @@ const NLS_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);8] = [
 #[derive(Clone,Copy)]
 struct BootFile { address:u64, length:u64 }
 impl BootFile { const EMPTY:Self=Self{address:0,length:0}; }
-const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
+// Keep a hard upper bound for corrupted or hostile boot-volume files, but
+// leave room for the growing native kernel image. Read incrementally below
+// rather than reserving the entire limit from the UEFI heap.
+const MAX_KERNEL_FILE: usize = 128 * 1024 * 1024;
 const MAX_NTDLL_FILE: usize = 16 * 1024 * 1024;
 const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
@@ -127,22 +130,33 @@ fn main() -> Status {
         None => { uefi::println!("Kernel path is not a regular file"); return Status::LOAD_ERROR; }
     };
 
-    // Bound file size to prevent a corrupt filesystem image from forcing an
-    // unbounded allocation. A full-file read is required before parsing offsets.
-    let mut image = vec![0u8; MAX_KERNEL_FILE];
-    let mut used = 0usize;
+    // Bound the complete image while reading in fixed-size chunks. This avoids
+    // reserving the full maximum from the UEFI heap for every normal boot, and
+    // permits the current >32 MiB native kernel without an unbounded read.
+    let mut image = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
     loop {
-        if used == image.len() {
-            uefi::println!("Kernel PE image exceeds the 32 MiB limit");
+        let n = match kernel_file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) => {
+                uefi::println!("Kernel PE32+ image read failed: {:?}", err);
+                return err.status();
+            }
+        };
+        let Some(next_len) = image.len().checked_add(n) else {
+            uefi::println!("Kernel PE32+ image length overflow");
+            return Status::BAD_BUFFER_SIZE;
+        };
+        if next_len > MAX_KERNEL_FILE {
+            uefi::println!(
+                "Kernel PE image exceeds the {} MiB limit",
+                MAX_KERNEL_FILE / (1024 * 1024)
+            );
             return Status::BAD_BUFFER_SIZE;
         }
-        match kernel_file.read(&mut image[used..]) {
-            Ok(0) => break,
-            Ok(n) => used += n,
-            Err(err) => { uefi::println!("Kernel PE32+ image read failed: {:?}", err); return err.status(); }
-        }
+        image.extend_from_slice(&chunk[..n]);
     }
-    image.truncate(used);
     let Some(expected_digest) = EXPECTED_KERNEL_SHA256 else {
         uefi::println!("FATAL: no build-time kernel trust anchor; refusing unsigned/unpinned kernel");
         return Status::SECURITY_VIOLATION;
