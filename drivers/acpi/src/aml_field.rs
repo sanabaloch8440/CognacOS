@@ -127,7 +127,9 @@ impl AmlMutex {
         if n.object_type!=AmlObjectType::Mutex||n.method_flags>15{return Err(SyncError::InvalidObject)}
         Ok(Self::new(n.method_flags))
     }
+/// Return the AML Mutex synchronization level encoded by the namespace object.
     pub fn sync_level(&self)->u8{self.sync_level}
+/// Acquire the AML Mutex while enforcing owner, recursion, sync-level, and bounded-wait rules.
     pub fn acquire(&self,thread_id:u64,current_sync_level:&mut u8,spin_limit:u32)->Result<MutexToken,SyncError>{
         if thread_id==0{return Err(SyncError::InvalidOwner)}
         if self.sync_level<*current_sync_level{return Err(SyncError::SyncLevelViolation)}
@@ -149,6 +151,7 @@ impl AmlMutex {
         }
         Err(SyncError::Timeout)
     }
+/// Release an AML Mutex token and restore the caller's previous synchronization level.
     pub fn release(&self,thread_id:u64,current_sync_level:&mut u8,token:MutexToken)->Result<(),SyncError>{
         if thread_id==0||self.owner.load(Ordering::Acquire)!=thread_id{return Err(SyncError::NotOwner)}
         let depth=self.recursion.load(Ordering::Relaxed);
@@ -170,8 +173,11 @@ impl AmlEvent {
         if n.object_type!=AmlObjectType::Event{return Err(SyncError::InvalidObject)}
         Ok(Self::new())
     }
+/// Set the AML Event signaled state with release ordering.
     pub fn signal(&self){self.signaled.store(true,Ordering::Release);}
+/// Clear the AML Event signaled state with release ordering.
     pub fn reset(&self){self.signaled.store(false,Ordering::Release);}
+/// Wait for an AML Event using a bounded non-blocking spin policy.
     pub fn wait(&self,spin_limit:u32)->Result<(),SyncError>{
         for _ in 0..spin_limit{
             if self.signaled.compare_exchange(true,false,Ordering::AcqRel,Ordering::Acquire).is_ok(){return Ok(())}
