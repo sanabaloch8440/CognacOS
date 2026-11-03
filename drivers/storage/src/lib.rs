@@ -25,6 +25,7 @@ pub const fn error_to_ntstatus(error: StorageError) -> nt_abi::ntstatus::NTSTATU
     }
 }
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Geometry { pub sector_count: u64, pub logical_sector_size: u32, pub physical_sector_size: u32 }
 impl Geometry {
