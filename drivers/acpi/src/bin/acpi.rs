@@ -590,7 +590,6 @@ unsafe fn program_and_verify_pdo_resources(
     return STATUS_DEVICE_CONFIGURATION_ERROR
    }
   }
-  let _=prs_node;
  }
  let current=match read_pdo_resource_template(device,*b"_CRS"){
   Ok(value)=>value,Err(status)=>return status,
