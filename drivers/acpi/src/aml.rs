@@ -814,6 +814,34 @@ mod tests{
         assert_eq!(diagnostic.error,AmlError::UnsupportedOpcode);
         assert_eq!(ns.count,1);
     }
+    #[test]fn specification_derived_conformance_corpus(){
+        // These byte streams are authored from the public ACPI AML grammar.
+        // They test structural parsing only; they do not claim AML evaluation.
+        struct Fixture { name:&'static str, bytes:&'static [u8], expected:Result<usize,AmlError> }
+        let fixtures=[
+            Fixture{name:"empty definition block",bytes:&[],expected:Ok(1)},
+            Fixture{name:"Name with Ones integer",bytes:&[0x08,b'V',b'A',b'L',b'0',0xff],expected:Ok(2)},
+            Fixture{name:"Device with integer-valued _STA",bytes:&[
+                0x5b,0x82,0x0b,b'P',b'C',b'I',b'0',0x08,b'_',b'S',b'T',b'A',0x01
+            ],expected:Ok(3)},
+            Fixture{name:"OperationRegion and Field",bytes:&[
+                0x5b,0x80,b'R',b'E',b'G',b'N',0x00,0x0a,0x00,0x0a,0x10,
+                0x5b,0x81,0x0b,b'R',b'E',b'G',b'N',0x00,b'D',b'A',b'T',b'0',0x08
+            ],expected:Ok(3)},
+            Fixture{name:"reserved PkgLength bits",bytes:&[0x10,0x61,0x00],expected:Err(AmlError::BadPackageLength)},
+            Fixture{name:"unterminated string",bytes:&[
+                0x08,b'B',b'A',b'D',b'0',0x12,0x05,1,0x0d,b'x',b'y'
+            ],expected:Err(AmlError::Truncated)},
+            Fixture{name:"unsupported term opcode",bytes:&[0x99],expected:Err(AmlError::UnsupportedOpcode)},
+        ];
+        for fixture in fixtures {
+            let mut namespace=AmlNamespace::new();
+            let result=load_definition_block(fixture.bytes,&mut namespace).map(|()|namespace.count);
+            assert_eq!(result,fixture.expected,"fixture: {}",fixture.name);
+            if fixture.expected.is_err(){assert_eq!(namespace.count,1,"failed fixture mutated namespace: {}",fixture.name);}
+        }
+    }
+
     #[test]fn integer_constants_follow_definition_block_revision_width(){
         assert_eq!(decode_integer_constant(&[0x00],0,1,1),Ok((AmlInteger{value:0,width_bits:32},1)));
         assert_eq!(decode_integer_constant(&[0x01],0,1,1),Ok((AmlInteger{value:1,width_bits:32},1)));
