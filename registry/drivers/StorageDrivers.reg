@@ -46,14 +46,14 @@ Windows Registry Editor Version 5.00
 
 [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\disk]
 "Type"=dword:00000001
-"Start"=dword:00000003
+"Start"=dword:00000000
 "ErrorControl"=dword:00000001
 "Group"="SCSI Class"
 "ImagePath"="\\SystemRoot\\System32\\drivers\\disk.sys"
 
 [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\partmgr]
 "Type"=dword:00000001
-"Start"=dword:00000003
+"Start"=dword:00000000
 "ErrorControl"=dword:00000001
 "Group"="System Bus Extender"
 "ImagePath"="\\SystemRoot\\System32\\drivers\\partmgr.sys"
