@@ -178,6 +178,8 @@ impl AcpiDeviceRecord {
 }
 struct AcpiState {
     ready: AtomicBool,
+    unloading: AtomicBool,
+    active_operations: core::sync::atomic::AtomicUsize,
     madt: UnsafeCell<MaybeUninit<acpi::MadtInfo>>,
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
@@ -190,6 +192,8 @@ struct AcpiState {
 unsafe impl Sync for AcpiState {}
 static STATE: AcpiState = AcpiState {
     ready: AtomicBool::new(false),
+    unloading: AtomicBool::new(false),
+    active_operations: core::sync::atomic::AtomicUsize::new(0),
     madt: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
@@ -199,6 +203,25 @@ static STATE: AcpiState = AcpiState {
     device_records: UnsafeCell::new(MaybeUninit::new([AcpiDeviceRecord::EMPTY;MAX_ACPI_DEVICES])),
     device_count: core::sync::atomic::AtomicUsize::new(0),
 };
+
+/// Pins driver code and AML namespace state while a dispatch callback is
+/// executing. DriverUnload closes admission first, then drains this count
+/// before the image or its static dispatcher headers can be reclaimed.
+struct AcpiOperationGuard;
+impl AcpiOperationGuard {
+    fn enter()->Option<Self>{
+        if STATE.unloading.load(Ordering::Acquire){return None}
+        STATE.active_operations.fetch_add(1,Ordering::AcqRel);
+        if STATE.unloading.load(Ordering::Acquire){
+            STATE.active_operations.fetch_sub(1,Ordering::AcqRel);
+            return None
+        }
+        Some(Self)
+    }
+}
+impl Drop for AcpiOperationGuard {
+    fn drop(&mut self){STATE.active_operations.fetch_sub(1,Ordering::AcqRel);}
+}
 
 
 // ACPI.sys obtains firmware tables through the HAL's Windows-compatible
@@ -483,6 +506,7 @@ unsafe fn query_pdo_resource_requirements(device:*mut cognacos_nt_abi::io::DEVIC
 }
 
 unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+    let Some(_operation)=AcpiOperationGuard::enter() else{return STATUS_DEVICE_NOT_READY;};
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -560,7 +584,14 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
     status
 }
 unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+    // Stop new ACPI PnP callbacks before waiting for callbacks already inside
+    // AML evaluation. The kernel's mutant records are retired on final release;
+    // draining here guarantees no owner/waiter still references driver storage.
+    STATE.unloading.store(true, Ordering::Release);
     STATE.ready.store(false, Ordering::Release);
+    while STATE.active_operations.load(Ordering::Acquire)!=0 {
+        core::hint::spin_loop();
+    }
 }
 
 fn collect_device_identities(
@@ -599,6 +630,9 @@ fn collect_device_identities(
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -> i32 {
     if driver.is_null() { return STATUS_INVALID_PARAMETER; }
+    STATE.ready.store(false,Ordering::Release);
+    STATE.unloading.store(false,Ordering::Release);
+    STATE.active_operations.store(0,Ordering::Release);
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
     let madt_bytes = match unsafe { query_hal_table(*b"APIC", 0) } {
         Ok(bytes) => bytes,
