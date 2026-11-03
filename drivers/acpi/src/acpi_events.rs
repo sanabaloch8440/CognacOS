@@ -48,7 +48,7 @@ pub trait GasIo{
  fn write(&mut self,gas:AcpiGas,width:u8,value:u64)->Result<(),EventError>;
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct SleepRegisterWrite{pub gas:AcpiGas,pub width:u8,pub value:u64}
+pub struct SleepRegisterWrite{pub gas:AcpiGas,pub width:u8,pub value:u64,pub mask:u64}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct SleepRegisterPlan{pub writes:[Option<SleepRegisterWrite>;2],pub count:u8,pub state:u8}
 /// Construct (but do not execute) a spec-shaped S1-S5 register write sequence.
@@ -61,14 +61,14 @@ pub fn build_sleep_register_plan(registers:&AcpiPlatformRegisters,state:u8,type_
   AcpiHardwareModel::HardwareReduced=>{
    let gas=registers.sleep_control.ok_or(EventError::InvalidFadt)?;
    // HW-reduced SLEEP_CONTROL: SLP_TYP[4:2], SLP_EN[5].
-   plan.writes[0]=Some(SleepRegisterWrite{gas,width:1,value:((type_a as u64)<<2)|(1<<5)});plan.count=1;
+   plan.writes[0]=Some(SleepRegisterWrite{gas,width:1,value:((type_a as u64)<<2)|(1<<5),mask:(7<<2)|(1<<5)});plan.count=1;
   }
   AcpiHardwareModel::FixedHardware=>{
    let a=registers.pm1a_control.ok_or(EventError::InvalidFadt)?;
    // PM1 control: SLP_TYP[12:10], SLP_EN[13]. Preserve unrelated bits.
-   plan.writes[0]=Some(SleepRegisterWrite{gas:a,width:2,value:((type_a as u64)<<10)|(1<<13)});plan.count=1;
+   plan.writes[0]=Some(SleepRegisterWrite{gas:a,width:2,value:((type_a as u64)<<10)|(1<<13),mask:(7<<10)|(1<<13)});plan.count=1;
    if let Some(b)=registers.pm1b_control{
-    plan.writes[1]=Some(SleepRegisterWrite{gas:b,width:2,value:((type_b as u64)<<10)|(1<<13)});plan.count=2;
+    plan.writes[1]=Some(SleepRegisterWrite{gas:b,width:2,value:((type_b as u64)<<10)|(1<<13),mask:(7<<10)|(1<<13)});plan.count=2;
    }
   }
  }
@@ -76,7 +76,9 @@ pub fn build_sleep_register_plan(registers:&AcpiPlatformRegisters,state:u8,type_
 }
 pub fn execute_sleep_register_plan(io:&mut impl GasIo,plan:&SleepRegisterPlan)->Result<(),EventError>{
  for write in plan.writes.iter().take(plan.count as usize).flatten(){
-  io.write(write.gas,write.width,write.value)?;
+  let current=io.read(write.gas,write.width)?;
+  let value=(current&!write.mask)|(write.value&write.mask);
+  io.write(write.gas,write.width,value)?;
  }
  Ok(())
 }
@@ -156,18 +158,20 @@ impl GpeController{
    for index in 0..bytes{
     let status=io.read(block.register_gas(false,index),1)? as u8;
     let enable_gas=block.register_gas(true,index);
-    let enabled=io.read(enable_gas,1)? as u8;
-    let mut pending=status&enabled;
+    let mut enable_value=io.read(enable_gas,1)? as u8;
+    let mut pending=status&enable_value;
     while pending!=0{
      let bit=pending.trailing_zeros() as u8;let mask=1u8<<bit;pending&=!mask;
      let event=block.event_base as u16+index*8+bit as u16;
      let Some(registration)=self.events[..self.event_count].iter().find(|e|e.number==event).copied() else{
-      io.write(enable_gas,1,(enabled&!mask) as u64)?;
+      enable_value&=!mask;
+      io.write(enable_gas,1,enable_value as u64)?;
       io.clear_status_w1c(block.register_gas(false,index),mask)?;
       continue
      };
      if self.queued==MAX_DEFERRED_EVENTS{return Err(EventError::QueueFull)}
-     io.write(enable_gas,1,(enabled&!mask) as u64)?;
+     enable_value&=!mask;
+     io.write(enable_gas,1,enable_value as u64)?;
      io.clear_status_w1c(block.register_gas(false,index),mask)?;
      self.queue[self.tail]=DeferredGpe{number:event,method_node:registration.method_node,trigger:registration.trigger};
      self.tail=(self.tail+1)%MAX_DEFERRED_EVENTS;self.queued+=1;captured+=1;
