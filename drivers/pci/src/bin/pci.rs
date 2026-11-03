@@ -341,6 +341,10 @@ unsafe fn query_standard_bus_interface(device:*mut DEVICE_OBJECT,version:u16,siz
         set_bus_data:Some(pci_bus_set_data),
         get_bus_data:Some(pci_bus_get_data),
     };
+    // The bus driver owns one interface reference for every successful
+    // IRP_MN_QUERY_INTERFACE response; the consumer releases it through
+    // InterfaceDereference when it has finished using the returned table.
+    pci_bus_interface_reference(device.cast());
     unsafe{core::ptr::write_unaligned(output.cast::<BUS_INTERFACE_STANDARD>(),interface);}
     STATUS_SUCCESS
 }
