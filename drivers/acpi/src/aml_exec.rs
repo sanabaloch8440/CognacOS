@@ -705,6 +705,45 @@ mod tests{
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
  }
+ #[test]fn control_flow_executes_else_only_when_if_predicate_is_false(){
+  let aml=[0x14,0x10,b'T',b'E',b'S',b'T',0,
+   0xa0,0x04,0x00,0xa4,0x01,
+   0xa1,0x05,0xa4,0x0a,2];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(2));
+
+  let true_aml=[0x14,0x10,b'T',b'E',b'S',b'T',0,
+   0xa0,0x04,0x01,0xa4,0x01,
+   0xa1,0x05,0xa4,0x0a,2];
+  let mut ns=AmlNamespace::new();load_definition_block(&true_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&true_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
+ }
+ #[test]fn control_flow_rejects_if_and_else_packages_that_escape_method_bounds(){
+  let bad_if=[0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa0,0x7f,0x01,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&bad_if,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&bad_if,&ns,id,&[]),Err(ExecError::BadPackage));
+
+  let bad_else=[0x14,0x0d,b'T',b'E',b'S',b'T',0,
+   0xa0,0x04,0x00,0xa4,0x01,0xa1,0x7f];
+  let mut ns=AmlNamespace::new();load_definition_block(&bad_else,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&bad_else,&ns,id,&[]),Err(ExecError::BadPackage));
+ }
+ #[test]fn control_flow_return_escapes_a_live_while_body(){
+  let aml=[0x14,0x0c,b'T',b'E',b'S',b'T',0,0xa2,0x05,0x01,0xa4,0x0a,42];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+ }
+ #[test]fn rejects_else_without_a_preceding_if(){
+  let aml=[0x14,0x0a,b'T',b'E',b'S',b'T',0,0xa1,0x03,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::UnsupportedOpcode));
+ }
  #[test]fn executes_if_else_and_comparison_predicate(){
   // If (LEqual (Arg0, One)) Return (7); Else Return (9)
   let aml=[0x14,0x13,b'T',b'E',b'S',b'T',1,0xa0,0x07,0x93,0x68,0x01,0xa4,0x0a,7,0xa1,0x04,0xa4,0x0a,9];
