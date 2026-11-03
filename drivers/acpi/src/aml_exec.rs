@@ -1154,11 +1154,11 @@ mod tests{
  }
  #[test]fn evaluates_predefined_osi_for_windows_11_firmware_profiles(){
   // Return(_OSI("Windows 2021")) and Return(_OSI("Windows 2022")).
-  let windows_11=[0x14,0x1a,b'T',b'E',b'S',b'T',0,0xa4,b'_',b'O',b'S',b'I',0x0d,b'W',b'i',b'n',b'd',b'o',b'w',b's',b' ',b'2',b'0',b'2',b'1',0];
+  let windows_11=[0x14,0x19,b'T',b'E',b'S',b'T',0,0xa4,b'_',b'O',b'S',b'I',0x0d,b'W',b'i',b'n',b'd',b'o',b'w',b's',b' ',b'2',b'0',b'2',b'1',0];
   let mut ns=AmlNamespace::new();load_definition_block(&windows_11,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&windows_11,&ns,id,&[]).unwrap(),AmlValue::Integer(0xFFFF_FFFF));
-  let windows_22=[0x14,0x1a,b'T',b'E',b'S',b'T',0,0xa4,b'_',b'O',b'S',b'I',0x0d,b'W',b'i',b'n',b'd',b'o',b'w',b's',b' ',b'2',b'0',b'2',b'2',0];
+  let windows_22=[0x14,0x19,b'T',b'E',b'S',b'T',0,0xa4,b'_',b'O',b'S',b'I',0x0d,b'W',b'i',b'n',b'd',b'o',b'w',b's',b' ',b'2',b'0',b'2',b'2',0];
   let mut ns=AmlNamespace::new();load_definition_block(&windows_22,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&windows_22,&ns,id,&[]).unwrap(),AmlValue::Integer(0xFFFF_FFFF));
