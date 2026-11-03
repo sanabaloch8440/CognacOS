@@ -382,7 +382,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                 let alias_index=resolve_path(ns,parent,&alias,true,AmlObjectType::Alias,0,0,0)?;
                 ns.nodes[alias_index as usize].alias_target=target;
             }
-            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};let id=resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;let node=&mut ns.nodes[id as usize];if node.external_placeholder&&(node.external_object_type!=object_type||node.external_method_flags!=flags){return Err(AmlError::DuplicateName)}node.external_placeholder=true;node.external_owner=ns.loading_table;node.external_object_type=object_type;node.external_method_flags=flags;}
+            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};let id=resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;let node=&mut ns.nodes[id as usize];if node.external_placeholder{if node.external_object_type!=object_type||node.external_method_flags!=flags{return Err(AmlError::DuplicateName)}}else{node.external_placeholder=true;node.external_owner=ns.loading_table;node.external_object_type=object_type;node.external_method_flags=flags;}}
             0x5b=>{
                 let ext=c.byte()?;
                 match ext{
@@ -470,7 +470,21 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
     let mut c=Cursor{bytes:aml,pos:0,end:aml.len()};
     match parse_terms(&mut c,namespace,0,0){
         Ok(())=>{namespace.loading_table=original_owner;Ok(())},
-        Err(error)=>{namespace.count=original_count;namespace.loading_table=original_owner;Err(error)}
+        Err(error)=>{
+            // Revert promotions of External placeholders in pre-existing
+            // namespace nodes so a failed table load is truly atomic.
+            for index in 1..original_count {
+                let node=&mut namespace.nodes[index];
+                if node.source_table==table_id && node.external_placeholder && node.external_owner!=table_id {
+                    node.object_type=AmlObjectType::External;
+                    node.source_table=node.external_owner;
+                    node.method_flags=node.external_method_flags;
+                    node.body_start=0;
+                    node.body_length=0;
+                }
+            }
+            namespace.count=original_count;namespace.loading_table=original_owner;Err(error)
+        }
     }
 }
 
@@ -588,6 +602,16 @@ mod tests{
         assert_eq!(ns.nodes[id].source_table,1);
         assert_eq!(unload_definition_block(&mut ns,1),1);
         assert!(ns.find_child(0,*b"MET0").is_none());
+    }
+    #[test]fn failed_cross_table_definition_rolls_back_external_promotion(){
+        let mut ns=AmlNamespace::new();
+        load_definition_block_owned(&[0x15,b'M',b'E',b'T',b'0',8,0],&mut ns,1).unwrap();
+        let malformed=[0x14,0x06,b'M',b'E',b'T',b'0',0,0x99];
+        assert_eq!(load_definition_block_owned(&malformed,&mut ns,2),Err(AmlError::UnsupportedOpcode));
+        let id=ns.find_child(0,*b"MET0").unwrap() as usize;
+        assert_eq!(ns.nodes[id].object_type,AmlObjectType::External);
+        assert_eq!(ns.nodes[id].source_table,1);
+        assert_eq!(ns.count,2);
     }
     #[test]fn table_owner_ids_support_values_above_one_byte(){
         let mut ns=AmlNamespace::new();
