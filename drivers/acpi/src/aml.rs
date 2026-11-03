@@ -14,6 +14,19 @@ pub const MAX_NAME_SEGMENTS:usize=8;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlError { Truncated, BadPackageLength, BadName, UnsupportedOpcode, NamespaceFull, NamespaceCapacity { capacity:usize, requested:usize }, DuplicateName, InvalidParent, BadDefinitionBlock }
 
+/// Structured failure information for a DefinitionBlock load. `term_offset`
+/// identifies the outermost AML term being parsed when the failure bubbled
+/// out of the parser; it is deliberately not advertised as an exact nested
+/// operand offset. `opcode` is the byte at that term boundary when present.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct AmlDiagnostic {
+    pub table_id:u32,
+    pub term_offset:usize,
+    pub opcode:Option<u8>,
+    pub namespace_parent:u16,
+    pub error:AmlError,
+}
+
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct AmlName { pub segments:[[u8;4];MAX_NAME_SEGMENTS], pub count:u8, pub rooted:bool, pub parents:u8 }
 impl AmlName { pub const EMPTY:Self=Self{segments:[[0;4];MAX_NAME_SEGMENTS],count:0,rooted:false,parents:0}; }
@@ -530,9 +543,13 @@ pub fn load_definition_block(aml:&[u8],namespace:&mut AmlNamespace)->Result<(),A
 /// Load one DSDT/SSDT with a stable table-owner ID. All namespace objects
 /// introduced by this block carry the ID and can be removed independently.
 pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32)->Result<(),AmlError>{
-    // Namespace insertion is append-only. Restoring the original count on
-    // failure makes each definition-block load atomic without copying the
-    // large fixed-capacity namespace onto the kernel stack.
+    load_definition_block_diagnostic(aml,namespace,table_id).map_err(|diagnostic|diagnostic.error)
+}
+
+/// Load a DefinitionBlock and retain structured context when parsing fails.
+/// The reported offset is the outermost term boundary; nested parser helpers
+/// currently return the error kind without an exact inner-operand cursor.
+pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32)->Result<(),AmlDiagnostic>{
     let original_count=namespace.count;
     let original_owner=namespace.loading_table;
     namespace.loading_table=table_id;
@@ -540,8 +557,6 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
     match parse_terms(&mut c,namespace,0,0){
         Ok(())=>{namespace.loading_table=original_owner;Ok(())},
         Err(error)=>{
-            // Revert promotions of External placeholders in pre-existing
-            // namespace nodes so a failed table load is truly atomic.
             for index in 1..original_count {
                 let node=&mut namespace.nodes[index];
                 if node.source_table==table_id && node.external_placeholder && node.external_owner!=table_id {
@@ -552,7 +567,16 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
                     node.body_length=0;
                 }
             }
-            namespace.count=original_count;namespace.loading_table=original_owner;Err(error)
+            namespace.count=original_count;
+            namespace.loading_table=original_owner;
+            let term_offset=c.pos.saturating_sub(1).min(aml.len());
+            Err(AmlDiagnostic{
+                table_id,
+                term_offset,
+                opcode:aml.get(term_offset).copied(),
+                namespace_parent:0,
+                error,
+            })
         }
     }
 }
@@ -735,6 +759,17 @@ mod tests{
         let mut ns=AmlNamespace::new();ns.count=MAX_NAMESPACE_NODES;
         assert_eq!(ns.insert(0,*b"FULL",AmlObjectType::Name,0,0,0),Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:MAX_NAMESPACE_NODES+1}));
         assert_eq!(namespace_capacity(),MAX_NAMESPACE_NODES);assert_eq!(namespace_remaining(&ns),0);
+    }
+    #[test]fn structured_diagnostic_identifies_table_term_opcode_and_error(){
+        let aml=[0x10,0x06,b'S',b'C',b'P',b'0',0x99];
+        let mut ns=AmlNamespace::new();
+        let diagnostic=load_definition_block_diagnostic(&aml,&mut ns,0x1234).unwrap_err();
+        assert_eq!(diagnostic.table_id,0x1234);
+        assert_eq!(diagnostic.term_offset,0);
+        assert_eq!(diagnostic.opcode,Some(0x10));
+        assert_eq!(diagnostic.namespace_parent,0);
+        assert_eq!(diagnostic.error,AmlError::UnsupportedOpcode);
+        assert_eq!(ns.count,1);
     }
     #[test]fn integer_constants_follow_definition_block_revision_width(){
         assert_eq!(decode_integer_constant(&[0x00],0,1,1),Ok((AmlInteger{value:0,width_bits:32},1)));
