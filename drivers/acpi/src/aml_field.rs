@@ -76,9 +76,10 @@ fn write_unlocked<I:FieldIo>(n:&crate::aml::AmlNode,value:u64,io:&mut I)->Result
     let last=((end-1)/unit_bits)*width as u64;
     let mut unit=first;
     while unit<=last{
-        let unit_start=unit;
+        let unit_start=unit.checked_mul(8).ok_or(FieldError::AddressOverflow)?;
+        let unit_end=unit_start.checked_add(unit_bits).ok_or(FieldError::AddressOverflow)?;
         let overlap_start=start.max(unit_start);
-        let overlap_end=end.min(unit_start+unit_bits);
+        let overlap_end=end.min(unit_end);
         let shift=(overlap_start-unit_start) as u32;
         let count=(overlap_end-overlap_start) as u32;
         let field_shift=(overlap_start-start) as u32;
@@ -255,7 +256,7 @@ mod tests{
     fn field_read_write_preserves_adjacent_bits(){
         // OperationRegion(REGN,SystemMemory,0,8); Field(REGN,Preserve){Offset? FOO:5}
         let aml=[0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,8,
-                 0x5b,0x81,0x0e,b'R',b'E',b'G',b'N',0x01,0x01,0x00,b'F',b'O',b'O',b'_',0x05];
+                 0x5b,0x81,0x0b,b'R',b'E',b'G',b'N',0x01,0x01,0x00,b'F',b'O',b'O',b'_',0x05];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let id=ns.find_child(0,*b"FOO_").unwrap();
         let mut mem=Memory{bytes:[0b1011_0100;32],locked:false};
