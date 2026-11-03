@@ -15,10 +15,14 @@ pub struct HotplugEvent{pub node:u16,pub generation:u32,pub kind:HotplugEventKin
 pub struct HotplugQueue{events:[Option<HotplugEvent>;MAX_HOTPLUG_EVENTS],head:usize,len:usize}
 impl HotplugQueue{
  pub const fn new()->Self{Self{events:[None;MAX_HOTPLUG_EVENTS],head:0,len:0}}
+/// Queue one firmware notification without overwriting an event that has not been processed.
  pub fn push(&mut self,e:HotplugEvent)->Result<(),HotplugError>{if self.len==MAX_HOTPLUG_EVENTS{return Err(HotplugError::QueueFull)}let i=(self.head+self.len)%MAX_HOTPLUG_EVENTS;self.events[i]=Some(e);self.len+=1;Ok(())}
+/// Remove and return the oldest queued firmware notification, preserving FIFO order.
  pub fn pop(&mut self)->Option<HotplugEvent>{if self.len==0{return None}let e=self.events[self.head].take();self.head=(self.head+1)%MAX_HOTPLUG_EVENTS;self.len-=1;e}
+/// Return the number of notifications currently awaiting processing.
  pub fn len(&self)->usize{self.len}
 }
+/// Translate an ACPI Notify value into a supported hotplug event; unknown values are ignored.
 pub fn decode_notify(v:u32)->Option<HotplugEventKind>{match v{0=>Some(HotplugEventKind::BusCheck),1=>Some(HotplugEventKind::DeviceCheck),2=>Some(HotplugEventKind::DeviceWake),3=>Some(HotplugEventKind::EjectRequest),4=>Some(HotplugEventKind::DeviceCheckLight),_=>None}}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum DeviceLifecycle{Absent,Present,Enumerated,EjectPending,RemovalPending,Removed}
@@ -37,11 +41,14 @@ pub trait HotplugBackend{
 pub const OST_STATUS_SUCCESS:u32=0;
 pub const OST_STATUS_FAILURE:u32=1;
 pub const OST_STATUS_EJECT_IN_PROGRESS:u32=2;
+/// Begin a new device-presence generation after validating the previous lifecycle state.
 pub fn device_arrived(d:&mut HotplugDevice,node:u16,g:u32)->Result<(),HotplugError>{
  if d.state!=DeviceLifecycle::Absent&&d.state!=DeviceLifecycle::Removed{return Err(HotplugError::InvalidTransition)}
  *d=HotplugDevice{node,generation:g,state:DeviceLifecycle::Present,wake_armed:false,eject_in_progress:false};Ok(())
 }
+/// Promote a present device to the enumerated state only for its current generation.
 pub fn mark_enumerated(d:&mut HotplugDevice,g:u32)->Result<(),HotplugError>{if d.generation!=g{return Err(HotplugError::StaleGeneration)}if d.state!=DeviceLifecycle::Present{return Err(HotplugError::InvalidTransition)}d.state=DeviceLifecycle::Enumerated;Ok(())}
+/// Run the orderly eject transaction: quiesce wake, evaluate _EJ0, then request PnP removal.
 pub fn request_eject(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)->Result<(),HotplugError>{
  if d.generation!=g{return Err(HotplugError::StaleGeneration)}if d.state!=DeviceLifecycle::Enumerated{return Err(HotplugError::InvalidTransition)}
  d.state=DeviceLifecycle::EjectPending;d.eject_in_progress=true;b.report_ost(d.node,OST_STATUS_EJECT_IN_PROGRESS,0);
@@ -63,20 +70,24 @@ pub fn request_eject(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)->Res
  if !b.request_pnp_remove(d.node,false){d.state=DeviceLifecycle::RemovalPending;b.report_ost(d.node,OST_STATUS_FAILURE,0);return Err(HotplugError::MethodFailed)}
  d.state=DeviceLifecycle::RemovalPending;Ok(())
 }
+/// Begin surprise removal without running the firmware orderly-eject method.
 pub fn surprise_remove(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)->Result<(),HotplugError>{
  if d.generation!=g{return Err(HotplugError::StaleGeneration)}if d.state!=DeviceLifecycle::Enumerated&&d.state!=DeviceLifecycle::Present{return Err(HotplugError::InvalidTransition)}
  if d.wake_armed&&!b.disarm_wake(d.node){return Err(HotplugError::MethodFailed)}d.wake_armed=false;
  if !b.request_pnp_remove(d.node,true){return Err(HotplugError::MethodFailed)}d.state=DeviceLifecycle::RemovalPending;Ok(())
 }
+/// Destroy a removal-pending PDO only after the kernel confirms all outstanding references drained.
 pub fn finalize_removal(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)->Result<(),HotplugError>{
  if d.generation!=g{return Err(HotplugError::StaleGeneration)}if d.state!=DeviceLifecycle::RemovalPending{return Err(HotplugError::InvalidTransition)}
  if !b.pdo_references_drained(d.node){return Err(HotplugError::RemovalNotDrained)}if !b.remove_pdo(d.node){return Err(HotplugError::MethodFailed)}
  d.state=DeviceLifecycle::Removed;d.eject_in_progress=false;Ok(())
 }
+/// Arm firmware wake resources for an enumerated device and publish the state only on success.
 pub fn arm_device_wake(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)->Result<(),HotplugError>{
  if d.generation!=g{return Err(HotplugError::StaleGeneration)}if d.state!=DeviceLifecycle::Enumerated{return Err(HotplugError::InvalidTransition)}
  if d.wake_armed{return Ok(())}if !b.arm_wake(d.node){return Err(HotplugError::MethodFailed)}d.wake_armed=true;Ok(())
 }
+/// Disarm firmware wake resources and retain the armed state if the backend fails.
 pub fn disarm_device_wake(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)->Result<(),HotplugError>{
  if d.generation!=g{return Err(HotplugError::StaleGeneration)}if !d.wake_armed{return Ok(())}
  if !b.disarm_wake(d.node){return Err(HotplugError::MethodFailed)}d.wake_armed=false;Ok(())
