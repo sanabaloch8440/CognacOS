@@ -9,7 +9,9 @@ const PAGE_SIZE:u64=4096;
 const MAX_GAS_MAPPINGS:usize=128;
 const SPACE_SYSTEM_MEMORY:u8=0;
 const SPACE_SYSTEM_IO:u8=1;
-static MAP_LOCK:AtomicBool=AtomicBool::new(false);\nstatic RMW_LOCK:AtomicBool=AtomicBool::new(false);
+static MAP_LOCK:AtomicBool=AtomicBool::new(false);
+static RMW_LOCK:AtomicBool=AtomicBool::new(false);
+static RMW_LOCK:AtomicBool=AtomicBool::new(false);
 static MAPPED_PHYSICAL:[AtomicU64;MAX_GAS_MAPPINGS]=[const{AtomicU64::new(0)};MAX_GAS_MAPPINGS];
 static MAPPED_VIRTUAL:[AtomicU64;MAX_GAS_MAPPINGS]=[const{AtomicU64::new(0)};MAX_GAS_MAPPINGS];
 
@@ -35,6 +37,9 @@ fn access(gas:crate::acpi::AcpiGas)->Result<Access,GasError>{
 fn lock_mapping_table(){while MAP_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}}
 struct MappingGuard;
 impl Drop for MappingGuard{fn drop(&mut self){MAP_LOCK.store(false,Ordering::Release);}}
+fn lock_rmw(){while RMW_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}}
+struct RmwGuard;
+impl Drop for RmwGuard{fn drop(&mut self){RMW_LOCK.store(false,Ordering::Release);}}
 fn memory_pointer(address:u64,bytes:u8)->Result<*mut u8,GasError>{
     let page=address&!(PAGE_SIZE-1);
     let offset=address-page;
@@ -70,6 +75,7 @@ unsafe fn read_raw(gas:crate::acpi::AcpiGas,a:Access)->Result<u64,GasError>{
             }})
         }
         SPACE_SYSTEM_IO=>{
+            if a.bytes==8{return Err(GasError::InvalidWidth)}
             if gas.address>u16::MAX as u64||gas.address+a.bytes as u64>0x1_0000{return Err(GasError::InvalidAddress)}
             let port=gas.address as u16;
             Ok(unsafe{match a.bytes{1=>read_port_u8(port) as u64,2=>read_port_u16(port) as u64,4=>read_port_u32(port) as u64,_=>return Err(GasError::InvalidWidth)}})
@@ -111,6 +117,7 @@ pub unsafe fn write(gas:crate::acpi::AcpiGas,value:u64)->Result<(),GasError>{
     let a=access(gas)?;
     let field_limit=if a.field_width==64{u64::MAX}else{(1u64<<a.field_width)-1};
     if value&!field_limit!=0{return Err(GasError::InvalidWidth)}
+    lock_rmw();let _guard=RmwGuard;
     let current=unsafe{read_raw(gas,a)?};
     let next=(current&!a.mask)|((value<<a.bit_offset)&a.mask);
     unsafe{write_raw(gas,a,next)}
@@ -121,7 +128,7 @@ pub unsafe fn update(gas:crate::acpi::AcpiGas,clear_mask:u64,set_mask:u64)->Resu
     let a=access(gas)?;
     let limit=if a.field_width==64{u64::MAX}else{(1u64<<a.field_width)-1};
     if (clear_mask|set_mask)&!limit!=0{return Err(GasError::InvalidWidth)}
-    lock_mapping_table();let _guard=MappingGuard;
+    lock_rmw();let _guard=RmwGuard;
     let raw=unsafe{read_raw(gas,a)?};
     let field=(raw&a.mask)>>a.bit_offset;
     let next=((field&!clear_mask)|set_mask)&limit;
