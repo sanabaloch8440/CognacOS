@@ -94,6 +94,7 @@ fn write_unlocked<I:FieldIo>(n:&crate::aml::AmlNode,value:u64,io:&mut I)->Result
     Ok(())
 }
 
+/// Read a bounded AML Field through the supplied OperationRegion I/O contract.
 pub fn read_field<I:FieldIo>(ns:&AmlNamespace,id:u16,io:&mut I)->Result<u64,FieldError>{
     let n=field_node(ns,id)?;
     if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
@@ -101,6 +102,7 @@ pub fn read_field<I:FieldIo>(ns:&AmlNamespace,id:u16,io:&mut I)->Result<u64,Fiel
     if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
     result
 }
+/// Write a bounded AML Field through the supplied OperationRegion I/O contract.
 pub fn write_field<I:FieldIo>(ns:&AmlNamespace,id:u16,value:u64,io:&mut I)->Result<(),FieldError>{
     let n=field_node(ns,id)?;
     if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
