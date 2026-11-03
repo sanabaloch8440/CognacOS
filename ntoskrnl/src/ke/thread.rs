@@ -775,7 +775,7 @@ pub fn adjust_apc_region(guarded:bool,enter:bool)->bool{
 pub fn thread_object_from_id(id:u64)->*mut c_void{
     if id==0{return core::ptr::null_mut()}
     let table=THREADS.lock();
-    table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty)
+    table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty&&t.state!=ThreadState::Exited)
         .map(|record|(record as *const ThreadRecord as *mut c_void))
         .unwrap_or(core::ptr::null_mut())
 }
