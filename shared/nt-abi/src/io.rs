@@ -171,8 +171,10 @@ pub struct IO_STACK_LOCATION {
     pub minor_function: u8,
     pub flags: u8,
     pub control: u8,
-    /// Raw bytes preserve the WDK Parameters union's x64 field alignment,
-    /// including POINTER_ALIGNMENT members in Read/Write/DeviceIoControl.
+    /// The WDK Parameters union is 8-byte aligned on x64. Keep its alignment
+    /// padding explicit so every member is addressed relative to the true
+    /// union base (offset 0x08), not the four-byte dispatch header.
+    pub parameters_alignment: u32,
     pub parameters: [u8; 0x20],
     pub device_object: *mut DEVICE_OBJECT,
     pub file_object: PVOID,
@@ -289,7 +291,7 @@ mod tests {
             assert_eq!(core::mem::offset_of!(IRP, user_buffer), 0x70);
             assert_eq!(core::mem::offset_of!(IRP, tail), 0x78);
             assert_eq!(core::mem::size_of::<IO_STACK_LOCATION>(), 0x48);
-            assert_eq!(core::mem::offset_of!(IO_STACK_LOCATION, parameters), 0x04);
+            assert_eq!(core::mem::offset_of!(IO_STACK_LOCATION, parameters), 0x08);
             assert_eq!(core::mem::offset_of!(IO_STACK_LOCATION, device_object), 0x28);
             assert_eq!(core::mem::offset_of!(IO_STACK_LOCATION, file_object), 0x30);
             assert_eq!(core::mem::offset_of!(IO_STACK_LOCATION, completion_routine), 0x38);
