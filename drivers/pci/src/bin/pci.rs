@@ -45,6 +45,16 @@ ExAllocatePoolWithTag:
 ExFreePoolWithTag:
     jmp QWORD PTR [rip + __imp_ntoskrnl_ExFreePoolWithTag]
 .size ExFreePoolWithTag, .-ExFreePoolWithTag
+.global ObfReferenceObject
+.type ObfReferenceObject,@function
+ObfReferenceObject:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_ObfReferenceObject]
+.size ObfReferenceObject, .-ObfReferenceObject
+.global ObDereferenceObject
+.type ObDereferenceObject,@function
+ObDereferenceObject:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_ObDereferenceObject]
+.size ObDereferenceObject, .-ObDereferenceObject
 
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -64,6 +74,14 @@ __imp_ntoskrnl_ExAllocatePoolWithTag: .quad 0
 .type __imp_ntoskrnl_ExFreePoolWithTag,@object
 __imp_ntoskrnl_ExFreePoolWithTag: .quad 0
 .size __imp_ntoskrnl_ExFreePoolWithTag,8
+.global __imp_ntoskrnl_ObfReferenceObject
+.type __imp_ntoskrnl_ObfReferenceObject,@object
+__imp_ntoskrnl_ObfReferenceObject: .quad 0
+.size __imp_ntoskrnl_ObfReferenceObject,8
+.global __imp_ntoskrnl_ObDereferenceObject
+.type __imp_ntoskrnl_ObDereferenceObject,@object
+__imp_ntoskrnl_ObDereferenceObject: .quad 0
+.size __imp_ntoskrnl_ObDereferenceObject,8
 "#);
 
 const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
