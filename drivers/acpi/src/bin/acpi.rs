@@ -706,9 +706,6 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             Err(status)=>return status,
         }
     }
-    let mut table_sources:[&[u8];acpi::aml_tables::MAX_AML_TABLES]=[&[];acpi::aml_tables::MAX_AML_TABLES];
-    table_sources[0]=dsdt;
-    for index in 0..ssdt_count{table_sources[index+1]=ssdt_tables[index];}
     let manager=unsafe{(*STATE.aml_manager.get()).assume_init_mut()};
     let gate=unsafe{&*STATE.aml_barrier.get()};
     // DSDT is mandatory and is installed as its own transaction. SSDTs are
