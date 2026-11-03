@@ -45,6 +45,37 @@ fn validate_runtime_value(value:&AmlRuntimeValue,arena:&AmlObjectArena)->Result<
 }
 
 impl From<ObjectError> for RuntimeError { fn from(e:ObjectError)->Self{Self::Arena(e)} }
+/// Deep-copy an AML runtime value tree into the caller-owned arena. Package
+/// elements are copied recursively so a Store/CopyObject does not accidentally
+/// make nested package contents alias the source package.
+fn clone_value_tree_inner(value_id:u16,arena:&mut AmlObjectArena,
+    path:&mut [u16;32],depth:usize)->Result<u16,RuntimeError>{
+    if depth>=path.len(){return Err(RuntimeError::InvalidObjectLength)}
+    if path[..depth].contains(&value_id){return Err(RuntimeError::InvalidReference)}
+    let source=*arena.get(value_id).ok_or(RuntimeError::InvalidReference)?;
+    validate_runtime_value(&source,arena)?;
+    path[depth]=value_id;
+    let mut copy=source;
+    if source.kind==AmlValueKind::Package{
+        let count=checked_element_count(&source)?;
+        for index in 0..count{
+            copy.elements[index]=clone_value_tree_inner(source.elements[index],arena,path,depth+1)?;
+        }
+    }
+    arena.allocate(copy).map_err(RuntimeError::from)
+}
+
+/// Clone transactionally: a malformed/cyclic package or full arena leaves the
+/// arena exactly as it was before the attempted copy.
+fn clone_value_tree(value_id:u16,arena:&mut AmlObjectArena)->Result<u16,RuntimeError>{
+    let checkpoint=arena.count;
+    let mut path=[u16::MAX;32];
+    match clone_value_tree_inner(value_id,arena,&mut path,0){
+        Ok(id)=>Ok(id),
+        Err(error)=>{arena.count=checkpoint;Err(error)}
+    }
+}
+
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlReference {
@@ -297,13 +328,17 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
                 // fixed target type yet; first assignment establishes it.
                 source
             };
-            let stored_id=if stored==source{value}else{arena.allocate(stored)?};
+            let stored_id=if stored.kind==AmlValueKind::Package{
+                clone_value_tree(value,arena)?
+            }else if stored==source{value}else{arena.allocate(stored)?};
             bindings.values[i]=stored_id;bindings.bound[i]=true;Ok(())
         }
         AmlReference::PackageElement{package,index}=>{
-            let p=arena.get_mut(package).ok_or(RuntimeError::InvalidReference)?;
+            let p=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
             if p.kind!=AmlValueKind::Package||index as usize>=checked_element_count(p)?{return Err(RuntimeError::InvalidReference)}
-            p.elements[index as usize]=value;Ok(())
+            let stored_id=if source.kind==AmlValueKind::Package{clone_value_tree(value,arena)?}else{value};
+            let p=arena.get_mut(package).ok_or(RuntimeError::InvalidReference)?;
+            p.elements[index as usize]=stored_id;Ok(())
         }
         AmlReference::BufferByte{buffer,index}=>{
             // Validate the complete target and source before taking a mutable
@@ -395,6 +430,49 @@ pub fn integer_to_string(value:u64)->AmlRuntimeValue{
 mod tests{
     use super::*;
     use crate::aml::load_definition_block;
+    #[test]fn package_target_store_deep_copies_nested_values(){
+        let aml=[0x08,b'P',b'K',b'G',b'0',0x01];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"PKG0").unwrap();
+        let mut arena=AmlObjectArena::new();
+        let mut one=AmlRuntimeValue::EMPTY;one.kind=AmlValueKind::Integer;one.integer=1;
+        let source_child=arena.allocate(one).unwrap();
+        let mut inner=AmlRuntimeValue::EMPTY;inner.kind=AmlValueKind::Package;inner.element_count=1;
+        inner.elements[0]=source_child;
+        let source_inner=arena.allocate(inner).unwrap();
+        let mut outer=AmlRuntimeValue::EMPTY;outer.kind=AmlValueKind::Package;outer.element_count=1;
+        outer.elements[0]=source_inner;
+        let source_package=arena.allocate(outer).unwrap();
+        let mut old=AmlRuntimeValue::EMPTY;old.kind=AmlValueKind::Package;old.element_count=0;
+        let old_id=arena.allocate(old).unwrap();
+        let mut bindings=AmlBindings::new();bindings.bind(&namespace,node,old_id).unwrap();
+        store_reference(bindings.reference_node(&namespace,node).unwrap(),source_package,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        let copied_id=bindings.value_id(node).unwrap();
+        let copied_outer=*arena.get(copied_id).unwrap();
+        let copied_inner_id=copied_outer.elements[0];
+        let copied_inner=*arena.get(copied_inner_id).unwrap();
+        let copied_child=copied_inner.elements[0];
+        assert_ne!(copied_inner_id,source_inner);
+        assert_ne!(copied_child,source_child);
+        let mut nine=one;nine.integer=9;let nine_id=arena.allocate(nine).unwrap();
+        let inner_ref=AmlReference::PackageElement{package:copied_inner_id,index:0};
+        store_reference(inner_ref,nine_id,&mut bindings,&namespace,&mut arena).unwrap();
+        assert_eq!(arena.get(source_child).unwrap().integer,1);
+        assert_eq!(arena.get(copied_child).unwrap().integer,1);
+        assert_eq!(arena.get(arena.get(copied_inner_id).unwrap().elements[0]).unwrap().integer,9);
+    }
+
+    #[test]fn cyclic_package_copy_rolls_back_arena_allocations(){
+        let mut arena=AmlObjectArena::new();
+        let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
+        let package_id=arena.allocate(package).unwrap();
+        arena.get_mut(package_id).unwrap().elements[0]=package_id;
+        let checkpoint=arena.count;
+        assert_eq!(clone_value_tree(package_id,&mut arena),Err(RuntimeError::InvalidReference));
+        assert_eq!(arena.count,checkpoint);
+    }
+
     #[test]fn implicit_source_operand_conversions_follow_expected_type(){
         let arena=AmlObjectArena::new();
         let mut text=AmlRuntimeValue::EMPTY;text.kind=AmlValueKind::String;
