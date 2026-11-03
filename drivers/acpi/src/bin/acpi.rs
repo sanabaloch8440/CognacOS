@@ -631,6 +631,27 @@ fn collect_device_identities(
     Ok(())
 }
 
+/// Preserve the failure class at the native driver boundary. In particular,
+/// unsupported AML is not a caller-parameter error, and corrupt firmware data
+/// must not be reported as STATUS_INVALID_PARAMETER.
+fn table_error_to_status(error:acpi::aml_tables::TableError)->i32{
+    use acpi::aml::AmlError;
+    use acpi::aml_tables::TableError;
+    match error{
+        TableError::InvalidSdt(error)=>acpi::error_to_ntstatus(error),
+        TableError::NamespaceCapacity|TableError::TableLimit=>STATUS_INSUFFICIENT_RESOURCES,
+        TableError::Parse(AmlError::NamespaceFull|AmlError::NamespaceCapacity{..})=>STATUS_INSUFFICIENT_RESOURCES,
+        TableError::Parse(AmlError::UnsupportedOpcode)=>STATUS_NOT_SUPPORTED,
+        TableError::Parse(_)=>STATUS_DEVICE_DATA_ERROR,
+        TableError::UnsupportedSignature=>STATUS_NOT_SUPPORTED,
+        TableError::DuplicateTable=>STATUS_OBJECT_NAME_COLLISION,
+        TableError::ExecutionBusy=>STATUS_DEVICE_BUSY,
+        TableError::DsdtAlreadyLoaded|TableError::DsdtRequired|TableError::InvalidHandle
+            |TableError::UnloadOrder|TableError::NamespaceChanged=>STATUS_DEVICE_CONFIGURATION_ERROR,
+        TableError::MethodExecution(_)|TableError::BufferRead(_)|TableError::DeviceIdentity(_)=>STATUS_NOT_SUPPORTED,
+    }
+}
+
 /// DriverEntry validates firmware, loads DSDT/SSDT namespace definitions,
 /// builds the ACPI device catalogue, and publishes bus-enumerated PDOs. PDOs
 /// answer the WDM QueryId contract using PnP-owned paged-pool buffers.
@@ -689,19 +710,44 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     table_sources[0]=dsdt;
     for index in 0..ssdt_count{table_sources[index+1]=ssdt_tables[index];}
     let manager=unsafe{(*STATE.aml_manager.get()).assume_init_mut()};
-    let barrier=unsafe{&mut *STATE.aml_barrier.get()};
-    let loaded=match manager.load_firmware_tables(dsdt,&ssdt_tables[..ssdt_count],barrier){
-        Ok(tables)=>tables,
-        Err(acpi::aml_tables::TableError::NamespaceCapacity|acpi::aml_tables::TableError::TableLimit)=>return STATUS_INSUFFICIENT_RESOURCES,
-        Err(_)=>return STATUS_INVALID_PARAMETER,
-    };
     let gate=unsafe{&*STATE.aml_barrier.get()};
+    // DSDT is mandatory and is installed as its own transaction. SSDTs are
+    // optional definition blocks: a table containing AML syntax not yet
+    // implemented by this interpreter is isolated and skipped rather than
+    // preventing the machine from reaching PCI enumeration. The table manager
+    // rolls back every partial namespace insertion before returning an error.
+    let dsdt_handle=match manager.load_dsdt(dsdt,gate){
+        Ok(handle)=>handle,
+        Err(error)=>return table_error_to_status(error),
+    };
+    let mut loaded_ssdts:[Option<acpi::aml_tables::TableHandle>;acpi::aml_tables::MAX_AML_TABLES-1]=[None;acpi::aml_tables::MAX_AML_TABLES-1];
+    let mut loaded_ssdt_tables:[&'static [u8];acpi::aml_tables::MAX_AML_TABLES-1]=[&[];acpi::aml_tables::MAX_AML_TABLES-1];
+    let mut loaded_ssdt_count=0usize;
+    for table in ssdt_tables[..ssdt_count].iter().copied(){
+        match manager.load_ssdt(table,gate){
+            Ok(handle)=>{
+                loaded_ssdts[loaded_ssdt_count]=Some(handle);
+                loaded_ssdt_tables[loaded_ssdt_count]=table;
+                loaded_ssdt_count+=1;
+            }
+            // Unsupported grammar and duplicate declarations are scoped to
+            // this optional SSDT. Malformed SDT headers/checksums and resource
+            // exhaustion remain fatal and retain their distinct NTSTATUS.
+            Err(acpi::aml_tables::TableError::Parse(acpi::aml::AmlError::UnsupportedOpcode
+                |acpi::aml::AmlError::DuplicateName))
+            |Err(acpi::aml_tables::TableError::DuplicateTable)=>continue,
+            Err(error)=>return table_error_to_status(error),
+        }
+    }
+    let mut table_sources:[&[u8];acpi::aml_tables::MAX_AML_TABLES]=[&[];acpi::aml_tables::MAX_AML_TABLES];
+    table_sources[0]=dsdt;
+    for index in 0..loaded_ssdt_count{table_sources[index+1]=loaded_ssdt_tables[index];}
     let records=unsafe{(*STATE.device_records.get()).assume_init_mut()};
     let mut identity_count=0usize;
-    if let Err(status)=collect_device_identities(manager,loaded.dsdt,&table_sources[..ssdt_count+1],dsdt,gate,records,&mut identity_count){return status;}
-    for index in 0..loaded.ssdt_count{
-        let handle=match loaded.ssdts[index]{Some(handle)=>handle,None=>return STATUS_INVALID_PARAMETER};
-        if let Err(status)=collect_device_identities(manager,handle,&table_sources[..ssdt_count+1],ssdt_tables[index],gate,records,&mut identity_count){return status;}
+    if let Err(status)=collect_device_identities(manager,dsdt_handle,&table_sources[..loaded_ssdt_count+1],dsdt,gate,records,&mut identity_count){return status;}
+    for index in 0..loaded_ssdt_count{
+        let handle=match loaded_ssdts[index]{Some(handle)=>handle,None=>return STATUS_DEVICE_CONFIGURATION_ERROR};
+        if let Err(status)=collect_device_identities(manager,handle,&table_sources[..loaded_ssdt_count+1],loaded_ssdt_tables[index],gate,records,&mut identity_count){return status;}
     }
     // Create an ACPI bus device and real WDM PDOs for firmware devices
     // reported present and enabled. Each PDO owns an immutable identity copy.
