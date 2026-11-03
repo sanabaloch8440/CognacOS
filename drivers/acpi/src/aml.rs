@@ -307,7 +307,8 @@ fn read_pkg_value(c:&mut Cursor<'_>)->Result<usize,AmlError>{
     if follow!=0&&lead&0x30!=0{return Err(AmlError::BadPackageLength)}
     let mut value=if follow==0{(lead&0x3f)as usize}else{(lead&0x0f)as usize};
     for i in 0..follow{value|=(c.byte()? as usize)<<(4+8*i);}
-    if value<1+follow{return Err(AmlError::BadPackageLength)}
+    // FieldLength reuses the PkgLength byte encoding but represents a bit
+    // count, so zero remains a valid ReservedField width.
     Ok(value)
 }
 
