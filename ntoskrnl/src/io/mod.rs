@@ -10,7 +10,7 @@ pub(crate) mod wdm;
 pub(crate) mod file_services;
 #[path = "storage.rs"]
 pub(crate) mod storage;
-#[path = "fat32_driver.rs"]
+#[path = "../../../drivers/fat32/wdm_driver.rs"]
 pub(crate) mod fat32_driver;
 #[path = "pnp.rs"]
 pub(crate) mod pnp;
