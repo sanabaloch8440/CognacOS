@@ -10,6 +10,12 @@ use core::ffi::c_void;
 use crate::ntoskrnl::driver_loader::{self, DriverObject, LoadedDriver, RegistryDriverLoadError};
 use crate::ntoskrnl::driver_order::{self, GroupTagOrder, ScheduleError, ServiceNode};
 use crate::ntoskrnl::cm::hive::Hive;
+use crate::nt_abi::io::DRIVER_EXTENSION;
+
+const MAX_BOOT_DRIVER_EXTENSIONS: usize = 128;
+// Driver extensions must remain address-stable for the lifetime of loaded drivers.
+static mut DRIVER_EXTENSIONS: [DRIVER_EXTENSION; MAX_BOOT_DRIVER_EXTENSIONS] =
+    [DRIVER_EXTENSION::empty(); MAX_BOOT_DRIVER_EXTENSIONS];
 
 #[derive(Clone, Copy, Debug)]
 pub enum DriverInitStatus {
@@ -98,7 +104,8 @@ pub unsafe fn initialize_boot_drivers<F>(
 ) -> Result<BootInitReport, DriverInitError>
 where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
     let count = nodes.len();
-    if schedule.len() < count || scheduler_state.len() < count
+    if count > MAX_BOOT_DRIVER_EXTENSIONS
+        || schedule.len() < count || scheduler_state.len() < count
         || driver_objects.len() < count || service_names.len() < count || records.len() < count {
         return Err(DriverInitError::BufferTooSmall);
     }
@@ -187,6 +194,23 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
         };
 
         let driver_ptr = &mut driver_objects[service_index] as *mut DriverObject;
+        // The WDM DRIVER_OBJECT contains a pointer to a separate DRIVER_EXTENSION.
+        // Keep the extension in static, bounded storage because the loaded driver
+        // retains it after this initialization routine returns.
+        let extension_ptr = unsafe {
+            core::ptr::addr_of_mut!(DRIVER_EXTENSIONS)
+                .cast::<DRIVER_EXTENSION>()
+                .add(service_index)
+        };
+        unsafe {
+            extension_ptr.write(DRIVER_EXTENSION {
+                driver_object: driver_ptr.cast(),
+                add_device: None,
+                count: 0,
+                service_key_name: (*driver_ptr).driver_name,
+            });
+            (*driver_ptr).driver_extension = extension_ptr.cast();
+        }
         let result = unsafe {
             driver_loader::load_registered_service_with_resolver(
                 hive, node.name, path_buffer, image_buffer, driver_ptr,
