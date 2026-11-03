@@ -127,7 +127,7 @@ unsafe fn read_disk(lower:*mut DEVICE_OBJECT,lba:u64,sectors:u32,buffer:&mut[u8]
  if lower.is_null()||sectors==0||buffer.len()!=sectors as usize*512{return STATUS_INVALID_PARAMETER}
  let offset=match lba.checked_mul(512){Some(v) if v<=i64::MAX as u64=>v as i64,_=>return STATUS_INVALID_PARAMETER};
  let length=buffer.len() as u32;
- let irp=unsafe{IoAllocateIrp((*lower).stack_size.max(1),0)};
+ let irp=unsafe{IoAllocateIrp((*lower).stack_size.max(1) as i8,0)};
  if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
  let stack=unsafe{IoGetNextIrpStackLocation(irp)};
  if stack.is_null(){unsafe{IoFreeIrp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
