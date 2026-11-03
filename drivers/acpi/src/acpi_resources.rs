@@ -195,10 +195,17 @@ fn allocation_satisfies(requirement:Resource,allocated:Resource)->bool{
          Resource::ExtendedIrq{flags,interrupts,count}) =>
             count==1&&mask&(1u16.checked_shl(interrupts[0]).unwrap_or(0) as u16)!=0
                 &&level_triggered==(flags&2!=0)&&active_low==(flags&4!=0)&&shared==(flags&8!=0),
-        (Resource::ExtendedIrq{flags,interrupts,count,..},
+        (Resource::ExtendedIrq{flags,interrupts,count},
          Resource::ExtendedIrq{flags:actual_flags,interrupts:actual,count:actual_count}) =>
-            count>0&&actual_count>0&&flags&0x1e==actual_flags&0x1e
+            count>0&&count<=8&&actual_count>0&&actual_count<=8
+                &&flags&0x1e==actual_flags&0x1e
                 &&actual[..actual_count as usize].iter().all(|gsi|interrupts[..count as usize].contains(gsi)),
+        (Resource::ExtendedIrq{flags,interrupts,count},
+         Resource::Irq{mask,level_triggered,active_low,shared,..}) =>
+            count>0&&count<=8&&mask.count_ones()==1
+                &&interrupts[..count as usize].contains(&(mask.trailing_zeros()))
+                &&(flags&2!=0)==level_triggered&&(flags&4!=0)==active_low
+                &&(flags&8!=0)==shared,
         (Resource::Dma{channels,transfer_size,bus_master},
          Resource::Dma{channels:allocated,transfer_size:actual_size,bus_master:actual_master}) =>
             allocated.count_ones()==1&&channels&allocated!=0
@@ -276,7 +283,7 @@ fn project_assignment(requirement:Resource,allocated:Resource)->Option<Resource>
             if gsi<16{Some(Resource::Irq{mask:1u16<<(gsi as u16),level_triggered,active_low,shared,wake_capable})}
             else{Some(Resource::ExtendedIrq{flags:(if level_triggered{2}else{0})|(if active_low{4}else{0})|(if shared{8}else{0})|(if wake_capable{0x10}else{0}),interrupts,count:1})}
         }
-        (Resource::ExtendedIrq{flags, ..},Resource::ExtendedIrq{interrupts,count,..}) if count>0=>
+        (Resource::ExtendedIrq{flags,..},Resource::ExtendedIrq{interrupts,count,..}) if count>0&&count<=8=>
             Some(Resource::ExtendedIrq{flags,interrupts,count}),
         (Resource::Dma{transfer_size,bus_master,..},Resource::Dma{channels,..})=>
             Some(Resource::Dma{channels,transfer_size,bus_master}),
