@@ -46,7 +46,7 @@ struct KernelAmlMutex { initialized:core::sync::atomic::AtomicU8, header:core::c
 const _:()=assert!(core::mem::offset_of!(KernelAmlMutex,header)==8);
 const _:()=assert!(core::mem::size_of::<KernelAmlMutex>()==64);
 impl KernelAmlMutex {
- const fn new()->Self{Self{initialized:core::sync::atomic::AtomicU8::new(0),header:core::cell::UnsafeCell::new([0;3])}}
+ const fn new()->Self{Self{initialized:core::sync::atomic::AtomicU8::new(0),header:core::cell::UnsafeCell::new([0;7])}}
  fn object(&self)->*mut core::ffi::c_void{self.header.get().cast()}
 }
 unsafe impl Sync for KernelAmlMutex {}
