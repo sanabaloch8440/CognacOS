@@ -182,6 +182,15 @@ impl AtaRequestTable {
         if s.state != AtaRequestState::Submitted || bytes > s.expected_bytes { return Err(0xC000_000Du32 as i32); }
         s.state = AtaRequestState::Completing; Ok(s.request_context)
     }
+    /// Release a request rejected by the miniport before it accepted ownership.
+    pub fn abort(&mut self, id: u64) -> Result<(), i32> {
+        let s = self.find_mut(id)?;
+        if s.state != AtaRequestState::Queued && s.state != AtaRequestState::Submitted {
+            return Err(0xC000_0184u32 as i32);
+        }
+        *s = AtaRequestSlot::EMPTY;
+        Ok(())
+    }
     pub fn release(&mut self, id: u64) -> Result<(), i32> {
         let s = self.find_mut(id)?;
         if s.state != AtaRequestState::Completing { return Err(0xC000_0184u32 as i32); }
