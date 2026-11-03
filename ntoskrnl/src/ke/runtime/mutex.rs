@@ -101,6 +101,10 @@ pub fn thread_exit_cleanup(thread:u64){
     // namespace capacity; a pointer array of that size would consume 16 KiB
     // of kernel stack during thread termination.
     loop{
+        // Serialize owner rundown with acquisition/release before publishing
+        // the abandoned state, otherwise a waiter could acquire between the
+        // owner-table update and the dispatcher signal-state transition.
+        let _guard=DISPATCHER_OBJECT_LOCK.lock();
         let object={
             let mut table=MUTANTS.lock();
             let Some(record)=table.records.iter_mut().find(|r|r.object!=0&&r.owner==thread)else{break};
@@ -108,7 +112,6 @@ pub fn thread_exit_cleanup(thread:u64){
             record.object
         };
         let header=object as *mut DispatcherHeader;
-        let _guard=DISPATCHER_OBJECT_LOCK.lock();
         unsafe{(&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
         let mut timed_out=[0u64;crate::dispatcher::MAX_WAITERS];let mut timed_count=0usize;
         let mut owner_waiter=None;
