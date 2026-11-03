@@ -34,7 +34,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 21. [x] Implement integer constants and AML revision-dependent integer width semantics.
 22. [x] Validate Buffer, Package, and VarPackage payloads and nested package boundaries.
 23. [x] Reject unterminated strings and malformed encodings without scanning past table bounds.
-24. [x] Report unsupported opcode with table, byte offset, opcode, and enclosing namespace object.
+24. [ ] Report unsupported opcode with table, byte offset, opcode, and enclosing namespace object.
 25. [ ] Create an iASL/ACPICA-derived parser conformance corpus.
 
 ## AML execution and runtime objects
