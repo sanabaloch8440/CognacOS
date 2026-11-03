@@ -45,6 +45,7 @@ type MountedFat = FatFilesystem<crate::io::storage::IoManagerBlockDevice>;
 static DRIVER_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static DRIVER_INIT: AtomicUsize = AtomicUsize::new(0);
 static VOLUME_DEVICE: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_PARTITION_DEVICE: AtomicUsize = AtomicUsize::new(0);
 // FatFs uses interior mutability. All access is serialized by this lock and
 // each operation owns the mounted instance for its complete lifetime.
 static VOLUME_RESOURCE: IrqSpinLock<()> = IrqSpinLock::new(());
@@ -85,7 +86,9 @@ fn with_mounted<T>(
     operation: impl FnOnce(&cognacos_fat32::fatfs::FileSystem<DiskStream<crate::io::storage::IoManagerBlockDevice>>) -> Result<T, i32>,
 ) -> Result<T, i32> {
     let _resource = VOLUME_RESOURCE.lock();
-    let disk = crate::io::storage::fat32_block_device().map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+    let partition = ACTIVE_PARTITION_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
+    if partition.is_null() { return Err(STATUS_IO_DEVICE_ERROR); }
+    let disk = crate::io::storage::fat32_block_device(partition).map_err(|_| STATUS_IO_DEVICE_ERROR)?;
     let sectors = disk.sector_count();
     let mounted = if writable {
         FatFilesystem::mount_read_write(disk, 0, sectors)
@@ -199,10 +202,10 @@ fn ensure_driver_device() -> Result<*mut DeviceObject, i32> {
 pub fn mount_volume(real_device: *mut DeviceObject) -> i32 {
     if real_device.is_null() { return STATUS_INVALID_PARAMETER; }
     if let Err(status) = ensure_driver_device() { return status; }
+    ACTIVE_PARTITION_DEVICE.store(real_device as usize, Ordering::Release);
     let status = unsafe { wdm::io_verify_volume(real_device, 0) };
     if status >= 0 && !volume_device().is_null() { STATUS_SUCCESS }
-    else if status >= 0 { STATUS_UNRECOGNIZED_VOLUME }
-    else { status }
+    else { ACTIVE_PARTITION_DEVICE.store(0, Ordering::Release); if status >= 0 { STATUS_UNRECOGNIZED_VOLUME } else { status } }
 }
 
 unsafe extern "win64" fn file_system_control_dispatch(_device: *mut DeviceObject, irp: *mut Irp) -> i32 {
@@ -219,9 +222,12 @@ unsafe extern "win64" fn file_system_control_dispatch(_device: *mut DeviceObject
         let vpb = unsafe { wdm::io_read_stack_pointer::<VPB>(stack, 12) };
         if real.is_null() || vpb.is_null() {
             status = STATUS_INVALID_PARAMETER;
-        } else if with_mounted(false, |_| Ok(())).is_err() {
-            status = STATUS_UNRECOGNIZED_VOLUME;
         } else {
+            ACTIVE_PARTITION_DEVICE.store(real as usize, Ordering::Release);
+            if with_mounted(false, |_| Ok(())).is_err() {
+                status = STATUS_UNRECOGNIZED_VOLUME;
+                ACTIVE_PARTITION_DEVICE.store(0, Ordering::Release);
+            } else {
             let existing = volume_device();
             if !existing.is_null() {
                 if unsafe { (*vpb).device_object }.is_null() {
@@ -253,6 +259,7 @@ unsafe extern "win64" fn file_system_control_dispatch(_device: *mut DeviceObject
                     VOLUME_DEVICE.store(volume as usize, Ordering::Release);
                     status = STATUS_SUCCESS;
                 } else { status = create; }
+            }
             }
         }
     } else if minor == IRP_MN_VERIFY_VOLUME {
