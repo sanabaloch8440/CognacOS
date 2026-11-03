@@ -10,7 +10,11 @@ pub struct IoManagerBlockDevice {
 }
 impl IoManagerBlockDevice {
     fn unavailable() -> Self { Self { capacity: 0 } }
+    pub fn sector_count(&self) -> u64 { self.capacity / 512 }
+    pub fn capacity_bytes(&self) -> u64 { self.capacity }
 }
+pub fn debug_trace_store_read(_offset: u64, _output: &mut [u8]) -> bool { false }
+pub fn debug_trace_store_write(_offset: u64, _input: &[u8]) -> bool { false }
 impl cognacos_fat32::BlockDevice for IoManagerBlockDevice {
     fn sector_size(&self) -> u32 { 512 }
     fn sector_count(&self) -> u64 { self.capacity / 512 }
