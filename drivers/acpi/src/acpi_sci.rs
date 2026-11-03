@@ -185,13 +185,13 @@ impl SciLifecycle {
         if !services.compatible() { return Err(SciError::BackendUnavailable); }
         let vector = self.vector;
         let context = self.context;
+        let handler_was_registered = matches!(self.state, SciState::HandlerRegistered | SciState::Enabled);
         self.state = SciState::Stopping;
         let enable = services.set_enabled.ok_or(SciError::BackendUnavailable)?;
         let unregister = services.unregister.ok_or(SciError::BackendUnavailable)?;
         let release = services.release_vector.ok_or(SciError::BackendUnavailable)?;
         if unsafe { enable(vector, false) } != 0 { return Err(SciError::BackendFailure); }
-        if matches!(self.state, SciState::HandlerRegistered | SciState::Enabled | SciState::Stopping)
-            && unsafe { unregister(vector, context) } != 0 {
+        if handler_was_registered && unsafe { unregister(vector, context) } != 0 {
             return Err(SciError::BackendFailure);
         }
         if unsafe { release(vector) } != 0 { return Err(SciError::BackendFailure); }
@@ -199,18 +199,6 @@ impl SciLifecycle {
         self.vector = 0;
         self.context = 0;
         Ok(())
-    }
-}
-
-/// The DPC must call this adapter, which only queues a PASSIVE_LEVEL worker.
-/// It must not evaluate AML, take AML mutexes, or perform blocking EC accesses.
-pub type QueuePassiveWork = extern "C" fn(context: u64) -> bool;
-pub struct SciDeferredDispatch { pub context: u64, pub queue_worker: QueuePassiveWork }
-impl SciDeferredDispatch {
-    pub extern "C" fn dpc_trampoline(context: u64) {
-        // The registered DPC callback is expected to be a driver-owned adapter
-        // that resolves its SciDeferredDispatch context and calls queue_worker.
-        let _ = context;
     }
 }
 
