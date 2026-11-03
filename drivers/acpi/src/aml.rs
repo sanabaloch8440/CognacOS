@@ -371,7 +371,9 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
     let mut connection_start=0u32;
     let mut connection_length=0u32;
     while c.pos<c.end{
+        let term_offset=c.pos;
         let op=c.byte()?;
+        *context=ParseContext{term_offset,opcode:Some(op),namespace_parent:parent};
         match op{
             0x00=>{ // ReservedField: advance by encoded bit length.
                 bit_offset=bit_offset.checked_add(read_pkg_value(c)?).ok_or(AmlError::BadPackageLength)?;
@@ -412,7 +414,9 @@ fn parse_field_list(c:&mut Cursor<'_>,ns:&mut AmlNamespace,container:u16,region:
     Ok(())
 }
 
-fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Result<(),AmlError>{
+#[derive(Clone,Copy)]
+struct ParseContext { term_offset:usize, opcode:Option<u8>, namespace_parent:u16 }
+fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8,context:&mut ParseContext)->Result<(),AmlError>{
     if depth>32{return Err(AmlError::BadDefinitionBlock)}
     while c.pos<c.end{
         let op=c.byte()?;
@@ -425,7 +429,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                 let name=parse_name(&mut sub)?;
                 if op==0x10{
                     let scope=resolve_path(ns,parent,&name,true,AmlObjectType::Scope,0,0,0)?;
-                    parse_terms(&mut sub,ns,scope,depth+1)?;
+                    parse_terms(&mut sub,ns,scope,depth+1,context)?;
                 }else{
                     let flags=sub.byte()?;
                     let body_start=sub.pos;let body_len=sub.end-sub.pos;
@@ -522,7 +526,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                             },
                             _=>{}
                         }
-                        parse_terms(&mut sub,ns,node,depth+1)?;
+                        parse_terms(&mut sub,ns,node,depth+1,context)?;
                         c.pos=end;
                     }
                     _=>return Err(AmlError::UnsupportedOpcode)
@@ -554,7 +558,8 @@ pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,ta
     let original_owner=namespace.loading_table;
     namespace.loading_table=table_id;
     let mut c=Cursor{bytes:aml,pos:0,end:aml.len()};
-    match parse_terms(&mut c,namespace,0,0){
+    let mut context=ParseContext{term_offset:0,opcode:None,namespace_parent:0};
+    match parse_terms(&mut c,namespace,0,0,&mut context){
         Ok(())=>{namespace.loading_table=original_owner;Ok(())},
         Err(error)=>{
             for index in 1..original_count {
@@ -569,12 +574,11 @@ pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,ta
             }
             namespace.count=original_count;
             namespace.loading_table=original_owner;
-            let term_offset=c.pos.saturating_sub(1).min(aml.len());
             Err(AmlDiagnostic{
                 table_id,
-                term_offset,
-                opcode:aml.get(term_offset).copied(),
-                namespace_parent:0,
+                term_offset:context.term_offset.min(aml.len()),
+                opcode:context.opcode,
+                namespace_parent:context.namespace_parent,
                 error,
             })
         }
@@ -760,14 +764,15 @@ mod tests{
         assert_eq!(ns.insert(0,*b"FULL",AmlObjectType::Name,0,0,0),Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:MAX_NAMESPACE_NODES+1}));
         assert_eq!(namespace_capacity(),MAX_NAMESPACE_NODES);assert_eq!(namespace_remaining(&ns),0);
     }
-    #[test]fn structured_diagnostic_identifies_table_term_opcode_and_error(){
+    #[test]fn structured_diagnostic_identifies_nested_term_and_scope_parent(){
+        // Scope(SCP0) contains an unsupported 0x99 term at byte offset 6.
         let aml=[0x10,0x06,b'S',b'C',b'P',b'0',0x99];
         let mut ns=AmlNamespace::new();
         let diagnostic=load_definition_block_diagnostic(&aml,&mut ns,0x1234).unwrap_err();
         assert_eq!(diagnostic.table_id,0x1234);
-        assert_eq!(diagnostic.term_offset,0);
-        assert_eq!(diagnostic.opcode,Some(0x10));
-        assert_eq!(diagnostic.namespace_parent,0);
+        assert_eq!(diagnostic.term_offset,6);
+        assert_eq!(diagnostic.opcode,Some(0x99));
+        assert_eq!(diagnostic.namespace_parent,1);
         assert_eq!(diagnostic.error,AmlError::UnsupportedOpcode);
         assert_eq!(ns.count,1);
     }
