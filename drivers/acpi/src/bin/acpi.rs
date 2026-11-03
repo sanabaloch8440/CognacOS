@@ -802,6 +802,50 @@ fn collect_device_identities(
     Ok(())
 }
 
+
+fn parse_hex_digit(value:u8)->Option<u8>{
+ match value{b'0'..=b'9'=>Some(value-b'0'),b'a'..=b'f'=>Some(value-b'a'+10),b'A'..=b'F'=>Some(value-b'A'+10),_=>None}
+}
+/// Discover fixed-hardware GPE methods and PowerResource namespace objects
+/// after all DSDT/SSDT definition blocks have been loaded.
+fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager)->Result<(),i32>{
+ let platform=unsafe{(*STATE.platform_registers.get()).assume_init_ref()};
+ let gpe=unsafe{(*STATE.gpe_controller.get()).assume_init_mut()};
+ if let Some((gas,length,base))=platform.gpe0{
+  gpe.configure_block(0,acpi::acpi_events::GpeRegisterBlock{gas,length,event_base:base})
+   .map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+ }
+ if let Some((gas,length,base))=platform.gpe1{
+  gpe.configure_block(1,acpi::acpi_events::GpeRegisterBlock{gas,length,event_base:base})
+   .map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+ }
+ if let Some(scope)=manager.namespace().find_child(0,*b"_GPE"){
+  for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+   if node.parent!=scope||node.object_type!=acpi::aml::AmlObjectType::Method{continue}
+   let name=node.name;
+   if name[0]!=b'_'||!matches!(name[1],b'L'|b'E'){continue}
+   let (Some(hi),Some(lo))=(parse_hex_digit(name[2]),parse_hex_digit(name[3]))else{continue};
+   let event=((hi<<4)|lo) as u16;
+   gpe.register_event(acpi::acpi_events::GpeEvent{
+    number:event,method_node:index as u16,
+    trigger:if name[1]==b'L'{acpi::acpi_events::ACPI_GPE_LEVEL}else{acpi::acpi_events::ACPI_GPE_EDGE},
+    wake_capable:false,enabled:false,
+   }).map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+  }
+ }
+ let graph=unsafe{(*STATE.power_resources.get()).assume_init_mut()};
+ for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+  if node.object_type!=acpi::aml::AmlObjectType::PowerResource{continue}
+  if manager.namespace().find_child(index as u16,*b"_ON").is_none()
+   ||manager.namespace().find_child(index as u16,*b"_OFF").is_none(){
+   return Err(STATUS_DEVICE_CONFIGURATION_ERROR)
+  }
+  graph.register(index as u16,node.power_resource_system_level,node.power_resource_order,false)
+   .map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
+ }
+ Ok(())
+}
+
 /// Preserve the failure class at the native driver boundary. In particular,
 /// unsupported AML is not a caller-parameter error, and corrupt firmware data
 /// must not be reported as STATUS_INVALID_PARAMETER.
@@ -934,6 +978,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         let handle=match loaded_ssdts[index]{Some(handle)=>handle,None=>return STATUS_DEVICE_CONFIGURATION_ERROR};
         if let Err(status)=collect_device_identities(manager,handle,&table_sources[..loaded_ssdt_count+1],loaded_ssdt_tables[index],gate,records,&mut identity_count){return status;}
     }
+    if let Err(status)=discover_power_and_event_namespace(manager){return status;}
     // Create an ACPI bus device and real WDM PDOs for firmware devices
     // reported present and enabled. Each PDO owns an immutable identity copy.
     // Namespace records include devices that are disabled or absent; only
