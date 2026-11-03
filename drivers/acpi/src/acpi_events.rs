@@ -288,6 +288,19 @@ mod tests{
  impl GasIo for Io{fn read(&mut self,g:AcpiGas,_:u8)->Result<u64,EventError>{Ok(self.regs[g.address as usize] as u64)}fn write(&mut self,g:AcpiGas,_:u8,v:u64)->Result<(),EventError>{self.regs[g.address as usize]=v as u8;self.writes+=1;Ok(())}}
  impl GpeIo for Io{}
  struct Exec{calls:usize}impl GpeMethodExecutor for Exec{fn execute_gpe_method(&mut self,_:u16)->Result<(),EventError>{self.calls+=1;Ok(())}}
+ #[test]fn sleep_register_plan_preserves_unrelated_hardware_reduced_bits(){
+  let registers=AcpiPlatformRegisters{model:AcpiHardwareModel::HardwareReduced,pm1a_control:None,pm1b_control:None,sleep_control:Some(gas(1)),sleep_status:None,gpe0:None,gpe1:None};
+  let plan=build_sleep_register_plan(&registers,2,3,0).unwrap();
+  let mut io=Io{regs:[0;32],writes:0};io.regs[1]=0b1100_0011;
+  execute_sleep_register_plan(&mut io,&plan).unwrap();
+  assert_eq!(io.regs[1],(0b1100_0011&!((7<<2)|(1<<5)))|((3<<2)|(1<<5)));
+ }
+ #[test]fn sci_masks_every_pending_bit_in_a_shared_enable_byte(){
+  let mut g=GpeController::new();g.configure_block(0,GpeRegisterBlock{gas:gas(4),length:4,event_base:0}).unwrap();
+  for (number,node) in [(0,70),(1,71)]{g.register_event(GpeEvent{number,method_node:node,trigger:ACPI_GPE_EDGE,wake_capable:false,enabled:true}).unwrap();}
+  let mut io=Io{regs:[0;32],writes:0};io.regs[4]=3;io.regs[6]=3;
+  assert_eq!(g.capture_sci(&mut io).unwrap(),2);assert_eq!(io.regs[6],0);
+ }
  #[test]fn gpe_capture_masks_and_clears_then_deferred_exec_reenables(){
   let mut g=GpeController::new();g.configure_block(0,GpeRegisterBlock{gas:gas(4),length:4,event_base:0}).unwrap();
   g.register_event(GpeEvent{number:1,method_node:77,trigger:ACPI_GPE_LEVEL,wake_capable:true,enabled:true}).unwrap();
