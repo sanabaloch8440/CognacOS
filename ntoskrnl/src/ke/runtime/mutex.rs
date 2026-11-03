@@ -97,17 +97,16 @@ pub unsafe extern "win64" fn ke_read_state_mutant(object:*const DispatcherHeader
 /// Mark mutexes owned by a terminating thread abandoned and wake their next waiter.
 pub fn thread_exit_cleanup(thread:u64){
     if thread==0{return}
-    let mut objects=[0usize;2048];let mut count=0;
-    {
-        let mut table=MUTANTS.lock();
-        for record in table.records.iter_mut(){
-            if record.object!=0&&record.owner==thread{
-                record.owner=0;record.recursion=0;record.abandoned=true;
-                objects[count]=record.object;count+=1;
-            }
-        }
-    }
-    for object in objects[..count].iter().copied(){
+    // Process one owned mutant at a time. The table can cover the full ACPI
+    // namespace capacity; a pointer array of that size would consume 16 KiB
+    // of kernel stack during thread termination.
+    loop{
+        let object={
+            let mut table=MUTANTS.lock();
+            let Some(record)=table.records.iter_mut().find(|r|r.object!=0&&r.owner==thread)else{break};
+            record.owner=0;record.recursion=0;record.abandoned=true;
+            record.object
+        };
         let header=object as *mut DispatcherHeader;
         let _guard=DISPATCHER_OBJECT_LOCK.lock();
         unsafe{(&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
@@ -132,9 +131,6 @@ pub fn thread_exit_cleanup(thread:u64){
     }
     complete_ready_wait_all_groups();
 }
-
-
-
 
 // ---- FAST_MUTEX ABI entry points -------------------------------------------
 // x64 FAST_MUTEX layout: Count@0, Owner@8, Contention@16, KEVENT@24,
