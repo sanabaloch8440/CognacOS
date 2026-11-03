@@ -136,6 +136,15 @@ impl DRIVER_EXTENSION {
     }
 }
 
+/// Windows x64 WDM layout invariants. DRIVER_EXTENSION::AddDevice is at
+/// offset 0x20; keeping the intervening DriverInit/StartIo/Unload slots is
+/// essential because the I/O Manager and drivers share this structure.
+const _: () = assert!(core::mem::offset_of!(DRIVER_EXTENSION, add_device) == 0x20);
+const _: () = assert!(core::mem::offset_of!(DRIVER_EXTENSION, count) == 0x28);
+const _: () = assert!(core::mem::offset_of!(DRIVER_EXTENSION, service_key_name) == 0x30);
+const _: () = assert!(core::mem::size_of::<DRIVER_EXTENSION>() == 0x40);
+const _: () = assert!(core::mem::size_of::<DRIVER_OBJECT>() == 0x150);
+
 #[repr(C, align(16))]
 pub struct DEVICE_OBJECT {
     pub type_: i16,
