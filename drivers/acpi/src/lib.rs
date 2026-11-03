@@ -1619,3 +1619,16 @@ mod firmware_table_policy_tests {
         assert_eq!(find_unique_table_with_mapper(&mapper,0x1000,*b"FACP"),Err(AcpiError::DuplicateTable));
     }
 }
+
+
+#[cfg(test)]
+mod remaining_firmware_table_tests {
+ use super::*;
+ fn finish(b:&mut [u8]){b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));}
+ fn sdt(sig:[u8;4],n:usize)->std::vec::Vec<u8>{let mut b=std::vec![0u8;n];b[..4].copy_from_slice(&sig);b[4..8].copy_from_slice(&(n as u32).to_le_bytes());b[8]=1;b}
+ #[test] fn validates_facs_without_applying_sdt_checksum(){let mut b=[0u8;64];b[..4].copy_from_slice(b"FACS");b[4..8].copy_from_slice(&64u32.to_le_bytes());b[32]=2;let f=parse_facs(&b).unwrap();assert_eq!(f.length,64);assert_eq!(f.version,2);assert_eq!(parse_facs(&b[..40]),Err(AcpiError::BadLength));}
+ #[test] fn validates_hpet_gas_and_page_protection(){let mut b=sdt(*b"HPET",56);b[41]=64;b[44..52].copy_from_slice(&0xfed0_0000u64.to_le_bytes());finish(&mut b);let h=parse_hpet(&b).unwrap();assert_eq!(h.base.address,0xfed0_0000);b[55]=3;finish(&mut b);assert_eq!(parse_hpet(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_bgrt_version_status_and_image_address(){let mut b=sdt(*b"BGRT",56);b[36..38].copy_from_slice(&1u16.to_le_bytes());b[38]=1;b[40..48].copy_from_slice(&0x1000u64.to_le_bytes());finish(&mut b);assert_eq!(parse_bgrt(&b).unwrap().image_address,0x1000);b[40..48].fill(0);finish(&mut b);assert_eq!(parse_bgrt(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_gtdt_fixed_fields_and_timer_offset(){let mut b=sdt(*b"GTDT",96);b[88..92].copy_from_slice(&1u32.to_le_bytes());b[92..96].copy_from_slice(&96u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b).unwrap().platform_timer_count,1);b[92..96].copy_from_slice(&95u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_pptt_variable_node_bounds(){let mut b=sdt(*b"PPTT",40);b[36]=0;b[37]=4;finish(&mut b);assert!(validate_pptt(&b).is_ok());b[37]=8;finish(&mut b);assert_eq!(validate_pptt(&b),Err(AcpiError::MalformedEntry));}
+}
