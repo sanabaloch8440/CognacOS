@@ -25,7 +25,7 @@ pub enum AmlObjectType { Root=0, Scope=1, Device=2, Method=3, Name=4, Processor=
 pub struct AmlNode {
     pub parent:u16, pub name:[u8;4], pub object_type:AmlObjectType,
     /// AML definition block slot that supplied this namespace object.
-    pub source_table:u8,
+    pub source_table:u32,
     pub method_flags:u8, pub body_start:u32, pub body_length:u32,
     /// Canonical target for Alias objects; u16::MAX for non-alias nodes.
     pub alias_target:u16,
@@ -41,7 +41,7 @@ pub struct AmlNode {
 impl AmlNode {
     pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0};
 }
-pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u8 }
+pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u32 }
 impl AmlNamespace {
     pub const fn new()->Self { Self{nodes:[AmlNode::ROOT;MAX_NAMESPACE_NODES],count:1,loading_table:0} }
 /// Find a direct namespace child by its four-byte AML NameSeg without resolving aliases.
@@ -180,7 +180,7 @@ fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:
                 let existing=ns.nodes[found as usize].object_type;
                 if kind==AmlObjectType::Scope {
                     if !matches!(existing,AmlObjectType::Root|AmlObjectType::Scope|AmlObjectType::Device|AmlObjectType::Processor|AmlObjectType::PowerResource|AmlObjectType::ThermalZone){return Err(AmlError::InvalidParent)}
-                    if existing==AmlObjectType::Scope && ns.nodes[found as usize].source_table!=ns.loading_table {ns.nodes[found as usize].source_table=0;}
+                    
                 } else if existing==AmlObjectType::External {
                     ns.nodes[found as usize].object_type=kind;
                     ns.nodes[found as usize].method_flags=flags;
@@ -438,7 +438,7 @@ pub fn load_definition_block(aml:&[u8],namespace:&mut AmlNamespace)->Result<(),A
 
 /// Load one DSDT/SSDT with a stable table-owner ID. All namespace objects
 /// introduced by this block carry the ID and can be removed independently.
-pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_id:u8)->Result<(),AmlError>{
+pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32)->Result<(),AmlError>{
     // Namespace insertion is append-only. Restoring the original count on
     // failure makes each definition-block load atomic without copying the
     // large fixed-capacity namespace onto the kernel stack.
@@ -458,14 +458,27 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
 pub fn unload_definition_block(namespace:&mut AmlNamespace,table_id:u8)->usize{
     if table_id==0{return 0}
     let old_count=namespace.count;
+    let mut needed_as_scope=[false;MAX_NAMESPACE_NODES];
+    // Any surviving object needs its Scope ancestors as namespace containers.
+    for index in 1..old_count {
+        if namespace.nodes[index].source_table!=table_id {
+            let mut parent=namespace.nodes[index].parent as usize;
+            while parent>0 && parent<old_count {
+                needed_as_scope[parent]=true;
+                parent=namespace.nodes[parent].parent as usize;
+            }
+        }
+    }
     let mut remap=[u16::MAX;MAX_NAMESPACE_NODES];
     remap[0]=0;
     let mut write=1usize;
     for read in 1..old_count {
         let node=namespace.nodes[read];
         let parent=node.parent as usize;
-        if node.source_table==table_id || parent>=old_count || remap[parent]==u16::MAX {continue}
+        if parent>=old_count || remap[parent]==u16::MAX {continue}
+        if node.source_table==table_id && !(node.object_type==AmlObjectType::Scope && needed_as_scope[read]) {continue}
         let mut kept=node;
+        if kept.source_table==table_id {kept.source_table=0;}
         kept.parent=remap[parent];
         remap[read]=write as u16;
         namespace.nodes[write]=kept;
@@ -531,7 +544,7 @@ mod tests{
         load_definition_block_owned(&[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01],&mut ns,1).unwrap();
         load_definition_block_owned(&[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'1',0x01],&mut ns,2).unwrap();
         let parent=ns.find_child(0,*b"PAR0").unwrap() as usize;
-        assert_eq!(ns.nodes[parent].source_table,0);
+        assert_eq!(ns.nodes[parent].source_table,1);
         unload_definition_block(&mut ns,1);
         let parent=ns.find_child(0,*b"PAR0").unwrap();
         assert!(ns.find_child(parent,*b"VAL1").is_some());
