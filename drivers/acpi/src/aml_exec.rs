@@ -26,8 +26,8 @@ impl<'a> Reader<'a>{
 enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(u64),Break,ContinueLoop}
-struct Machine<'a>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:AmlObjectArena,bindings:AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
-impl<'a> Machine<'a>{
+struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
+impl<'a,'b> Machine<'a,'b>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn name_reference(&mut self,node:u16)->Result<AmlReference,ExecError>{
   let reference=self.bindings.reference_node(self.namespace,node).map_err(|_|ExecError::BadTarget)?;
@@ -122,7 +122,7 @@ impl<'a> Machine<'a>{
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
       let value=execute_method_inner(self.aml,self.namespace,canonical,
-          &call_args[..count],self.call_depth+1,self.integer_width_bits)?;
+          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)?;
       Ok(Self::integer_value(value))
      }
      _=>Err(ExecError::NonIntegerName),
@@ -189,7 +189,7 @@ impl<'a> Machine<'a>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits)
+      execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
@@ -253,7 +253,8 @@ impl<'a> Machine<'a>{
 pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
  let namespace=AmlNamespace::new();
  let zero=Machine::integer_value(0);
- let mut machine=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),bindings:AmlBindings::with_aml_revision(2),integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
+ let mut arena=AmlObjectArena::new();let mut bindings=AmlBindings::with_aml_revision(2);
+ let mut machine=Machine{locals:[zero;8],args:[zero;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
  let mut reader=Reader{bytes,pos:0,end:bytes.len()};
  let value=machine.term(&mut reader)?;
  Ok((value,reader.pos))
@@ -263,7 +264,7 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 /// Only integer arguments and scalar operations are currently supported.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8)->Result<u64,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings)->Result<u64,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
@@ -274,7 +275,7 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  if end>aml.len(){return Err(ExecError::InvalidMethod)}
  if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
  let zero=Machine::integer_value(0);
- let mut m=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),bindings:AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2}),integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
+ let mut m=Machine{locals:[zero;8],args:[zero;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
  for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
  let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(value)
 }
@@ -284,7 +285,9 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
 /// the containing DefinitionBlock (32 bits for revision 1, otherwise 64).
 pub fn execute_method_with_values(aml:&[u8],namespace:&AmlNamespace,
     method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlValue,ExecError>{
-    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits).map(AmlValue::Integer)
+    let mut arena=AmlObjectArena::new();
+    let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
+    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings).map(AmlValue::Integer)
 }
 
 /// Integer-argument compatibility entry point using an explicit AML width.
