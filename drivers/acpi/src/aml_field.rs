@@ -395,4 +395,22 @@ pub fn write_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,input:&[u8],io:&mut
     result
 }
 
+
+    #[test]
+    fn wide_field_buffer_round_trips_more_than_one_aml_integer(){
+        let mut ns=AmlNamespace::new();
+        let mut node=crate::aml::AmlNode::ROOT;
+        node.object_type=AmlObjectType::Field;node.field_region=5;node.body_start=8;
+        node.body_length=80;node.field_access_type=0;node.field_update_rule=0;
+        ns.nodes[1]=node;ns.count=2;
+        let mut mem=Memory{bytes:[0x33;32],locked:false};
+        let mut output=[0u8;10];
+        assert_eq!(read_field_buffer(&ns,1,&mut mem,&mut output),Ok(10));
+        assert_eq!(output,[0x33;10]);
+        let input=[0xa5;10];
+        assert_eq!(write_field_buffer(&ns,1,&input,&mut mem),Ok(()));
+        assert_eq!(&mem.bytes[1..11],&input);
+        assert_eq!(mem.bytes[0],0x33);assert_eq!(mem.bytes[11],0x33);
+    }
+
 }
