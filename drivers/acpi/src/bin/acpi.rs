@@ -180,6 +180,7 @@ struct AcpiState {
     ready: AtomicBool,
     unloading: AtomicBool,
     active_operations: core::sync::atomic::AtomicUsize,
+    interface_references: core::sync::atomic::AtomicUsize,
     madt: UnsafeCell<MaybeUninit<acpi::MadtInfo>>,
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
@@ -194,6 +195,7 @@ static STATE: AcpiState = AcpiState {
     ready: AtomicBool::new(false),
     unloading: AtomicBool::new(false),
     active_operations: core::sync::atomic::AtomicUsize::new(0),
+    interface_references: core::sync::atomic::AtomicUsize::new(0),
     madt: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
@@ -589,7 +591,8 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     // draining here guarantees no owner/waiter still references driver storage.
     STATE.unloading.store(true, Ordering::Release);
     STATE.ready.store(false, Ordering::Release);
-    while STATE.active_operations.load(Ordering::Acquire)!=0 {
+    while STATE.active_operations.load(Ordering::Acquire)!=0
+        || STATE.interface_references.load(Ordering::Acquire)!=0 {
         core::hint::spin_loop();
     }
 }
@@ -633,6 +636,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     STATE.ready.store(false,Ordering::Release);
     STATE.unloading.store(false,Ordering::Release);
     STATE.active_operations.store(0,Ordering::Release);
+    STATE.interface_references.store(0,Ordering::Release);
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
     let madt_bytes = match unsafe { query_hal_table(*b"APIC", 0) } {
         Ok(bytes) => bytes,
@@ -747,6 +751,19 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     STATUS_SUCCESS
 }
 
+/// A referenced firmware interface pins ACPI.sys until the consumer calls
+/// InterfaceDereference. The reference callback itself is guarded as an active
+/// operation so unload cannot race the count increment.
+unsafe extern "win64" fn acpi_interface_reference(context:PVOID){
+    if context!=core::ptr::addr_of!(STATE).cast_mut().cast(){return}
+    let Some(_operation)=AcpiOperationGuard::enter() else{return};
+    STATE.interface_references.fetch_add(1,Ordering::AcqRel);
+}
+unsafe extern "win64" fn acpi_interface_dereference(context:PVOID){
+    if context!=core::ptr::addr_of!(STATE).cast_mut().cast(){return}
+    let _=STATE.interface_references.fetch_update(Ordering::AcqRel,Ordering::Acquire,|count|Some(count.saturating_sub(1)));
+}
+
 /// Copy a validated firmware table through the versioned ACPI bus interface.
 /// The caller owns the destination buffer; no firmware physical pointer escapes.
 unsafe extern "win64" fn query_firmware_table(
@@ -757,6 +774,7 @@ unsafe extern "win64" fn query_firmware_table(
     buffer_length: u32,
     required_length: *mut u32,
 ) -> i32 {
+    let Some(_operation)=AcpiOperationGuard::enter() else{return STATUS_DEVICE_NOT_READY;};
     if context.is_null() || signature.is_null() || required_length.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
@@ -798,8 +816,8 @@ unsafe extern "win64" fn cognac_acpi_get_firmware_interface(
                 size: core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() as u16,
                 version: ACPI_FIRMWARE_INTERFACE_VERSION as u16,
                 context: core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>(),
-                interface_reference: None,
-                interface_dereference: None,
+                interface_reference: Some(acpi_interface_reference),
+                interface_dereference: Some(acpi_interface_dereference),
             },
             query_table: Some(query_firmware_table),
         });
