@@ -126,6 +126,11 @@ impl<G:AmlExecutionGate,I:AcpiMethodInvoker> AcpiMethodInvoker for GatedDeviceIn
 
 pub struct AmlTableManager {
     namespace:AmlNamespace,
+    // Parser declarations can resolve and refine External placeholders that
+    // were created by earlier tables. Keep a persistent snapshot buffer so a
+    // failed table can restore both appended nodes and mutations to existing
+    // namespace entries without consuming the small kernel boot stack.
+    rollback_nodes:[crate::aml::AmlNode;MAX_NAMESPACE_NODES],
     records:[TableRecord;MAX_AML_TABLES],
     count:usize,
     next_generation:u32,
@@ -133,8 +138,8 @@ pub struct AmlTableManager {
 }
 impl AmlTableManager {
     pub const fn new()->Self {
-        Self{namespace:AmlNamespace::new(),records:[TableRecord::EMPTY;MAX_AML_TABLES],
-            count:0,next_generation:1,dsdt_loaded:false}
+        Self{namespace:AmlNamespace::new(),rollback_nodes:[crate::aml::AmlNode::ROOT;MAX_NAMESPACE_NODES],
+            records:[TableRecord::EMPTY;MAX_AML_TABLES],count:0,next_generation:1,dsdt_loaded:false}
     }
     /// # Safety
     /// The RSDP, root-table, FADT, DSDT, and SSDT physical ranges must be mapped
@@ -274,15 +279,17 @@ impl AmlTableManager {
         }
         if self.namespace.count>=MAX_NAMESPACE_NODES{return Err(TableError::NamespaceCapacity)}
         let before=self.namespace.count;
-        // A DefinitionBlock is one namespace transaction. The parser can have
-        // inserted valid declarations before encountering an unsupported or
-        // malformed later term; never leave those partial declarations visible
-        // when the table itself is rejected.
+        // A DefinitionBlock is one namespace transaction. Snapshot the fixed
+        // namespace into manager-owned storage: AML External resolution may
+        // mutate an existing placeholder as well as append new nodes.
+        self.rollback_nodes.copy_from_slice(&self.namespace.nodes);
         if let Err(error)=load_definition_block_owned(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,self.count as u32){
+            self.namespace.nodes.copy_from_slice(&self.rollback_nodes);
             self.namespace.count=before;
             return Err(TableError::Parse(error));
         }
         if self.namespace.count>u16::MAX as usize{
+            self.namespace.nodes.copy_from_slice(&self.rollback_nodes);
             self.namespace.count=before;
             return Err(TableError::NamespaceCapacity)
         }
