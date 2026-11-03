@@ -9,7 +9,7 @@
 
 use core::{ffi::c_void, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_nt_abi::{
-    bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
+    bus::{BUS_INTERFACE_STANDARD, GUID_BUS_INTERFACE_STANDARD, PCI_DEVICE_INFORMATION},
     io::{DEVICE_OBJECT, DRIVER_EXTENSION, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
     ntstatus::*,
     types::PVOID,
@@ -609,23 +609,36 @@ unsafe extern "win64" fn dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> 
 
 unsafe extern "win64" fn add_device(driver: *mut DRIVER_OBJECT, pdo: *mut DEVICE_OBJECT) -> i32 {
     if driver.is_null() || pdo.is_null() { return STATUS_INVALID_PARAMETER; }
-    let mut interface = core::mem::MaybeUninit::<PCI_DEVICE_INTERFACE>::zeroed();
+    let mut interface = core::mem::MaybeUninit::<BUS_INTERFACE_STANDARD>::zeroed();
     let status = unsafe {
-        query_pci_bus_interface(pdo, &GUID_PCI_DEVICE_INTERFACE,
-            core::mem::size_of::<PCI_DEVICE_INTERFACE>() as u16,
-            cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION as u16,
+        query_pci_bus_interface(pdo, &GUID_BUS_INTERFACE_STANDARD,
+            core::mem::size_of::<BUS_INTERFACE_STANDARD>() as u16,
+            cognacos_nt_abi::bus::BUS_INTERFACE_STANDARD_VERSION as u16,
             interface.as_mut_ptr().cast())
     };
     if status != STATUS_SUCCESS { return STATUS_NOT_SUPPORTED; }
     let interface = unsafe { interface.assume_init() };
-    if (interface.header.size as usize) < core::mem::size_of::<PCI_DEVICE_INTERFACE>()
-        || interface.header.version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION {
+    if (interface.size as usize) < core::mem::size_of::<BUS_INTERFACE_STANDARD>() || interface.version != 1 {
+        if let Some(deref) = interface.interface_dereference { unsafe { deref(interface.context); } }
         return 0xC000_0059u32 as i32;
     }
-    let Some(query) = interface.query_information else { return STATUS_NOT_SUPPORTED; };
+    let Some(get_bus_data) = interface.get_bus_data else {
+        if let Some(deref) = interface.interface_dereference { unsafe { deref(interface.context); } }
+        return STATUS_NOT_SUPPORTED;
+    };
+    let mut config = [0u8; 64];
+    let bytes = unsafe { get_bus_data(interface.context, 0, config.as_mut_ptr().cast(), 0, config.len() as u32) };
+    if let Some(deref) = interface.interface_dereference { unsafe { deref(interface.context); } }
+    if bytes < 16 { return STATUS_DEVICE_DATA_ERROR; }
     let mut information = PCI_DEVICE_INFORMATION::default();
-    let status = unsafe { query(interface.header.context, &mut information) };
-    if status != STATUS_SUCCESS { return status; }
+    information.vendor_id = u16::from_le_bytes([config[0], config[1]]);
+    information.device_id = u16::from_le_bytes([config[2], config[3]]);
+    information.command = u16::from_le_bytes([config[4], config[5]]);
+    information.revision_id = config[8];
+    information.programming_interface = config[9];
+    information.subclass = config[10];
+    information.class_code = config[11];
+    information.header_type = config[14];
     if information.class_code != 0x01 || information.subclass != 0x01 {
         return STATUS_NOT_SUPPORTED;
     }
