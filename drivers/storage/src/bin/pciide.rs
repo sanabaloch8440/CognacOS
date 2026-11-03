@@ -553,7 +553,7 @@ unsafe extern "win64" fn add_device(driver: *mut c_void, pdo: *mut DEVICE_OBJECT
     };
     if status != STATUS_SUCCESS { return STATUS_NOT_SUPPORTED; }
     let interface = unsafe { interface.assume_init() };
-    if interface.header.size as usize < core::mem::size_of::<PCI_DEVICE_INTERFACE>()
+    if (interface.header.size as usize) < core::mem::size_of::<PCI_DEVICE_INTERFACE>()
         || interface.header.version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION {
         return 0xC000_0059u32 as i32;
     }
