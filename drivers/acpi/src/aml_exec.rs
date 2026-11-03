@@ -139,6 +139,7 @@ impl<'a,'b> Machine<'a,'b>{
     AmlValueKind::Buffer=>{
      let length=source.byte_length as usize;
      if length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
+     if length.saturating_mul(4).saturating_sub(1)>MAX_AML_BYTES{return Err(ExecError::TargetTypeMismatch)}
      let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;let mut out=0usize;
      for byte in source.bytes[..length].iter(){
       if out!=0{value.bytes[out]=b',';out+=1;}
@@ -441,21 +442,36 @@ mod tests{
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&decimal,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
 
-  let dec=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x97,0x0a,42,0x00];
+  let dec=[0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,0x97,0x0a,42,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&dec,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   let value=execute_method_typed_with_values(&dec,&ns,id,&[],64).unwrap();
   assert_eq!(value.kind,AmlValueKind::String);assert_eq!(&value.bytes[..2],b"42");
 
-  let hex=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x98,0x0a,42,0x00];
+  let hex=[0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa4,0x98,0x0a,42,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&hex,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   let value=execute_method_typed_with_values(&hex,&ns,id,&[],32).unwrap();
   assert_eq!(value.kind,AmlValueKind::String);assert_eq!(value.byte_length,8);
   assert_eq!(&value.bytes[..8],b"0000002A");
 
+  // Buffer conversion uses comma-separated byte values, not host-endian integers.
+  let decimal_buffer=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,10,255,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x97,b'B',b'U',b'F',b'0',0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&decimal_buffer,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&decimal_buffer,&ns,id,&[],64).unwrap();
+  assert_eq!(&value.bytes[..value.byte_length as usize],b"10,255");
+
+  let hex_buffer=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,10,255,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x98,b'B',b'U',b'F',b'0',0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&hex_buffer,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let value=execute_method_typed_with_values(&hex_buffer,&ns,id,&[],64).unwrap();
+  assert_eq!(&value.bytes[..value.byte_length as usize],b"0A,FF");
+
   let to_buffer=[0x08,b'S',b'T',b'R',b'0',0x0d,b'O',b'K',0,
-   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x96,b'S',b'T',b'R',b'0',0x00];
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x96,b'S',b'T',b'R',b'0',0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&to_buffer,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   let value=execute_method_typed_with_values(&to_buffer,&ns,id,&[],64).unwrap();
@@ -463,7 +479,7 @@ mod tests{
   assert_eq!(&value.bytes[..3],b"OK\0");
 
   let to_string=[0x08,b'B',b'U',b'F',b'0',0x11,0x06,0x0a,3,b'O',b'K',0,
-   0x14,0x10,b'T',b'E',b'S',b'T',0,0xa4,0x9c,b'B',b'U',b'F',b'0',0x0a,3];
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x9c,b'B',b'U',b'F',b'0',0x0a,3];
   let mut ns=AmlNamespace::new();load_definition_block(&to_string,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   let value=execute_method_typed_with_values(&to_string,&ns,id,&[],64).unwrap();
