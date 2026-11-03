@@ -75,7 +75,7 @@ impl<'a> Machine<'a>{
     let rem=Self::target(r)?;let q=Self::target(r)?;
     self.store(rem,remainder);self.store(q,quotient);Ok(self.normalize(quotient))
    }
-   0x80=>{let v=self.normalize(!self.term_depth(r,depth+1)?);let t=Self::target(r)?;self.store(t,v);Ok(v)},
+   0x80=>{let operand=self.term_depth(r,depth+1)?;let v=self.normalize(!operand);let t=Self::target(r)?;self.store(t,v);Ok(v)},
    0x90=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0&&b!=0)as u64)},
    0x91=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0||b!=0)as u64)},
    0x92=>Ok((self.term_depth(r,depth+1)?==0)as u64),
@@ -217,7 +217,7 @@ mod tests{
 
  #[test]fn method_local_and_argument_targets_store_integer_values_without_type_aliasing(){
   let mut namespace=AmlNamespace::new();
-  let mut aml=[0x14,0x0d,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
+  let aml=[0x14,0x0d,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
   load_definition_block(&aml,&mut namespace).unwrap();
   let id=namespace.find_child(0,*b"TEST").unwrap();
   // Existing public entry point passes Integer args; typed Name operands are
