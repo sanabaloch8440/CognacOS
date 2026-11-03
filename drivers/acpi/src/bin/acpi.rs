@@ -275,7 +275,7 @@ unsafe fn allocate_prefixed_id_list(ids:&[acpi::acpi_device::AcpiId])->Result<us
     // form is also emitted to match the WDK/ReactOS ACPI bus ID convention.
     let mut units=1usize;
     for id in ids {
-        if id.length==0||id.as_bytes().iter().any(|b|*b<=0x20||*b>0x7f||*b==b','||*b==b'\\\\') {
+        if id.length==0||id.as_bytes().iter().any(|b|*b<=0x20||*b>0x7f||*b==b','||*b==b'\\') {
             return Err(STATUS_INVALID_PARAMETER);
         }
         units=units.checked_add(5+id.length as usize+1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -307,7 +307,7 @@ unsafe fn allocate_prefixed_id_list(ids:&[acpi::acpi_device::AcpiId])->Result<us
 }
 
 unsafe fn allocate_acpi_device_id(id:&acpi::acpi_device::AcpiId)->Result<usize,i32>{
-    if id.length==0||id.as_bytes().iter().any(|b|*b<=0x20||*b>0x7f||*b==b','||*b==b'\\\\') {
+    if id.length==0||id.as_bytes().iter().any(|b|*b<=0x20||*b>0x7f||*b==b','||*b==b'\\') {
         return Err(STATUS_INVALID_PARAMETER);
     }
     let units=5usize.checked_add(id.length as usize+1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -418,7 +418,7 @@ unsafe fn query_pdo_id(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,irp:*mut c
             unsafe{allocate_prefixed_id_list(&identity.compatible_ids[..count])}
         }
         BUS_QUERY_INSTANCE_ID => {
-            let uid=identity.uid_string.unwrap_or_else(||decimal_uid(identity.uid.unwrap_or(extension.node as u64)));
+            let uid=identity.uid_string.unwrap_or_else(||decimal_uid(identity.uid.unwrap_or(unsafe{(*extension).node} as u64)));
             unsafe{allocate_id_string(&uid)}
         }
         _=>Err(STATUS_NOT_SUPPORTED),
