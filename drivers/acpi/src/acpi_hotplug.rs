@@ -127,7 +127,9 @@ pub fn disarm_device_wake(d:&mut HotplugDevice,g:u32,b:&mut impl HotplugBackend)
  use super::*;
  
  #[test] fn duplicate_arrival_cannot_replace_live_device_generation() {
-  let mut device=ready();
+  let mut device=HotplugDevice::EMPTY;
+  device_arrived(&mut device,7,4).unwrap();
+  mark_enumerated(&mut device,4).unwrap();
   assert_eq!(device_arrived(&mut device,9,5),Err(HotplugError::InvalidTransition));
   assert_eq!(device.node,7);
   assert_eq!(device.generation,4);
