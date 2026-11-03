@@ -26,7 +26,6 @@ impl<'a> Reader<'a>{
 }
 #[derive(Clone,Copy)]
 enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
 // Execution outcomes propagate through nested If/Else blocks. Only the nearest
 // While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
