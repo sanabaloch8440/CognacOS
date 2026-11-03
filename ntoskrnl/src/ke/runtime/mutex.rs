@@ -38,6 +38,12 @@ fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
     Some(if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
 }
 fn try_acquire_mutant(object:*mut DispatcherHeader)->bool{try_acquire_mutant_status(object).is_some()}
+/// Distinguish a registered-but-owned mutant from an object that could not be
+/// registered because the bounded kernel mutant table is full.
+fn mutant_is_registered(object:*mut DispatcherHeader)->bool{
+ if object.is_null(){return false}
+ MUTANTS.lock().records.iter().any(|record|record.object==object as usize)
+}
 fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
     if object.is_null(){return 0}
     let Some(current)=crate::thread::current_thread_id() else{return 0};
