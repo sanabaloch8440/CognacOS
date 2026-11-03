@@ -280,7 +280,6 @@ fn io_pnp_bind_driver(driver:*mut c_void,pdo:*mut DeviceObject,callback:PnpAddDe
 /// The callback decides whether a PDO belongs to its hardware family and
 /// creates/attaches its FDO on a match. Existing children are considered
 /// immediately; future BusRelations updates trigger the same callback.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPRegisterDeviceDriver(
  driver:*mut c_void,add_device:Option<PnpAddDeviceRoutine>
 )->i32 {
@@ -312,7 +311,6 @@ pub unsafe extern "win64" fn IoPnPRegisterDeviceDriver(
 /// Publish bus relations after a successful IRP_MN_QUERY_DEVICE_RELATIONS
 /// completion. The relations object and every child pointer must be kernel-owned
 /// and readable; unknown/deleting objects are rejected before any state changes.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,relations:*const DeviceRelations)->i32{
  if bus.is_null()||relations.is_null(){return STATUS_INVALID_PARAMETER}
  let count=unsafe{ptr::read_unaligned(ptr::addr_of!((*relations).count))} as usize;
@@ -418,7 +416,6 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
 /// Dispatch one real IRP_MJ_PNP lifecycle request under PnP-manager ownership.
 /// START_DEVICE resources are reserved before forwarding and committed only after completion.
 /// Pending IRPs remain owned until terminal IoCompleteRequest.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void)->i32 {
  unsafe{io_pnp_dispatch_lifecycle_internal(device,minor,allocated,translated,false)}
 }
@@ -519,7 +516,6 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
 /// Query a synchronous IRP_MN_QUERY_INTERFACE on a bus PDO/FDO. The
 /// returned interface is copied into caller-owned storage; the provider retains
 /// ownership of its context and callback targets for the device lifetime.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPQueryBusInterface(
  bus:*mut DeviceObject,
  interface_guid:*const crate::nt_abi::bus::GUID,
@@ -562,7 +558,6 @@ pub unsafe extern "win64" fn IoPnPQueryBusInterface(
 /// Ask a bus driver for IRP_MN_QUERY_DEVICE_RELATIONS / BusRelations and
 /// publish the returned children when the IRP completes. STATUS_PENDING is
 /// supported; the manager retains the IRP and processes relations on completion.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPEnumerateBus(bus:*mut DeviceObject)->i32{
  unsafe{IoPnPDispatchLifecycle(bus,0x07,ptr::null(),ptr::null())}
 }
@@ -570,7 +565,6 @@ pub unsafe extern "win64" fn IoPnPEnumerateBus(bus:*mut DeviceObject)->i32{
 /// Retrieve a child PDO already published by a completed BusRelations request.
 /// The caller owns no reference from this query; the PnP relation table retains
 /// the PDO until a later relation update or explicit device removal.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPQueryBusChild(
  bus:*mut DeviceObject,index:u32,output:*mut *mut DeviceObject,
 )->i32 {
@@ -589,20 +583,17 @@ pub unsafe extern "win64" fn IoPnPQueryBusChild(
 }
 /// Start a PnP device by sending its real START_DEVICE IRP with the
 /// allocated and translated resource lists supplied by the bus/resource arbiter.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPStartDevice(device:*mut DeviceObject,allocated:*const c_void,translated:*const c_void)->i32{
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_START_DEVICE,allocated,translated)}
 }
 /// Send IRP_MN_QUERY_RESOURCES to the device stack. The bus PDO/FDO owns
 /// the returned CM_RESOURCE_LIST; this dispatch does not allocate or mutate it.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPQueryResources(device:*mut DeviceObject)->i32 {
  unsafe{IoPnPDispatchLifecycle(device,0x0a,ptr::null(),ptr::null())}
 }
 
 /// Send IRP_MN_QUERY_RESOURCE_REQUIREMENTS to the device stack. The bus driver
 /// supplies requirements; the kernel arbiter validates translated claims at START.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPQueryResourceRequirements(device:*mut DeviceObject)->i32 {
  unsafe{IoPnPDispatchLifecycle(device,0x0b,ptr::null(),ptr::null())}
 }
@@ -610,7 +601,6 @@ pub unsafe extern "win64" fn IoPnPQueryResourceRequirements(device:*mut DeviceOb
 /// Rebalance a started device using the caller's newly arbitrated resource
 /// lists. The stop must complete before start is issued; STATUS_PENDING is
 /// propagated and callers must resume the transaction from completion.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPRebalanceDevice(
  device:*mut DeviceObject, allocated:*const c_void, translated:*const c_void
 )->i32 {
@@ -620,14 +610,12 @@ pub unsafe extern "win64" fn IoPnPRebalanceDevice(
 }
 
 /// Stop a started device through its driver's IRP_MN_STOP_DEVICE dispatch.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPStopDevice(device:*mut DeviceObject)->i32{
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_STOP_DEVICE,ptr::null(),ptr::null())}
 }
 /// Remove a device using the required surprise-removal-before-remove sequence.
 /// If surprise removal completes asynchronously, the manager automatically
 /// dispatches REMOVE_DEVICE after successful terminal completion.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
  if device.is_null(){return STATUS_INVALID_PARAMETER}
  let state=io_pnp_state(device);
@@ -644,7 +632,6 @@ pub unsafe extern "win64" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
 
 /// Return the number of currently published children for a bus. This is an
 /// enumeration snapshot count, not a claim that those children have started.
-#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPQueryChildCount(bus:*mut DeviceObject)->u32{
  if bus.is_null(){return 0}
  let manager=PNP_MANAGER.lock();
