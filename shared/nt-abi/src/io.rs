@@ -85,6 +85,7 @@ impl VPB {
 
 pub type PDRIVER_DISPATCH = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP) -> NTSTATUS>;
 pub type PDRIVER_UNLOAD = Option<unsafe extern "win64" fn(*mut DRIVER_OBJECT)>;
+pub type PDRIVER_ADD_DEVICE = Option<unsafe extern "win64" fn(*mut DRIVER_OBJECT, *mut DEVICE_OBJECT) -> NTSTATUS>;
 pub type PIO_COMPLETION_ROUTINE = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP, PVOID) -> NTSTATUS>;
 
 #[repr(C)]
@@ -104,6 +105,27 @@ pub struct DRIVER_OBJECT {
     pub driver_start_io: PVOID,
     pub driver_unload: PDRIVER_UNLOAD,
     pub major_function: [PDRIVER_DISPATCH; 28],
+}
+
+/// WDM DRIVER_EXTENSION layout. The I/O Manager owns this object and
+/// drivers publish their AddDevice callback here; it is not an ntoskrnl export.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DRIVER_EXTENSION {
+    pub driver_object: *mut DRIVER_OBJECT,
+    pub add_device: PDRIVER_ADD_DEVICE,
+    pub count: ULONG,
+    pub service_key_name: UNICODE_STRING,
+}
+impl DRIVER_EXTENSION {
+    pub const fn empty() -> Self {
+        Self {
+            driver_object: core::ptr::null_mut(),
+            add_device: None,
+            count: 0,
+            service_key_name: UNICODE_STRING { length: 0, maximum_length: 0, buffer: core::ptr::null_mut() },
+        }
+    }
 }
 
 #[repr(C, align(16))]
