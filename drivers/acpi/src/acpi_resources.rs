@@ -449,6 +449,18 @@ mod assigned_resource_encoding_tests{
   assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
  }
  #[test]
+ fn verifies_post_srs_crs_against_selected_bus_relative_assignment(){
+  let mut expected=ResourceList::EMPTY;
+  expected.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:0x100,length:0x100,decode_16_bit:true});
+  expected.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[9,0,0,0,0,0,0,0],count:1});
+  expected.count=2;
+  let mut current=expected;
+  current.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  assert_eq!(verify_current_resources(&expected,&current),Ok(()));
+  current.entries[1]=Some(Resource::ExtendedIrq{flags:0x02,interrupts:[9,0,0,0,0,0,0,0],count:1});
+  assert_eq!(verify_current_resources(&expected,&current),Err(ResourceError::InvalidDescriptor));
+ }
+ #[test]
  fn rejects_allocations_outside_every_prs_alternative(){
   let mut required=ResourceList::EMPTY;
   required.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
