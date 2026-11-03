@@ -274,4 +274,47 @@ mod tests{
         assert_eq!(mem.bytes[0]&0b1110_0000,0b1010_0000);
         assert!(!mem.locked);
     }
+
+    struct CompositeMemory { value:u64, bank:u64, indexed_reads:u32, indexed_writes:u32 }
+    impl FieldIo for CompositeMemory {
+        fn read(&mut self,_:u16,_:u64,_:u8)->Result<u64,()>{Ok(self.value)}
+        fn write(&mut self,_:u16,_:u64,_:u8,value:u64)->Result<(),()>{self.value=value;Ok(())}
+        fn read_indexed(&mut self,index:u16,data:u16,offset:u64,_:u8)->Result<u64,()>{
+            if index!=2||data!=3||offset!=0{return Err(())} self.indexed_reads+=1;Ok(self.value)
+        }
+        fn write_indexed(&mut self,index:u16,data:u16,offset:u64,_:u8,value:u64)->Result<(),()>{
+            if index!=2||data!=3||offset!=0{return Err(())} self.indexed_writes+=1;self.value=value;Ok(())
+        }
+        fn select_bank(&mut self,register:u16,value:u64)->Result<(),()>{if register!=4{return Err(())}self.bank=value;Ok(())}
+    }
+
+    #[test]
+    fn index_field_read_and_write_use_index_data_pair(){
+        let mut ns=AmlNamespace::new();
+        let mut node=crate::aml::AmlNode::ROOT;
+        node.object_type=AmlObjectType::Field;node.field_mode=1;node.field_index_register=2;
+        node.field_data_register=3;node.body_length=8;node.field_access_type=0;
+        ns.nodes[1]=node;ns.count=2;
+        let mut io=CompositeMemory{value:0x5a,bank:0,indexed_reads:0,indexed_writes:0};
+        assert_eq!(read_index_field(&ns,1,&mut io),Ok(0x5a));
+        assert_eq!(write_index_field(&ns,1,0xa5,&mut io),Ok(()));
+        assert_eq!(io.value,0xa5);assert_eq!(io.indexed_reads,1);assert_eq!(io.indexed_writes,1);
+    }
+
+    #[test]
+    fn bank_field_selects_firmware_bank_before_region_access(){
+        let aml=[0x0a,0x02];
+        let mut ns=AmlNamespace::new();
+        let mut node=crate::aml::AmlNode::ROOT;
+        node.object_type=AmlObjectType::Field;node.field_mode=2;node.field_region=5;
+        node.field_bank_register=4;node.field_bank_value_start=0;node.field_bank_value_length=2;
+        node.body_length=8;node.field_access_type=0;
+        ns.nodes[1]=node;ns.count=2;
+        let mut io=CompositeMemory{value:0x6c,bank:0,indexed_reads:0,indexed_writes:0};
+        assert_eq!(read_field_with_aml(&aml,&ns,1,&mut io),Ok(0x6c));
+        assert_eq!(io.bank,2);
+        assert_eq!(write_field_with_aml(&aml,&ns,1,0xc6,&mut io),Ok(()));
+        assert_eq!(io.bank,2);assert_eq!(io.value,0xc6);
+    }
+
 }
