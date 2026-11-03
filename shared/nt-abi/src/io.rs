@@ -103,8 +103,8 @@ pub struct DRIVER_OBJECT {
     pub driver_name: UNICODE_STRING,
     pub hardware_database: *mut UNICODE_STRING,
     pub fast_io_dispatch: PVOID,
-    pub driver_init: PVOID,
-    pub driver_start_io: PVOID,
+    pub driver_init: PDRIVER_INITIALIZE,
+    pub driver_start_io: PDRIVER_STARTIO,
     pub driver_unload: PDRIVER_UNLOAD,
     pub major_function: [PDRIVER_DISPATCH; 28],
 }
@@ -143,6 +143,8 @@ const _: () = assert!(core::mem::offset_of!(DRIVER_EXTENSION, add_device) == 0x2
 const _: () = assert!(core::mem::offset_of!(DRIVER_EXTENSION, count) == 0x28);
 const _: () = assert!(core::mem::offset_of!(DRIVER_EXTENSION, service_key_name) == 0x30);
 const _: () = assert!(core::mem::size_of::<DRIVER_EXTENSION>() == 0x40);
+const _: () = assert!(core::mem::offset_of!(DRIVER_OBJECT, driver_extension) == 0x30);
+const _: () = assert!(core::mem::offset_of!(DRIVER_OBJECT, major_function) == 0x70);
 const _: () = assert!(core::mem::size_of::<DRIVER_OBJECT>() == 0x150);
 
 #[repr(C, align(16))]
