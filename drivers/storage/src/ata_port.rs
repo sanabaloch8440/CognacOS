@@ -278,6 +278,13 @@ mod request_validation_tests {
         write.sector_count = 1;
         write.system_buffer = core::ptr::null_mut();
         assert!(validate_request(&write).is_err());
+        write.system_buffer = 1usize as *mut u8;
+        write.flags = 0x4;
+        assert!(validate_request(&write).is_err());
+        write.flags = 0;
+        write.sg_count = 1;
+        write.sg_list = 1usize as *const AtaPortSgElement;
+        assert!(validate_request(&write).is_err());
     }
 
     #[test]
