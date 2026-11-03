@@ -204,6 +204,11 @@ pub unsafe extern "win64" fn IoMountFAT32Volume(real_device: *mut DeviceObject) 
     mount_volume(real_device)
 }
 
+// Keep the private driver-loader entry visible to the PE export linker; the
+// caller is partmgr.sys, which resolves this name from ntoskrnl at load time.
+#[used]
+static FAT32_MOUNT_ENTRY: unsafe extern "win64" fn(*mut DeviceObject) -> i32 = IoMountFAT32Volume;
+
 pub fn mount_volume(real_device: *mut DeviceObject) -> i32 {
     if real_device.is_null() { return STATUS_INVALID_PARAMETER; }
     let active = ACTIVE_PARTITION_DEVICE.load(Ordering::Acquire);
