@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `acpi-production-readiness-audit`  
-**Status:** tasks 1–25 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
+**Status:** tasks 1–26 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -39,7 +39,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 
 ## AML execution and runtime objects
 
-26. [ ] Implement exact AML operand/target typing and conversion rules.
+26. [x] Implement exact AML operand/target typing and conversion rules. Verified by AML runtime, method-executor, parser, and table-lifecycle regression suites; see `AML_OPERAND_TARGET_CONVERSIONS.md`.
 27. [ ] Complete arithmetic, logical, bitwise, conversion, and target-store opcode semantics.
 28. [ ] Implement If/Else/While/Break/Continue/Return with package-boundary-safe control flow.
 29. [ ] Correct method argument/local lifetime, recursion, and serialization-flag behavior.
