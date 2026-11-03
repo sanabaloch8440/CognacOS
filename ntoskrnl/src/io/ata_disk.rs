@@ -331,6 +331,45 @@ impl BlockDevice for IoManagerBlockDevice {
  }
 }
 
+/// Sector-oriented adapter consumed by the FAT32 filesystem driver. Requests
+/// remain partition-relative and are forwarded through the partition DEVICE_OBJECT.
+impl cognacos_fat32::BlockDevice for IoManagerBlockDevice {
+ fn sector_size(&self)->u32 { SECTOR_BYTES as u32 }
+ fn sector_count(&self)->u64 { self.capacity / SECTOR_BYTES as u64 }
+ fn read_sectors(&mut self,lba:u64,output:&mut[u8])->Result<(),cognacos_fat32::DiskError>{
+  if output.len()%SECTOR_BYTES!=0{return Err(cognacos_fat32::DiskError::InvalidGeometry)}
+  let offset=lba.checked_mul(SECTOR_BYTES as u64).ok_or(cognacos_fat32::DiskError::Overflow)?;
+  let end=offset.checked_add(output.len() as u64).ok_or(cognacos_fat32::DiskError::Overflow)?;
+  if end>self.capacity{return Err(cognacos_fat32::DiskError::OutOfRange)}
+  let count=storage_transfer(self.device,wdm::IRP_MJ_READ,offset,output.as_mut_ptr(),output.len())
+      .map_err(|_|cognacos_fat32::DiskError::DeviceFailure)?;
+  if count==output.len(){Ok(())}else{Err(cognacos_fat32::DiskError::DeviceFailure)}
+ }
+ fn write_sectors(&mut self,lba:u64,input:&[u8])->Result<(),cognacos_fat32::DiskError>{
+  if input.len()%SECTOR_BYTES!=0{return Err(cognacos_fat32::DiskError::InvalidGeometry)}
+  let offset=lba.checked_mul(SECTOR_BYTES as u64).ok_or(cognacos_fat32::DiskError::Overflow)?;
+  let end=offset.checked_add(input.len() as u64).ok_or(cognacos_fat32::DiskError::Overflow)?;
+  if end>self.capacity{return Err(cognacos_fat32::DiskError::OutOfRange)}
+  let count=storage_transfer(self.device,wdm::IRP_MJ_WRITE,offset,input.as_ptr() as *mut u8,input.len())
+      .map_err(|_|cognacos_fat32::DiskError::DeviceFailure)?;
+  if count==input.len(){Ok(())}else{Err(cognacos_fat32::DiskError::DeviceFailure)}
+ }
+ fn flush(&mut self)->Result<(),cognacos_fat32::DiskError>{
+  STORAGE_DISK.lock().as_mut().ok_or(cognacos_fat32::DiskError::DeviceFailure)?
+      .flush().map_err(|_|cognacos_fat32::DiskError::DeviceFailure)
+ }
+}
+
+/// Return a partition-relative block device only after GPT partition discovery.
+pub fn fat32_block_device()->Result<IoManagerBlockDevice,cognacos_fat32::DiskError>{
+ let device=PARTITION_DEVICE.load(Ordering::Acquire) as *mut DeviceObject;
+ let capacity=PARTITION_CAPACITY.load(Ordering::Acquire);
+ if device.is_null()||capacity==0||capacity%(SECTOR_BYTES as u64)!=0{
+  return Err(cognacos_fat32::DiskError::InvalidGeometry);
+ }
+ Ok(IoManagerBlockDevice{device,capacity})
+}
+
 /// Create a partition-relative block-device adapter. All filesystem data I/O
 /// performed through this adapter is sent down the registered WDM partition stack.
 pub fn ext4_block_device() -> Result<IoManagerBlockDevice, extfs::Error> {
