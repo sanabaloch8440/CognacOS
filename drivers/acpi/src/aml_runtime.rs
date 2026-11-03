@@ -14,8 +14,15 @@ use crate::aml_objects::{AmlObjectArena,AmlRuntimeValue,AmlValueKind,ObjectError
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RuntimeError {
     InvalidNode,UnboundNode,InvalidReference,NotIndexable,IndexOutOfRange,
-    TypeMismatch,ValueTooLarge,InvalidIntegerString,Arena(ObjectError),
+    TypeMismatch,ValueTooLarge,InvalidObjectLength,InvalidIntegerString,Arena(ObjectError),
 }
+/// Validate a caller-constructed runtime object's declared byte extent.
+fn checked_byte_length(value:&AmlRuntimeValue)->Result<usize,RuntimeError>{
+    let length=value.byte_length as usize;
+    if length>MAX_AML_BYTES{return Err(RuntimeError::InvalidObjectLength)}
+    Ok(length)
+}
+
 impl From<ObjectError> for RuntimeError { fn from(e:ObjectError)->Self{Self::Arena(e)} }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -62,7 +69,8 @@ pub fn index_reference(arena:&AmlObjectArena,source:u16,index:u16)->Result<AmlRe
             Ok(AmlReference::PackageElement{package:source,index:index as u8})
         }
         AmlValueKind::Buffer=>{
-            if index>=value.byte_length{return Err(RuntimeError::IndexOutOfRange)}
+            let length=checked_byte_length(value)?;
+            if index as usize>=length{return Err(RuntimeError::IndexOutOfRange)}
             Ok(AmlReference::BufferByte{buffer:source,index})
         }
         _=>Err(RuntimeError::NotIndexable),
@@ -81,7 +89,7 @@ pub fn dereference(reference:AmlReference,bindings:&AmlBindings,arena:&AmlObject
         }
         AmlReference::BufferByte{buffer,index}=>{
             let b=arena.get(buffer).ok_or(RuntimeError::InvalidReference)?;
-            if b.kind!=AmlValueKind::Buffer||index>=b.byte_length{return Err(RuntimeError::InvalidReference)}
+            if b.kind!=AmlValueKind::Buffer||index as usize>=checked_byte_length(b)?{return Err(RuntimeError::InvalidReference)}
             let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=b.bytes[index as usize] as u64;Ok(v)
         }
     }
@@ -119,20 +127,22 @@ pub fn to_integer(value:&AmlRuntimeValue)->Result<u64,RuntimeError>{
     match value.kind{
         AmlValueKind::Integer=>Ok(value.integer),
         AmlValueKind::Buffer=>{
-            if value.byte_length>8{return Err(RuntimeError::ValueTooLarge)}
+            let length=checked_byte_length(value)?;
+            if length>8{return Err(RuntimeError::ValueTooLarge)}
             let mut out=0u64;
-            for i in 0..value.byte_length as usize{out|=(value.bytes[i] as u64)<<(i*8)}
+            for i in 0..length{out|=(value.bytes[i] as u64)<<(i*8)}
             Ok(out)
         }
         AmlValueKind::String=>{
-            let mut out=0u64;let mut digits=0usize;
-            for &c in value.bytes.iter().take(value.byte_length as usize){
-                if c==0{break}
-                let nibble=match c{b'0'..=b'9'=>(c-b'0')as u64,b'a'..=b'f'=>(c-b'a'+10)as u64,b'A'..=b'F'=>(c-b'A'+10)as u64,_=>return Err(RuntimeError::InvalidIntegerString)};
+            let length=checked_byte_length(value)?;
+            if length==0{return Err(RuntimeError::InvalidIntegerString)}
+            let mut out=0u64;
+            for &ch in &value.bytes[..length]{
+                // byte_length excludes the AML terminator; embedded NUL is malformed.
+                let nibble=match ch{b'0'..=b'9'=>(ch-b'0')as u64,b'a'..=b'f'=>(ch-b'a'+10)as u64,b'A'..=b'F'=>(ch-b'A'+10)as u64,_=>return Err(RuntimeError::InvalidIntegerString)};
                 out=out.checked_mul(16).and_then(|v|v.checked_add(nibble)).ok_or(RuntimeError::ValueTooLarge)?;
-                digits+=1;
             }
-            if digits==0{return Err(RuntimeError::InvalidIntegerString)}Ok(out)
+            Ok(out)
         }
         _=>Err(RuntimeError::TypeMismatch),
     }
@@ -148,7 +158,8 @@ pub fn to_buffer(value:&AmlRuntimeValue,length:usize)->Result<AmlRuntimeValue,Ru
             for i in 0..core::cmp::min(length,8){out.bytes[i]=(value.integer>>(i*8)) as u8;}
         }
         AmlValueKind::String|AmlValueKind::Buffer=>{
-            let n=core::cmp::min(length,value.byte_length as usize);
+            let source_length=checked_byte_length(value)?;
+            let n=core::cmp::min(length,source_length);
             out.bytes[..n].copy_from_slice(&value.bytes[..n]);
         }
         _=>return Err(RuntimeError::TypeMismatch),
@@ -238,4 +249,28 @@ mod tests{
         assert_eq!(integer_to_string(120).bytes[..3],*b"120");
         let mut bad=s;bad.bytes[1]=b'x';assert_eq!(to_integer(&bad),Err(RuntimeError::InvalidIntegerString));
     }
+    #[test]fn malformed_public_byte_lengths_are_rejected_without_panics(){
+        let mut malformed=AmlRuntimeValue::EMPTY;
+        malformed.kind=AmlValueKind::Buffer;
+        malformed.byte_length=(MAX_AML_BYTES+1) as u16;
+        assert_eq!(to_integer(&malformed),Err(RuntimeError::InvalidObjectLength));
+        assert_eq!(to_buffer(&malformed,4),Err(RuntimeError::InvalidObjectLength));
+        let mut arena=AmlObjectArena::new();
+        let id=arena.allocate(malformed).unwrap();
+        assert_eq!(index_reference(&arena,id,0),Err(RuntimeError::InvalidObjectLength));
+    }
+
+    #[test]fn hexadecimal_string_conversion_rejects_empty_and_embedded_nul(){
+        let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
+        assert_eq!(to_integer(&string),Err(RuntimeError::InvalidIntegerString));
+        string.byte_length=3;string.bytes[..3].copy_from_slice(&[b'1',0,b'2']);
+        assert_eq!(to_integer(&string),Err(RuntimeError::InvalidIntegerString));
+    }
+
+    #[test]fn hexadecimal_string_conversion_detects_u64_overflow(){
+        let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
+        string.byte_length=17;string.bytes[..17].fill(b'f');
+        assert_eq!(to_integer(&string),Err(RuntimeError::ValueTooLarge));
+    }
+
 }
