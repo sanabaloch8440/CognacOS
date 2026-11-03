@@ -1,5 +1,10 @@
 //! Windows x64 CM_RESOURCE_LIST serialization for ACPI raw bus resources.
 //! ACPI reports bus-relative values; kernel PnP and HAL own arbitration and translation.
+/*
+ * FIXME(ACPI-PRODUCTION) — WDM resource-list serialization
+ * FIXME(ACPI-PRODUCTION): Verify binary layout, alignment, descriptor mapping, count/size arithmetic, ownership, and Windows x64 ABI compatibility for CM_RESOURCE_LIST serialization. Add byte-level golden fixtures and ensure partial serialization never publishes invalid output.
+ */
+
 #![no_std]
 use crate::acpi_resources::{Resource,ResourceList};
 pub const PARTIAL_DESCRIPTOR_SIZE:usize=20;
