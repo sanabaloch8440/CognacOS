@@ -160,7 +160,7 @@ unsafe extern "win64" fn query_interface_complete(_device:*mut DEVICE_OBJECT,_ir
  if !context.is_null(){let _=unsafe{KeSetEvent(context,0,0)};}
  0xC0000016u32 as i32
 }
-/// Windows IRP_MN_QUERY_INTERFACE path; no private kernel export is required.
+/// Windows WDM IRP_MN_QUERY_INTERFACE path; no private kernel export is required.
 unsafe fn query_pci_bus_interface(
  device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,
  size:u16,version:u16,output:PVOID
