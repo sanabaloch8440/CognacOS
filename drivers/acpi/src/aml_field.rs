@@ -324,7 +324,8 @@ pub fn read_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,io:&mut I,output:&mu
     let unit_bits=width as u64*8;
     let start=n.body_start as u64;
     let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
-    let operation=||{
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=(||{
         output[..required].fill(0);
         let mut cached_unit=u64::MAX;let mut cached_value=0u64;
         for bit in start..end{
@@ -338,9 +339,7 @@ pub fn read_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,io:&mut I,output:&mu
             if value!=0{output[relative/8]|=1<<(relative%8);}
         }
         Ok(required)
-    };
-    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
-    let result=operation();
+    })();
     if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
     result
 }
@@ -356,7 +355,8 @@ pub fn write_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,input:&[u8],io:&mut
     let unit_bits=width as u64*8;
     let start=n.body_start as u64;
     let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
-    let operation=||{
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=(||{
         let first=(start/unit_bits)*width as u64;
         let last=((end-1)/unit_bits)*width as u64;
         let mut unit=first;
@@ -383,9 +383,7 @@ pub fn write_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,input:&[u8],io:&mut
             unit=unit.checked_add(width as u64).ok_or(FieldError::AddressOverflow)?;
         }
         Ok(())
-    };
-    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
-    let result=operation();
+    })();
     if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
     result
 }
