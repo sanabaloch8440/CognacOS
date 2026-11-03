@@ -138,6 +138,32 @@ pub fn parse_name_string(bytes:&[u8],offset:usize,limit:usize)->Result<(AmlName,
     Ok((name,cursor.pos))
 }
 
+/// AML IntegerData decoded according to the DefinitionBlock AML revision.
+/// Revisions below 2 use a 32-bit Integer object; revision 2 and later use
+/// 64 bits. QWordConst is rejected for legacy AML revisions.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct AmlInteger { pub value:u64, pub width_bits:u8 }
+
+pub fn decode_integer_constant(bytes:&[u8],offset:usize,limit:usize,aml_revision:u8)->Result<(AmlInteger,usize),AmlError>{
+    if offset>limit||limit>bytes.len(){return Err(AmlError::Truncated)}
+    let mut c=Cursor{bytes,pos:offset,end:limit};
+    let opcode=c.byte()?;
+    let width=if aml_revision<2{32}else{64};
+    let value=match opcode{
+        0x00=>0,
+        0x01=>1,
+        0xff=>if width==32{u32::MAX as u64}else{u64::MAX},
+        0x0a=>c.byte()? as u64,
+        0x0b=>u16::from_le_bytes(c.take(2)?.try_into().map_err(|_|AmlError::Truncated)?) as u64,
+        0x0c=>u32::from_le_bytes(c.take(4)?.try_into().map_err(|_|AmlError::Truncated)?) as u64,
+        0x0e if width==64=>u64::from_le_bytes(c.take(8)?.try_into().map_err(|_|AmlError::Truncated)?),
+        0x0e=>return Err(AmlError::UnsupportedOpcode),
+        _=>return Err(AmlError::UnsupportedOpcode),
+    };
+    if width==32 && value>u32::MAX as u64{return Err(AmlError::BadDefinitionBlock)}
+    Ok((AmlInteger{value,width_bits:width},c.pos))
+}
+
 fn resolve_parent(ns:&AmlNamespace,current:u16,n:&AmlName)->Result<u16,AmlError>{
     let mut p=if n.rooted{0}else{current};
     for _ in 0..n.parents{
@@ -709,6 +735,19 @@ mod tests{
         let mut ns=AmlNamespace::new();ns.count=MAX_NAMESPACE_NODES;
         assert_eq!(ns.insert(0,*b"FULL",AmlObjectType::Name,0,0,0),Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:MAX_NAMESPACE_NODES+1}));
         assert_eq!(namespace_capacity(),MAX_NAMESPACE_NODES);assert_eq!(namespace_remaining(&ns),0);
+    }
+    #[test]fn integer_constants_follow_definition_block_revision_width(){
+        assert_eq!(decode_integer_constant(&[0x00],0,1,1),Ok((AmlInteger{value:0,width_bits:32},1)));
+        assert_eq!(decode_integer_constant(&[0x01],0,1,1),Ok((AmlInteger{value:1,width_bits:32},1)));
+        assert_eq!(decode_integer_constant(&[0xff],0,1,1),Ok((AmlInteger{value:u32::MAX as u64,width_bits:32},1)));
+        assert_eq!(decode_integer_constant(&[0xff],0,1,2),Ok((AmlInteger{value:u64::MAX,width_bits:64},1)));
+        assert_eq!(decode_integer_constant(&[0x0a,0xfe],0,2,2),Ok((AmlInteger{value:254,width_bits:64},2)));
+        assert_eq!(decode_integer_constant(&[0x0b,0x34,0x12],0,3,2),Ok((AmlInteger{value:0x1234,width_bits:64},3)));
+        assert_eq!(decode_integer_constant(&[0x0c,1,2,3,4],0,5,1),Ok((AmlInteger{value:0x04030201,width_bits:32},5)));
+        assert_eq!(decode_integer_constant(&[0x0e,1,2,3,4,5,6,7,8],0,9,2),Ok((AmlInteger{value:0x0807060504030201,width_bits:64},9)));
+        assert_eq!(decode_integer_constant(&[0x0e,1,2,3,4,5,6,7,8],0,9,1),Err(AmlError::UnsupportedOpcode));
+        assert_eq!(decode_integer_constant(&[0x0c,1,2],0,3,2),Err(AmlError::Truncated));
+        assert_eq!(decode_integer_constant(&[0xff],0,2,2),Err(AmlError::Truncated));
     }
     #[test]fn package_length_decodes_all_widths(){
         assert_eq!(decode_package_length(&[0x3f;63],0,63),Ok((63,63)));
