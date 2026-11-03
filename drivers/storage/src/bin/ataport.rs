@@ -6,7 +6,7 @@
 //! and registers its implementation with IOCTL_ATA_PORT_REGISTER_MINIPORT.
 use core::{ffi::c_void, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 use cognacos_nt_abi::{
-    bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
+    bus::{BUS_INTERFACE_STANDARD, GUID_BUS_INTERFACE_STANDARD, PCI_DEVICE_INFORMATION},
     io::{DRIVER_EXTENSION,DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
     ntstatus::*, types::PVOID,
 };
@@ -497,13 +497,31 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
 
 unsafe extern "win64" fn add_device(driver:*mut DRIVER_OBJECT,pdo:*mut DEVICE_OBJECT)->i32{
  if driver.is_null()||pdo.is_null(){return STATUS_INVALID_PARAMETER}
- let mut interface=core::mem::MaybeUninit::<PCI_DEVICE_INTERFACE>::zeroed();
- let status=unsafe{query_pci_bus_interface(pdo,&GUID_PCI_DEVICE_INTERFACE,core::mem::size_of::<PCI_DEVICE_INTERFACE>() as u16,cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION as u16,interface.as_mut_ptr().cast())};
+ let mut interface=core::mem::MaybeUninit::<BUS_INTERFACE_STANDARD>::zeroed();
+ let status=unsafe{query_pci_bus_interface(pdo,&GUID_BUS_INTERFACE_STANDARD,core::mem::size_of::<BUS_INTERFACE_STANDARD>() as u16,cognacos_nt_abi::bus::BUS_INTERFACE_STANDARD_VERSION as u16,interface.as_mut_ptr().cast())};
  if status!=STATUS_SUCCESS{return STATUS_NOT_SUPPORTED}
  let interface=unsafe{interface.assume_init()};
- if (interface.header.size as usize)<core::mem::size_of::<PCI_DEVICE_INTERFACE>()||interface.header.version as u32!=cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION{return STATUS_REVISION_MISMATCH}
- let Some(query)=interface.query_information else{return STATUS_NOT_SUPPORTED};
- let mut info=PCI_DEVICE_INFORMATION::default();let status=unsafe{query(interface.header.context,&mut info)};if status!=STATUS_SUCCESS{return status}
+ if (interface.size as usize)<core::mem::size_of::<BUS_INTERFACE_STANDARD>()||interface.version!=1 {
+  if let Some(deref)=interface.interface_dereference{unsafe{deref(interface.context)}}
+  return STATUS_REVISION_MISMATCH;
+ }
+ let Some(get_bus_data)=interface.get_bus_data else {
+  if let Some(deref)=interface.interface_dereference{unsafe{deref(interface.context)}}
+  return STATUS_NOT_SUPPORTED;
+ };
+ let mut config=[0u8;64];
+ let bytes=unsafe{get_bus_data(interface.context,0,config.as_mut_ptr().cast(),0,config.len() as u32)};
+ if let Some(deref)=interface.interface_dereference{unsafe{deref(interface.context)}}
+ if bytes<16{return STATUS_DEVICE_DATA_ERROR}
+ let mut info=PCI_DEVICE_INFORMATION::default();
+ info.vendor_id=u16::from_le_bytes([config[0],config[1]]);
+ info.device_id=u16::from_le_bytes([config[2],config[3]]);
+ info.command=u16::from_le_bytes([config[4],config[5]]);
+ info.revision_id=config[8];
+ info.programming_interface=config[9];
+ info.subclass=config[10];
+ info.class_code=config[11];
+ info.header_type=config[14];
  if info.class_code!=PCI_CLASS_MASS_STORAGE||info.subclass!=PCI_SUBCLASS_IDE{return STATUS_NOT_SUPPORTED}
  let mut fdo=core::ptr::null_mut();
  let status=unsafe{IoCreateDevice(driver.cast(),core::mem::size_of::<AtaPortFdoExtension>() as u32,core::ptr::null_mut(),FILE_DEVICE_CONTROLLER,0,0,&mut fdo)};
