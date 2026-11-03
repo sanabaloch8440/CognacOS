@@ -500,6 +500,17 @@ pub fn execute_method_with_values(aml:&[u8],namespace:&AmlNamespace,
     Ok(AmlValue::Integer(value.integer))
 }
 
+/// Scalar-argument entry point for callers that provide an OS method synchronizer.
+pub fn execute_method_with_sync(aml:&[u8],namespace:&AmlNamespace,method_index:u16,
+    args:&[u64],integer_width_bits:u8,sync:&dyn AmlMethodSynchronizer)->Result<AmlValue,ExecError>{
+    if args.len()>7{return Err(ExecError::BadArgumentCount)}
+    let mut values=[Machine::integer_value(0);7];
+    for (slot,value) in values.iter_mut().zip(args.iter().copied()){*slot=Machine::integer_value(value);}
+    let result=execute_method_typed_with_sync(aml,namespace,method_index,&values[..args.len()],integer_width_bits,sync)?;
+    if result.kind!=AmlValueKind::Integer{return Err(ExecError::NonIntegerName)}
+    Ok(AmlValue::Integer(result.integer))
+}
+
 /// Integer-argument compatibility entry point using an explicit AML width.
 pub fn execute_method_with_integer_width(aml:&[u8],namespace:&AmlNamespace,
     method_index:u16,args:&[u64],integer_width_bits:u8)->Result<AmlValue,ExecError>{
@@ -777,6 +788,14 @@ mod tests{
   assert_eq!(execute_method_typed_with_sync(&aml,&ns,id,&[],64,&sync),Err(ExecError::UnsupportedOpcode));
   assert_eq!(sync.acquires.load(Ordering::SeqCst),1);
   assert_eq!(sync.releases.load(Ordering::SeqCst),1);
+ }
+ #[test]fn serialized_recursive_method_reuses_same_thread_lock_until_call_depth_limit(){
+  let aml=[0x14,0x0b,b'T',b'E',b'S',b'T',0x18,0xa4,b'T',b'E',b'S',b'T'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b'TEST').unwrap();let sync=RecordingSync::new();
+  assert_eq!(execute_method_with_sync(&aml,&ns,id,&[],64,&sync),Err(ExecError::CallDepthLimit));
+  assert_eq!(sync.acquires.load(Ordering::SeqCst),17);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),17);
  }
  #[test]fn serialized_nested_methods_enforce_monotonic_sync_levels(){
   let allowed=[0x14,0x08,b'I',b'N',b'N',b'R',0x38,0xa4,0x01,
