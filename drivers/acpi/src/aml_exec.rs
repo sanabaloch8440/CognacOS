@@ -8,7 +8,7 @@
 #![no_std]
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
 use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,AmlValueKind};
-use crate::aml_runtime::{to_integer_implicit,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode};
+use crate::aml_runtime::{to_integer_implicit,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType}
@@ -71,22 +71,38 @@ impl<'a,'b> Machine<'a,'b>{
   self.store_value(t,Self::integer_value(self.normalize(v)),StoreMode::Store)
  }
  fn term(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{self.term_depth(r,0)}
+ fn store_reference_value(&mut self,reference:AmlReference,value:AmlRuntimeValue,
+    mode:StoreMode)->Result<(),ExecError>{
+  let checkpoint=self.arena.count;
+  let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;
+  match store_reference_with_mode(reference,id,mode,&mut self.bindings,self.namespace,self.arena){
+   Ok(())=>Ok(()),
+   Err(error)=>{
+    self.arena.count=checkpoint;
+    Err(match error{RuntimeError::TypeMismatch|RuntimeError::ValueTooLarge|RuntimeError::EmptyBuffer|RuntimeError::InvalidIntegerString=>ExecError::TargetTypeMismatch,_=>ExecError::NonIntegerName})
+   }
+  }
+ }
+ fn argument_value(&mut self,index:usize)->Result<AmlRuntimeValue,ExecError>{
+  if index>=7{return Err(ExecError::BadArgumentCount)}
+  let value=self.args[index];
+  if value.kind==AmlValueKind::ObjectReference{
+   let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;
+   dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)
+  }else{Ok(value)}
+ }
  fn store_value(&mut self,t:Target,value:AmlRuntimeValue,mode:StoreMode)->Result<(),ExecError>{
   match t{
    Target::Null=>Ok(()),
    Target::Local(i)=>{self.locals[i]=value;Ok(())},
-   Target::Arg(i)=>{self.args[i]=value;Ok(())},
-   Target::Reference(reference)=>{
-    let checkpoint=self.arena.count;
-    let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;
-    match store_reference_with_mode(reference,id,mode,&mut self.bindings,self.namespace,&mut self.arena){
-     Ok(())=>Ok(()),
-     Err(error)=>{
-      self.arena.count=checkpoint;
-      Err(match error{RuntimeError::TypeMismatch|RuntimeError::ValueTooLarge|RuntimeError::EmptyBuffer|RuntimeError::InvalidIntegerString=>ExecError::TargetTypeMismatch,_=>ExecError::NonIntegerName})
-     }
-    }
+   Target::Arg(i)=>{
+    let current=self.args[i];
+    if current.kind==AmlValueKind::ObjectReference{
+     let reference=reference_from_value(&current).map_err(|_|ExecError::NonIntegerName)?;
+     self.store_reference_value(reference,value,mode)
+    }else{self.args[i]=value;Ok(())}
    }
+   Target::Reference(reference)=>self.store_reference_value(reference,value,mode),
   }
  }
  /// Evaluate a TermArg without prematurely coercing Local/Arg/Name objects.
@@ -104,7 +120,7 @@ impl<'a,'b> Machine<'a,'b>{
     let b=r.take(8)?;Ok(Self::integer_value(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?)))
    }
    0x60..=0x67=>Ok(self.locals[(op-0x60) as usize]),
-   0x68..=0x6e=>Ok(self.args[(op-0x68) as usize]),
+   0x68..=0x6e=>self.argument_value((op-0x68) as usize),
    0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
     r.pos=start;
     let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;
@@ -128,6 +144,16 @@ impl<'a,'b> Machine<'a,'b>{
      _=>Err(ExecError::NonIntegerName),
     }
    }
+   0x71=>{
+    let target=self.target(r)?;
+    match target{Target::Reference(reference)=>Ok(make_object_reference(reference)),
+        _=>Err(ExecError::UnsupportedOpcode)}
+   }
+   0x83=>{
+    let source=self.term_value(r)?;
+    let reference=reference_from_value(&source).map_err(|_|ExecError::TargetTypeMismatch)?;
+    dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)
+   }
    _=>{
     r.pos=start;
     self.term(r).map(Self::integer_value)
@@ -138,11 +164,12 @@ impl<'a,'b> Machine<'a,'b>{
   if depth>32{return Err(ExecError::NestingLimit)}
   self.step()?;let op=r.byte()?;
   match op{
-   0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),0x0a=>Ok(r.byte()? as u64),
+   0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
+   0x71|0x83=>{let value=self.term_value(r)?;self.operand_integer(&value)},0x0a=>Ok(r.byte()? as u64),
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
-   0x60..=0x67=>self.operand_integer(&self.locals[(op-0x60)as usize]),0x68..=0x6e=>self.operand_integer(&self.args[(op-0x68)as usize]),
+   0x60..=0x67=>self.operand_integer(&self.locals[(op-0x60)as usize]),0x68..=0x6e=>{let value=self.argument_value((op-0x68)as usize)?;self.operand_integer(&value)},
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
     let v=match op{
@@ -347,6 +374,27 @@ mod tests{
   // Existing public entry point passes Integer args; typed Name operands are
   // exercised above while Local/Arg scalar values remain width-aware.
   assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn arg_object_reference_auto_dereferences_for_reads_and_writes(){
+  let aml=[
+   0x08,b'N',b'A',b'M',b'0',0x01,
+   0x14,0x12,b'T',b'E',b'S',b'T',1,
+   0x70,0x0a,42,0x68,
+   0xa4,0x72,b'N',b'A',b'M',b'0',0x01,0x00
+  ];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let node=ns.find_child(0,*b"NAM0").unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  let reference=make_object_reference(AmlReference::NamespaceNode(node));
+  assert_eq!(execute_method_with_values(&aml,&ns,id,&[reference],64).unwrap(),AmlValue::Integer(43));
+ }
+
+ #[test]fn refof_and_derefof_preserve_namespace_object_references(){
+  let aml=[0x08,b'N',b'A',b'M',b'0',0x01,
+      0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x83,0x71,b'N',b'A',b'M',b'0'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
  }
 
  #[test]fn uninitialized_locals_and_unused_arguments_are_not_integer_zero(){
