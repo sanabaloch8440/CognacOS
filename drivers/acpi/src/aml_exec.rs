@@ -481,8 +481,8 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8,
     sync:&dyn AmlMethodSynchronizer)->Result<AmlRuntimeValue,ExecError>{
     // This convenience API owns a fresh arena, so caller-supplied arena handles
-    // cannot be valid here. Nested AML calls may still pass validated handles.
-    if args.iter().any(|value|matches!(value.kind,AmlValueKind::Package|AmlValueKind::ObjectReference)){
+    // cannot be valid here. Namespace-node references are self-contained and remain valid.
+    if args.iter().any(|value|value.kind==AmlValueKind::Package){
         return Err(ExecError::UnsupportedArgumentValue)
     }
     let mut arena=AmlObjectArena::new();
