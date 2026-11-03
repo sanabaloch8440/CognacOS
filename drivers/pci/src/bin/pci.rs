@@ -324,6 +324,20 @@ unsafe extern "win64" fn pci_bus_set_data(
     0
 }
 
+/// The current PCI resource path publishes translated CM resources to
+/// function drivers. It does not expose a second bus-address translation path.
+unsafe extern "win64" fn pci_bus_translate_address(
+    _context:PVOID,_bus_address:i64,_address_space:u32,
+    _translated_address_space:*mut u32,_translated_address:*mut i64,
+)->u8 { 0 }
+
+/// The current storage stack is PIO-only and does not advertise DMA support.
+/// Returning NULL is the standard no-adapter result; drivers must not assume
+/// that every BUS_INTERFACE_STANDARD provider has a DMA adapter.
+unsafe extern "win64" fn pci_bus_get_dma_adapter(
+    _context:PVOID,_device_description:PVOID,_number_of_map_registers:*mut u32,
+)->PVOID { core::ptr::null_mut() }
+
 /// Publish the Microsoft WDM BUS_INTERFACE_STANDARD to a function PDO.
 unsafe fn query_standard_bus_interface(device:*mut DEVICE_OBJECT,version:u16,size:u16,output:PVOID)->i32 {
     if device.is_null() || output.is_null() || version as u32!=BUS_INTERFACE_STANDARD_VERSION
@@ -336,8 +350,8 @@ unsafe fn query_standard_bus_interface(device:*mut DEVICE_OBJECT,version:u16,siz
         context:device.cast(),
         interface_reference:Some(pci_bus_interface_reference),
         interface_dereference:Some(pci_bus_interface_dereference),
-        translate_bus_address:core::ptr::null_mut(),
-        get_dma_adapter:core::ptr::null_mut(),
+        translate_bus_address:Some(pci_bus_translate_address),
+        get_dma_adapter:Some(pci_bus_get_dma_adapter),
         set_bus_data:Some(pci_bus_set_data),
         get_bus_data:Some(pci_bus_get_data),
     };
