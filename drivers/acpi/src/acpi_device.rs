@@ -439,6 +439,31 @@ mod tests{
         assert_eq!(sync.acquired.load(core::sync::atomic::Ordering::SeqCst),1);
         assert_eq!(sync.released.load(core::sync::atomic::Ordering::SeqCst),1);
     }
+    #[test]fn synchronized_invoker_passes_typed_buffer_arguments_to_methods(){
+        let mut aml=std::vec::Vec::new();
+        add_method(&mut aml,*b"_SRS",&[0xa4,0x68]);
+        aml[1]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();crate::aml::load_definition_block(&aml,&mut ns).unwrap();
+        let method=ns.find_child(0,*b"_SRS").unwrap();
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=3;buffer.bytes[..3].copy_from_slice(&[0x22,0x10,0x79]);
+        let sync=SyncRecorder::new();
+        let mut invoker=SynchronizedMethodInvoker{synchronizer:&sync};
+        assert_eq!(invoker.evaluate_value_with_args(&ns,&aml,method,&[buffer]).unwrap(),
+            AcpiMethodValue::Buffer{bytes:{let mut b=[0u8;MAX_AML_BYTES];b[..3].copy_from_slice(&[0x22,0x10,0x79]);b},length:3});
+    }
+    #[test]fn synchronized_invoker_accepts_srs_method_without_return_object(){
+        let mut aml=std::vec::Vec::new();
+        add_method(&mut aml,*b"_SRS",&[0xa3]);
+        aml[1]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();crate::aml::load_definition_block(&aml,&mut ns).unwrap();
+        let method=ns.find_child(0,*b"_SRS").unwrap();
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=2;buffer.bytes[..2].copy_from_slice(&[0x79,0]);
+        let sync=SyncRecorder::new();
+        let mut invoker=SynchronizedMethodInvoker{synchronizer:&sync};
+        assert_eq!(invoker.evaluate_value_with_args(&ns,&aml,method,&[buffer]).unwrap(),AcpiMethodValue::Integer(0));
+    }
     #[test]fn synchronized_invoker_fails_closed_when_serialized_method_lock_fails(){
         let mut aml=std::vec::Vec::new();
         aml.extend_from_slice(&[0x5b,0x82,0,b'D',b'E',b'V',b'0']);
