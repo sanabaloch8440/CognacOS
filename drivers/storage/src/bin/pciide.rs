@@ -7,14 +7,16 @@
 //! PCI stack completes successfully. Hardware register programming is kept
 //! fail-closed until a HAL-backed port/MMIO mapping provider is connected.
 
-use core::ffi::c_void;
+use core::{ffi::c_void, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_nt_abi::{
     bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
     io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
     ntstatus::*,
     types::PVOID,
 };
-use cognacos_storage::{ide::{Channel, RegisterIo, MAX_LBA28}, pciidex::{
+use cognacos_storage::{
+    ata_port::{AtaPortOperation, AtaPortRequest, ATA_PORT_REQUEST_DEVICE_INDEX_MASK},
+    ide::{Channel, RegisterIo, MAX_LBA28}, pciidex::{
     parse_translated_resources, ControllerState, IdeResourceSet,
     PciIdeController, PciIdeIdentity, ResourceKind,
 }};
@@ -37,8 +39,23 @@ struct PciIdeFdoExtension {
     previous_state: ControllerState,
     active_channels: u8,
     present_drives: u8,
+    // One independently identified ATA device per channel/device position.
+    // These channels are the miniport's persistent PIO transport state.
+    channels: [Option<Channel>; 4],
+    pio_lock: AtomicBool,
 }
 const _: () = assert!(core::mem::size_of::<PciIdeFdoExtension>() <= 512);
+
+struct PioGuard<'a>(&'a AtomicBool);
+impl<'a> PioGuard<'a> {
+    fn acquire(lock: &'a AtomicBool) -> Self {
+        while lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        Self(lock)
+    }
+}
+impl Drop for PioGuard<'_> { fn drop(&mut self) { self.0.store(false, Ordering::Release); } }
 
 unsafe extern "win64" {
     fn IoCreateDevice(driver: *mut DRIVER_OBJECT, extension_size: u32,
@@ -58,6 +75,10 @@ unsafe extern "win64" {
         size: u16, version: u16, output: PVOID) -> i32;
     fn IoPnPRegisterDeviceDriver(driver: *mut c_void,
         add_device: Option<unsafe extern "win64" fn(*mut c_void, *mut DEVICE_OBJECT) -> i32>) -> i32;
+    fn IoAllocateIrp(stack_size: i8, charge_quota: u8) -> *mut IRP;
+    fn IoGetNextIrpStackLocation(irp: *mut IRP) -> *mut IO_STACK_LOCATION;
+    fn IoFreeIrp(irp: *mut IRP);
+    fn DbgPrint(format: *const u8) -> i32;
 }
 
 core::arch::global_asm!(r#"
@@ -80,6 +101,10 @@ IMPORT IoCopyCurrentIrpStackLocationToNext
 IMPORT IoSetCompletionRoutine
 IMPORT IoPnPQueryBusInterface
 IMPORT IoPnPRegisterDeviceDriver
+IMPORT IoAllocateIrp
+IMPORT IoGetNextIrpStackLocation
+IMPORT IoFreeIrp
+IMPORT DbgPrint
 
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
@@ -99,6 +124,10 @@ IAT IoCopyCurrentIrpStackLocationToNext
 IAT IoSetCompletionRoutine
 IAT IoPnPQueryBusInterface
 IAT IoPnPRegisterDeviceDriver
+IAT IoAllocateIrp
+IAT IoGetNextIrpStackLocation
+IAT IoFreeIrp
+IAT DbgPrint
 "#);
 
 unsafe fn resource_list_bytes(list: *const u8) -> Option<&'static [u8]> {
@@ -162,49 +191,242 @@ impl RegisterIo for X86PortIo {
     }
 }
 
+
 fn assigned_port_range(resources: &IdeResourceSet, start: u64, length: u64) -> bool {
     resources.entries[..resources.count].iter().flatten().any(|resource| {
         resource.kind == ResourceKind::Port
             && resource.start <= start
-            && resource.start.checked_add(resource.length).is_some_and(|end| end >= start.saturating_add(length))
+            && resource.start.checked_add(resource.length as u64)
+                .is_some_and(|end| end >= start.saturating_add(length))
     })
 }
 
-/// Initialize legacy compatibility channels only when PnP has explicitly
-/// assigned every register range. Native-mode BAR decoding is deliberately
-/// rejected until PCI BAR resource descriptors can be mapped unambiguously.
+fn assigned_port_resource(resources: &IdeResourceSet, ordinal: usize) -> Option<(u16, u32)> {
+    let mut seen = 0usize;
+    for resource in resources.entries[..resources.count].iter().flatten() {
+        if resource.kind != ResourceKind::Port { continue; }
+        let end = resource.start.checked_add(resource.length as u64)?;
+        if resource.start > u16::MAX as u64 || end > (u16::MAX as u64) + 1 { return None; }
+        if seen == ordinal { return Some((resource.start as u16, resource.length)); }
+        seen += 1;
+    }
+    None
+}
+
+const IRP_MJ_INTERNAL_DEVICE_CONTROL: u8 = 0x0f;
+const IOCTL_ATA_PORT_REGISTER_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x800 << 2) | 3;
+const IOCTL_ATA_PORT_UNREGISTER_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x801 << 2) | 3;
+const IOCTL_ATA_PORT_SUBMIT_MINIPORT: u32 = (FILE_DEVICE_CONTROLLER << 16) | (0x802 << 2) | 3;
+
+unsafe extern "win64" fn miniport_submit(
+    context: *mut c_void,
+    request: *const cognacos_storage::ata_port::AtaPortRequest,
+    bytes_transferred: *mut u32,
+) -> i32 {
+    if context.is_null() || request.is_null() || bytes_transferred.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { bytes_transferred.write(0); }
+    let ext = context.cast::<PciIdeFdoExtension>();
+    if unsafe { (*ext).magic != FDO_EXTENSION_MAGIC || (*ext).controller.state != ControllerState::Started } {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    let request = unsafe { &*request };
+    let slot = (request.flags & ATA_PORT_REQUEST_DEVICE_INDEX_MASK) as usize;
+    let Some(channel) = (unsafe { (*ext).channels[slot] }) else { return STATUS_NOT_FOUND; };
+    let _pio_guard = PioGuard::acquire(unsafe { &(*ext).pio_lock });
+    let mut io = X86PortIo;
+    let result = match request.operation {
+        cognacos_storage::ata_port::AtaPortOperation::Read => {
+            let Some(bytes) = request.sector_count.checked_mul(512) else { return STATUS_INVALID_PARAMETER; };
+            if request.system_buffer.is_null() || bytes == 0 || bytes as usize > 256 * 512 {
+                return STATUS_INVALID_PARAMETER;
+            }
+            let output = unsafe { core::slice::from_raw_parts_mut(request.system_buffer, bytes as usize) };
+            channel.read_sectors(&mut io, request.lba, output).map(|_| bytes)
+        }
+        cognacos_storage::ata_port::AtaPortOperation::Write => {
+            let Some(bytes) = request.sector_count.checked_mul(512) else { return STATUS_INVALID_PARAMETER; };
+            if request.system_buffer.is_null() || bytes == 0 || bytes as usize > 256 * 512 {
+                return STATUS_INVALID_PARAMETER;
+            }
+            let input = unsafe { core::slice::from_raw_parts(request.system_buffer, bytes as usize) };
+            channel.write_sectors(&mut io, request.lba, input).map(|_| bytes)
+        }
+        cognacos_storage::ata_port::AtaPortOperation::Flush => channel.flush(&mut io).map(|_| 0),
+        _ => return STATUS_INVALID_DEVICE_REQUEST,
+    };
+    match result {
+        Ok(bytes) => { unsafe { bytes_transferred.write(bytes); } STATUS_SUCCESS }
+        Err(error) => cognacos_storage::error_to_ntstatus(error),
+    }
+}
+
+unsafe fn send_port_control(lower: *mut DEVICE_OBJECT, code: u32, input: *const c_void) -> i32 {
+    if lower.is_null() { return STATUS_DEVICE_NOT_READY; }
+    let irp = unsafe { IoAllocateIrp((*lower).stack_size as i8, 0) };
+    if irp.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+    let stack = unsafe { IoGetNextIrpStackLocation(irp) };
+    if stack.is_null() { unsafe { IoFreeIrp(irp); } return STATUS_INVALID_PARAMETER; }
+    unsafe {
+        (*stack).major_function = IRP_MJ_INTERNAL_DEVICE_CONTROL;
+        (*stack).parameters.fill(0);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u32>(), code);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<*const c_void>(), input);
+    }
+    let status = unsafe { IoCallDriver(lower, irp) };
+    unsafe { IoFreeIrp(irp); }
+    status
+}
+
+unsafe fn register_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
+    let table = cognacos_storage::ata_port::AtaPortMiniportInterface {
+        size: core::mem::size_of::<cognacos_storage::ata_port::AtaPortMiniportInterface>() as u32,
+        version: cognacos_storage::ata_port::ATA_PORT_INTERFACE_VERSION,
+        miniport_context: extension.cast(),
+        initialize: None,
+        start: None,
+        submit: Some(miniport_submit),
+        reset: None,
+        stop: None,
+        unload: None,
+    };
+    unsafe { send_port_control((*extension).lower_device, IOCTL_ATA_PORT_REGISTER_MINIPORT, (&table as *const cognacos_storage::ata_port::AtaPortMiniportInterface).cast::<c_void>()) }
+}
+
+unsafe fn unregister_ataport_miniport(extension: *mut PciIdeFdoExtension) -> i32 {
+    unsafe { send_port_control((*extension).lower_device, IOCTL_ATA_PORT_UNREGISTER_MINIPORT, extension.cast()) }
+}
+
+unsafe fn submit_test_request(
+    extension: *mut PciIdeFdoExtension,
+    operation: AtaPortOperation,
+    lba: u64,
+    sectors: u32,
+    flags: u32,
+    buffer: *mut u8,
+) -> i32 {
+    let request = AtaPortRequest {
+        size: core::mem::size_of::<AtaPortRequest>() as u32,
+        operation,
+        request_id: 0x5155_454d_5550,
+        lba,
+        sector_count: sectors,
+        flags,
+        system_buffer: buffer,
+        sg_list: core::ptr::null(),
+        sg_count: 0,
+        timeout_ms: 30_000,
+        packet_cdb: core::ptr::null(),
+        packet_cdb_length: 0,
+        reserved: [0; 7],
+    };
+    unsafe {
+        send_port_control(
+            (*extension).lower_device,
+            IOCTL_ATA_PORT_SUBMIT_MINIPORT,
+            (&request as *const AtaPortRequest).cast(),
+        )
+    }
+}
+
+/// QEMU integration test against the dedicated primary-slave test disk.
+/// It snapshots two sectors, writes a deterministic pattern, flushes, reads
+/// them back, compares, and restores the original bytes before reporting pass.
+unsafe fn qemu_pio_round_trip(extension: *mut PciIdeFdoExtension) -> i32 {
+    if unsafe { (*extension).channels[1].is_none() } { return STATUS_SUCCESS; }
+    let mut original = [0u8; 1024];
+    let mut verify = [0u8; 1024];
+    let mut pattern = [0u8; 1024];
+    for (index, byte) in pattern.iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(37).wrapping_add(0xa5);
+    }
+    let read_original = unsafe {
+        submit_test_request(extension, AtaPortOperation::Read, 1, 2, 1, original.as_mut_ptr())
+    };
+    if read_original != STATUS_SUCCESS { return read_original; }
+
+    let write_status = unsafe {
+        submit_test_request(extension, AtaPortOperation::Write, 1, 2, 1, pattern.as_mut_ptr())
+    };
+    if write_status != STATUS_SUCCESS {
+        let _ = unsafe { submit_test_request(extension, AtaPortOperation::Write, 1, 2, 1, original.as_mut_ptr()) };
+        let _ = unsafe { submit_test_request(extension, AtaPortOperation::Flush, 0, 0, 1, core::ptr::null_mut()) };
+        return write_status;
+    }
+    let flush_status = unsafe {
+        submit_test_request(extension, AtaPortOperation::Flush, 0, 0, 1, core::ptr::null_mut())
+    };
+    let read_status = if flush_status == STATUS_SUCCESS {
+        unsafe { submit_test_request(extension, AtaPortOperation::Read, 1, 2, 1, verify.as_mut_ptr()) }
+    } else { flush_status };
+    let matched = read_status == STATUS_SUCCESS && verify == pattern;
+
+    // Always restore the test disk's previous contents, even when verification
+    // fails, so repeated QEMU runs do not leave a modified test image.
+    let restore_status = unsafe {
+        submit_test_request(extension, AtaPortOperation::Write, 1, 2, 1, original.as_mut_ptr())
+    };
+    let restore_flush = if restore_status == STATUS_SUCCESS {
+        unsafe { submit_test_request(extension, AtaPortOperation::Flush, 0, 0, 1, core::ptr::null_mut()) }
+    } else { restore_status };
+    if restore_flush != STATUS_SUCCESS { return restore_flush; }
+    if !matched { return if read_status == STATUS_SUCCESS { STATUS_DEVICE_DATA_ERROR } else { read_status }; }
+    STATUS_SUCCESS
+}
+
+/// Resolve command/control register windows from PnP-translated resources.
+/// Native-mode BARs are consumed in PCI IDE BAR order (command/control pairs);
+/// compatibility mode uses the legacy ranges only when those exact ranges
+/// were assigned by the bus. No BAR is guessed and no PCI config is modified.
 fn initialize_compatibility_channels(extension: &mut PciIdeFdoExtension) -> i32 {
     let identity = extension.controller.identity;
-    if identity.primary_native() || identity.secondary_native() {
-        return STATUS_NOT_SUPPORTED;
-    }
     let resources = &extension.controller.resources;
-    let channels = [
-        (0x1f0u16, 0x3f6u16, 0x1f0u64, 8u64, 0x3f4u64, 4u64),
-        (0x170u16, 0x376u16, 0x170u64, 8u64, 0x374u64, 4u64),
-    ];
     let mut active = 0u8;
     let mut drives = 0u8;
+    let mut discovered = [None; 4];
     let mut io = X86PortIo;
-    for (index, (command, control, command_resource, command_len, control_resource, control_len)) in channels.iter().copied().enumerate() {
-        if !assigned_port_range(resources, command_resource, command_len)
-            || !assigned_port_range(resources, control_resource, control_len) {
-            continue;
-        }
+
+    let definitions = [
+        (false, 0x1f0u16, 0x3f6u16, 0x1f0u64, 8u64, 0x3f4u64, 4u64),
+        (true,  0x170u16, 0x376u16, 0x170u64, 8u64, 0x374u64, 4u64),
+    ];
+    for (index, (secondary, legacy_command, legacy_control, legacy_command_resource,
+                 command_len, legacy_control_resource, control_len)) in definitions.into_iter().enumerate() {
+        let native = if secondary { identity.secondary_native() } else { identity.primary_native() };
+        let (command, control) = if native {
+            // BAR0/1 are primary command/control, BAR2/3 secondary.
+            let command_ordinal = if secondary { 2 } else { 0 };
+            let control_ordinal = command_ordinal + 1;
+            let Some((command, command_size)) = assigned_port_resource(resources, command_ordinal) else { continue; };
+            let Some((control_bar, control_size)) = assigned_port_resource(resources, control_ordinal) else { continue; };
+            if command_size < 8 || control_size < 3 { continue; }
+            let Some(control) = control_bar.checked_add(2) else { continue; };
+            (command, control)
+        } else {
+            if !assigned_port_range(resources, legacy_command_resource, command_len)
+                || !assigned_port_range(resources, legacy_control_resource, control_len) { continue; }
+            (legacy_command, legacy_control)
+        };
         active |= 1 << index;
         for device in 0..2u8 {
             let channel = Channel { command_base: command, control, device, sectors: MAX_LBA28, poll_budget: 1_000_000 };
+            // A missing device commonly floats as 0x00/0xff. IDENTIFY is
+            // attempted only after the assigned channel responds plausibly.
             let status = match io.read8(command + 7) { Ok(value) => value, Err(_) => continue };
             if status == 0 || status == 0xff { continue; }
             let mut probe = channel;
             if probe.identify(&mut io).is_ok() {
-                drives |= 1 << (index * 2 + device as usize);
+                let slot = index * 2 + device as usize;
+                drives |= 1 << slot;
+                discovered[slot] = Some(probe);
             }
         }
     }
-    if active == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    if active == 0 || drives == 0 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
     extension.active_channels = active;
     extension.present_drives = drives;
+    extension.channels = discovered;
     STATUS_SUCCESS
 }
 
@@ -228,6 +450,21 @@ unsafe extern "win64" fn pnp_complete(
             } else { status };
             if hardware_status == STATUS_SUCCESS {
                 let _ = unsafe { (*extension).controller.start_succeeded() };
+                let registration = unsafe { register_ataport_miniport(extension) };
+                let test_status = if registration == STATUS_SUCCESS { unsafe { qemu_pio_round_trip(extension) } } else { registration };
+                if test_status == STATUS_SUCCESS && unsafe { (*extension).channels[1].is_some() } {
+                    unsafe { DbgPrint(b"pciide: ATA PIO read/write/flush round-trip passed\\r\\n\\0".as_ptr()); }
+                }
+                if test_status != STATUS_SUCCESS {
+                    unsafe {
+                        (*extension).controller.stop_succeeded();
+                        (*extension).channels = [None; 4];
+                        (*extension).active_channels = 0;
+                        (*extension).present_drives = 0;
+                        let _ = unregister_ataport_miniport(extension);
+                        (*irp).io_status.status.status = test_status;
+                    }
+                }
             } else {
                 unsafe {
                     (*irp).io_status.status.status = hardware_status;
@@ -236,12 +473,20 @@ unsafe extern "win64" fn pnp_complete(
             }
         }
         IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL => {
-            if status == STATUS_SUCCESS && unsafe { (*extension).controller.state } == ControllerState::Started {
-                let _ = unsafe { (*extension).controller.stop_succeeded() };
+            if status == STATUS_SUCCESS {
+                let ext = unsafe { &mut *extension };
+                if ext.controller.state == ControllerState::Started {
+                    let _ = ext.controller.stop_succeeded();
+                }
+                // The miniport was unregistered before forwarding STOP/REMOVE.
+                ext.channels = [None; 4];
+                ext.active_channels = 0;
+                ext.present_drives = 0;
             }
         }
         IRP_MN_REMOVE_DEVICE => {
-            let lower = unsafe { (*extension).lower_device };
+            let ext = unsafe { &mut *extension };
+            let lower = ext.lower_device;
             unsafe { (*extension).magic = 0; }
             if !lower.is_null() { unsafe { IoDetachDevice(lower); } }
             unsafe { IoDeleteDevice(fdo); }
@@ -275,7 +520,12 @@ unsafe extern "win64" fn dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> 
                 }
                 unsafe { (*extension).previous_state = previous; }
             }
-            IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE | IRP_MN_SURPRISE_REMOVAL => {}
+            IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE | IRP_MN_SURPRISE_REMOVAL => {
+                let status = unsafe { unregister_ataport_miniport(extension) };
+                if status != STATUS_SUCCESS && status != STATUS_DEVICE_NOT_READY {
+                    return status;
+                }
+            }
             _ => {}
         }
         unsafe {
@@ -301,7 +551,7 @@ unsafe extern "win64" fn add_device(driver: *mut c_void, pdo: *mut DEVICE_OBJECT
     };
     if status != STATUS_SUCCESS { return STATUS_NOT_SUPPORTED; }
     let interface = unsafe { interface.assume_init() };
-    if interface.header.size as usize < core::mem::size_of::<PCI_DEVICE_INTERFACE>()
+    if (interface.header.size as usize) < core::mem::size_of::<PCI_DEVICE_INTERFACE>()
         || interface.header.version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION {
         return 0xC000_0059u32 as i32;
     }
@@ -339,6 +589,8 @@ unsafe extern "win64" fn add_device(driver: *mut c_void, pdo: *mut DEVICE_OBJECT
             previous_state: ControllerState::Created,
             active_channels: 0,
             present_drives: 0,
+            channels: [None; 4],
+            pio_lock: AtomicBool::new(false),
         });
         (*fdo).flags = ((*fdo).flags & !0x80) | ((*lower).flags & (0x02 | 0x04));
     }

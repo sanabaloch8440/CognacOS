@@ -181,6 +181,65 @@ pub mod ide {
             Ok(())
         }
 
+        /// Program an LBA28 command for a bounded multi-sector PIO transfer.
+        /// A sector count of 256 is encoded as zero per the ATA task-file rules.
+        fn select_lba_count(&self, io: &mut impl RegisterIo, lba: u64, sectors: u16) -> Result<(), StorageError> {
+            if sectors == 0 || sectors > 256 { return Err(StorageError::InvalidArgument); }
+            let end = lba.checked_add(sectors as u64).ok_or(StorageError::Overflow)?;
+            if end > self.sectors || end > MAX_LBA28 { return Err(StorageError::OutOfRange); }
+            io.write8(self.reg(DRIVE_HEAD)?, 0xe0 | (self.device << 4) | ((lba >> 24) as u8 & 0x0f))?;
+            io.delay_400ns(self.control)?;
+            io.write8(self.reg(SECTOR_COUNT)?, sectors as u8)?;
+            io.write8(self.reg(LBA_LOW)?, lba as u8)?;
+            io.write8(self.reg(LBA_MID)?, (lba >> 8) as u8)?;
+            io.write8(self.reg(LBA_HIGH)?, (lba >> 16) as u8)?;
+            Ok(())
+        }
+
+        /// Read consecutive sectors using one ATA READ SECTORS command.
+        /// The caller buffer must contain an exact whole number of 512-byte sectors.
+        pub fn read_sectors(&self, io: &mut impl RegisterIo, lba: u64, output: &mut [u8]) -> Result<(), StorageError> {
+            self.validate()?;
+            if output.is_empty() || output.len() % SECTOR_BYTES != 0 {
+                return Err(StorageError::InvalidArgument);
+            }
+            let count = output.len() / SECTOR_BYTES;
+            if count > 256 { return Err(StorageError::InvalidArgument); }
+            self.select_lba_count(io, lba, count as u16)?;
+            io.write8(self.reg(STATUS_COMMAND)?, CMD_READ_SECTORS)?;
+            io.delay_400ns(self.control)?;
+            for sector in output.chunks_exact_mut(SECTOR_BYTES) {
+                self.wait(io, true)?;
+                for chunk in sector.chunks_exact_mut(2) {
+                    chunk.copy_from_slice(&io.read16(self.reg(DATA)?)?.to_le_bytes());
+                }
+            }
+            self.wait(io, false)?;
+            Ok(())
+        }
+
+        /// Write consecutive sectors using one ATA WRITE SECTORS command.
+        /// Completion is reported only after the device leaves BSY and reports no error.
+        pub fn write_sectors(&self, io: &mut impl RegisterIo, lba: u64, input: &[u8]) -> Result<(), StorageError> {
+            self.validate()?;
+            if input.is_empty() || input.len() % SECTOR_BYTES != 0 {
+                return Err(StorageError::InvalidArgument);
+            }
+            let count = input.len() / SECTOR_BYTES;
+            if count > 256 { return Err(StorageError::InvalidArgument); }
+            self.select_lba_count(io, lba, count as u16)?;
+            io.write8(self.reg(STATUS_COMMAND)?, CMD_WRITE_SECTORS)?;
+            io.delay_400ns(self.control)?;
+            for sector in input.chunks_exact(SECTOR_BYTES) {
+                self.wait(io, true)?;
+                for chunk in sector.chunks_exact(2) {
+                    io.write16(self.reg(DATA)?, u16::from_le_bytes([chunk[0], chunk[1]]))?;
+                }
+            }
+            self.wait(io, false)?;
+            Ok(())
+        }
+
         pub fn read_sector(&self, io: &mut impl RegisterIo, lba: u64, out: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError> {
             self.validate()?;
             self.select_lba(io, lba)?;
@@ -236,6 +295,37 @@ pub mod ide {
             let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:10,poll_budget:8};
             assert_eq!(ch.read_sector(&mut Fake{status:STATUS_DRQ,words:[0;256],writes:std::vec::Vec::new()},10,&mut [0;512]),Err(StorageError::OutOfRange));
         }
+        #[test]
+        fn multi_sector_pio_read_uses_one_command_and_exact_buffer_length() {
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:32,poll_budget:8};
+            let mut fake=Fake{status:STATUS_DRQ,words:[0x5aa5;256],writes:std::vec::Vec::new()};
+            let mut output=[0u8;1024];
+            ch.read_sectors(&mut fake,4,&mut output).unwrap();
+            assert!(output.iter().all(|byte| *byte == 0xa5 || *byte == 0x5a));
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f2 && *value == 2));
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f7 && *value == CMD_READ_SECTORS as u16));
+        }
+
+        #[test]
+        fn multi_sector_pio_write_validates_range_and_encodes_256_sectors() {
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:512,poll_budget:8};
+            let mut fake=Fake{status:STATUS_DRQ,words:[0;256],writes:std::vec::Vec::new()};
+            let input=[0x3cu8;256*SECTOR_BYTES];
+            ch.write_sectors(&mut fake,0,&input).unwrap();
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f2 && *value == 0));
+            assert!(fake.writes.iter().any(|(port,value)| *port == 0x1f7 && *value == CMD_WRITE_SECTORS as u16));
+            assert_eq!(fake.writes.iter().filter(|(port,_)| *port == 0x1f0).count(), 256*256);
+            assert_eq!(ch.write_sectors(&mut fake,500,&input),Err(StorageError::OutOfRange));
+        }
+
+        #[test]
+        fn multi_sector_pio_rejects_partial_sector_buffers() {
+            let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:32,poll_budget:8};
+            let mut fake=Fake{status:STATUS_DRQ,words:[0;256],writes:std::vec::Vec::new()};
+            assert_eq!(ch.read_sectors(&mut fake,0,&mut [0u8;513]),Err(StorageError::InvalidArgument));
+            assert_eq!(ch.write_sectors(&mut fake,0,&[0u8;0]),Err(StorageError::InvalidArgument));
+        }
+
         #[test]
         fn bounded_polling_times_out_on_busy_controller() {
             let ch=Channel{command_base:0x1f0,control:0x3f6,device:0,sectors:10,poll_budget:2};

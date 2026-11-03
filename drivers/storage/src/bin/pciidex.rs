@@ -17,7 +17,7 @@ use cognacos_nt_abi::{
 };
 
 const IRP_MJ_MAXIMUM_FUNCTION: usize = 27;
-const IRP_MJ_PNP: usize = 0x1b;
+const IRP_MJ_PNP: u8 = 0x1b;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const FILE_DEVICE_CONTROLLER: u32 = 0x00000004;
 const PCI_PDO_CLASS: u8 = 0x01;
@@ -149,9 +149,9 @@ unsafe extern "win64" fn add_device(
     };
     if status != STATUS_SUCCESS { return STATUS_NOT_SUPPORTED; }
     let interface = unsafe { interface.assume_init() };
-    if interface.header.size as usize < core::mem::size_of::<PCI_DEVICE_INTERFACE>()
+    if (interface.header.size as usize) < core::mem::size_of::<PCI_DEVICE_INTERFACE>()
         || interface.header.version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION {
-        return (0xC000_0059u32 as i32);
+        return 0xC000_0059u32 as i32;
     }
     let Some(query) = interface.query_information else { return STATUS_NOT_SUPPORTED; };
     let mut identity = PCI_DEVICE_INFORMATION::default();
@@ -171,7 +171,7 @@ unsafe extern "win64" fn add_device(
     let lower = unsafe { IoAttachDeviceToDeviceStack(fdo, pdo) };
     if lower.is_null() {
         unsafe { IoDeleteDevice(fdo); }
-        return (0xC000_000Eu32 as i32);
+        return 0xC000_000Eu32 as i32;
     }
     let extension = unsafe { (*fdo).device_extension.cast::<PciIdexFdoExtension>() };
     unsafe {
