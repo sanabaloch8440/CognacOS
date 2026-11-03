@@ -198,11 +198,15 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  let operation=match major{IRP_MJ_READ=>AtaPortOperation::Read,IRP_MJ_WRITE=>AtaPortOperation::Write,IRP_MJ_FLUSH_BUFFERS=>AtaPortOperation::Flush,_=>return unsafe{complete(irp,STATUS_INVALID_DEVICE_REQUEST,0)}};
  let miniport={
   let _guard=Guard::acquire();
-  if unsafe{(*ext).started==0||(*ext).removing!=0}{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}}
-  let Some(miniport)= (unsafe{(*ext).miniport}) else{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}};
-  unsafe{(*ext).active_requests=(*ext).active_requests.saturating_add(1);}
-  miniport
+  if unsafe{(*ext).started!=0&&(*ext).removing==0} {
+   let current=unsafe{(*ext).miniport};
+   if let Some(current)=current {
+    unsafe{(*ext).active_requests=(*ext).active_requests.saturating_add(1);}
+    Some(current)
+   } else { None }
+  } else { None }
  };
+ let Some(miniport)=miniport else{return unsafe{complete(irp,STATUS_DEVICE_NOT_READY,0)}};
  let mut request=AtaPortRequest{size:core::mem::size_of::<AtaPortRequest>() as u32,operation,request_id:1,lba:0,sector_count:0,flags:0,system_buffer:core::ptr::null_mut(),sg_list:core::ptr::null(),sg_count:0,timeout_ms:30_000,packet_cdb:core::ptr::null(),packet_cdb_length:0,reserved:[0;7]};
  let expected=if operation==AtaPortOperation::Flush{0}else{
   let length=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
