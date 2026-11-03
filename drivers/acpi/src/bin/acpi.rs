@@ -563,6 +563,7 @@ unsafe fn program_and_verify_pdo_resources(
  let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
  let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
  let gate=unsafe{&*STATE.aml_barrier.get()};
+ let mut expected=allocated;
 
  if manager.namespace().find_child(ext.node,*b"_PRS").is_some(){
   let alternatives=match read_pdo_resource_alternatives(device){
@@ -571,6 +572,7 @@ unsafe fn program_and_verify_pdo_resources(
   let selected=match acpi::acpi_resources::select_assigned_resources(&alternatives,&allocated){
    Ok(value)=>value,Err(_)=>return STATUS_DEVICE_CONFIGURATION_ERROR,
   };
+  expected=selected;
   let mut template=[0u8;acpi::aml_objects::MAX_AML_BYTES];
   let template_length=match acpi::acpi_resources::encode_resource_template(&selected,&mut template){
    Ok(length)=>length,Err(_)=>return STATUS_DEVICE_CONFIGURATION_ERROR,
@@ -593,7 +595,7 @@ unsafe fn program_and_verify_pdo_resources(
  let current=match read_pdo_resource_template(device,*b"_CRS"){
   Ok(value)=>value,Err(status)=>return status,
  };
- match acpi::acpi_resources::verify_current_resources(&allocated,&current){
+ match acpi::acpi_resources::verify_current_resources(&expected,&current){
   Ok(())=>STATUS_SUCCESS,
   Err(_)=>STATUS_DEVICE_CONFIGURATION_ERROR,
  }
