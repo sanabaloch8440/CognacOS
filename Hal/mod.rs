@@ -8,6 +8,10 @@
 #[path = "apic.rs"]
 mod apic;
 
+/// Intel VT-d hardware translation backend; generic DMA policy remains in Io.
+#[path = "vtd.rs"]
+pub mod vtd;
+
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
