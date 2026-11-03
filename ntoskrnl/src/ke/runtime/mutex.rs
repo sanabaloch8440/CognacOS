@@ -7,8 +7,8 @@ const STATUS_ABANDONED_WAIT_0: i32 = 0x0000_0080;
 #[derive(Clone,Copy)]
 struct MutantRecord{object:usize,owner:u64,recursion:u32,abandoned:bool}
 impl MutantRecord{const EMPTY:Self=Self{object:0,owner:0,recursion:0,abandoned:false};}
-struct MutantTable{records:[MutantRecord;128]}
-impl MutantTable{const fn new()->Self{Self{records:[MutantRecord::EMPTY;128]}}}
+struct MutantTable{records:[MutantRecord;2048]}
+impl MutantTable{const fn new()->Self{Self{records:[MutantRecord::EMPTY;2048]}}}
 static MUTANTS:crate::hal::IrqSpinLock<MutantTable>=crate::hal::IrqSpinLock::new(MutantTable::new());
 unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
     if object.is_null(){return}
@@ -91,7 +91,7 @@ pub unsafe extern "win64" fn ke_read_state_mutant(object:*const DispatcherHeader
 /// Mark mutexes owned by a terminating thread abandoned and wake their next waiter.
 pub fn thread_exit_cleanup(thread:u64){
     if thread==0{return}
-    let mut objects=[0usize;128];let mut count=0;
+    let mut objects=[0usize;2048];let mut count=0;
     {
         let mut table=MUTANTS.lock();
         for record in table.records.iter_mut(){
