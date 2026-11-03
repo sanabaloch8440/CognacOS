@@ -29,6 +29,7 @@ impl IoManagerBlockDevice {
 
     fn submit(&self,major:u8,offset:u64,buffer:*mut u8,length:u32,control_code:u32)->Result<usize,DiskError>{
         if self.device.is_null(){return Err(DiskError::DeviceFailure)}
+        if unsafe{crate::ntoskrnl::ke::runtime::ke_get_current_irql()}!=0{return Err(DiskError::DeviceFailure)}
         if offset>i64::MAX as u64{return Err(DiskError::OutOfRange)}
         let end=offset.checked_add(length as u64).ok_or(DiskError::Overflow)?;
         if end>self.capacity{return Err(DiskError::OutOfRange)}
