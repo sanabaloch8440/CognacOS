@@ -275,7 +275,7 @@ impl AmlTableManager {
         if self.namespace.count>=MAX_NAMESPACE_NODES{return Err(TableError::NamespaceCapacity)}
         let before=self.namespace.count;
         load_definition_block(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace)?;
-        for node in before..self.namespace.count{self.namespace.nodes[node].source_table=self.count as u8;}
+        for node in before..self.namespace.count{self.namespace.nodes[node].source_table=self.count as u32;}
         if self.namespace.count>u16::MAX as usize{
             self.namespace.count=before;
             return Err(TableError::NamespaceCapacity)
