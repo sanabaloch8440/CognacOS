@@ -32,37 +32,40 @@ impl<'a> Machine<'a>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn target(r:&mut Reader<'_>)->Result<Target,ExecError>{let op=r.byte()?;match op{0x00=>Ok(Target::Null),0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),_=>Err(ExecError::BadTarget)}}
  fn integer_value(value:u64)->AmlRuntimeValue{let mut out=AmlRuntimeValue::EMPTY;out.kind=AmlValueKind::Integer;out.integer=value;out}
+ fn integer_mask(&self)->u64{if self.integer_width_bits==32{u32::MAX as u64}else{u64::MAX}}
+ fn normalize(&self,value:u64)->u64{value&self.integer_mask()}
  fn operand_integer(&self,value:&AmlRuntimeValue)->Result<u64,ExecError>{to_integer_implicit(value,self.integer_width_bits).map_err(|_|ExecError::NonIntegerName)}
- fn store(&mut self,t:Target,v:u64){let value=Self::integer_value(v);match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=value,Target::Arg(i)=>self.args[i]=value}}
+ fn store(&mut self,t:Target,v:u64){let value=Self::integer_value(self.normalize(v));match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=value,Target::Arg(i)=>self.args[i]=value}}
  fn term(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{self.term_depth(r,0)}
  fn term_depth(&mut self,r:&mut Reader<'_>,depth:u8)->Result<u64,ExecError>{
   if depth>32{return Err(ExecError::NestingLimit)}
   self.step()?;let op=r.byte()?;
   match op{
-   0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(u64::MAX),0x0a=>Ok(r.byte()? as u64),
+   0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),0x0a=>Ok(r.byte()? as u64),
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
-   0x0e=>{let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
+   0x0e=>{if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
    0x60..=0x67=>self.operand_integer(&self.locals[(op-0x60)as usize]),0x68..=0x6e=>self.operand_integer(&self.args[(op-0x68)as usize]),
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
     let v=match op{
      0x72=>a.wrapping_add(b),0x74=>a.wrapping_sub(b),0x77=>a.wrapping_mul(b),
-     0x79=>if b>=64{0}else{a<<b},0x7a=>if b>=64{0}else{a>>b},
+     0x79=>if b>=self.integer_width_bits as u64{0}else{a<<b},0x7a=>if b>=self.integer_width_bits as u64{0}else{a>>b},
      0x7b=>a&b,0x7c=>!(a&b),0x7d=>a|b,0x7e=>!(a|b),0x85=>{if b==0{return Err(ExecError::DivideByZero)}a%b},_=>a^b
     };
-    let t=Self::target(r)?;self.store(t,v);Ok(v)
+    let v=self.normalize(v);let t=Self::target(r)?;self.store(t,v);Ok(v)
    }
    0x81|0x82=>{
     let value=self.term_depth(r,depth+1)?;
-    let result=if value==0{0}else if op==0x81{64-value.leading_zeros() as u64}else{value.trailing_zeros() as u64+1};
+    let value=self.normalize(value);
+    let result=if value==0{0}else if op==0x81{self.integer_width_bits as u64-if self.integer_width_bits==32{(value as u32).leading_zeros() as u64}else{value.leading_zeros() as u64}}else{value.trailing_zeros() as u64+1};
     let t=Self::target(r)?;self.store(t,result);Ok(result)
    }
    0x75|0x76=>{
     let t=Self::target(r)?;
     let current=match t{Target::Null=>0,Target::Local(i)=>self.operand_integer(&self.locals[i])?,Target::Arg(i)=>self.operand_integer(&self.args[i])?};
     let value=if op==0x75{current.wrapping_add(1)}else{current.wrapping_sub(1)};
-    self.store(t,value);Ok(value)
+    let value=self.normalize(value);self.store(t,value);Ok(value)
    }
    0x78=>{
     let dividend=self.term_depth(r,depth+1)?;let divisor=self.term_depth(r,depth+1)?;
@@ -70,9 +73,9 @@ impl<'a> Machine<'a>{
     let remainder=dividend%divisor;let quotient=dividend/divisor;
     // AML Divide operand order is Dividend, Divisor, Remainder, Quotient.
     let rem=Self::target(r)?;let q=Self::target(r)?;
-    self.store(rem,remainder);self.store(q,quotient);Ok(quotient)
+    self.store(rem,remainder);self.store(q,quotient);Ok(self.normalize(quotient))
    }
-   0x80=>{let v=!self.term_depth(r,depth+1)?;let t=Self::target(r)?;self.store(t,v);Ok(v)},
+   0x80=>{let v=self.normalize(!self.term_depth(r,depth+1)?);let t=Self::target(r)?;self.store(t,v);Ok(v)},
    0x90=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0&&b!=0)as u64)},
    0x91=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0||b!=0)as u64)},
    0x92=>Ok((self.term_depth(r,depth+1)?==0)as u64),
@@ -212,7 +215,7 @@ mod tests{
   assert_eq!(execute_method(&buffer_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x1235));
  }
 
- #[test]fn method_local_and_argument_string_values_use_implicit_integer_conversion(){
+ #[test]fn method_local_and_argument_targets_store_integer_values_without_type_aliasing(){
   let mut namespace=AmlNamespace::new();
   let mut aml=[0x14,0x0d,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
   load_definition_block(&aml,&mut namespace).unwrap();
@@ -220,6 +223,26 @@ mod tests{
   // Existing public entry point passes Integer args; typed Name operands are
   // exercised above while Local/Arg scalar values remain width-aware.
   assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn integer_width_controls_ones_arithmetic_and_qword_acceptance(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0,0xa4,0xff];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method_with_integer_width(&aml,&ns,id,&[],32).unwrap(),AmlValue::Integer(0xffff_ffff));
+  assert_eq!(execute_method_with_integer_width(&aml,&ns,id,&[],64).unwrap(),AmlValue::Integer(u64::MAX));
+
+  let add=[0x08,b'S',b'T',b'R',b'0',0x0d,b'F',b'F',b'F',b'F',b'F',b'F',b'F',b'F',0,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'S',b'T',b'R',b'0',0x01,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&add,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method_with_integer_width(&add,&ns,id,&[],32).unwrap(),AmlValue::Integer(0));
+  assert_eq!(execute_method_with_integer_width(&add,&ns,id,&[],64).unwrap(),AmlValue::Integer(0x1_0000_0000));
+
+  let qword=[0x14,0x11,b'T',b'E',b'S',b'T',0,0xa4,0x0e,1,0,0,0,0,0,0,0];
+  let mut ns=AmlNamespace::new();load_definition_block(&qword,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method_with_integer_width(&qword,&ns,id,&[],32),Err(ExecError::UnsupportedOpcode));
  }
 
  #[test]fn invokes_nested_method_with_an_independent_local_frame(){
