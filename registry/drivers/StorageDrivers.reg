@@ -1,5 +1,9 @@
 Windows Registry Editor Version 5.00
 
+; FAT32 is the active filesystem for the current boot-volume path. The ext4
+; parser library is retained for offline format tests but no ext4.sys service
+; is registered or loaded.
+
 ; ataport.sys is loaded during boot so the storage port layer is available
 ; before PnP starts. Controller and class drivers remain PnP-deferred until
 ; their PE images and assigned device resources are available.
