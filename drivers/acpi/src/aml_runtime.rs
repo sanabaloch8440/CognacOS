@@ -295,7 +295,7 @@ mod tests{
         assert_eq!(to_integer(&s),Ok(0x1a2f));
         let mut decimal=s;decimal.bytes[..3].copy_from_slice(b"123");decimal.byte_length=3;
         assert_eq!(to_integer(&decimal),Ok(123));
-        let b=to_buffer(&s,6).unwrap();assert_eq!(&b.bytes[..6],b"1a2f\0\0");
+        let b=to_buffer(&s,6).unwrap();assert_eq!(&b.bytes[..6],b"0x1a2f");
         assert_eq!(integer_to_string(120).bytes[..3],*b"120");
         let mut bad=s;bad.bytes[1]=b'x';assert_eq!(to_integer(&bad),Err(RuntimeError::InvalidIntegerString));
     }
