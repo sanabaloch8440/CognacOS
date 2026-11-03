@@ -59,6 +59,7 @@ unsafe extern "win64"{
  fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
  fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
  fn IoMountFAT32Volume(device:*mut DEVICE_OBJECT)->i32;
+ fn IoFAT32StorageRoundTripTest()->i32;
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -84,6 +85,7 @@ IMPORT IoCompleteRequest
 IMPORT IoPnPRegisterDeviceDriver
 IMPORT IoPnPEnumerateBus
 IMPORT IoMountFAT32Volume
+IMPORT IoFAT32StorageRoundTripTest
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -107,6 +109,7 @@ IAT IoCompleteRequest
 IAT IoPnPRegisterDeviceDriver
 IAT IoPnPEnumerateBus
 IAT IoMountFAT32Volume
+IAT IoFAT32StorageRoundTripTest
 "#);
 
 fn fdo_extension(device:*mut DEVICE_OBJECT)->Option<*mut PartMgrFdoExtension>{
@@ -207,7 +210,7 @@ unsafe extern "win64" fn pnp_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,con
    let count=unsafe{(*ext).relations.count as usize};
    for index in (0..count).rev(){
     let child=unsafe{(*ext).relations.objects[index]};
-    if !child.is_null()&&unsafe{IoMountFAT32Volume(child)}==STATUS_SUCCESS{break}
+    if !child.is_null()&&unsafe{IoMountFAT32Volume(child)}==STATUS_SUCCESS{let _=unsafe{IoFAT32StorageRoundTripTest()};break}
    }
   }
   if minor==IRP_MN_REMOVE_DEVICE{
