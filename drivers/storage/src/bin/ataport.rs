@@ -463,10 +463,10 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
   if minor==IRP_MN_REMOVE_DEVICE {
    let physical=unsafe{(*ext).physical};
    unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;}
-   unsafe{set_completion_routine(irp,Some(remove_complete),device.cast(),1,1,1);copy_current_irp_stack_location_to_next(irp);return IoCallDriver((*ext).lower,irp);}
+   unsafe{copy_current_irp_stack_location_to_next(irp);set_completion_routine(irp,Some(remove_complete),device.cast(),1,1,1);return IoCallDriver((*ext).lower,irp);}
   }
   if minor==IRP_MN_START_DEVICE||minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL {
-   unsafe{set_completion_routine(irp,Some(pnp_complete),device.cast(),1,1,1);copy_current_irp_stack_location_to_next(irp);return IoCallDriver((*ext).lower,irp);}
+   unsafe{copy_current_irp_stack_location_to_next(irp);set_completion_routine(irp,Some(pnp_complete),device.cast(),1,1,1);return IoCallDriver((*ext).lower,irp);}
   }
   unsafe{skip_current_irp_stack_location(irp);return IoCallDriver((*ext).lower,irp);}
  }
