@@ -169,43 +169,70 @@ fn assigned_port_range(resources: &IdeResourceSet, start: u64, length: u64) -> b
     resources.entries[..resources.count].iter().flatten().any(|resource| {
         resource.kind == ResourceKind::Port
             && resource.start <= start
-            && resource.start.checked_add(resource.length).is_some_and(|end| end >= start.saturating_add(length))
+            && resource.start.checked_add(resource.length as u64)
+                .is_some_and(|end| end >= start.saturating_add(length))
     })
 }
 
-/// Initialize legacy compatibility channels only when PnP has explicitly
-/// assigned every register range. Native-mode BAR decoding is deliberately
-/// rejected until PCI BAR resource descriptors can be mapped unambiguously.
+fn assigned_port_base(resources: &IdeResourceSet, minimum_length: u32, ordinal: usize) -> Option<u16> {
+    let mut seen = 0usize;
+    for resource in resources.entries[..resources.count].iter().flatten() {
+        if resource.kind != ResourceKind::Port || resource.length < minimum_length { continue; }
+        // x86 IN/OUT instructions address a 16-bit I/O-port space. Refuse
+        // truncated BAR addresses instead of silently aliasing another port.
+        let end = resource.start.checked_add(resource.length as u64)?;
+        if resource.start > u16::MAX as u64 || end > (u16::MAX as u64) + 1 { continue; }
+        if seen == ordinal { return Some(resource.start as u16); }
+        seen += 1;
+    }
+    None
+}
+
+/// Resolve command/control register windows from PnP-translated resources.
+/// Native-mode BARs are consumed in PCI IDE BAR order (command/control pairs);
+/// compatibility mode uses the legacy ranges only when those exact ranges
+/// were assigned by the bus. No BAR is guessed and no PCI config is modified.
 fn initialize_compatibility_channels(extension: &mut PciIdeFdoExtension) -> i32 {
     let identity = extension.controller.identity;
-    if identity.primary_native() || identity.secondary_native() {
-        return STATUS_NOT_SUPPORTED;
-    }
     let resources = &extension.controller.resources;
-    let channels = [
-        (0x1f0u16, 0x3f6u16, 0x1f0u64, 8u64, 0x3f4u64, 4u64),
-        (0x170u16, 0x376u16, 0x170u64, 8u64, 0x374u64, 4u64),
-    ];
     let mut active = 0u8;
     let mut drives = 0u8;
     let mut discovered = [None; 4];
     let mut io = X86PortIo;
-    for (index, (command, control, command_resource, command_len, control_resource, control_len)) in channels.iter().copied().enumerate() {
-        if !assigned_port_range(resources, command_resource, command_len)
-            || !assigned_port_range(resources, control_resource, control_len) {
-            continue;
-        }
+
+    let definitions = [
+        (false, 0x1f0u16, 0x3f6u16, 0x1f0u64, 8u64, 0x3f4u64, 4u64),
+        (true,  0x170u16, 0x376u16, 0x170u64, 8u64, 0x374u64, 4u64),
+    ];
+    for (index, (secondary, legacy_command, legacy_control, legacy_command_resource,
+                 command_len, legacy_control_resource, control_len)) in definitions.into_iter().enumerate() {
+        let native = if secondary { identity.secondary_native() } else { identity.primary_native() };
+        let (command, control) = if native {
+            // BAR0/1 are primary command/control, BAR2/3 secondary.
+            let command_ordinal = if secondary { 2 } else { 0 };
+            let control_ordinal = command_ordinal + 1;
+            let Some(command) = assigned_port_base(resources, 8, command_ordinal) else { continue; };
+            let Some(control_bar) = assigned_port_base(resources, 3, control_ordinal) else { continue; };
+            let Some(control) = control_bar.checked_add(2) else { continue; };
+            if !assigned_port_range(resources, command as u64, 8)
+                || !assigned_port_range(resources, control_bar as u64, 3) { continue; }
+            (command, control)
+        } else {
+            if !assigned_port_range(resources, legacy_command_resource, command_len)
+                || !assigned_port_range(resources, legacy_control_resource, control_len) { continue; }
+            (legacy_command, legacy_control)
+        };
         active |= 1 << index;
         for device in 0..2u8 {
             let channel = Channel { command_base: command, control, device, sectors: MAX_LBA28, poll_budget: 1_000_000 };
+            // A missing device commonly floats as 0x00/0xff. IDENTIFY is
+            // attempted only after the assigned channel responds plausibly.
             let status = match io.read8(command + 7) { Ok(value) => value, Err(_) => continue };
             if status == 0 || status == 0xff { continue; }
             let mut probe = channel;
             if probe.identify(&mut io).is_ok() {
                 let slot = index * 2 + device as usize;
                 drives |= 1 << slot;
-                // IDENTIFY updates sectors to the device-reported LBA28
-                // capacity. Retain the validated channel for later requests.
                 discovered[slot] = Some(probe);
             }
         }
