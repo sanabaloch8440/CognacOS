@@ -654,11 +654,21 @@ pub fn parse_facs(bytes:&[u8])->Result<FacsInfo,AcpiError>{
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct AcpiGas { pub address_space_id:u8,pub bit_width:u8,pub bit_offset:u8,pub access_size:u8,pub address:u64 }
-fn parse_optional_gas(bytes:&[u8],offset:usize)->Result<Option<AcpiGas>,AcpiError>{let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;if s.iter().all(|b|*b==0){Ok(None)}else{Ok(Some(parse_gas(bytes,offset)?))}}
+fn parse_optional_gas(bytes:&[u8],offset:usize)->Result<Option<AcpiGas>,AcpiError>{
+    let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;
+    // ACPI defines a zero GAS address as an absent optional register. Firmware
+    // may leave the other descriptor bytes populated, so testing all 12 bytes
+    // for zero incorrectly rejects otherwise valid FADTs.
+    if s[4..12].iter().all(|byte|*byte==0){Ok(None)}else{Ok(Some(parse_gas(bytes,offset)?)}
+}
 fn parse_gas(bytes:&[u8],offset:usize)->Result<AcpiGas,AcpiError>{
     let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;
     let gas=AcpiGas{address_space_id:s[0],bit_width:s[1],bit_offset:s[2],access_size:s[3],address:u64::from_le_bytes(s[4..12].try_into().map_err(|_|AcpiError::Truncated)?)};
-    if gas.address_space_id>1||gas.address==0||gas.bit_width==0||gas.bit_offset>=gas.bit_width||gas.access_size>4{return Err(AcpiError::MalformedEntry)} Ok(gas)
+    // ACPI 6.x GAS supports the standard spaces 0x00-0x0A and the
+    // Functional Fixed Hardware space 0x7F; it is not limited to memory/I/O.
+    let valid_space=gas.address_space_id<=0x0A||gas.address_space_id==0x7F;
+    if !valid_space||gas.address==0||gas.bit_width==0||gas.bit_offset>=gas.bit_width||gas.access_size>4{return Err(AcpiError::MalformedEntry)}
+    Ok(gas)
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct HpetInfo { pub event_timer_block_id:u32,pub base:AcpiGas,pub sequence_number:u8,pub minimum_tick:u16,pub page_protection:u8 }
@@ -1297,6 +1307,22 @@ mod acpi_5_6_revision_tests {
         let mut legacy=header(*b"FACP",116,3);
         legacy[40..44].copy_from_slice(&0x8765u32.to_le_bytes());checksum(&mut legacy);
         assert_eq!(parse_fadt(&legacy).unwrap().effective_dsdt(),0x8765);
+    }
+    #[test]
+    fn parses_fadt_functional_fixed_hardware_gas_and_absent_registers(){
+        let mut table=header(*b"FACP",244,6);
+        table[40..44].copy_from_slice(&0x1234u32.to_le_bytes());
+        table[140..148].copy_from_slice(&0x5678u64.to_le_bytes());
+        // ACPI Functional Fixed Hardware reset register (space 0x7F).
+        table[116]=0x7f;table[117]=8;table[119]=1;
+        table[120..128].copy_from_slice(&0x1234u64.to_le_bytes());
+        // An absent optional register may retain descriptor metadata.
+        table[184]=1;table[185]=32;table[187]=2;
+        checksum(&mut table);
+        let fadt=parse_fadt(&table).unwrap();
+        assert_eq!(fadt.effective_dsdt(),0x5678);
+        assert_eq!(fadt.reset_register.unwrap().address_space_id,0x7f);
+        assert_eq!(fadt.x_pm1b_control_block,None);
     }
     #[test]
     fn parses_x86_local_apic_and_x2apic_nmi_records(){
