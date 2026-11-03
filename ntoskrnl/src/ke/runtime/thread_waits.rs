@@ -507,15 +507,19 @@ fn consume_wait_all_object(thread_id:u64,object_id:u64)->i32{
     let object=object_id as *mut DispatcherHeader;
     if object.is_null(){return STATUS_INVALID_PARAMETER}
     if unsafe{(*object).kind}==MUTANT_OBJECT{
-        let mut table=MUTANTS.lock();
-        let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) else{return STATUS_INVALID_PARAMETER};
-        if record.owner==thread_id{record.recursion=record.recursion.saturating_add(1);}
-        else{record.owner=thread_id;record.recursion=1;}
-        let abandoned=record.abandoned;record.abandoned=false;
+        let (abandoned,recursion)={
+            let mut table=MUTANTS.lock();
+            let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) else{return STATUS_INVALID_PARAMETER};
+            if record.owner==thread_id{record.recursion=record.recursion.saturating_add(1);}
+            else{record.owner=thread_id;record.recursion=1;}
+            let abandoned=record.abandoned;record.abandoned=false;
+            (abandoned,record.recursion)
+        };
         unsafe{
             object.cast::<u8>().add(48).write(0);
-            (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);
+            (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-recursion as i32,Ordering::Release);
         }
+        let _=crate::thread::adjust_apc_region_for_thread(thread_id,false,true);
         return if abandoned{0x80}else{STATUS_SUCCESS};
     }
     // The caller holds DISPATCHER_OBJECT_LOCK. Notification objects remain
