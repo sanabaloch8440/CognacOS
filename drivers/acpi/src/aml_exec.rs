@@ -31,11 +31,12 @@ enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
 /// The provider must coordinate all callers of a method object, block until
 /// acquisition is permitted (or return ExecutionBusy), and implement
 /// per-thread ownership so nested calls obey ACPI mutex reentrancy rules.
-pub trait AmlMethodSynchronizer{
+pub trait AmlMethodSynchronizer:Sync{
  fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>;
  fn release(&self,method_index:u16);
 }
 struct NoMethodSynchronizer;
+static NO_METHOD_SYNCHRONIZER:NoMethodSynchronizer=NoMethodSynchronizer;
 impl AmlMethodSynchronizer for NoMethodSynchronizer{
  fn acquire(&self,_method_index:u16,_sync_level:u8)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
  fn release(&self,_method_index:u16){}
@@ -425,7 +426,7 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
  let namespace=AmlNamespace::new();
  let empty=Machine::uninitialized_value();
  let mut arena=AmlObjectArena::new();let mut bindings=AmlBindings::with_aml_revision(2);
- let mut machine=Machine{locals:[empty;8],args:[empty;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0,sync:&NoMethodSynchronizer,current_sync_level:0};
+ let mut machine=Machine{locals:[empty;8],args:[empty;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0,sync:&NO_METHOD_SYNCHRONIZER,current_sync_level:0};
  let mut reader=Reader{bytes,pos:0,end:bytes.len()};
  let value=machine.term(&mut reader)?;
  Ok((value,reader.pos))
@@ -488,7 +489,7 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
 /// the OS's per-thread implicit-mutex provider.
 pub fn execute_method_typed_with_values(aml:&[u8],namespace:&AmlNamespace,
     method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlRuntimeValue,ExecError>{
-    execute_method_typed_with_sync(aml,namespace,method_index,args,integer_width_bits,&NoMethodSynchronizer)
+    execute_method_typed_with_sync(aml,namespace,method_index,args,integer_width_bits,&NO_METHOD_SYNCHRONIZER)
 }
 
 /// Compatibility scalar API: returns an Integer and rejects typed non-Integer
