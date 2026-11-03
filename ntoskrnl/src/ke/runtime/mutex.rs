@@ -210,6 +210,7 @@ pub fn thread_exit_cleanup(thread:u64){
                 header.cast::<u8>().add(48).write(0);
                 (&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
             }
+            let _=crate::thread::adjust_apc_region_for_thread(id,false,true);
             let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_ABANDONED_WAIT_0,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_ABANDONED_WAIT_0);
             let _=crate::thread::complete_wait(id,status);
         }
