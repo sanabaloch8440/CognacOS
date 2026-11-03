@@ -1,9 +1,9 @@
+//! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
+//! Entries describe export names/ordinals only; they are not all implemented APIs.
 #[path = "resource_arbiter.rs"]
 pub(crate) mod resource_arbiter;
 #[path = "wdm_requirements.rs"]
 pub(crate) mod wdm_requirements;
-//! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
-//! Entries describe export names/ordinals only; they are not all implemented APIs.
 #[path = "wdm.rs"]
 pub(crate) mod wdm;
 #[path = "file_services.rs"]
