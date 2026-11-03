@@ -745,6 +745,11 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&bad_else,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&bad_else,&ns,id,&[]),Err(ExecError::BadPackage));
+
+  let bad_while=[0x14,0x0b,b'T',b'E',b'S',b'T',0,0xa2,0x7f,0x01,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&bad_while,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&bad_while,&ns,id,&[]),Err(ExecError::BadPackage));
  }
  #[test]fn control_flow_return_escapes_a_live_while_body(){
   let aml=[0x14,0x0c,b'T',b'E',b'S',b'T',0,0xa2,0x05,0x01,0xa4,0x0a,42];
