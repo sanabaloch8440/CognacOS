@@ -23,6 +23,7 @@ pub mod acpi_wdm_requirements;
 pub mod acpi_power;
 pub mod acpi_hotplug;
 pub mod acpi_prt;
+pub mod acpi_events;
 
 
 /// Common 36-byte ACPI System Description Table header.
@@ -64,9 +65,29 @@ pub struct FadtInfo {
     pub revision:u8,pub preferred_pm_profile:u8,pub firmware_ctrl:u32,pub dsdt:u32,
     pub boot_arch_flags:u16,pub flags:u32,pub minor_version:u8,
     pub x_firmware_ctrl:u64,pub x_dsdt:u64,pub pm1a_control_legacy:u32,
-    pub reset_register:Option<AcpiGas>, pub x_pm1a_control_block:Option<AcpiGas>,
+    pub pm1a_event_legacy:u32,pub pm1b_event_legacy:u32,pub pm1b_control_legacy:u32,
+    pub pm2_control_legacy:u32,pub pm_timer_legacy:u32,pub gpe0_legacy:u32,pub gpe1_legacy:u32,
+    pub pm1_event_length:u8,pub pm1_control_length:u8,pub pm2_control_length:u8,
+    pub pm_timer_length:u8,pub gpe0_length:u8,pub gpe1_length:u8,pub gpe1_base:u8,
+    pub reset_register:Option<AcpiGas>, pub x_pm1a_event_block:Option<AcpiGas>,
+    pub x_pm1b_event_block:Option<AcpiGas>, pub x_pm1a_control_block:Option<AcpiGas>,
     pub x_pm1b_control_block:Option<AcpiGas>, pub x_pm2_control_block:Option<AcpiGas>,
     pub x_pm_timer_block:Option<AcpiGas>, pub x_gpe0_block:Option<AcpiGas>, pub x_gpe1_block:Option<AcpiGas>,
+    pub sleep_control_register:Option<AcpiGas>,pub sleep_status_register:Option<AcpiGas>,
+}
+impl FadtInfo {
+    pub const HARDWARE_REDUCED_ACPI:u32=1<<20;
+    pub const LOW_POWER_S0_IDLE_CAPABLE:u32=1<<21;
+    pub fn hardware_reduced(&self)->bool{self.flags&Self::HARDWARE_REDUCED_ACPI!=0}
+    pub fn low_power_s0_idle_capable(&self)->bool{self.flags&Self::LOW_POWER_S0_IDLE_CAPABLE!=0}
+    pub fn effective_gpe0(&self)->Option<(AcpiGas,u8)>{
+        self.x_gpe0_block.filter(|g|g.address!=0).map(|g|(g,self.gpe0_length))
+            .or_else(||(self.gpe0_legacy!=0&&self.gpe0_length!=0).then_some((AcpiGas{address_space_id:1,bit_width:self.gpe0_length.saturating_mul(8),bit_offset:0,access_size:1,address:self.gpe0_legacy as u64},self.gpe0_length)))
+    }
+    pub fn effective_gpe1(&self)->Option<(AcpiGas,u8,u8)>{
+        self.x_gpe1_block.filter(|g|g.address!=0).map(|g|(g,self.gpe1_length,self.gpe1_base))
+            .or_else(||(self.gpe1_legacy!=0&&self.gpe1_length!=0).then_some((AcpiGas{address_space_id:1,bit_width:self.gpe1_length.saturating_mul(8),bit_offset:0,access_size:1,address:self.gpe1_legacy as u64},self.gpe1_length,self.gpe1_base)))
+    }
 }
 impl FadtInfo {
     pub fn effective_firmware_ctrl(&self)->u64{if self.x_firmware_ctrl!=0{self.x_firmware_ctrl}else{self.firmware_ctrl as u64}}
@@ -84,14 +105,20 @@ pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
     if n>=111{out.boot_arch_flags=u16::from_le_bytes([bytes[109],bytes[110]]);}
     if n>=116{out.flags=u32le(bytes,112)?;}
     if n>=132{out.minor_version=bytes[131];}
-    if n>=68{out.pm1a_control_legacy=u32le(bytes,64)?;}
+    if n>=84{out.pm1a_event_legacy=u32le(bytes,56)?;out.pm1b_event_legacy=u32le(bytes,60)?;out.pm1a_control_legacy=u32le(bytes,64)?;out.pm1b_control_legacy=u32le(bytes,68)?;out.pm2_control_legacy=u32le(bytes,72)?;out.pm_timer_legacy=u32le(bytes,76)?;out.gpe0_legacy=u32le(bytes,80)?;}
+    if n>=88{out.gpe1_legacy=u32le(bytes,84)?;}
+    if n>=95{out.pm1_event_length=bytes[88];out.pm1_control_length=bytes[89];out.pm2_control_length=bytes[90];out.pm_timer_length=bytes[91];out.gpe0_length=bytes[92];out.gpe1_length=bytes[93];out.gpe1_base=bytes[94];}
     if n>=128{out.reset_register=parse_optional_gas(bytes,116)?;}
+    if n>=160{out.x_pm1a_event_block=parse_optional_gas(bytes,148)?;}
+    if n>=172{out.x_pm1b_event_block=parse_optional_gas(bytes,160)?;}
     if n>=184{out.x_pm1a_control_block=parse_optional_gas(bytes,172)?;}
     if n>=196{out.x_pm1b_control_block=parse_optional_gas(bytes,184)?;}
     if n>=208{out.x_pm2_control_block=parse_optional_gas(bytes,196)?;}
     if n>=220{out.x_pm_timer_block=parse_optional_gas(bytes,208)?;}
     if n>=232{out.x_gpe0_block=parse_optional_gas(bytes,220)?;}
     if n>=244{out.x_gpe1_block=parse_optional_gas(bytes,232)?;}
+    if n>=256{out.sleep_control_register=parse_optional_gas(bytes,244)?;}
+    if n>=268{out.sleep_status_register=parse_optional_gas(bytes,256)?;}
     if n>=148{
         out.x_firmware_ctrl=u64::from_le_bytes(bytes[132..140].try_into().map_err(|_|AcpiError::Truncated)?);
         out.x_dsdt=u64::from_le_bytes(bytes[140..148].try_into().map_err(|_|AcpiError::Truncated)?);
