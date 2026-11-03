@@ -175,7 +175,21 @@ fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:
     let mut p=resolve_parent(ns,current,n)?;
     for i in 0..n.count as usize{
         let name=n.segments[i];
-        if let Some(found)=ns.find_child(p,name){p=found;continue}
+        if let Some(found)=ns.find_child(p,name){
+            if i+1==n.count as usize {
+                let existing=ns.nodes[found as usize].object_type;
+                if kind==AmlObjectType::Scope {
+                    if !matches!(existing,AmlObjectType::Root|AmlObjectType::Scope|AmlObjectType::Device|AmlObjectType::Processor|AmlObjectType::PowerResource|AmlObjectType::ThermalZone){return Err(AmlError::InvalidParent)}
+                    if existing==AmlObjectType::Scope && ns.nodes[found as usize].source_table!=ns.loading_table {ns.nodes[found as usize].source_table=0;}
+                } else if existing==AmlObjectType::External {
+                    ns.nodes[found as usize].object_type=kind;
+                    ns.nodes[found as usize].method_flags=flags;
+                    ns.nodes[found as usize].body_start=u32::try_from(body_start).map_err(|_|AmlError::BadDefinitionBlock)?;
+                    ns.nodes[found as usize].body_length=u32::try_from(body_len).map_err(|_|AmlError::BadDefinitionBlock)?;
+                } else {return Err(AmlError::DuplicateName)}
+            }
+            p=found;continue
+        }
         if i+1<n.count as usize&&!create_intermediate{return Err(AmlError::InvalidParent)}
         let k=if i+1==n.count as usize{kind}else{AmlObjectType::Scope};
         p=ns.insert(p,name,k,flags,body_start,body_len)?;
@@ -480,6 +494,61 @@ pub fn namespace_remaining(namespace:&AmlNamespace)->usize{MAX_NAMESPACE_NODES.s
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn package_length_checks_all_width_boundaries_and_input_limit(){
+        let mut one=[0u8;4];one[0]=0x04;
+        assert_eq!(decode_package_length(&one,0,4),Ok((4,4)));
+        let mut two=[0u8;17];two[0]=0x41;two[1]=1;
+        assert_eq!(decode_package_length(&two,0,17),Ok((17,17)));
+        let mut three=[0u8;16];three[0]=0x80;three[1]=1;
+        assert_eq!(decode_package_length(&three,0,16),Ok((16,16)));
+        let mut four=[0u8;16];four[0]=0xc0;four[1]=1;
+        assert_eq!(decode_package_length(&four,0,16),Ok((16,16)));
+        assert_eq!(decode_package_length(&[0x40],0,1),Err(AmlError::Truncated));
+        assert_eq!(decode_package_length(&[0x41,0x01],0,1),Err(AmlError::Truncated));
+        assert_eq!(decode_package_length(&[0x3f],0,1),Err(AmlError::BadPackageLength));
+        assert_eq!(decode_package_length(&[0xc0,0xff,0xff,0x0f],0,4),Err(AmlError::BadPackageLength));
+        assert_eq!(decode_package_length(&[0x41,0x01],0,usize::MAX),Err(AmlError::Truncated));
+    }
+    #[test]fn namestring_accepts_nullname_and_rejects_malformed_segments(){
+        let (null,end)=parse_name_string(&[0x00],0,1).unwrap();assert_eq!(null.count,0);assert_eq!(end,1);
+        assert!(parse_name_string(&[0x2e,b'A',b'B',b'C',b'D',b'E',b'F',b'G',b'H'],0,9).is_ok());
+        assert!(parse_name_string(&[0x2f,1,b'A',b'B',b'C',b'D'],0,6).is_ok());
+        assert_eq!(parse_name_string(&[0x2f,0],0,2),Err(AmlError::BadName));
+        assert_eq!(parse_name_string(&[0x2f,9],0,2),Err(AmlError::BadName));
+        assert_eq!(parse_name_string(&[0x5c,0x5e,b'A',b'B',b'C',b'D'],0,6),Err(AmlError::BadName));
+        assert_eq!(parse_name_string(&[b'1',b'A',b'B',b'C'],0,4),Err(AmlError::BadName));
+        assert_eq!(parse_name_string(&[b'A',b'B',b'?',b'D'],0,4),Err(AmlError::BadName));
+    }
+    #[test]fn external_forward_declaration_is_promoted_by_later_definition(){
+        let aml=[0x15,b'M',b'E',b'T',b'0',8,0,0x14,0x06,b'M',b'E',b'T',b'0',0];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let id=ns.find_child(0,*b"MET0").unwrap() as usize;
+        assert_eq!(ns.nodes[id].object_type,AmlObjectType::Method);
+        assert_eq!(ns.nodes[id].method_flags,0);
+    }
+    #[test]fn scope_reopen_is_shared_across_table_owners(){
+        let mut ns=AmlNamespace::new();
+        load_definition_block_owned(&[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'0',0x01],&mut ns,1).unwrap();
+        load_definition_block_owned(&[0x10,0x0b,b'P',b'A',b'R',b'0',0x08,b'V',b'A',b'L',b'1',0x01],&mut ns,2).unwrap();
+        let parent=ns.find_child(0,*b"PAR0").unwrap() as usize;
+        assert_eq!(ns.nodes[parent].source_table,0);
+        unload_definition_block(&mut ns,1);
+        let parent=ns.find_child(0,*b"PAR0").unwrap();
+        assert!(ns.find_child(parent,*b"VAL1").is_some());
+        assert!(ns.find_child(parent,*b"VAL0").is_none());
+    }
+    #[test]fn unloading_one_table_preserves_unrelated_objects(){
+        let mut ns=AmlNamespace::new();
+        load_definition_block_owned(&[0x08,b'A',b'A',b'A',b'A',0x01,0x06,b'A',b'A',b'A',b'A',b'A',b'L',b'I',b'1'],&mut ns,1).unwrap();
+        load_definition_block_owned(&[0x08,b'B',b'B',b'B',b'B',0x01],&mut ns,2).unwrap();
+        assert_eq!(unload_definition_block(&mut ns,1),2);
+        assert!(ns.find_child(0,*b"AAAA").is_none());assert!(ns.find_child(0,*b"ALI1").is_none());assert!(ns.find_child(0,*b"BBBB").is_some());
+    }
+    #[test]fn reports_namespace_capacity_explicitly(){
+        let mut ns=AmlNamespace::new();ns.count=MAX_NAMESPACE_NODES;
+        assert_eq!(ns.insert(0,*b"FULL",AmlObjectType::Name,0,0,0),Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:MAX_NAMESPACE_NODES+1}));
+        assert_eq!(namespace_capacity(),MAX_NAMESPACE_NODES);assert_eq!(namespace_remaining(&ns),0);
+    }
     #[test]fn package_length_decodes_all_widths(){
         assert_eq!(decode_package_length(&[0x3f;63],0,63),Ok((63,63)));
         assert_eq!(decode_package_length(&[0x41,0x01,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],0,17),Ok((17,17)));
