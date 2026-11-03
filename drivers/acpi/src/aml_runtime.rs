@@ -256,6 +256,20 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
     Ok(converted)
 }
 
+/// Convert an AML source operand to the data type required by an operator.
+/// This is intentionally separate from explicit ToInteger: implicit
+/// String-to-Integer conversion uses unprefixed hexadecimal text, while
+/// ToInteger follows its explicit decimal-or-0x-prefixed syntax.
+pub fn convert_source_operand(value:&AmlRuntimeValue,expected_kind:AmlValueKind,
+    integer_width_bits:u8,arena:&AmlObjectArena)->Result<AmlRuntimeValue,RuntimeError>{
+    validate_runtime_value(value,arena)?;
+    if value.kind==expected_kind{return Ok(*value)}
+    if !matches!(integer_width_bits,32|64){return Err(RuntimeError::TypeMismatch)}
+    let mut target=AmlRuntimeValue::EMPTY;
+    target.kind=expected_kind;
+    convert_to_target_type(value,&target,arena,integer_width_bits)
+}
+
 /// Store an existing arena value through an AML reference. Named objects use
 /// implicit result conversion; CopyObject bypasses it. Package elements retain
 /// their dynamic value type. Buffer-byte writes truncate to the field width.
@@ -381,6 +395,25 @@ pub fn integer_to_string(value:u64)->AmlRuntimeValue{
 mod tests{
     use super::*;
     use crate::aml::load_definition_block;
+    #[test]fn implicit_source_operand_conversions_follow_expected_type(){
+        let arena=AmlObjectArena::new();
+        let mut text=AmlRuntimeValue::EMPTY;text.kind=AmlValueKind::String;
+        text.byte_length=3;text.bytes[..3].copy_from_slice(b"12Z");
+        let integer=convert_source_operand(&text,AmlValueKind::Integer,64,&arena).unwrap();
+        assert_eq!(integer.integer,0x12);
+        let mut bytes=AmlRuntimeValue::EMPTY;bytes.kind=AmlValueKind::Buffer;
+        bytes.byte_length=2;bytes.bytes[..2].copy_from_slice(&[0x34,0x12]);
+        let integer=convert_source_operand(&bytes,AmlValueKind::Integer,32,&arena).unwrap();
+        assert_eq!(integer.integer,0x1234);
+        let mut number=AmlRuntimeValue::EMPTY;number.kind=AmlValueKind::Integer;number.integer=0x1234;
+        let buffer=convert_source_operand(&number,AmlValueKind::Buffer,32,&arena).unwrap();
+        assert_eq!(buffer.byte_length,4);assert_eq!(&buffer.bytes[..4],&[0x34,0x12,0,0]);
+        let string=convert_source_operand(&bytes,AmlValueKind::String,64,&arena).unwrap();
+        assert_eq!(string.byte_length,5);assert_eq!(&string.bytes[..5],b"34 12");
+        let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
+        assert_eq!(convert_source_operand(&package,AmlValueKind::Integer,64,&arena),Err(RuntimeError::TypeMismatch));
+    }
+
     #[test]fn named_store_converts_to_existing_integer_buffer_and_string_types(){
         let aml=[0x08,b'I',b'N',b'T',b'0',0x01,0x08,b'B',b'U',b'F',b'0',0x01,0x08,b'S',b'T',b'R',b'0',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
