@@ -406,10 +406,20 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
                 _=>STATUS_INVALID_PARAMETER,
             },
         };
-        let info=match crate::acpi::parse_fadt(fadt){
-            Ok(value)=>value,Err(_)=>return STATUS_INVALID_PARAMETER,
+        // DSDT discovery depends only on the validated FADT header and its
+        // legacy/extended DSDT pointers. Do not parse unrelated PM/GAS fields
+        // here: valid ACPI 5/6 firmware may use GAS address spaces such as
+        // Functional Fixed Hardware (0x7F), which must not block AML loading.
+        let fadt_header=match crate::acpi::validate_sdt(fadt,Some(*b"FACP")){
+            Ok(header)=>header,Err(_)=>return STATUS_INVALID_PARAMETER,
         };
-        let address=info.effective_dsdt();
+        let fadt_length=fadt_header.length as usize;
+        if fadt_length<44{return STATUS_INVALID_PARAMETER;}
+        let legacy_dsdt=u32::from_le_bytes([fadt[40],fadt[41],fadt[42],fadt[43]]) as u64;
+        let extended_dsdt=if fadt_length>=148{
+            u64::from_le_bytes(fadt[140..148].try_into().unwrap_or([0;8]))
+        }else{0};
+        let address=if extended_dsdt!=0{extended_dsdt}else{legacy_dsdt};
         // The x64 bootstrap page tables identity-map the first 64 GiB.
         const LOW_LIMIT:u64=0x10_0000_0000;
         if address==0||address.checked_add(36).is_none_or(|end|end>LOW_LIMIT){
