@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `acpi-production-readiness-audit`  
-**Status:** tasks 1–10 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
+**Status:** tasks 1–20 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -21,16 +21,16 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 
 ## AML parser and namespace
 
-11. [ ] Test PkgLength decoding against ACPI encoding and boundary/overflow vectors.
-12. [ ] Complete NameString grammar and validate root, parent, DualName, MultiName, and NullName contexts.
-13. [ ] Handle declaration ordering, forward references, External declarations, and cross-table duplicates.
-14. [ ] Implement exact AML namespace search rules for rooted, parent-prefixed, and unprefixed paths.
-15. [ ] Add table owner IDs so unloading/reloading removes only objects introduced by that table.
-16. [ ] Support reopening Scope objects without treating valid scope reuse as a duplicate.
-17. [ ] Parse Processor, PowerResource, ThermalZone, Device, Mutex, Event, Alias, and DataRegion fields completely.
-18. [ ] Complete Field, IndexField, BankField, ConnectField, AccessField, and ExtendedAccessField parsing.
-19. [ ] Use checked bit-offset arithmetic and validate field lengths and access widths.
-20. [ ] Make namespace capacity configurable or return explicit capacity diagnostics.
+11. [x] Test PkgLength decoding against ACPI encoding and boundary/overflow vectors.
+12. [x] Complete NameString grammar and validate root, parent, DualName, MultiName, and NullName contexts.
+13. [x] Handle declaration ordering, forward references, External declarations, and cross-table duplicates.
+14. [x] Implement exact AML namespace search rules for rooted, parent-prefixed, and unprefixed paths.
+15. [x] Add table owner IDs so unloading/reloading removes only objects introduced by that table.
+16. [x] Support reopening Scope objects without treating valid scope reuse as a duplicate.
+17. [x] Parse Processor, PowerResource, ThermalZone, Device, Mutex, Event, Alias, and DataRegion fields completely.
+18. [x] Complete Field, IndexField, BankField, ConnectField, AccessField, and ExtendedAccessField parsing.
+19. [x] Use checked bit-offset arithmetic and validate field lengths and access widths.
+20. [x] Make namespace capacity configurable or return explicit capacity diagnostics.
 21. [ ] Implement integer constants and AML revision-dependent integer width semantics.
 22. [ ] Validate Buffer, Package, and VarPackage payloads and nested package boundaries.
 23. [ ] Reject unterminated strings and malformed encodings without scanning past table bounds.
@@ -144,3 +144,20 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 ## Firmware discovery batch 1 evidence
 
 Tasks 1–10 were checked off after the ACPI test workflow compiled the complete library test suite and passed the focused firmware-discovery regression suites on commit `3abb1b47ea29eb451f5995509b94d93acbb8852d` (workflow run `41571153077`). The test workflow compiles all library tests, then runs RSDP, root-table, DSDT, SSDT/provenance, FADT GAS, FACS/HPET/BGRT/GTDT/PPTT, ACPI 5/6, and NUMA table regression suites. The broader pre-existing AML/PnP/resource tests are compiled but not all executed by this focused workflow; their existing runtime failures are outside this batch and are not claimed fixed.
+
+
+## AML parser and namespace batch 2 evidence
+
+Tasks 11–20 were implemented and verified in the focused ACPI CI workflow on commit `815d8b604e33d87ae26c4e248c830eeb24866aa7` (run `41573605837`). The workflow compiled the complete ACPI library test target and passed the focused firmware-discovery, AML parser/namespace, and AML table-lifecycle suites.
+
+Highlights:
+- PkgLength decoding now validates the caller's input limit and exercises one- through four-byte encodings and truncation/overflow boundaries.
+- NameString parsing and namespace lookup cover rooted, parent-prefixed, DualName, MultiName, NullName, and ancestor-search behavior.
+- External declarations are checked for compatibility, promoted by later definitions, rolled back on failed loads, and restored when the defining table unloads.
+- Namespace table ownership uses 32-bit owner IDs and is integrated into the table manager's reverse-order unload path.
+- Scope reopening is supported without duplicating valid namespace containers.
+- Device, Processor, PowerResource, ThermalZone, Mutex, Event, Alias, and DataRegion declarations are parsed; Processor and PowerResource fixed fields are retained.
+- Field, IndexField, BankField, ConnectField, AccessField, and ExtendedAccessField operands/metadata are retained and validated.
+- Field offset/length conversions are checked; zero-width ReservedField handling and explicit namespace-capacity diagnostics have regression coverage.
+
+The UEFI/QEMU build workflow remains failing separately and is not represented as passing by this ACPI library-test result.
