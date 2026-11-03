@@ -28,7 +28,7 @@ use cognacos_pci as pci;
 mod hal;
 #[path = "ke/smp.rs"]
 mod smp;
-#[path = "io/platform_drivers.rs"]
+#[path = "../../drivers/platform/platform_drivers.rs"]
 mod platform_drivers;
 #[path = "boot/boot_orchestration.rs"]
 mod boot_orchestration;
