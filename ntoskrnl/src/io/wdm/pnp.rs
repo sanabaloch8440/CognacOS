@@ -166,9 +166,9 @@ const MAX_PNP_RELATIONS:usize=64;
 #[repr(C)]
 pub struct DeviceRelations { pub count:u32, pub objects:[*mut DeviceObject;MAX_PNP_RELATIONS] }
 #[derive(Clone,Copy)]
-struct PnpRelation { used:bool, bus:*mut DeviceObject, child:*mut DeviceObject }
+struct PnpRelation { used:bool, bus:*mut DeviceObject, child:*mut DeviceObject, started:bool }
 unsafe impl Send for PnpRelation {}
-impl PnpRelation { const EMPTY:Self=Self{used:false,bus:ptr::null_mut(),child:ptr::null_mut()}; }
+impl PnpRelation { const EMPTY:Self=Self{used:false,bus:ptr::null_mut(),child:ptr::null_mut(),started:false}; }
 const MAX_PNP_MANAGER_IRPS:usize=64;
 #[derive(Clone,Copy)]
 struct ManagedPnpIrp { used:bool, irp:*mut Irp, device:*mut DeviceObject, minor:u8, returned:bool, completed:bool, status:i32, remove_after_surprise:bool, enumerate_bus:bool }
@@ -298,7 +298,7 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
   if manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==child){
    duplicate_refs[duplicate_count]=child;duplicate_count+=1;
   }else if let Some(slot)=manager.relations.iter_mut().find(|r|!r.used||r.bus==bus&&!children[..count].contains(&r.child)){
-   *slot=PnpRelation{used:true,bus,child};
+   *slot=PnpRelation{used:true,bus,child,started:false};
   }
  }
  manager.enumerations=manager.enumerations.wrapping_add(1);
@@ -329,7 +329,25 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
    }
   }
  }
- STATUS_SUCCESS
+ // Disk PDOs are the first storage children in this stack. Start them only
+ // after all class/filter AddDevice callbacks have attached their FDOs.
+ // Partition PDOs are also FILE_DEVICE_DISK and are started by the same path.
+ for child in children[..count].iter().copied(){
+  if unsafe{(*child).device_type}!=7{continue}
+  let needs_start={
+   let manager=PNP_MANAGER.lock();
+   manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==child&&!r.started)
+  };
+  if !needs_start{continue}
+  let start_status=unsafe{io_pnp_dispatch_lifecycle_internal(child,IRP_MN_START_DEVICE,ptr::null(),ptr::null(),false)};
+  if start_status==STATUS_SUCCESS{
+   let mut manager=PNP_MANAGER.lock();
+   if let Some(relation)=manager.relations.iter_mut().find(|r|r.used&&r.bus==bus&&r.child==child){relation.started=true;}
+  }else if start_status!=STATUS_PENDING&&result==STATUS_SUCCESS{
+   result=start_status;
+  }
+ }
+ result
 }
 /// Dispatch one real IRP_MJ_PNP lifecycle request under PnP-manager ownership.
 /// START_DEVICE resources are reserved before forwarding and committed only after completion.
