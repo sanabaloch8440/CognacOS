@@ -1,8 +1,8 @@
 Windows Registry Editor Version 5.00
 
-; Storage stack metadata is PnP-deferred until the relevant PE driver images and
-; device resources are available. The current build does not claim these drivers
-; are loadable just because their service entries exist.
+; ataport.sys is loaded during boot so the storage port layer is available
+; before PnP starts. Controller and class drivers remain PnP-deferred until
+; their PE images and assigned device resources are available.
 ; ATA port driver is loaded early so the PCI IDE function driver can bind
 ; controller miniports through the common port/miniport interface.
 [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\ataport]
