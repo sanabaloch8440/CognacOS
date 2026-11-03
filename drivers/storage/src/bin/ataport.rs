@@ -11,7 +11,7 @@ use cognacos_nt_abi::{
 };
 use cognacos_storage::ata_port::{
     AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, AtaRequestTable,
-    validate_request, ATA_PORT_INTERFACE_VERSION,
+    validate_request, AtaPortServices, AtaPortRegisterMiniport, ATA_PORT_INTERFACE_VERSION,
 };
 
 const IRP_MJ_CREATE: usize = 0;
@@ -25,7 +25,7 @@ const SECTOR_SIZE: u32 = 512;
 const MAX_PIO_SECTORS: u32 = 256;
 const IO_NO_INCREMENT: i8 = 0;
 
-unsafe extern "win64" { fn IoCompleteRequest(irp: *mut IRP, priority_boost: i8); }
+unsafe extern "win64" { fn IoCompleteRequest(irp: *mut IRP, priority_boost: i8); fn IoRegisterDriverInterface(owner: *mut DRIVER_OBJECT, name: *const u8, name_length: u16, interface: *const c_void, size: u32) -> i32; }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
 .section .text.import_thunks,"ax",@progbits
@@ -47,7 +47,7 @@ struct RequestCell(UnsafeCell<AtaRequestTable>);
 unsafe impl Sync for RequestCell {}
 static PORT_LOCK: AtomicBool = AtomicBool::new(false);
 static MINIPORT: MiniportCell = MiniportCell(UnsafeCell::new(None));
-static REQUESTS: RequestCell = RequestCell(UnsafeCell::new(AtaRequestTable::new()));
+static REQUESTS: RequestCell = RequestCell(UnsafeCell::new(AtaRequestTable::new()));\nstatic PORT_SERVICES: AtaPortServices = AtaPortServices { size: core::mem::size_of::<AtaPortServices>() as u32, version: ATA_PORT_INTERFACE_VERSION, register_miniport: Some(AtaPortRegisterMiniport), allocate_common_buffer: None, free_common_buffer: None, connect_interrupt: None, disconnect_interrupt: None };\nstatic PORT_INTERFACE_NAME: &[u8] = b"CognacOS.AtaPort.Services.v1";
 
 struct PortGuard;
 impl PortGuard {
