@@ -234,3 +234,42 @@ mod request_table_tests {
         assert_eq!(q.outstanding(), 0);
     }
 }
+
+#[cfg(test)]
+mod request_validation_tests {
+    use super::*;
+
+    fn base(operation: AtaPortOperation) -> AtaPortRequest {
+        AtaPortRequest {
+            size: core::mem::size_of::<AtaPortRequest>() as u32,
+            operation, request_id: 1, lba: 0, sector_count: 1, flags: 0,
+            system_buffer: 1usize as *mut u8,
+            sg_list: core::ptr::null(), sg_count: 0, timeout_ms: 1000,
+            packet_cdb: core::ptr::null(), packet_cdb_length: 0, reserved: [0; 7],
+        }
+    }
+
+    #[test]
+    fn buffered_pio_read_write_require_a_system_buffer_and_bounded_count() {
+        let read = base(AtaPortOperation::Read);
+        assert_eq!(validate_request(&read), Ok(512));
+        let mut write = base(AtaPortOperation::Write);
+        write.sector_count = 256;
+        assert_eq!(validate_request(&write), Ok(256 * 512));
+        write.sector_count = u32::MAX;
+        assert!(validate_request(&write).is_err());
+        write.sector_count = 1;
+        write.system_buffer = core::ptr::null_mut();
+        assert!(validate_request(&write).is_err());
+    }
+
+    #[test]
+    fn flush_request_has_no_data_payload() {
+        let mut flush = base(AtaPortOperation::Flush);
+        flush.sector_count = 0;
+        flush.system_buffer = core::ptr::null_mut();
+        assert_eq!(validate_request(&flush), Ok(0));
+        flush.lba = 1;
+        assert!(validate_request(&flush).is_err());
+    }
+}
