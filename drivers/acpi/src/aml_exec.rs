@@ -90,8 +90,8 @@ impl<'a> Machine<'a>{
     match entry.object_type {
      AmlObjectType::Method=>{
       let count=(entry.method_flags&7) as usize;
-      let mut call_args=[0u64;7];
-      for slot in call_args.iter_mut().take(count){*slot=self.term(r)?;}
+      let mut call_args=[Self::integer_value(0);7];
+      for slot in call_args.iter_mut().take(count){*slot=Self::integer_value(self.term(r)?);}
       execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits)
      }
      AmlObjectType::Name=>{
@@ -165,7 +165,7 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 /// Only integer arguments and scalar operations are currently supported.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64],call_depth:u8,integer_width_bits:u8)->Result<u64,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8)->Result<u64,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
@@ -177,22 +177,31 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
  let zero=Machine::integer_value(0);
  let mut m=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
- for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=Machine::integer_value(value);}
+ for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
  let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(value)
 }
 
 
 /// Execute a scalar-returning AML method using the Integer width encoded by
 /// the containing DefinitionBlock (32 bits for revision 1, otherwise 64).
+pub fn execute_method_with_values(aml:&[u8],namespace:&AmlNamespace,
+    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlValue,ExecError>{
+    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits).map(AmlValue::Integer)
+}
+
+/// Integer-argument compatibility entry point using an explicit AML width.
 pub fn execute_method_with_integer_width(aml:&[u8],namespace:&AmlNamespace,
     method_index:u16,args:&[u64],integer_width_bits:u8)->Result<AmlValue,ExecError>{
-    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits).map(AmlValue::Integer)
+    if args.len()>7{return Err(ExecError::BadArgumentCount)}
+    let mut values=[Machine::integer_value(0);7];
+    for (slot,value) in values.iter_mut().zip(args.iter().copied()){*slot=Machine::integer_value(value);}
+    execute_method_with_values(aml,namespace,method_index,&values[..args.len()],integer_width_bits)
 }
 
 /// Execute a loaded method with a fresh AML frame. Nested invocations receive
 /// independent Local/Arg storage and share only the bounded per-frame budget.
 pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64])->Result<AmlValue,ExecError>{
- execute_method_inner(aml,namespace,method_index,args,0,64).map(AmlValue::Integer)
+    execute_method_with_integer_width(aml,namespace,method_index,args,64)
 }
 #[cfg(test)]
 mod tests{
@@ -223,6 +232,18 @@ mod tests{
   // Existing public entry point passes Integer args; typed Name operands are
   // exercised above while Local/Arg scalar values remain width-aware.
   assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn typed_string_and_buffer_arguments_use_implicit_integer_conversion(){
+  let aml=[0x14,0x0b,b'T',b'E',b'S',b'T',1,0xa4,0x72,0x68,0x01,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
+  string.byte_length=2;string.bytes[..2].copy_from_slice(b"2A");
+  assert_eq!(execute_method_with_values(&aml,&ns,id,&[string],64).unwrap(),AmlValue::Integer(0x2b));
+  let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+  buffer.byte_length=2;buffer.bytes[..2].copy_from_slice(&[0x34,0x12]);
+  assert_eq!(execute_method_with_values(&aml,&ns,id,&[buffer],32).unwrap(),AmlValue::Integer(0x1235));
  }
 
  #[test]fn integer_width_controls_ones_arithmetic_and_qword_acceptance(){
