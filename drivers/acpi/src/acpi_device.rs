@@ -1,6 +1,11 @@
 //! ACPI-1 standard device identification object evaluation.
 //! This module deliberately evaluates only the ACPI-1 identity objects. It
 //! does not enumerate children, publish PDOs, or interpret resource templates.
+/*
+ * FIXME(ACPI-PRODUCTION) — ACPI device identity and status
+ * FIXME(ACPI-PRODUCTION): Complete typed evaluation and conversion for _HID/_CID/_UID/_STA/_ADR and related device methods, including ACPI defaults, malformed-result handling, and Windows-compatible ID ordering. Distinguish absent methods from execution failure and do not silently suppress errors without a testable policy.
+ */
+
 #![no_std]
 
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
