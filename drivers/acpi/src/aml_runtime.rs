@@ -82,6 +82,8 @@ pub enum AmlReference {
     NamespaceNode(u16),
     PackageElement { package:u16,index:u8 },
     BufferByte { buffer:u16,index:u16 },
+    /// A little-endian bit field backed by a runtime Buffer.
+    BufferField { buffer:u16,bit_offset:u16,bit_width:u16 },
 }
 
 /// Namespace Name objects are bound to arena values independently of the
@@ -144,6 +146,67 @@ pub fn index_reference(arena:&AmlObjectArena,source:u16,index:u16)->Result<AmlRe
     }
 }
 
+/// Validate a bit-field extent against its backing Buffer and return the
+/// backing object plus the field's rounded-up byte length.
+fn checked_buffer_field(arena:&AmlObjectArena,buffer:u16,bit_offset:u16,bit_width:u16)
+    ->Result<(AmlRuntimeValue,usize),RuntimeError>{
+    let target=*arena.get(buffer).ok_or(RuntimeError::InvalidReference)?;
+    if target.kind!=AmlValueKind::Buffer||bit_width==0{return Err(RuntimeError::InvalidReference)}
+    let bytes=checked_byte_length(&target)?;
+    let end=(bit_offset as usize).checked_add(bit_width as usize).ok_or(RuntimeError::InvalidReference)?;
+    if end>bytes.checked_mul(8).ok_or(RuntimeError::InvalidReference)?{return Err(RuntimeError::InvalidReference)}
+    let field_bytes=(bit_width as usize).checked_add(7).ok_or(RuntimeError::InvalidReference)?/8;
+    if field_bytes>MAX_AML_BYTES{return Err(RuntimeError::ValueTooLarge)}
+    Ok((target,field_bytes))
+}
+
+/// Read a little-endian BufferField. Fields no wider than the current AML
+/// Integer are represented as Integer; wider fields are returned as Buffer.
+fn read_buffer_field(arena:&AmlObjectArena,buffer:u16,bit_offset:u16,bit_width:u16,
+    integer_width_bits:u8)->Result<AmlRuntimeValue,RuntimeError>{
+    let (target,field_bytes)=checked_buffer_field(arena,buffer,bit_offset,bit_width)?;
+    let mut result=AmlRuntimeValue::EMPTY;
+    if bit_width<=integer_width_bits as u16{
+        result.kind=AmlValueKind::Integer;
+        for bit in 0..bit_width as usize{
+            let source_bit=bit_offset as usize+bit;
+            if (target.bytes[source_bit/8]>>(source_bit%8))&1!=0{
+                result.integer|=1u64<<bit;
+            }
+        }
+    }else{
+        result.kind=AmlValueKind::Buffer;result.byte_length=field_bytes as u16;
+        for bit in 0..bit_width as usize{
+            let source_bit=bit_offset as usize+bit;
+            if (target.bytes[source_bit/8]>>(source_bit%8))&1!=0{
+                result.bytes[bit/8]|=1u8<<(bit%8);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Write a converted Integer or Buffer into a BufferField, preserving every
+/// backing-buffer bit outside the field extent.
+fn write_buffer_field(arena:&mut AmlObjectArena,buffer:u16,bit_offset:u16,bit_width:u16,
+    source:&AmlRuntimeValue)->Result<(),RuntimeError>{
+    let (_,field_bytes)=checked_buffer_field(arena,buffer,bit_offset,bit_width)?;
+    if !matches!(source.kind,AmlValueKind::Integer|AmlValueKind::Buffer){return Err(RuntimeError::TypeMismatch)}
+    if source.kind==AmlValueKind::Buffer{checked_byte_length(source)?;}
+    let target=arena.get_mut(buffer).ok_or(RuntimeError::InvalidReference)?;
+    for bit in 0..bit_width as usize{
+        let value=if source.kind==AmlValueKind::Integer{
+            if bit<64{((source.integer>>bit)&1) as u8}else{0}
+        }else if bit/8<field_bytes{
+            (source.bytes[bit/8]>>(bit%8))&1
+        }else{0};
+        let target_bit=bit_offset as usize+bit;
+        let mask=1u8<<(target_bit%8);
+        if value!=0{target.bytes[target_bit/8]|=mask}else{target.bytes[target_bit/8]&=!mask}
+    }
+    Ok(())
+}
+
 /// Dereference a namespace, package-element, or buffer-byte reference.
 pub fn dereference(reference:AmlReference,bindings:&AmlBindings,arena:&AmlObjectArena)
     ->Result<AmlRuntimeValue,RuntimeError>{
@@ -158,6 +221,9 @@ pub fn dereference(reference:AmlReference,bindings:&AmlBindings,arena:&AmlObject
             let b=arena.get(buffer).ok_or(RuntimeError::InvalidReference)?;
             if b.kind!=AmlValueKind::Buffer||index as usize>=checked_byte_length(b)?{return Err(RuntimeError::InvalidReference)}
             let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=b.bytes[index as usize] as u64;Ok(v)
+        }
+        AmlReference::BufferField{buffer,bit_offset,bit_width}=>{
+            read_buffer_field(arena,buffer,bit_offset,bit_width,bindings.integer_width_bits)
         }
     }
 }
@@ -356,6 +422,25 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
             }else{value};
             let p=arena.get_mut(package).ok_or(RuntimeError::InvalidReference)?;
             p.elements[index as usize]=stored_id;Ok(())
+        }
+        AmlReference::BufferField{buffer,bit_offset,bit_width}=>{
+            let (_,field_bytes)=checked_buffer_field(arena,buffer,bit_offset,bit_width)?;
+            let converted=if mode==StoreMode::CopyObject{
+                // CopyObject does not coerce a field source: only Integer or
+                // Buffer objects may be written to a field target.
+                if !matches!(source.kind,AmlValueKind::Integer|AmlValueKind::Buffer){
+                    return Err(RuntimeError::TypeMismatch)
+                }
+                source
+            }else if bit_width<=bindings.integer_width_bits as u16{
+                convert_source_operand(&source,AmlValueKind::Integer,
+                    bindings.integer_width_bits,arena)?
+            }else{
+                let mut target=AmlRuntimeValue::EMPTY;
+                target.kind=AmlValueKind::Buffer;target.byte_length=field_bytes as u16;
+                convert_to_target_type(&source,&target,arena,bindings.integer_width_bits,true)?
+            };
+            write_buffer_field(arena,buffer,bit_offset,bit_width,&converted)
         }
         AmlReference::BufferByte{buffer,index}=>{
             // Validate the complete target and source before taking a mutable
@@ -653,6 +738,61 @@ mod tests{
         buffer.byte_length=0;
         assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
+    #[test]fn narrow_buffer_field_uses_integer_typing_and_preserves_neighbor_bits(){
+        let mut arena=AmlObjectArena::new();
+        let mut backing=AmlRuntimeValue::EMPTY;backing.kind=AmlValueKind::Buffer;
+        backing.byte_length=2;backing.bytes[..2].copy_from_slice(&[0b1010_0000,0x5a]);
+        let buffer=arena.allocate(backing).unwrap();
+        let reference=AmlReference::BufferField{buffer,bit_offset:2,bit_width:4};
+        let namespace=AmlNamespace::new();let mut bindings=AmlBindings::with_aml_revision(1);
+        let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::String;
+        source.byte_length=2;source.bytes[..2].copy_from_slice(b"0F");
+        let source_id=arena.allocate(source).unwrap();
+        store_reference(reference,source_id,&mut bindings,&namespace,&mut arena).unwrap();
+        let value=dereference(reference,&bindings,&arena).unwrap();
+        assert_eq!(value.kind,AmlValueKind::Integer);assert_eq!(value.integer,0x0f);
+        assert_eq!(arena.get(buffer).unwrap().bytes[0],0b1011_1100);
+        assert_eq!(arena.get(buffer).unwrap().bytes[1],0x5a);
+    }
+
+    #[test]fn wide_buffer_field_uses_buffer_typing_and_zero_extends(){
+        let mut arena=AmlObjectArena::new();
+        let mut backing=AmlRuntimeValue::EMPTY;backing.kind=AmlValueKind::Buffer;
+        backing.byte_length=10;backing.bytes[0]=0xaa;
+        let buffer=arena.allocate(backing).unwrap();
+        let reference=AmlReference::BufferField{buffer,bit_offset:4,bit_width:72};
+        let namespace=AmlNamespace::new();let mut bindings=AmlBindings::with_aml_revision(1);
+        let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Integer;
+        source.integer=0x12345678;
+        let source_id=arena.allocate(source).unwrap();
+        store_reference(reference,source_id,&mut bindings,&namespace,&mut arena).unwrap();
+        let value=dereference(reference,&bindings,&arena).unwrap();
+        assert_eq!(value.kind,AmlValueKind::Buffer);assert_eq!(value.byte_length,9);
+        assert_eq!(&value.bytes[..4],&[0x78,0x56,0x34,0x12]);
+        assert!(value.bytes[4..9].iter().all(|byte|*byte==0));
+        assert_eq!(arena.get(buffer).unwrap().bytes[0]&0x0f,0x0a);
+    }
+
+    #[test]fn copy_object_field_accepts_integer_or_buffer_but_rejects_string_atomically(){
+        let mut arena=AmlObjectArena::new();
+        let mut backing=AmlRuntimeValue::EMPTY;backing.kind=AmlValueKind::Buffer;
+        backing.byte_length=2;backing.bytes[..2].copy_from_slice(&[0xaa,0x55]);
+        let buffer=arena.allocate(backing).unwrap();
+        let reference=AmlReference::BufferField{buffer,bit_offset:4,bit_width:8};
+        let namespace=AmlNamespace::new();let mut bindings=AmlBindings::new();
+        let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
+        string.byte_length=1;string.bytes[0]=b'F';
+        let string_id=arena.allocate(string).unwrap();
+        assert_eq!(store_reference_with_mode(reference,string_id,StoreMode::CopyObject,
+            &mut bindings,&namespace,&mut arena),Err(RuntimeError::TypeMismatch));
+        assert_eq!(&arena.get(buffer).unwrap().bytes[..2],&[0xaa,0x55]);
+        let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=0x3c;
+        let integer_id=arena.allocate(integer).unwrap();
+        store_reference_with_mode(reference,integer_id,StoreMode::CopyObject,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        assert_eq!(&arena.get(buffer).unwrap().bytes[..2],&[0xca,0x53]);
+    }
+
     #[test]fn named_buffer_result_conversion_preserves_target_extent(){
         let aml=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,0,0];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
