@@ -93,3 +93,252 @@ pub fn disable_device(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState
  }
 
 }
+
+
+// ACPI 5.0+ power-resource dependency management. The graph is deliberately
+// independent of AML evaluation and hardware access: the driver supplies a
+// backend that invokes _ON/_OFF and serializes graph mutations with PnP power IRPs.
+pub const MAX_POWER_RESOURCES:usize=64;
+pub const MAX_POWER_RESOURCE_DEPENDENCIES:usize=8;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PowerResourceError{
+ InvalidNode,DuplicateNode,Capacity,TooManyDependencies,DuplicateDependency,
+ MissingDependency,DependencyCycle,ReferenceOverflow,NotReferenced,
+ BackendFailure,InvalidSleepPackage,InvalidPerformanceLimit,InvalidPowerState,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct PowerResource{
+ pub node:u16,
+ pub system_level:u8,
+ pub order:u8,
+ pub dependencies:[u16;MAX_POWER_RESOURCE_DEPENDENCIES],
+ pub dependency_count:u8,
+ pub references:u16,
+ pub enabled:bool,
+}
+impl PowerResource{
+ pub const EMPTY:Self=Self{node:u16::MAX,system_level:0,order:0,
+  dependencies:[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES],dependency_count:0,
+  references:0,enabled:false};
+}
+pub trait PowerResourceBackend{
+ /// Invoke the resource's _ON or _OFF method. Return only after AML completes.
+ fn set_power_resource(&mut self,node:u16,enabled:bool)->bool;
+}
+/// Bounded namespace-node keyed graph for _PR0/_PR1/_PR2/_PR3 dependencies.
+pub struct PowerResourceGraph{
+ entries:[PowerResource;MAX_POWER_RESOURCES],
+ count:usize,
+}
+impl PowerResourceGraph{
+ pub const fn new()->Self{Self{entries:[PowerResource::EMPTY;MAX_POWER_RESOURCES],count:0}}
+ pub fn len(&self)->usize{self.count}
+ fn find(&self,node:u16)->Option<usize>{self.entries[..self.count].iter().position(|e|e.node==node)}
+ pub fn resource(&self,node:u16)->Option<&PowerResource>{self.find(node).map(|i|&self.entries[i])}
+ /// Register a PowerResource namespace object and its _STA-reconciled initial state.
+ pub fn register(&mut self,node:u16,system_level:u8,order:u8,enabled:bool)->Result<(),PowerResourceError>{
+  if node==u16::MAX||system_level>5{return Err(PowerResourceError::InvalidNode)}
+  if self.find(node).is_some(){return Err(PowerResourceError::DuplicateNode)}
+  if self.count==MAX_POWER_RESOURCES{return Err(PowerResourceError::Capacity)}
+  self.entries[self.count]=PowerResource{node,system_level,order,enabled,
+   references:if enabled{1}else{0},..PowerResource::EMPTY};
+  self.count+=1;Ok(())
+ }
+ /// Replace dependencies only after every referenced PowerResource is known.
+ pub fn set_dependencies(&mut self,node:u16,dependencies:&[u16])->Result<(),PowerResourceError>{
+  if dependencies.len()>MAX_POWER_RESOURCE_DEPENDENCIES{return Err(PowerResourceError::TooManyDependencies)}
+  let index=self.find(node).ok_or(PowerResourceError::InvalidNode)?;
+  for (i,dependency) in dependencies.iter().enumerate(){
+   if *dependency==node||self.find(*dependency).is_none(){return Err(PowerResourceError::MissingDependency)}
+   if dependencies[..i].contains(dependency){return Err(PowerResourceError::DuplicateDependency)}
+  }
+  self.entries[index].dependencies=[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES];
+  self.entries[index].dependencies[..dependencies.len()].copy_from_slice(dependencies);
+  self.entries[index].dependency_count=dependencies.len() as u8;
+  Ok(())
+ }
+ fn acquire_inner(&mut self,index:usize,backend:&mut impl PowerResourceBackend,
+  path:&mut [u16;MAX_POWER_RESOURCES],depth:usize)->Result<(),PowerResourceError>{
+  if depth>=MAX_POWER_RESOURCES{return Err(PowerResourceError::DependencyCycle)}
+  let node=self.entries[index].node;
+  if path[..depth].contains(&node){return Err(PowerResourceError::DependencyCycle)}
+  if self.entries[index].references==u16::MAX{return Err(PowerResourceError::ReferenceOverflow)}
+  if self.entries[index].references!=0{
+   self.entries[index].references+=1;return Ok(())
+  }
+  path[depth]=node;
+  let count=self.entries[index].dependency_count as usize;
+  let dependencies=self.entries[index].dependencies;
+  let mut acquired=0usize;
+  while acquired<count{
+   let dep_index=self.find(dependencies[acquired]).ok_or(PowerResourceError::MissingDependency)?;
+   if let Err(error)=self.acquire_inner(dep_index,backend,path,depth+1){
+    while acquired>0{acquired-=1;let rollback=self.find(dependencies[acquired]).ok_or(PowerResourceError::MissingDependency)?;
+     let _=self.release_inner(rollback,backend);}
+    return Err(error)
+   }
+   acquired+=1;
+  }
+  if !backend.set_power_resource(node,true){
+   while acquired>0{acquired-=1;let rollback=self.find(dependencies[acquired]).ok_or(PowerResourceError::MissingDependency)?;
+    let _=self.release_inner(rollback,backend);}
+   return Err(PowerResourceError::BackendFailure)
+  }
+  self.entries[index].enabled=true;self.entries[index].references=1;Ok(())
+ }
+ fn release_inner(&mut self,index:usize,backend:&mut impl PowerResourceBackend)->Result<(),PowerResourceError>{
+  let resource=self.entries[index];
+  if resource.references==0{return Err(PowerResourceError::NotReferenced)}
+  if resource.references>1{self.entries[index].references-=1;return Ok(())}
+  if !backend.set_power_resource(resource.node,false){return Err(PowerResourceError::BackendFailure)}
+  self.entries[index].enabled=false;self.entries[index].references=0;
+  for dependency in resource.dependencies[..resource.dependency_count as usize].iter().rev(){
+   let dep_index=self.find(*dependency).ok_or(PowerResourceError::MissingDependency)?;
+   self.release_inner(dep_index,backend)?;
+  }
+  Ok(())
+ }
+ /// Acquire a resource and all transitive dependencies in dependency-first order.
+ pub fn acquire(&mut self,node:u16,backend:&mut impl PowerResourceBackend)->Result<(),PowerResourceError>{
+  let index=self.find(node).ok_or(PowerResourceError::InvalidNode)?;
+  self.acquire_inner(index,backend,&mut [u16::MAX;MAX_POWER_RESOURCES],0)
+ }
+ /// Release one reference; dependencies are released only after the resource turns off.
+ pub fn release(&mut self,node:u16,backend:&mut impl PowerResourceBackend)->Result<(),PowerResourceError>{
+  let index=self.find(node).ok_or(PowerResourceError::InvalidNode)?;
+  self.release_inner(index,backend)
+ }
+ /// Atomically acquire a device's selected _PRx set; unwind every acquired reference on failure.
+ pub fn acquire_set(&mut self,nodes:&[u16],backend:&mut impl PowerResourceBackend)->Result<(),PowerResourceError>{
+  for (i,node) in nodes.iter().enumerate(){
+   if nodes[..i].contains(node){return Err(PowerResourceError::DuplicateDependency)}
+   if self.find(*node).is_none(){return Err(PowerResourceError::InvalidNode)}
+  }
+  let mut acquired=0usize;
+  while acquired<nodes.len(){
+   if let Err(error)=self.acquire(nodes[acquired],backend){
+    while acquired>0{acquired-=1;let _=self.release(nodes[acquired],backend);}
+    return Err(error)
+   }
+   acquired+=1;
+  }
+  Ok(())
+ }
+ /// Release a device's resource set in reverse declaration order.
+ pub fn release_set(&mut self,nodes:&[u16],backend:&mut impl PowerResourceBackend)->Result<(),PowerResourceError>{
+  for node in nodes.iter().rev(){self.release(*node,backend)?;}
+  Ok(())
+ }
+}
+
+/// ACPI _S1.._S5 package data: exactly two 3-bit sleep-type values.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SleepType{pub state:u8,pub type_a:u8,pub type_b:u8}
+pub fn parse_sleep_type(state:u8,package:&[u64])->Result<SleepType,PowerResourceError>{
+ if !(1..=5).contains(&state)||package.len()!=2||package[0]>7||package[1]>7{
+  return Err(PowerResourceError::InvalidSleepPackage)
+ }
+ Ok(SleepType{state,type_a:package[0] as u8,type_b:package[1] as u8})
+}
+/// Validate integer results returned by _PSC, _PPC and _PSR before policy consumes them.
+pub fn validate_current_power_state(value:u64)->Result<u8,PowerResourceError>{
+ if value>3{Err(PowerResourceError::InvalidPowerState)}else{Ok(value as u8)}
+}
+pub fn validate_performance_limit(value:u64,performance_states:u8)->Result<u8,PowerResourceError>{
+ if performance_states==0||value>=performance_states as u64||value>u8::MAX as u64{
+  Err(PowerResourceError::InvalidPerformanceLimit)
+ }else{Ok(value as u8)}
+}
+
+/// Sleep sequencing is delegated to a platform backend so CPU/interrupt/timer
+/// coordination remains in the kernel/HAL rather than being guessed by AML code.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SystemSleepPhase{Awake,Preparing,Sleeping,Resuming,Failed}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SystemSleepError{InvalidTransition,PrepareFailed,EnterFailed,ResumeFailed}
+pub trait SystemSleepBackend{
+ fn prepare_devices(&mut self,state:u8)->bool;
+ fn enter_firmware_sleep(&mut self,sleep:SleepType)->bool;
+ fn resume_devices(&mut self,state:u8)->bool;
+ fn rollback_prepare(&mut self,state:u8);
+}
+pub struct SystemSleepCoordinator{phase:SystemSleepPhase,last_state:u8}
+impl SystemSleepCoordinator{
+ pub const fn new()->Self{Self{phase:SystemSleepPhase::Awake,last_state:0}}
+ pub fn phase(&self)->SystemSleepPhase{self.phase}
+ /// Prepare devices before entering S1-S5; failed entry rolls prepared devices back.
+ pub fn enter(&mut self,sleep:SleepType,backend:&mut impl SystemSleepBackend)->Result<(),SystemSleepError>{
+  if self.phase!=SystemSleepPhase::Awake||!(1..=5).contains(&sleep.state){return Err(SystemSleepError::InvalidTransition)}
+  self.phase=SystemSleepPhase::Preparing;
+  if !backend.prepare_devices(sleep.state){self.phase=SystemSleepPhase::Awake;return Err(SystemSleepError::PrepareFailed)}
+  if !backend.enter_firmware_sleep(sleep){
+   backend.rollback_prepare(sleep.state);self.phase=SystemSleepPhase::Awake;
+   return Err(SystemSleepError::EnterFailed)
+  }
+  self.last_state=sleep.state;self.phase=SystemSleepPhase::Sleeping;Ok(())
+ }
+ /// Complete resume only after the platform has restored firmware-visible state.
+ pub fn resume(&mut self,backend:&mut impl SystemSleepBackend)->Result<(),SystemSleepError>{
+  if self.phase!=SystemSleepPhase::Sleeping{return Err(SystemSleepError::InvalidTransition)}
+  self.phase=SystemSleepPhase::Resuming;
+  if !backend.resume_devices(self.last_state){self.phase=SystemSleepPhase::Failed;return Err(SystemSleepError::ResumeFailed)}
+  self.phase=SystemSleepPhase::Awake;self.last_state=0;Ok(())
+ }
+}
+
+#[cfg(test)]
+mod power_resource_graph_tests{
+ use super::*;
+ struct Backend{fail_node:Option<u16>,calls:[(u16,bool);32],count:usize}
+ impl Backend{fn new()->Self{Self{fail_node:None,calls:[(u16::MAX,false);32],count:0}}}
+ impl PowerResourceBackend for Backend{
+  fn set_power_resource(&mut self,node:u16,enabled:bool)->bool{
+   if self.count<self.calls.len(){self.calls[self.count]=(node,enabled);self.count+=1;}
+   self.fail_node!=Some(node)
+  }
+ }
+ fn graph()->PowerResourceGraph{
+  let mut graph=PowerResourceGraph::new();
+  graph.register(1,0,0,false).unwrap();graph.register(2,0,1,false).unwrap();
+  graph.register(3,0,2,false).unwrap();graph.set_dependencies(2,&[1]).unwrap();
+  graph.set_dependencies(3,&[2]).unwrap();graph
+ }
+ #[test]fn dependencies_power_on_before_dependent_and_off_after(){
+  let mut graph=graph();let mut backend=Backend::new();graph.acquire(3,&mut backend).unwrap();
+  assert_eq!(&backend.calls[..3],&[(1,true),(2,true),(3,true)]);
+  graph.release(3,&mut backend).unwrap();
+  assert_eq!(&backend.calls[3..6],&[(3,false),(2,false),(1,false)]);
+ }
+ #[test]fn shared_dependency_is_reference_counted(){
+  let mut graph=graph();graph.set_dependencies(3,&[1]).unwrap();let mut backend=Backend::new();
+  graph.acquire(2,&mut backend).unwrap();graph.acquire(3,&mut backend).unwrap();
+  assert_eq!(graph.resource(1).unwrap().references,2);
+  graph.release(2,&mut backend).unwrap();assert!(graph.resource(1).unwrap().enabled);
+  graph.release(3,&mut backend).unwrap();assert!(!graph.resource(1).unwrap().enabled);
+ }
+ #[test]fn failed_power_on_unwinds_already_acquired_dependencies(){
+  let mut graph=graph();let mut backend=Backend::new();backend.fail_node=Some(3);
+  assert_eq!(graph.acquire(3,&mut backend),Err(PowerResourceError::BackendFailure));
+  assert_eq!(graph.resource(1).unwrap().references,0);assert_eq!(graph.resource(2).unwrap().references,0);
+  assert!(!graph.resource(1).unwrap().enabled);assert!(!graph.resource(2).unwrap().enabled);
+ }
+ #[test]fn dependency_cycle_is_rejected_without_powering_hardware(){
+  let mut graph=graph();graph.set_dependencies(1,&[3]).unwrap();let mut backend=Backend::new();
+  assert_eq!(graph.acquire(3,&mut backend),Err(PowerResourceError::DependencyCycle));
+  assert_eq!(backend.count,0);
+ }
+ #[test]fn dependency_sets_reject_duplicates_and_missing_nodes(){
+  let mut graph=graph();assert_eq!(graph.set_dependencies(3,&[2,2]),Err(PowerResourceError::DuplicateDependency));
+  assert_eq!(graph.set_dependencies(3,&[9]),Err(PowerResourceError::MissingDependency));
+ }
+ #[test]fn sleep_type_requires_exact_two_valid_values(){
+  assert_eq!(parse_sleep_type(3,&[5,6]).unwrap(),SleepType{state:3,type_a:5,type_b:6});
+  assert_eq!(parse_sleep_type(0,&[0,0]),Err(PowerResourceError::InvalidSleepPackage));
+  assert_eq!(parse_sleep_type(3,&[8,0]),Err(PowerResourceError::InvalidSleepPackage));
+  assert_eq!(parse_sleep_type(3,&[0]),Err(PowerResourceError::InvalidSleepPackage));
+ }
+ #[test]fn power_and_performance_method_results_are_bounded(){
+  assert_eq!(validate_current_power_state(3),Ok(3));assert!(validate_current_power_state(4).is_err());
+  assert_eq!(validate_performance_limit(2,4),Ok(2));assert!(validate_performance_limit(4,4).is_err());
+ }
+}
