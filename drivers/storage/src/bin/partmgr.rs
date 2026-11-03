@@ -25,7 +25,17 @@ const PARTITION_PDO_MAGIC:u64=0x434f_474e_5054_4e50;
 const IOCTL_DISK_GET_LENGTH_INFO:u32=0x0007_405c;
 const IOCTL_STORAGE_GET_DEVICE_NUMBER:u32=0x002d_1080;
 const GPT_ENTRY_BUFFER_BYTES:usize=16*1024;
+const SL_INVOKE_ON_CANCEL:u8=0x20;
+const SL_INVOKE_ON_SUCCESS:u8=0x40;
+const SL_INVOKE_ON_ERROR:u8=0x80;
 
+#[repr(C)]
+struct DriverExtension {
+ driver_object:*mut DRIVER_OBJECT,
+ add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>,
+ count:u32,
+ service_key_name:cognacos_nt_abi::object::UNICODE_STRING,
+}
 #[repr(C)]
 struct AtaDiskPdoExtension{magic:u64,parent:*mut DEVICE_OBJECT,slot:u8,reserved:[u8;7],descriptor:DiskDescriptor}
 #[repr(C)]
@@ -51,16 +61,10 @@ unsafe extern "win64"{
  fn IoAttachDeviceToDeviceStack(source:*mut DEVICE_OBJECT,target:*mut DEVICE_OBJECT)->*mut DEVICE_OBJECT;
  fn IoDetachDevice(target:*mut DEVICE_OBJECT);
  fn IoCallDriver(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32;
- fn IoSkipCurrentIrpStackLocation(irp:*mut IRP);
- fn IoCopyCurrentIrpStackLocationToNext(irp:*mut IRP);
- fn IoSetCompletionRoutine(irp:*mut IRP,routine:Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT,*mut IRP,PVOID)->i32>,context:PVOID,success:u8,error:u8,cancel:u8);
  fn IoAllocateIrp(stack_size:i8,charge_quota:u8)->*mut IRP;
- fn IoGetNextIrpStackLocation(irp:*mut IRP)->*mut IO_STACK_LOCATION;
  fn IoFreeIrp(irp:*mut IRP);
  fn IoCompleteRequest(irp:*mut IRP,priority_boost:i8);
- fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
- fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
- fn IoMountFAT32Volume(device:*mut DEVICE_OBJECT)->i32;
+ fn IoVerifyVolume(device:*mut DEVICE_OBJECT,allow_raw_mount:u8)->i32;
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -76,16 +80,9 @@ IMPORT IoDeleteDevice
 IMPORT IoAttachDeviceToDeviceStack
 IMPORT IoDetachDevice
 IMPORT IoCallDriver
-IMPORT IoSkipCurrentIrpStackLocation
-IMPORT IoCopyCurrentIrpStackLocationToNext
-IMPORT IoSetCompletionRoutine
 IMPORT IoAllocateIrp
-IMPORT IoGetNextIrpStackLocation
 IMPORT IoFreeIrp
 IMPORT IoCompleteRequest
-IMPORT IoPnPRegisterDeviceDriver
-IMPORT IoPnPEnumerateBus
-IMPORT IoMountFAT32Volume
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -99,16 +96,9 @@ IAT IoDeleteDevice
 IAT IoAttachDeviceToDeviceStack
 IAT IoDetachDevice
 IAT IoCallDriver
-IAT IoSkipCurrentIrpStackLocation
-IAT IoCopyCurrentIrpStackLocationToNext
-IAT IoSetCompletionRoutine
 IAT IoAllocateIrp
-IAT IoGetNextIrpStackLocation
 IAT IoFreeIrp
 IAT IoCompleteRequest
-IAT IoPnPRegisterDeviceDriver
-IAT IoPnPEnumerateBus
-IAT IoMountFAT32Volume
 "#);
 
 fn fdo_extension(device:*mut DEVICE_OBJECT)->Option<*mut PartMgrFdoExtension>{
@@ -120,6 +110,34 @@ fn partition_extension(device:*mut DEVICE_OBJECT)->Option<*mut PartitionPdoExten
  if ext.is_null()||unsafe{(*ext).magic!=PARTITION_PDO_MAGIC}{None}else{Some(ext)}
 }
 fn current_stack(irp:*mut IRP)->*mut IO_STACK_LOCATION{if irp.is_null(){core::ptr::null_mut()}else{unsafe{(*irp).tail[8] as *mut IO_STACK_LOCATION}}}
+/// WDM header macro: IoGetNextIrpStackLocation is an inline macro, not an ntoskrnl export.
+fn next_stack_location(irp:*mut IRP)->*mut IO_STACK_LOCATION{
+ let current=current_stack(irp);if current.is_null(){core::ptr::null_mut()}else{unsafe{current.sub(1)}}
+}
+/// WDM header macro: copy the current stack parameters into the next stack slot.
+unsafe fn copy_current_irp_stack_location_to_next(irp:*mut IRP){
+ let current=current_stack(irp);let next=next_stack_location(irp);
+ if !current.is_null()&&!next.is_null(){unsafe{core::ptr::copy(current,next,1);}}
+}
+/// WDM header macro: let IoCallDriver reuse the caller's current stack slot.
+unsafe fn skip_current_irp_stack_location(irp:*mut IRP){
+ if irp.is_null(){return}
+ let current=current_stack(irp);if current.is_null(){return}
+ unsafe{(*irp).current_location=(*irp).current_location.saturating_add(1);(*irp).tail[8]=current.add(1) as usize;}
+}
+/// WDM header macro: install completion state in the next stack location.
+unsafe fn set_completion_routine(
+ irp:*mut IRP,
+ routine:Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT,*mut IRP,PVOID)->i32>,
+ context:PVOID,success:u8,error:u8,cancel:u8,
+){
+ let next=next_stack_location(irp);if next.is_null(){return}
+ let mut control=0;
+ if success!=0{control|=SL_INVOKE_ON_SUCCESS}
+ if error!=0{control|=SL_INVOKE_ON_ERROR}
+ if cancel!=0{control|=SL_INVOKE_ON_CANCEL}
+ unsafe{(*next).completion_routine=routine;(*next).context=context;(*next).control|=control;}
+}
 unsafe fn complete(irp:*mut IRP,status:i32,information:usize)->i32{unsafe{(*irp).io_status.status.status=status;(*irp).io_status.information=information;IoCompleteRequest(irp,0);}status}
 
 unsafe fn read_disk(lower:*mut DEVICE_OBJECT,lba:u64,sectors:u32,buffer:&mut[u8])->i32{
@@ -128,7 +146,7 @@ unsafe fn read_disk(lower:*mut DEVICE_OBJECT,lba:u64,sectors:u32,buffer:&mut[u8]
  let length=buffer.len() as u32;
  let irp=unsafe{IoAllocateIrp((*lower).stack_size.max(1) as i8,0)};
  if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
- let stack=unsafe{IoGetNextIrpStackLocation(irp)};
+ let stack=unsafe{next_stack_location(irp)};
  if stack.is_null(){unsafe{IoFreeIrp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
  unsafe{
   (*stack).major_function=IRP_MJ_READ as u8;
@@ -205,13 +223,12 @@ unsafe extern "win64" fn pnp_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,con
   let status=unsafe{(*irp).io_status.status.status};
   if minor==IRP_MN_START_DEVICE&&status==STATUS_SUCCESS{
    let _=unsafe{scan_partitions(ext)};
-   let physical=unsafe{(*ext).physical};if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
    // Prefer later data partitions over the EFI system partition. Only one
    // FAT32 volume is currently mounted by the kernel's single-volume VPB path.
    let count=unsafe{(*ext).relations.count as usize};
    for index in (0..count).rev(){
     let child=unsafe{(*ext).relations.objects[index]};
-    if !child.is_null()&&unsafe{IoMountFAT32Volume(child)}==STATUS_SUCCESS{break}
+    if !child.is_null()&&unsafe{IoVerifyVolume(child,0)}==STATUS_SUCCESS{break}
    }
   }
   if minor==IRP_MN_REMOVE_DEVICE{
@@ -271,7 +288,7 @@ unsafe fn dispatch_partition(device:*mut DEVICE_OBJECT,ext:*mut PartitionPdoExte
   let absolute=match base.checked_add(offset as u64){Some(v) if v<=i64::MAX as u64=>v as i64,_=>return unsafe{complete(irp,STATUS_INVALID_PARAMETER,0)}};
   unsafe{core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<i64>(),absolute);}
  }
- unsafe{IoSkipCurrentIrpStackLocation(irp);IoCallDriver(lower,irp)}
+ unsafe{skip_current_irp_stack_location(irp);IoCallDriver(lower,irp)}
 }
 
 unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
@@ -292,9 +309,8 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
   if minor==IRP_MN_REMOVE_DEVICE{
    let physical=unsafe{(*ext).physical};
    unsafe{(*ext).relations=DeviceRelations::EMPTY;}
-   if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
    let lower=unsafe{(*ext).lower};
-   unsafe{IoCopyCurrentIrpStackLocationToNext(irp);IoSetCompletionRoutine(irp,Some(pnp_complete),device.cast(),1,1,1);return IoCallDriver(lower,irp);}
+   unsafe{copy_current_irp_stack_location_to_next(irp);set_completion_routine(irp,Some(pnp_complete),device.cast(),1,1,1);return IoCallDriver(lower,irp);}
   }
   if minor==IRP_MN_START_DEVICE{
    let lower=unsafe{(*ext).lower};
@@ -327,8 +343,16 @@ unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn DriverEntry(driver:*mut DRIVER_OBJECT,_context:PVOID)->i32{
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
- unsafe{for index in 0..=IRP_MJ_MAXIMUM_FUNCTION{(*driver).major_function[index]=Some(dispatch)}(*driver).driver_unload=None;}
- unsafe{IoPnPRegisterDeviceDriver(driver.cast(),Some(add_device))}
+ let extension=unsafe{(*driver).driver_extension.cast::<DriverExtension>()};
+ if extension.is_null(){return STATUS_INVALID_PARAMETER}
+ unsafe{
+  for index in 0..=IRP_MJ_MAXIMUM_FUNCTION{(*driver).major_function[index]=Some(dispatch)}
+  (*driver).driver_unload=None;
+  // AddDevice belongs to DRIVER_EXTENSION in the WDM ABI; it is not an
+  // ntoskrnl export or a private registration service.
+  (*extension).add_device=Some(add_device);
+ }
+ STATUS_SUCCESS
 }
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>)->!{loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}}
