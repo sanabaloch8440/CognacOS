@@ -792,7 +792,7 @@ mod tests{
  #[test]fn serialized_recursive_method_reuses_same_thread_lock_until_call_depth_limit(){
   let aml=[0x14,0x0b,b'T',b'E',b'S',b'T',0x18,0xa4,b'T',b'E',b'S',b'T'];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-  let id=ns.find_child(0,*b'TEST').unwrap();let sync=RecordingSync::new();
+  let id=ns.find_child(0,*b"TEST").unwrap();let sync=RecordingSync::new();
   assert_eq!(execute_method_with_sync(&aml,&ns,id,&[],64,&sync),Err(ExecError::CallDepthLimit));
   assert_eq!(sync.acquires.load(Ordering::SeqCst),17);
   assert_eq!(sync.releases.load(Ordering::SeqCst),17);
