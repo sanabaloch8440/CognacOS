@@ -303,15 +303,22 @@ fn invoke_pdo_power_method(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,name:[
 }
 
 
-fn invoke_aml_child_method(
+fn invoke_aml_child_method_with_args(
  manager:&acpi::aml_tables::AmlTableManager,gate:&acpi::aml_tables::AmlExecutionBarrier,
  handle:acpi::aml_tables::TableHandle,aml:&[u8],owner:u16,name:[u8;4],
+ args:&[acpi::aml_objects::AmlRuntimeValue],
 )->Result<bool,i32>{
  let Some(method)=manager.namespace().find_child(owner,name)else{return Ok(false)};
  if manager.namespace().nodes[method as usize].object_type!=acpi::aml::AmlObjectType::Method{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
  let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
- manager.invoke_method_value_with_args(handle,aml,method,gate,&mut runtime,&[])
+ manager.invoke_method_value_with_args(handle,aml,method,gate,&mut runtime,args)
   .map(|_|true).map_err(table_error_to_status)
+}
+fn invoke_aml_child_method(
+ manager:&acpi::aml_tables::AmlTableManager,gate:&acpi::aml_tables::AmlExecutionBarrier,
+ handle:acpi::aml_tables::TableHandle,aml:&[u8],owner:u16,name:[u8;4],
+)->Result<bool,i32>{
+ invoke_aml_child_method_with_args(manager,gate,handle,aml,owner,name,&[])
 }
 struct NativeAcpiPowerFirmware<'a>{
  manager:&'a acpi::aml_tables::AmlTableManager,
@@ -352,6 +359,21 @@ impl acpi::acpi_power::AcpiPowerFirmware for NativeAcpiPowerFirmware<'_>{
    Ok(acpi::acpi_device::AcpiMethodValue::Integer(value))=>Ok(value),
    _=>Err(acpi::acpi_power::PowerResourceError::InvalidPowerState),
   }
+ }
+ fn invoke_wake_method(&mut self,device_node:u16,enable:bool,system_state:u8,device_state:u8)->Result<(),acpi::acpi_power::PowerResourceError>{
+  let mut args=[acpi::aml_objects::AmlRuntimeValue::EMPTY;3];
+  for (index,value) in [enable as u64,system_state as u64,device_state as u64].iter().enumerate(){
+   args[index].kind=acpi::aml_objects::AmlValueKind::Integer;args[index].integer=*value;
+  }
+  if invoke_aml_child_method_with_args(self.manager,self.gate,self.device_handle,self.device_aml,
+    device_node,*b"_DSW",&args).map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)?{
+   return Ok(())
+  }
+  let mut legacy=acpi::aml_objects::AmlRuntimeValue::EMPTY;
+  legacy.kind=acpi::aml_objects::AmlValueKind::Integer;legacy.integer=enable as u64;
+  invoke_aml_child_method_with_args(self.manager,self.gate,self.device_handle,self.device_aml,
+    device_node,*b"_PSW",&[legacy])
+   .map(|_|()).map_err(|_|acpi::acpi_power::PowerResourceError::BackendFailure)
  }
  fn invoke_power_resource_method(&mut self,resource_node:u16,enable:bool)->Result<(),acpi::acpi_power::PowerResourceError>{
   let records=unsafe{(*STATE.device_records.get()).assume_init_ref()};
