@@ -1,6 +1,11 @@
 //! AML-4 OperationRegion decoding and bounded address-space dispatch.
 //! This layer never dereferences firmware-provided addresses. All accesses
 //! are delegated to an explicitly installed platform handler (ACPI.sys layer).
+/*
+ * FIXME(ACPI-PRODUCTION) — AML OperationRegion access
+ * FIXME(ACPI-PRODUCTION): Complete guarded OperationRegion dispatch for supported address spaces, ownership/policy checks, access widths, and error propagation. System memory and I/O access must go through validated HAL mappings/port APIs; EC/PCI/serial regions require their own protocol and timeout handling. Unsupported spaces must fail closed.
+ */
+
 #![no_std]
 
 use crate::aml::{AmlNamespace,AmlObjectType};
