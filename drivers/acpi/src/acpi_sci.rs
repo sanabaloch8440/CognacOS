@@ -35,6 +35,10 @@ pub struct SciRoute {
 /// SCI electrical default is active-low, level-triggered. A MADT override
 /// replaces both the GSI and polarity/trigger flags.
 pub fn resolve_sci_route(fadt: &FadtInfo, madt: &MadtInfo) -> Result<SciRoute, SciError> {
+    if madt.io_apic_count > madt.io_apics.len()
+        || madt.irq_override_count > madt.irq_overrides.len() {
+        return Err(SciError::InvalidRoute);
+    }
     let irq = fadt.sci_interrupt;
     if irq == 0 || irq > u8::MAX as u16 {
         return Err(SciError::MissingSciInterrupt);
