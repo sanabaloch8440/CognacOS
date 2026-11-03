@@ -52,10 +52,9 @@ fn decode_ata_string(words: &[u16], output: &mut [u8]) {
     let mut start = 0;
     while start < output.len() && output[start] == b' ' { start += 1; }
     if start != 0 { output.copy_within(start.., 0); output[output.len() - start..].fill(b' '); }
-    while output.last() == Some(&b' ') {
-        let last = output.len() - 1;
-        output[last] = 0;
-    }
+    let mut end=output.len();
+    while end>0&&output[end-1]==b' '{end-=1;}
+    output[end..].fill(0);
 }
 
 fn hash_identity(serial: &[u8], model: &[u8]) -> u64 {
