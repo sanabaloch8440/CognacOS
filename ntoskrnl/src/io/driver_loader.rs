@@ -28,74 +28,6 @@ impl DriverImageRecord { const EMPTY:Self=Self{used:false,driver:0,base:0,size:0
 static LOADED_DRIVER_IMAGES:crate::hal::IrqSpinLock<[DriverImageRecord;MAX_LOADED_DRIVER_IMAGES]>=
  crate::hal::IrqSpinLock::new([DriverImageRecord::EMPTY;MAX_LOADED_DRIVER_IMAGES]);
 
-const MAX_DRIVER_INTERFACES: usize = 16;
-const MAX_DRIVER_INTERFACE_NAME: usize = 64;
-#[derive(Clone, Copy)]
-struct DriverInterfaceRecord {
- used: bool,
- owner: usize,
- name_length: u8,
- name: [u8; MAX_DRIVER_INTERFACE_NAME],
- interface: usize,
- size: u32,
-}
-impl DriverInterfaceRecord {
- const EMPTY: Self = Self { used:false, owner:0, name_length:0, name:[0;MAX_DRIVER_INTERFACE_NAME], interface:0, size:0 };
-}
-static DRIVER_INTERFACES: crate::hal::IrqSpinLock<[DriverInterfaceRecord;MAX_DRIVER_INTERFACES]> =
- crate::hal::IrqSpinLock::new([DriverInterfaceRecord::EMPTY;MAX_DRIVER_INTERFACES]);
-
-/// Publish a versioned, named driver-to-driver interface. The owner must be a
-/// loader-managed DRIVER_OBJECT and the interface storage must remain resident
-/// until the owner unloads. Names are exact ASCII identifiers, not paths.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoRegisterDriverInterface(
- owner: *mut DriverObject, name: *const u8, name_length: u16,
- interface: *const c_void, size: u32,
-) -> i32 {
- const INVALID:i32=0xC000_000Du32 as i32;
- const RESOURCES:i32=0xC000_009Au32 as i32;
- if owner.is_null() || name.is_null() || interface.is_null()
-  || name_length==0 || name_length as usize>MAX_DRIVER_INTERFACE_NAME
-  || size==0 || size>512 { return INVALID; }
- if !LOADED_DRIVER_IMAGES.lock().iter().any(|r|r.used&&r.driver==owner as usize&&!r.unloading) {
-  return 0xC000_0008u32 as i32;
- }
- let bytes=unsafe{core::slice::from_raw_parts(name,name_length as usize)};
- if bytes.iter().any(|b|!b.is_ascii_alphanumeric()&&*b!=b'_'&&*b!=b'-') { return INVALID; }
- let mut records=DRIVER_INTERFACES.lock();
- if records.iter().any(|r|r.used&&r.name_length as usize==bytes.len()&&r.name[..bytes.len()].eq_ignore_ascii_case(bytes)) {
-  return 0xC000_0095u32 as i32;
- }
- let Some(slot)=records.iter_mut().find(|r|!r.used) else{return RESOURCES;};
- let mut copied=[0u8;MAX_DRIVER_INTERFACE_NAME];
- copied[..bytes.len()].copy_from_slice(bytes);
- *slot=DriverInterfaceRecord{used:true,owner:owner as usize,name_length:bytes.len() as u8,name:copied,interface:interface as usize,size};
- 0
-}
-
-/// Copy a published interface table into caller-owned storage. A copy prevents
-/// clients from retaining a pointer to a mutable registry record.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoQueryDriverInterface(
- name:*const u8,name_length:u16,output:*mut c_void,size:u32,
-)->i32 {
- const INVALID:i32=0xC000_000Du32 as i32;
- if name.is_null()||output.is_null()||name_length==0||name_length as usize>MAX_DRIVER_INTERFACE_NAME||size==0{return INVALID;}
- let bytes=unsafe{core::slice::from_raw_parts(name,name_length as usize)};
- let records=DRIVER_INTERFACES.lock();
- let Some(record)=records.iter().find(|r|r.used&&r.name_length as usize==bytes.len()&&r.name[..bytes.len()].eq_ignore_ascii_case(bytes)) else{return 0xC000_0225u32 as i32;};
- if record.size!=size{return 0xC000_0059u32 as i32;}
- unsafe{core::ptr::copy_nonoverlapping(record.interface as *const u8,output.cast::<u8>(),size as usize);}
- 0
-}
-
-fn unregister_driver_interfaces(owner:*mut DriverObject) {
- if owner.is_null(){return;}
- let mut records=DRIVER_INTERFACES.lock();
- for record in records.iter_mut(){if record.used&&record.owner==owner as usize{*record=DriverInterfaceRecord::EMPTY;}}
-}
-
 pub type DriverReinitialize = unsafe extern "win64" fn(*mut DriverObject, *mut c_void, u32);
 const MAX_REINITIALIZE_CALLBACKS: usize = 128;
 #[derive(Clone, Copy)]
@@ -216,7 +148,6 @@ pub fn image_for_address(address:u64)->Option<(u64,u32,u64)> {
 /// device rundown and invoked DriverUnload. Unknown/non-loader-owned drivers are ignored.
 pub unsafe fn unload_driver_image(driver:*mut c_void)->bool {
  if driver.is_null(){return false;}
- unregister_driver_interfaces(driver.cast());
  let record={let mut records=LOADED_DRIVER_IMAGES.lock();let Some(index)=records.iter().position(|r|r.used&&r.driver==driver as usize) else{return false;};let record=records[index];records[index]=DriverImageRecord::EMPTY;record};
  unsafe{unload_image(record.base,record.size)}.is_ok()
 }
