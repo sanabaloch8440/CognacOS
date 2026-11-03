@@ -85,6 +85,8 @@ impl VPB {
 
 pub type PDRIVER_DISPATCH = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP) -> NTSTATUS>;
 pub type PDRIVER_UNLOAD = Option<unsafe extern "win64" fn(*mut DRIVER_OBJECT)>;
+pub type PDRIVER_INITIALIZE = Option<unsafe extern "win64" fn(*mut DRIVER_OBJECT, *mut UNICODE_STRING) -> NTSTATUS>;
+pub type PDRIVER_STARTIO = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP)>;
 pub type PDRIVER_ADD_DEVICE = Option<unsafe extern "win64" fn(*mut DRIVER_OBJECT, *mut DEVICE_OBJECT) -> NTSTATUS>;
 pub type PIO_COMPLETION_ROUTINE = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP, PVOID) -> NTSTATUS>;
 
@@ -113,6 +115,9 @@ pub struct DRIVER_OBJECT {
 #[derive(Clone, Copy)]
 pub struct DRIVER_EXTENSION {
     pub driver_object: *mut DRIVER_OBJECT,
+    pub driver_init: PDRIVER_INITIALIZE,
+    pub driver_start_io: PDRIVER_STARTIO,
+    pub driver_unload: PDRIVER_UNLOAD,
     pub add_device: PDRIVER_ADD_DEVICE,
     pub count: ULONG,
     pub service_key_name: UNICODE_STRING,
@@ -121,6 +126,9 @@ impl DRIVER_EXTENSION {
     pub const fn empty() -> Self {
         Self {
             driver_object: core::ptr::null_mut(),
+            driver_init: None,
+            driver_start_io: None,
+            driver_unload: None,
             add_device: None,
             count: 0,
             service_key_name: UNICODE_STRING { length: 0, maximum_length: 0, buffer: core::ptr::null_mut() },
