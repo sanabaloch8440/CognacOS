@@ -149,6 +149,39 @@ pub mod bus {
         pub interface_dereference: Option<unsafe extern "win64" fn(PVOID)>,
     }
 
+    /// Microsoft WDM BUS_INTERFACE_STANDARD (wdm.h), queried with
+    /// GUID_BUS_INTERFACE_STANDARD through IRP_MN_QUERY_INTERFACE.
+    pub const GUID_BUS_INTERFACE_STANDARD: GUID = GUID {
+        data1: 0x496b_8280, data2: 0x6f25, data3: 0x11d0,
+        data4: [0xbe, 0xaf, 0x08, 0x00, 0x2b, 0xe2, 0x09, 0x2f],
+    };
+    pub type PINTERFACE_REFERENCE = Option<unsafe extern "win64" fn(context: PVOID)>;
+    pub type PINTERFACE_DEREFERENCE = Option<unsafe extern "win64" fn(context: PVOID)>;
+    pub type PTRANSLATE_BUS_ADDRESS = PVOID;
+    pub type PGET_DMA_ADAPTER = PVOID;
+    pub type PGET_SET_DEVICE_DATA = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            data_type: u32,
+            buffer: PVOID,
+            offset: u32,
+            length: u32,
+        ) -> u32,
+    >;
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct BUS_INTERFACE_STANDARD {
+        pub size: u16,
+        pub version: u16,
+        pub context: PVOID,
+        pub interface_reference: PINTERFACE_REFERENCE,
+        pub interface_dereference: PINTERFACE_DEREFERENCE,
+        pub translate_bus_address: PTRANSLATE_BUS_ADDRESS,
+        pub get_dma_adapter: PGET_DMA_ADAPTER,
+        pub set_bus_data: PGET_SET_DEVICE_DATA,
+        pub get_bus_data: PGET_SET_DEVICE_DATA,
+    }
+
     /// ACPI.sys firmware-table access. The provider copies the requested
     /// table into the caller's buffer and reports its required size.
     pub type PACPI_QUERY_TABLE = Option<
