@@ -35,12 +35,14 @@ static mut ACPI_BUS_DEVICE:*mut cognacos_nt_abi::io::DEVICE_OBJECT=core::ptr::nu
 static mut ACPI_PDOS:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS]=[core::ptr::null_mut();MAX_ACPI_PDOS];
 static mut ACPI_PDO_COUNT:usize=0;
 static mut ACPI_BUS_RELATIONS:AcpiDeviceRelations=AcpiDeviceRelations{count:0,objects:[core::ptr::null_mut();MAX_ACPI_PDOS]};
-// Windows x64 dispatcher-object ABI: the common DISPATCHER_HEADER is
-// 24 bytes. The kernel owns mutant bookkeeping and wait queues; ACPI.sys
-// stores one header per AML method and never implements its own lock protocol.
+// Windows x64 KMUTEX is an alias of KMUTANT: a 24-byte dispatcher header,
+// two-pointer LIST_ENTRY, owner-thread pointer, mutant flags, and APC-disable
+// byte. The complete 56-byte object must be reserved even though CognacOS
+// currently keeps owner/list bookkeeping in the kernel dispatcher side table.
 const MAX_ACPI_METHOD_MUTEXES:usize=acpi::aml::MAX_NAMESPACE_NODES;
+const _:()=assert!(core::mem::size_of::<[u64;7]>()==56);
 #[repr(C,align(8))]
-struct KernelAmlMutex { initialized:core::sync::atomic::AtomicU8, header:core::cell::UnsafeCell<[u64;3]> }
+struct KernelAmlMutex { initialized:core::sync::atomic::AtomicU8, header:core::cell::UnsafeCell<[u64;7]> }
 impl KernelAmlMutex {
  const fn new()->Self{Self{initialized:core::sync::atomic::AtomicU8::new(0),header:core::cell::UnsafeCell::new([0;3])}}
  fn object(&self)->*mut core::ffi::c_void{self.header.get().cast()}
