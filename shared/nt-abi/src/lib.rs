@@ -151,6 +151,8 @@ pub mod bus {
 
     /// Microsoft WDM BUS_INTERFACE_STANDARD (wdm.h), queried with
     /// GUID_BUS_INTERFACE_STANDARD through IRP_MN_QUERY_INTERFACE.
+    pub const BUS_INTERFACE_STANDARD_VERSION: u32 = 1;
+    pub const PCI_WHICHSPACE_CONFIG: u32 = 0;
     pub const GUID_BUS_INTERFACE_STANDARD: GUID = GUID {
         data1: 0x496b_8280, data2: 0x6f25, data3: 0x11d0,
         data4: [0xbe, 0xaf, 0x08, 0x00, 0x2b, 0xe2, 0x09, 0x2f],
