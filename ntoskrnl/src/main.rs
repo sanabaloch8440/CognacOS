@@ -52,7 +52,7 @@ use core::panic::PanicInfo;
 
 #[path = "boot/platform_devices.rs"]
 mod platform_devices;
-#[path = "io/driver_self_test.rs"]
+#[path = "../../drivers/test_support/driver_self_test.rs"]
 mod driver_self_test;
 pub(crate) use driver_self_test::{beep_test_worker, run_beep_runtime_test, BEEP_TEST_STACK};
 pub use platform_devices::{dequeue_keyboard_event, keyboard_event_drop_count, KeyboardEvent};
