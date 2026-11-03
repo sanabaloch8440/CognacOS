@@ -40,3 +40,7 @@ method body.
 This is an executor milestone, not a claim that all AML control-flow-adjacent
 features (serialization, synchronization, events, method reentrancy, or
 hardware-backed FieldUnits) are complete.
+
+## Verification
+
+Task 28 passed ACPI workflow [41587859995](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587859995): 49 AML method-executor tests, 37 AML runtime tests, 42 AML parser tests, and 11 AML table-lifecycle tests, plus all configured firmware regression suites. The follow-up documentation commit passed [41587872679](https://github.com/sanabaloch8440/CognacOS/actions/runs/41587872679).
