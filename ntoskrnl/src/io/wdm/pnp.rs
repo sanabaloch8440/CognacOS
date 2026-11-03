@@ -332,7 +332,7 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
  STATUS_SUCCESS
 }
 /// Dispatch one real IRP_MJ_PNP lifecycle request under PnP-manager ownership.
-/// START_DEVICE is validated/resourced by the normal Po/I/O dispatch path.
+/// START_DEVICE resources are reserved before forwarding and committed only after completion.
 /// Pending IRPs remain owned until terminal IoCompleteRequest.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void)->i32 {
@@ -348,7 +348,7 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  let irp=unsafe{io_allocate_irp(stack_size,0)};
  if irp.is_null(){unsafe{io_dereference_device_object(dispatch_device)};return STATUS_INSUFFICIENT_RESOURCES}
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
- if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
+ if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(dispatch_device)};return STATUS_INSUFFICIENT_RESOURCES}
  unsafe{
   (*stack).major_function=0x1b;(*stack).minor_function=minor;
   ptr::write_unaligned(stack.cast::<u8>().add(4).cast::<*mut c_void>(),allocated as *mut c_void);
