@@ -11,7 +11,7 @@ use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,Am
 use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType,SynchronizationUnavailable,SyncLevelViolation}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -26,11 +26,25 @@ impl<'a> Reader<'a>{
 }
 #[derive(Clone,Copy)]
 enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
+/// Host-provided implicit mutex support for AML Serialized methods.
+///
+/// The provider must coordinate all callers of a method object, block until
+/// acquisition is permitted (or return ExecutionBusy), and implement
+/// per-thread ownership so nested calls obey ACPI mutex reentrancy rules.
+pub trait AmlMethodSynchronizer{
+ fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>;
+ fn release(&self,method_index:u16);
+}
+struct NoMethodSynchronizer;
+impl AmlMethodSynchronizer for NoMethodSynchronizer{
+ fn acquire(&self,_method_index:u16,_sync_level:u8)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn release(&self,_method_index:u16){}
+}
 // Execution outcomes propagate through nested If/Else blocks. Only the nearest
 // While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
-struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
+struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,current_sync_level:u8}
 impl<'a,'b> Machine<'a,'b>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn name_reference(&mut self,node:u16)->Result<AmlReference,ExecError>{
@@ -245,7 +259,7 @@ impl<'a,'b> Machine<'a,'b>{
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
       execute_method_inner(self.aml,self.namespace,canonical,
-          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)
+          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.current_sync_level)
      }
      _=>Err(ExecError::NonIntegerName),
     }
@@ -336,7 +350,7 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings)?;self.operand_integer(&value)}
+      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.current_sync_level)?;self.operand_integer(&value)}
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
@@ -411,7 +425,7 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
  let namespace=AmlNamespace::new();
  let empty=Machine::uninitialized_value();
  let mut arena=AmlObjectArena::new();let mut bindings=AmlBindings::with_aml_revision(2);
- let mut machine=Machine{locals:[empty;8],args:[empty;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
+ let mut machine=Machine{locals:[empty;8],args:[empty;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0,sync:&NoMethodSynchronizer,current_sync_level:0};
  let mut reader=Reader{bytes,pos:0,end:bytes.len()};
  let value=machine.term(&mut reader)?;
  Ok((value,reader.pos))
@@ -421,22 +435,38 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 /// Only integer arguments and scalar operations are currently supported.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings)->Result<AmlRuntimeValue,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,current_sync_level:u8)->Result<AmlRuntimeValue,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
  let node=namespace.nodes.get(index).ok_or(ExecError::InvalidMethod)?;
  if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
  let expected=(node.method_flags&7)as usize;if args.len()!=expected||args.len()>7{return Err(ExecError::BadArgumentCount)}
- let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
- if end>aml.len(){return Err(ExecError::InvalidMethod)}
  if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
- let empty=Machine::uninitialized_value();
- let mut m=Machine{locals:[empty;8],args:[empty;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
- for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
- let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>Machine::integer_value(0),ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};
- if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
- Ok(value)
+ let serialized=(node.method_flags&0x08)!=0;
+ let sync_level=(node.method_flags>>4)&0x0f;
+ if serialized&&sync_level<current_sync_level{return Err(ExecError::SyncLevelViolation)}
+ if serialized{sync.acquire(method_index,sync_level)?;}
+ let active_sync_level=if serialized{sync_level}else{current_sync_level};
+ // Each invocation owns its own LocalX/ArgX frame and execution budget.
+ // Namespace objects and the method synchronizer are shared with nested calls.
+ let result=(||{
+  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
+  if end>aml.len(){return Err(ExecError::InvalidMethod)}
+  let empty=Machine::uninitialized_value();
+  let mut m=Machine{locals:[empty;8],args:[empty;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,current_sync_level:active_sync_level};
+  for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
+  let mut r=Reader{bytes:aml,pos:start,end};
+  let value=match m.execute(&mut r,0)?{
+   ExecFlow::Continue=>Machine::integer_value(0),
+   ExecFlow::Return(v)=>v,
+   ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl),
+  };
+  if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
+  Ok(value)
+ })();
+ if serialized{sync.release(method_index);}
+ result
 }
 
 
@@ -445,11 +475,20 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
 /// Execute a method and preserve Integer, String, or Buffer return objects.
 /// Package returns are rejected because their arena-backed element handles
 /// cannot outlive this invocation without an owning result arena.
-pub fn execute_method_typed_with_values(aml:&[u8],namespace:&AmlNamespace,
-    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlRuntimeValue,ExecError>{
+pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
+    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8,
+    sync:&dyn AmlMethodSynchronizer)->Result<AmlRuntimeValue,ExecError>{
     let mut arena=AmlObjectArena::new();
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
-    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings)
+    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,0)
+}
+
+/// Convenience entry point for non-Serialized methods. Serialized methods fail
+/// closed unless the caller uses execute_method_typed_with_sync and supplies
+/// the OS's per-thread implicit-mutex provider.
+pub fn execute_method_typed_with_values(aml:&[u8],namespace:&AmlNamespace,
+    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8)->Result<AmlRuntimeValue,ExecError>{
+    execute_method_typed_with_sync(aml,namespace,method_index,args,integer_width_bits,&NoMethodSynchronizer)
 }
 
 /// Compatibility scalar API: returns an Integer and rejects typed non-Integer
