@@ -1,3 +1,12 @@
+//! Native ACPI bus-driver entry point and WDM/PnP integration.
+//!
+//! This binary owns the ACPI bus FDO, child PDO bookkeeping, firmware-table
+//! lifetime, and dispatch glue. The library crate performs bounded parsing and
+//! AML operations; kernel PnP owns devnode/resource arbitration, PCI owns
+//! configuration space, and HAL owns interrupt-controller programming.
+//! Keep this layer as an adapter: do not duplicate parsers or touch APIC/PCI
+//! hardware directly. Every unsafe block must document the kernel contract
+//! that makes its pointers, IRQL, object references, and lifetime valid.
 #![no_std]
 #![no_main]
 
