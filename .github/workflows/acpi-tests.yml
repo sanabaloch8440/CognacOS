@@ -14,6 +14,9 @@ on:
     paths:
       - 'drivers/acpi/**'
       - 'shared/nt-abi/**'
+      - 'ntoskrnl/src/ke/**'
+      - 'ntoskrnl/src/ntoskrnl.rs'
+      - 'ntoskrnl/Cargo.toml'
       - '.github/workflows/acpi-tests.yml'
 
 permissions:
