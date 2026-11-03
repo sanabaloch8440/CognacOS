@@ -57,6 +57,7 @@ unsafe extern "win64" {
  fn IoPnPQueryBusInterface(device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,size:u16,version:u16,output:PVOID)->i32;
  fn IoPnPRegisterBusDevice(enumerator_id:u32,identity_hash:u64,device:*mut DEVICE_OBJECT,output_index:*mut u32)->i32;
  fn IoPnPProcessBusRelations(bus:*mut DEVICE_OBJECT,relations:*const c_void)->i32;
+ fn IoPnPEnumerateBus(bus:*mut DEVICE_OBJECT)->i32;
  fn IoPnPRegisterDeviceDriver(driver:*mut c_void,add_device:Option<unsafe extern "win64" fn(*mut c_void,*mut DEVICE_OBJECT)->i32>)->i32;
 }
 core::arch::global_asm!(r#"
@@ -81,6 +82,7 @@ IMPORT IoPnPQueryBusInterface
 IMPORT IoPnPRegisterDeviceDriver
 IMPORT IoPnPRegisterBusDevice
 IMPORT IoPnPProcessBusRelations
+IMPORT IoPnPEnumerateBus
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -102,6 +104,7 @@ IAT IoPnPQueryBusInterface
 IAT IoPnPRegisterDeviceDriver
 IAT IoPnPRegisterBusDevice
 IAT IoPnPProcessBusRelations
+IAT IoPnPEnumerateBus
 "#);
 
 #[repr(C)]
@@ -252,6 +255,8 @@ unsafe fn register_miniport(ext:*mut AtaPortFdoExtension,table:*const AtaPortMin
   unsafe{(*ext).miniport=Some(candidate);(*ext).started=1;}
  }
  unsafe{discover_disk_children(ext);}
+ let physical=unsafe{(*ext).physical};
+ if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
  STATUS_SUCCESS
 }
 unsafe fn unregister_miniport(ext:*mut AtaPortFdoExtension,context:*mut c_void)->i32{
@@ -284,9 +289,10 @@ unsafe extern "win64" fn remove_complete(_lower:*mut DEVICE_OBJECT,irp:*mut IRP,
  let fdo=context.cast::<DEVICE_OBJECT>();if fdo.is_null()||irp.is_null(){return STATUS_SUCCESS}
  if let Some(ext)=extension(fdo){
   unsafe{(*ext).removing=1;}
-  let empty=AtaPortDeviceRelations::EMPTY;
-  let _=unsafe{IoPnPProcessBusRelations(fdo,(&empty as *const AtaPortDeviceRelations).cast())};
-  unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;(*ext).magic=0;}
+  let physical=unsafe{(*ext).physical};
+  unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;}
+  if !physical.is_null(){let _=unsafe{IoPnPEnumerateBus(physical)};}
+  unsafe{(*ext).magic=0;}
   let lower=unsafe{(*ext).lower};if !lower.is_null(){unsafe{IoDetachDevice(lower)}}
  }
  unsafe{IoDeleteDevice(fdo)}
