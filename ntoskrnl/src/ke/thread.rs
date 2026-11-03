@@ -760,7 +760,7 @@ pub fn apc_region_depths()->(u16,u16){
 pub fn adjust_apc_region_for_thread(id:u64,guarded:bool,enter:bool)->bool{
     if id==0{return false}
     let mut table=THREADS.lock();
-    let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty) else{return false};
+    let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty&&t.state!=ThreadState::Exited) else{return false};
     let depth=if guarded{&mut t.guarded_region_depth}else{&mut t.critical_region_depth};
     if enter { *depth=depth.saturating_add(1); } else { *depth=depth.saturating_sub(1); }
     true
