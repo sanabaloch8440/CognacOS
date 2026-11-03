@@ -190,7 +190,7 @@ unsafe fn scan_partitions(ext:*mut PartMgrFdoExtension)->i32{
   unsafe{
    child_ext.write(PartitionPdoExtension{magic:PARTITION_PDO_MAGIC,parent:unsafe{(*ext).self_device},partition,geometry:descriptor.geometry,stable_id:partition_identity(descriptor.identity.stable_id,partition)});
    (*child).flags|=0x0000_1004;
-   (*child).stack_size=(*ext).lower.stack_size.saturating_add(1);
+   (*child).stack_size=(*(*ext).lower).stack_size.saturating_add(1);
   }
   let relations=unsafe{&mut (*ext).relations};
   let index=relations.count as usize;relations.objects[index]=child;relations.count+=1;
