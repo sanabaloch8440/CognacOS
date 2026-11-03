@@ -27,6 +27,7 @@ impl AcpiId {
         if value.is_empty()||value.len()>MAX_ID_STRING{return Err(IdentityError::StringTooLong)}
         let mut out=Self::EMPTY;out.bytes[..value.len()].copy_from_slice(value);out.length=value.len() as u8;Ok(out)
     }
+/// Return the validated, length-bounded bytes of this normalized ACPI identifier.
     pub fn as_bytes(&self)->&[u8]{&self.bytes[..self.length as usize]}
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
