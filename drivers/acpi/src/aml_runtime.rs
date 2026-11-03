@@ -14,7 +14,7 @@ use crate::aml_objects::{AmlObjectArena,AmlRuntimeValue,AmlValueKind,ObjectError
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RuntimeError {
     InvalidNode,UnboundNode,InvalidReference,NotIndexable,IndexOutOfRange,
-    TypeMismatch,ValueTooLarge,InvalidObjectLength,InvalidIntegerString,Arena(ObjectError),
+    TypeMismatch,ValueTooLarge,EmptyBuffer,InvalidObjectLength,InvalidIntegerString,Arena(ObjectError),
 }
 /// Validate a caller-constructed runtime object's declared byte extent.
 fn checked_element_count(value:&AmlRuntimeValue)->Result<usize,RuntimeError>{
@@ -162,19 +162,31 @@ pub fn to_integer(value:&AmlRuntimeValue)->Result<u64,RuntimeError>{
         AmlValueKind::Integer=>Ok(value.integer),
         AmlValueKind::Buffer=>{
             let length=checked_byte_length(value)?;
-            if length>8{return Err(RuntimeError::ValueTooLarge)}
+            if length==0{return Err(RuntimeError::EmptyBuffer)}
+            // ACPI ToInteger consumes at most the least-significant eight
+            // bytes; the first buffer byte is the least-significant byte.
             let mut out=0u64;
-            for i in 0..length{out|=(value.bytes[i] as u64)<<(i*8)}
+            for i in 0..core::cmp::min(length,8){out|=(value.bytes[i] as u64)<<(i*8)}
             Ok(out)
         }
         AmlValueKind::String=>{
             let length=checked_byte_length(value)?;
             if length==0{return Err(RuntimeError::InvalidIntegerString)}
+            let bytes=&value.bytes[..length];
+            let (digits,radix)=if bytes.len()>=2&&bytes[0]==b'0'&&(bytes[1]==b'x'||bytes[1]==b'X'){
+                (&bytes[2..],16u64)
+            }else{(bytes,10u64)};
+            if digits.is_empty(){return Err(RuntimeError::InvalidIntegerString)}
             let mut out=0u64;
-            for &ch in &value.bytes[..length]{
-                // byte_length excludes the AML terminator; embedded NUL is malformed.
-                let nibble=match ch{b'0'..=b'9'=>(ch-b'0')as u64,b'a'..=b'f'=>(ch-b'a'+10)as u64,b'A'..=b'F'=>(ch-b'A'+10)as u64,_=>return Err(RuntimeError::InvalidIntegerString)};
-                out=out.checked_mul(16).and_then(|v|v.checked_add(nibble)).ok_or(RuntimeError::ValueTooLarge)?;
+            for &ch in digits{
+                let digit=match ch{
+                    b'0'..=b'9'=>(ch-b'0')as u64,
+                    b'a'..=b'f' if radix==16=>(ch-b'a'+10)as u64,
+                    b'A'..=b'F' if radix==16=>(ch-b'A'+10)as u64,
+                    _=>return Err(RuntimeError::InvalidIntegerString),
+                };
+                if digit>=radix{return Err(RuntimeError::InvalidIntegerString)}
+                out=out.checked_mul(radix).and_then(|v|v.checked_add(digit)).ok_or(RuntimeError::ValueTooLarge)?;
             }
             Ok(out)
         }
@@ -246,7 +258,9 @@ mod tests{
         buffer.byte_length=8;buffer.bytes[..8].copy_from_slice(&[0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef]);
         assert_eq!(to_integer(&buffer),Ok(0xefcd_ab8967452301));
         buffer.byte_length=9;
-        assert_eq!(to_integer(&buffer),Err(RuntimeError::ValueTooLarge));
+        assert_eq!(to_integer(&buffer),Ok(0xefcd_ab8967452301));
+        buffer.byte_length=0;
+        assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
     #[test]fn buffer_byte_store_rejects_wrong_types_without_mutating_target(){
         let mut arena=AmlObjectArena::new();
@@ -277,8 +291,10 @@ mod tests{
     }
 
     #[test]fn conversions_are_bounded_and_checked(){
-        let mut s=AmlRuntimeValue::EMPTY;s.kind=AmlValueKind::String;s.bytes[..4].copy_from_slice(b"1a2f");s.byte_length=4;
+        let mut s=AmlRuntimeValue::EMPTY;s.kind=AmlValueKind::String;s.bytes[..6].copy_from_slice(b"0x1a2f");s.byte_length=6;
         assert_eq!(to_integer(&s),Ok(0x1a2f));
+        let mut decimal=s;decimal.bytes[..3].copy_from_slice(b"123");decimal.byte_length=3;
+        assert_eq!(to_integer(&decimal),Ok(123));
         let b=to_buffer(&s,6).unwrap();assert_eq!(&b.bytes[..6],b"1a2f\0\0");
         assert_eq!(integer_to_string(120).bytes[..3],*b"120");
         let mut bad=s;bad.bytes[1]=b'x';assert_eq!(to_integer(&bad),Err(RuntimeError::InvalidIntegerString));
@@ -299,11 +315,13 @@ mod tests{
         assert_eq!(to_integer(&string),Err(RuntimeError::InvalidIntegerString));
         string.byte_length=3;string.bytes[..3].copy_from_slice(&[b'1',0,b'2']);
         assert_eq!(to_integer(&string),Err(RuntimeError::InvalidIntegerString));
+        string.byte_length=2;string.bytes[..2].copy_from_slice(b"0x");
+        assert_eq!(to_integer(&string),Err(RuntimeError::InvalidIntegerString));
     }
 
     #[test]fn hexadecimal_string_conversion_detects_u64_overflow(){
         let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
-        string.byte_length=17;string.bytes[..17].fill(b'f');
+        string.byte_length=19;string.bytes[..19].copy_from_slice(b"0xfffffffffffffffff");
         assert_eq!(to_integer(&string),Err(RuntimeError::ValueTooLarge));
     }
 
