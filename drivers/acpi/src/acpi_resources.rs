@@ -285,6 +285,10 @@ fn project_assignment(requirement:Resource,allocated:Resource)->Option<Resource>
         }
         (Resource::ExtendedIrq{flags,..},Resource::ExtendedIrq{interrupts,count,..}) if count>0&&count<=8=>
             Some(Resource::ExtendedIrq{flags,interrupts,count}),
+        (Resource::ExtendedIrq{flags,..},Resource::Irq{mask,..}) if mask.count_ones()==1=>{
+            let mut interrupts=[0u32;8];interrupts[0]=mask.trailing_zeros();
+            Some(Resource::ExtendedIrq{flags,interrupts,count:1})
+        },
         (Resource::Dma{transfer_size,bus_master,..},Resource::Dma{channels,..})=>
             Some(Resource::Dma{channels,transfer_size,bus_master}),
         _=>None,
