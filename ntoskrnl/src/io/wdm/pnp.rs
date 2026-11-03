@@ -127,6 +127,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
   owner_refs[i]=reference;
  }
  let mut result=STATUS_SUCCESS;
+ let mut transferred=false;
  {
   let mut arbiter=RESOURCE_ARBITER.lock();
   let duplicate=arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed);
@@ -151,16 +152,13 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
       let r=resources[i];
       *slot=ResourceClaim{used:true,owner:owner_refs[i],irp,kind:r.kind,start:r.start,length:r.length,committed:false};
      }
+     transferred=true;
     }
    }
   }
  }
  // On duplicate or failure the speculative references were not transferred
  // into the arbiter. Successful insertion transfers one ref per claim.
- let transferred=result==STATUS_SUCCESS&&{
-  let arbiter=RESOURCE_ARBITER.lock();
-  arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed)
- };
  if !transferred{
   for held in owner_refs[..count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
  }
