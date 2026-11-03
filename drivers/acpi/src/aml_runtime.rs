@@ -317,8 +317,14 @@ fn convert_to_target_type(source:&AmlRuntimeValue,target:&AmlRuntimeValue,arena:
                 }
                 AmlValueKind::Buffer=>{
                     let n=checked_byte_length(source)?;
-                    converted.byte_length=n as u16;
-                    converted.bytes[..n].copy_from_slice(&source.bytes[..n]);
+                    let target_length=checked_byte_length(target)?;
+                    // A non-empty existing Buffer retains its extent. A
+                    // zero-length Buffer is treated as an unallocated target.
+                    let bytes=if target_exists&&target_length!=0{target_length}else{n};
+                    converted.byte_length=bytes as u16;
+                    let copied=core::cmp::min(n,bytes);
+                    converted.bytes[..copied].copy_from_slice(&source.bytes[..copied]);
+                    // EMPTY initialization zero-extends a shorter source.
                 }
                 _=>return Err(RuntimeError::TypeMismatch),
             }
@@ -970,6 +976,34 @@ mod tests{
         store_reference_with_mode(reference,integer_id,StoreMode::CopyObject,
             &mut bindings,&namespace,&mut arena).unwrap();
         assert_eq!(&arena.get(buffer).unwrap().bytes[..2],&[0xca,0x53]);
+    }
+
+    #[test]fn named_buffer_to_buffer_store_preserves_extent_and_zero_extends(){
+        let mut arena=AmlObjectArena::new();
+        let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Buffer;
+        target.byte_length=3;target.bytes[..3].copy_from_slice(&[0xaa,0xbb,0xcc]);
+        let target_id=arena.allocate(target).unwrap();
+        let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Buffer;
+        source.byte_length=1;source.bytes[0]=0x11;
+        let source_id=arena.allocate(source).unwrap();
+        let mut bindings=AmlBindings::new();let namespace=AmlNamespace::new();
+        // Use a valid Name node so Store follows the fixed-type path.
+        let aml=[0x08,b'B',b'U',b'F',b'0',0x01];
+        let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+        let node=ns.find_child(0,*b"BUF0").unwrap();
+        bindings.bind(&ns,node,target_id).unwrap();
+        store_reference(bindings.reference_node(&ns,node).unwrap(),source_id,
+            &mut bindings,&ns,&mut arena).unwrap();
+        let result=arena.get(bindings.value_id(node).unwrap()).unwrap();
+        assert_eq!(result.byte_length,3);assert_eq!(&result.bytes[..3],&[0x11,0,0]);
+
+        let mut large=AmlRuntimeValue::EMPTY;large.kind=AmlValueKind::Buffer;
+        large.byte_length=4;large.bytes[..4].copy_from_slice(&[1,2,3,4]);
+        let large_id=arena.allocate(large).unwrap();
+        store_reference(bindings.reference_node(&ns,node).unwrap(),large_id,
+            &mut bindings,&ns,&mut arena).unwrap();
+        let result=arena.get(bindings.value_id(node).unwrap()).unwrap();
+        assert_eq!(result.byte_length,3);assert_eq!(&result.bytes[..3],&[1,2,3]);
     }
 
     #[test]fn named_buffer_result_conversion_preserves_target_extent(){
