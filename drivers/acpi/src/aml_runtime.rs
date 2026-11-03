@@ -120,10 +120,15 @@ pub fn store_reference(reference:AmlReference,value:u16,bindings:&mut AmlBinding
             p.elements[index as usize]=value;Ok(())
         }
         AmlReference::BufferByte{buffer,index}=>{
-            let b=arena.get_mut(buffer).ok_or(RuntimeError::InvalidReference)?;
-            if b.kind!=AmlValueKind::Buffer||index>=b.byte_length{return Err(RuntimeError::InvalidReference)}
+            // Validate the complete target and source before taking a mutable
+            // reference, so every rejected store leaves the destination intact.
+            let target=arena.get(buffer).ok_or(RuntimeError::InvalidReference)?;
+            if target.kind!=AmlValueKind::Buffer{return Err(RuntimeError::InvalidReference)}
+            let length=checked_byte_length(target)?;
+            if index as usize>=length{return Err(RuntimeError::InvalidReference)}
             if source.kind!=AmlValueKind::Integer||source.integer>u8::MAX as u64{return Err(RuntimeError::TypeMismatch)}
-            b.bytes[index as usize]=source.integer as u8;Ok(())
+            let target=arena.get_mut(buffer).ok_or(RuntimeError::InvalidReference)?;
+            target.bytes[index as usize]=source.integer as u8;Ok(())
         }
     }
 }
@@ -288,6 +293,33 @@ mod tests{
         let reference=AmlReference::PackageElement{package:id,index:0};
         let bindings=AmlBindings::new();
         assert_eq!(dereference(reference,&bindings,&arena),Err(RuntimeError::InvalidReference));
+    }
+
+    #[test]fn buffer_byte_store_rejects_corrupt_target_extent_atomically(){
+        let mut arena=AmlObjectArena::new();
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=(MAX_AML_BYTES+1) as u16;buffer.bytes[0]=0xaa;
+        let buffer_id=arena.allocate(buffer).unwrap();
+        let mut replacement=AmlRuntimeValue::EMPTY;replacement.kind=AmlValueKind::Integer;replacement.integer=0x55;
+        let replacement_id=arena.allocate(replacement).unwrap();
+        let reference=AmlReference::BufferByte{buffer:buffer_id,index:0};
+        let mut bindings=AmlBindings::new();let namespace=AmlNamespace::new();
+        assert_eq!(store_reference(reference,replacement_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::InvalidObjectLength));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0xaa);
+    }
+
+    #[test]fn package_store_rejects_corrupt_element_count_atomically(){
+        let mut arena=AmlObjectArena::new();
+        let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
+        package.element_count=(crate::aml_objects::MAX_PACKAGE_ELEMENTS+1) as u8;
+        package.elements[0]=0;
+        let package_id=arena.allocate(package).unwrap();
+        let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::Integer;value.integer=9;
+        let value_id=arena.allocate(value).unwrap();
+        let reference=AmlReference::PackageElement{package:package_id,index:0};
+        let mut bindings=AmlBindings::new();let namespace=AmlNamespace::new();
+        assert_eq!(store_reference(reference,value_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::InvalidReference));
+        assert_eq!(arena.get(package_id).unwrap().elements[0],0);
     }
 
 }
