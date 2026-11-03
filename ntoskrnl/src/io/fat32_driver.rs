@@ -38,7 +38,7 @@ const IRP_MN_MOUNT_VOLUME: u8 = 1;
 const IRP_MN_VERIFY_VOLUME: u8 = 0;
 const IRP_MN_USER_FS_REQUEST: u8 = 0;
 const FILE_USE_FILE_POINTER_POSITION: i64 = -2;
-const IRP_MJ_FLUSH_BUFFERS: usize = 9;
+const IRP_MJ_FLUSH_BUFFERS: u8 = 9;
 
 type MountedFat = FatFilesystem<crate::io::storage::IoManagerBlockDevice>;
 
