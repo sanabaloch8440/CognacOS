@@ -187,7 +187,7 @@ unsafe fn set_completion_routine(
  unsafe{(*next).completion_routine=routine;(*next).context=context;(*next).control|=control;}
 }
 
-/// Completion for a synchronous IRP_MN_QUERY_INTERFACE request. Returning
+/// Completion for a synchronous WDM IRP_MN_QUERY_INTERFACE request. Returning
 /// STATUS_MORE_PROCESSING_REQUIRED leaves the caller-allocated IRP intact.
 unsafe extern "win64" fn query_interface_complete(
  _device:*mut DEVICE_OBJECT,_irp:*mut IRP,context:PVOID
@@ -197,7 +197,7 @@ unsafe extern "win64" fn query_interface_complete(
 }
 
 /// Query a bus-provided interface using the Windows PnP IRP contract, not a
-/// CognacOS-only helper export. QUERY_INTERFACE is synchronous to the caller.
+/// Query the standard Windows bus interface synchronously through the PnP IRP.
 unsafe fn query_pci_bus_interface(
  device:*mut DEVICE_OBJECT,guid:*const cognacos_nt_abi::bus::GUID,
  size:u16,version:u16,output:PVOID
