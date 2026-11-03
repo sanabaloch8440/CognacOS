@@ -25,7 +25,7 @@ pub fn build_wake_info(gpe:WakeResource,deepest_sleep_state:u64,additional_gpes:
  }Ok(out)
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum PowerMethod{Disable,PowerD0,PowerD3}
+pub enum PowerMethod{Disable,PowerD0,PowerD1,PowerD2,PowerD3}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct DevicePowerState{pub d_state:u8,pub disabled:bool,pub wake:Option<WakeInfo>}
 impl DevicePowerState{pub const INITIAL:Self=Self{d_state:0,disabled:false,wake:None};}
@@ -40,7 +40,7 @@ pub fn apply_srs(i:&mut impl AcpiPowerMethodInvoker,r:&ResourceList)->Result<(),
 pub fn evaluate_prw(i:&mut impl AcpiPowerMethodInvoker)->Result<Option<WakeInfo>,PowerError>{i.evaluate_prw()}
 pub fn transition_power(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState,target:u8)->Result<(),PowerError>{
  if target>3{return Err(PowerError::InvalidState)}if target==s.d_state{return Ok(())}
- let method=if target==3{PowerMethod::PowerD3}else{PowerMethod::PowerD0};
+ let method=match target{0=>PowerMethod::PowerD0,1=>PowerMethod::PowerD1,2=>PowerMethod::PowerD2,3=>PowerMethod::PowerD3,_=>return Err(PowerError::InvalidState)};
  if !i.invoke(method){return Err(PowerError::MethodFailed)}s.d_state=target;Ok(())
 }
 pub fn disable_device(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState)->Result<(),PowerError>{
@@ -60,6 +60,8 @@ pub fn disable_device(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState
  #[test]fn prs_is_validated(){let mut f=fake(true);assert_eq!(evaluate_prs(&mut f).unwrap().count,1);f.prs=[0x47,0];assert!(evaluate_prs(&mut f).is_err());}
  #[test]fn srs_failure_propagates(){let mut f=fake(false);assert_eq!(apply_srs(&mut f,&ResourceList::EMPTY),Err(PowerError::MethodFailed));}
  #[test]fn power_state_changes_only_after_success(){let mut f=fake(false);let mut s=DevicePowerState::INITIAL;assert_eq!(transition_power(&mut f,&mut s,3),Err(PowerError::MethodFailed));assert_eq!(s.d_state,0);f.ok=true;transition_power(&mut f,&mut s,3).unwrap();assert_eq!(s.d_state,3);}
+ #[test]fn every_device_power_state_invokes_its_matching_method(){let mut f=fake(true);let mut s=DevicePowerState::INITIAL;for (target,expected) in [(1,PowerMethod::PowerD1),(2,PowerMethod::PowerD2),(0,PowerMethod::PowerD0),(3,PowerMethod::PowerD3)]{transition_power(&mut f,&mut s,target).unwrap();assert_eq!(f.calls[f.count-1],Some(expected));assert_eq!(s.d_state,target);}}
+ #[test]fn invalid_device_power_state_does_not_invoke_firmware(){let mut f=fake(true);let mut s=DevicePowerState::INITIAL;assert_eq!(transition_power(&mut f,&mut s,4),Err(PowerError::InvalidState));assert_eq!(f.count,0);assert_eq!(s.d_state,0);}
  #[test]fn prw_sleep_state_checked(){let g=WakeResource{gpe_number:12,..WakeResource::EMPTY};assert_eq!(build_wake_info(g,6,&[]),Err(PowerError::InvalidSleepState));assert_eq!(build_wake_info(g,3,&[]).unwrap().deepest_sleep_state,3);}
  #[test]fn disable_failure_does_not_commit(){let mut f=fake(false);let mut s=DevicePowerState::INITIAL;assert_eq!(disable_device(&mut f,&mut s),Err(PowerError::MethodFailed));assert!(!s.disabled);}
 }
