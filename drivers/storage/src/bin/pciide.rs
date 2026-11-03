@@ -7,7 +7,7 @@
 //! PCI stack completes successfully. Hardware register programming is kept
 //! fail-closed until a HAL-backed port/MMIO mapping provider is connected.
 
-use core::{cell::UnsafeCell, ffi::c_void};
+use core::ffi::c_void;
 use cognacos_nt_abi::{
     bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
     io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
@@ -15,7 +15,7 @@ use cognacos_nt_abi::{
     types::PVOID,
 };
 use cognacos_storage::{
-    ata_port::{AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, AtaPortServices, ATA_PORT_INTERFACE_VERSION},
+    ata_port::{AtaPortMiniportInterface, AtaPortOperation, AtaPortRequest, ATA_PORT_INTERFACE_VERSION},
     error_to_ntstatus,
     StorageError,
     ide::{Channel, RegisterIo, MAX_LBA28}, pciidex::{
@@ -44,7 +44,6 @@ struct PciIdeFdoExtension {
     // One independently identified ATA device per channel/device position.
     // These channels are the miniport's persistent PIO transport state.
     channels: [Option<Channel>; 4],
-    miniport_registered: bool,
 }
 const _: () = assert!(core::mem::size_of::<PciIdeFdoExtension>() <= 512);
 
@@ -64,7 +63,6 @@ unsafe extern "win64" {
         context: PVOID, success: u8, error: u8, cancel: u8);
     fn IoPnPQueryBusInterface(device: *mut DEVICE_OBJECT, guid: *const cognacos_nt_abi::bus::GUID,
         size: u16, version: u16, output: PVOID) -> i32;
-    fn IoQueryDriverInterface(name: *const u8, name_length: u16, output: PVOID, size: u32) -> i32;
     fn IoPnPRegisterDeviceDriver(driver: *mut c_void,
         add_device: Option<unsafe extern "win64" fn(*mut c_void, *mut DEVICE_OBJECT) -> i32>) -> i32;
     fn IoAllocateIrp(stack_size: i8, charge_quota: u8) -> *mut IRP;
@@ -91,7 +89,6 @@ IMPORT IoSkipCurrentIrpStackLocation
 IMPORT IoCopyCurrentIrpStackLocationToNext
 IMPORT IoSetCompletionRoutine
 IMPORT IoPnPQueryBusInterface
-IMPORT IoQueryDriverInterface
 IMPORT IoPnPRegisterDeviceDriver
 IMPORT IoAllocateIrp
 IMPORT IoGetNextIrpStackLocation
@@ -114,7 +111,6 @@ IAT IoSkipCurrentIrpStackLocation
 IAT IoCopyCurrentIrpStackLocationToNext
 IAT IoSetCompletionRoutine
 IAT IoPnPQueryBusInterface
-IAT IoQueryDriverInterface
 IAT IoPnPRegisterDeviceDriver
 IAT IoAllocateIrp
 IAT IoGetNextIrpStackLocation
@@ -182,95 +178,6 @@ impl RegisterIo for X86PortIo {
     }
 }
 
-
-struct PortServicesCell(UnsafeCell<Option<AtaPortServices>>);
-unsafe impl Sync for PortServicesCell {}
-static PORT_SERVICES: PortServicesCell = PortServicesCell(UnsafeCell::new(None));
-static PORT_INTERFACE_NAME: &[u8] = b"CognacOS.AtaPort.Services.v1";
-
-fn port_services() -> Option<AtaPortServices> {
-    unsafe { *PORT_SERVICES.0.get() }
-}
-
-fn storage_status(error: StorageError) -> i32 { error_to_ntstatus(error) }
-
-unsafe extern "win64" fn miniport_submit(
-    context: *mut c_void,
-    request: *const AtaPortRequest,
-    bytes_transferred: *mut u32,
-) -> i32 {
-    if context.is_null() || request.is_null() || bytes_transferred.is_null() {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let extension = unsafe { &mut *context.cast::<PciIdeFdoExtension>() };
-    if extension.magic != FDO_EXTENSION_MAGIC || extension.controller.state != ControllerState::Started {
-        return STATUS_DEVICE_NOT_READY;
-    }
-    let request = unsafe { &*request };
-    if request.size as usize != core::mem::size_of::<AtaPortRequest>() || request.flags as usize >= 4 {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let Some(channel) = extension.channels[request.flags as usize] else {
-        return STATUS_NO_SUCH_DEVICE;
-    };
-    let mut io = X86PortIo;
-    let result = match request.operation {
-        AtaPortOperation::Read => {
-            let Some(length) = (request.sector_count as usize).checked_mul(512) else { return STATUS_INVALID_PARAMETER; };
-            if request.system_buffer.is_null() || length > 256 * 512 { return STATUS_INVALID_PARAMETER; }
-            let output = unsafe { core::slice::from_raw_parts_mut(request.system_buffer, length) };
-            channel.read_sectors(&mut io, request.lba, output).map(|_| length as u32)
-        }
-        AtaPortOperation::Write => {
-            let Some(length) = (request.sector_count as usize).checked_mul(512) else { return STATUS_INVALID_PARAMETER; };
-            if request.system_buffer.is_null() || length > 256 * 512 { return STATUS_INVALID_PARAMETER; }
-            let input = unsafe { core::slice::from_raw_parts(request.system_buffer, length) };
-            channel.write_sectors(&mut io, request.lba, input).map(|_| length as u32)
-        }
-        AtaPortOperation::Flush => channel.flush(&mut io).map(|_| 0),
-        AtaPortOperation::Identify | AtaPortOperation::Packet => return STATUS_INVALID_DEVICE_REQUEST,
-    };
-    match result {
-        Ok(bytes) => { unsafe { *bytes_transferred = bytes; } STATUS_SUCCESS }
-        Err(error) => storage_status(error),
-    }
-}
-
-unsafe extern "win64" fn miniport_stop(context: *mut c_void) -> i32 {
-    if context.is_null() { return STATUS_INVALID_PARAMETER; }
-    let extension = unsafe { &mut *context.cast::<PciIdeFdoExtension>() };
-    if extension.magic != FDO_EXTENSION_MAGIC { return STATUS_DELETE_PENDING; }
-    STATUS_SUCCESS
-}
-
-fn register_port_miniport(extension: &mut PciIdeFdoExtension) -> i32 {
-    if extension.miniport_registered { return STATUS_SUCCESS; }
-    let Some(services) = port_services() else { return STATUS_DEVICE_NOT_READY; };
-    let Some(register) = services.register_miniport else { return STATUS_NOT_SUPPORTED; };
-    let interface = AtaPortMiniportInterface {
-        size: core::mem::size_of::<AtaPortMiniportInterface>() as u32,
-        version: ATA_PORT_INTERFACE_VERSION,
-        miniport_context: (extension as *mut PciIdeFdoExtension).cast(),
-        initialize: None,
-        start: None,
-        submit: Some(miniport_submit),
-        reset: None,
-        stop: Some(miniport_stop),
-        unload: None,
-    };
-    let status = unsafe { register(&interface) };
-    if status == STATUS_SUCCESS { extension.miniport_registered = true; }
-    status
-}
-
-fn unregister_port_miniport(extension: &mut PciIdeFdoExtension) -> i32 {
-    if !extension.miniport_registered { return STATUS_SUCCESS; }
-    let Some(services) = port_services() else { return STATUS_DEVICE_NOT_READY; };
-    let Some(unregister) = services.unregister_miniport else { return STATUS_NOT_SUPPORTED; };
-    let status = unsafe { unregister((extension as *mut PciIdeFdoExtension).cast()) };
-    if status == STATUS_SUCCESS { extension.miniport_registered = false; }
-    status
-}
 
 fn assigned_port_range(resources: &IdeResourceSet, start: u64, length: u64) -> bool {
     resources.entries[..resources.count].iter().flatten().any(|resource| {
@@ -349,8 +256,8 @@ unsafe fn send_port_control(lower: *mut DEVICE_OBJECT, code: u32, input: *const 
     unsafe {
         (*stack).major_function = IRP_MJ_INTERNAL_DEVICE_CONTROL;
         (*stack).parameters.fill(0);
-        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(8).cast::<u32>(), code);
-        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<*const c_void>(), input);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(16).cast::<u32>(), code);
+        core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().add(24).cast::<*const c_void>(), input);
     }
     let status = unsafe { IoCallDriver(lower, irp) };
     unsafe { IoFreeIrp(irp); }
@@ -447,8 +354,7 @@ unsafe extern "win64" fn pnp_complete(
         IRP_MN_START_DEVICE => {
             let hardware_status = if status == STATUS_SUCCESS {
                 let ext = unsafe { &mut *extension };
-                let discovered = initialize_compatibility_channels(ext);
-                if discovered == STATUS_SUCCESS { register_port_miniport(ext) } else { discovered }
+                initialize_compatibility_channels(ext)
             } else { status };
             if hardware_status == STATUS_SUCCESS {
                 let _ = unsafe { (*extension).controller.start_succeeded() };
@@ -476,7 +382,7 @@ unsafe extern "win64" fn pnp_complete(
                     let _ = ext.controller.stop_succeeded();
                 }
                 // Do not leave stale channel state visible after stop/removal.
-                let _ = unregister_port_miniport(ext);
+                let _ = unregister_ataport_miniport(extension);
                 ext.channels = [None; 4];
                 ext.active_channels = 0;
                 ext.present_drives = 0;
@@ -484,7 +390,7 @@ unsafe extern "win64" fn pnp_complete(
         }
         IRP_MN_REMOVE_DEVICE => {
             let ext = unsafe { &mut *extension };
-            let _ = unregister_port_miniport(ext);
+            let _ = unregister_ataport_miniport(extension);
             let lower = ext.lower_device;
             unsafe { (*extension).magic = 0; }
             if !lower.is_null() { unsafe { IoDetachDevice(lower); } }
@@ -584,7 +490,6 @@ unsafe extern "win64" fn add_device(driver: *mut c_void, pdo: *mut DEVICE_OBJECT
             active_channels: 0,
             present_drives: 0,
             channels: [None; 4],
-            miniport_registered: false,
         });
         (*fdo).flags = ((*fdo).flags & !0x80) | ((*lower).flags & (0x02 | 0x04));
     }
@@ -600,10 +505,6 @@ pub unsafe extern "win64" fn DriverEntry(driver: *mut DRIVER_OBJECT, _context: P
         }
         (*driver).driver_unload = None;
     }
-    let mut services = core::mem::MaybeUninit::<AtaPortServices>::zeroed();
-    let status = unsafe { IoQueryDriverInterface(PORT_INTERFACE_NAME.as_ptr(), PORT_INTERFACE_NAME.len() as u16, services.as_mut_ptr().cast(), core::mem::size_of::<AtaPortServices>() as u32) };
-    if status != STATUS_SUCCESS { return status; }
-    unsafe { *PORT_SERVICES.0.get() = Some(services.assume_init()); }
     unsafe { IoPnPRegisterDeviceDriver(driver.cast(), Some(add_device)) }
 }
 
