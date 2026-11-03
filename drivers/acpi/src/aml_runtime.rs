@@ -1,6 +1,11 @@
 //! AML-3 bounded runtime references, namespace bindings and conversions.
 //! The runtime owns no heap memory and performs no firmware I/O. Callers own
 //! the fixed value arena and binding table for the lifetime of an AML scope.
+/*
+ * FIXME(ACPI-PRODUCTION) — AML runtime orchestration
+ * FIXME(ACPI-PRODUCTION): Complete the interpreter runtime lifecycle: method invocation, namespace coordination, object cleanup, serialization, execution budgets, timeout handling, and safe integration with kernel callbacks. No AML callback should execute while holding unrelated PnP locks or at interrupt level.
+ */
+
 #![no_std]
 
 use crate::aml::{AmlNamespace,AmlObjectType,MAX_NAMESPACE_NODES};
