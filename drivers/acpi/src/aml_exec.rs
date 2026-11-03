@@ -20,10 +20,15 @@ struct Reader<'a>{bytes:&'a [u8],pos:usize,end:usize}
 impl<'a> Reader<'a>{
  fn byte(&mut self)->Result<u8,ExecError>{if self.pos>=self.end{return Err(ExecError::Truncated)}let v=self.bytes[self.pos];self.pos+=1;Ok(v)}
  fn take(&mut self,n:usize)->Result<&'a [u8],ExecError>{let e=self.pos.checked_add(n).ok_or(ExecError::Truncated)?;if e>self.end{return Err(ExecError::Truncated)}let s=&self.bytes[self.pos..e];self.pos=e;Ok(s)}
- // Decode a PkgLength against this Reader's end, never against the backing AML slice alone.\n // This prevents a nested control-flow package from consuming its parent's next term.\n fn pkg_end(&mut self)->Result<usize,ExecError>{let (_,e)=decode_package_length(self.bytes,self.pos,self.end).map_err(|_|ExecError::BadPackage)?;Ok(e)}
+ // Decode a PkgLength against this Reader's end, never against the backing AML slice alone.
+ // This prevents a nested control-flow package from consuming its parent's next term.
+ fn pkg_end(&mut self)->Result<usize,ExecError>{let (_,e)=decode_package_length(self.bytes,self.pos,self.end).map_err(|_|ExecError::BadPackage)?;Ok(e)}
 }
 #[derive(Clone,Copy)]
 enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+// Execution outcomes propagate through nested If/Else blocks. Only the nearest
+// While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
 struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
@@ -358,22 +363,32 @@ impl<'a,'b> Machine<'a,'b>{
     0x70=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::Store)?;},
     0x9d=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::CopyObject)?;},
     0xa0|0xa2=>{
+     // Bound the nested term list to its own AML package before evaluating any child.
+     // Predicate and body readers share that boundary, not the full method slice.
      let end=r.pkg_end()?;let plen=1+((r.bytes[r.pos]>>6)as usize);let begin=r.pos+plen;
      if begin>end{return Err(ExecError::BadPackage)}
      let mut body=Reader{bytes:r.bytes,pos:begin,end};
      let mut predicate=true;
-     if op==0xa0{\n      // If evaluates its predicate once; Else is parsed after the If package and\n      // executed only when the predicate is false.\n      predicate=self.term(&mut body)?!=0;if predicate{let flow=self.execute(&mut body,depth+1)?;if flow!=ExecFlow::Continue{return Ok(flow);}}}
+     if op==0xa0{
+      // If evaluates its predicate once; Else is parsed after the If package and
+      // executed only when the predicate is false.
+      predicate=self.term(&mut body)?!=0;if predicate{let flow=self.execute(&mut body,depth+1)?;if flow!=ExecFlow::Continue{return Ok(flow);}}}
      else{
+      // While re-evaluates its predicate at the start of the bounded body on every iteration.
       let loop_start=body.pos;
       loop{self.step()?;let mut cond=Reader{bytes:body.bytes,pos:loop_start,end:body.end};if self.term(&mut cond)?==0{break}
        let mut iteration=Reader{bytes:body.bytes,pos:cond.pos,end:body.end};
        let flow=self.execute(&mut iteration,depth+1)?;
        if iteration.pos<=loop_start{return Err(ExecError::LoopControl)}
-       // Break exits this loop; ContinueLoop restarts this loop's predicate;\n       // Return is propagated unchanged to the method boundary.\n       match flow{ExecFlow::Continue=>{},ExecFlow::Return(v)=>return Ok(ExecFlow::Return(v)),ExecFlow::Break=>break,ExecFlow::ContinueLoop=>continue}
+       // Break exits this loop; ContinueLoop restarts this loop's predicate;
+       // Return is propagated unchanged to the method boundary.
+       // The nearest While consumes Break/ContinueLoop; Return propagates outward.
+       match flow{ExecFlow::Continue=>{},ExecFlow::Return(v)=>return Ok(ExecFlow::Return(v)),ExecFlow::Break=>break,ExecFlow::ContinueLoop=>continue}
       }
      }
      r.pos=end;
-     // Else is a sibling package immediately following If, not part of its body.\n     if op==0xa0 && r.pos<r.end && r.bytes[r.pos]==0xa1 {
+     // Else is a sibling package immediately following If, not part of its body.
+     if op==0xa0 && r.pos<r.end && r.bytes[r.pos]==0xa1 {
       r.pos+=1;let else_end=r.pkg_end()?;let else_plen=1+((r.bytes[r.pos]>>6)as usize);let else_begin=r.pos+else_plen;
       if else_begin>else_end{return Err(ExecError::BadPackage)}
       if !predicate{let mut alternate=Reader{bytes:r.bytes,pos:else_begin,end:else_end};let flow=self.execute(&mut alternate,depth+1)?;if flow!=ExecFlow::Continue{return Ok(flow);}}
