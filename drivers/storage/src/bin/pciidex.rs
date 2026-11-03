@@ -127,7 +127,7 @@ unsafe extern "win64" fn dispatch(
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if !stack.is_null() && unsafe { (*stack).major_function == IRP_MJ_PNP && (*stack).minor_function == IRP_MN_REMOVE_DEVICE } {
         unsafe {
-            set_completion_routine(irp, Some(remove_complete), device.cast(), 1, 1, 1);copy_current_irp_stack_location_to_next(irp);
+            copy_current_irp_stack_location_to_next(irp);set_completion_routine(irp, Some(remove_complete), device.cast(), 1, 1, 1);
             return IoCallDriver(lower, irp);
         }
     }
