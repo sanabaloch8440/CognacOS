@@ -619,6 +619,44 @@ pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
 
 
 
+/// FACS is not an SDT and has no checksum byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FacsInfo { pub length:u32, pub hardware_signature:u32, pub firmware_waking_vector:u32, pub global_lock:u32, pub flags:u32, pub x_firmware_waking_vector:u64, pub version:u8, pub ospm_flags:u32 }
+pub fn parse_facs(bytes:&[u8])->Result<FacsInfo,AcpiError>{
+    if bytes.len()<8{return Err(AcpiError::Truncated)} if bytes.get(0..4)!=Some(b"FACS"){return Err(AcpiError::BadSignature)}
+    let length=u32le(bytes,4)? as usize;if length<64||length>bytes.len(){return Err(AcpiError::BadLength)}
+    Ok(FacsInfo{length:length as u32,hardware_signature:u32le(bytes,8)?,firmware_waking_vector:u32le(bytes,12)?,global_lock:u32le(bytes,16)?,flags:u32le(bytes,20)?,x_firmware_waking_vector:u64::from_le_bytes(bytes[24..32].try_into().map_err(|_|AcpiError::Truncated)?),version:bytes[32],ospm_flags:u32le(bytes,36)?})
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct AcpiGas { pub address_space_id:u8,pub bit_width:u8,pub bit_offset:u8,pub access_size:u8,pub address:u64 }
+fn parse_gas(bytes:&[u8],offset:usize)->Result<AcpiGas,AcpiError>{
+    let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;
+    let gas=AcpiGas{address_space_id:s[0],bit_width:s[1],bit_offset:s[2],access_size:s[3],address:u64::from_le_bytes(s[4..12].try_into().map_err(|_|AcpiError::Truncated)?)};
+    if gas.address_space_id>1||gas.address==0||gas.bit_width==0||gas.bit_offset>=gas.bit_width||gas.access_size>4{return Err(AcpiError::MalformedEntry)} Ok(gas)
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct HpetInfo { pub event_timer_block_id:u32,pub base:AcpiGas,pub sequence_number:u8,pub minimum_tick:u16,pub page_protection:u8 }
+pub fn parse_hpet(bytes:&[u8])->Result<HpetInfo,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"HPET"))?;if h.length<56{return Err(AcpiError::BadLength)} let base=parse_gas(bytes,40)?;let page_protection=bytes[55];if page_protection>2{return Err(AcpiError::MalformedEntry)}
+    Ok(HpetInfo{event_timer_block_id:u32le(bytes,36)?,base,sequence_number:bytes[52],minimum_tick:u16::from_le_bytes([bytes[53],bytes[54]]),page_protection})
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BgrtInfo { pub version:u16,pub status:u8,pub image_type:u8,pub image_address:u64,pub offset_x:u32,pub offset_y:u32 }
+pub fn parse_bgrt(bytes:&[u8])->Result<BgrtInfo,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"BGRT"))?;if h.length<56{return Err(AcpiError::BadLength)} let version=u16::from_le_bytes([bytes[36],bytes[37]]);let status=bytes[38];let image_type=bytes[39];let image_address=u64::from_le_bytes(bytes[40..48].try_into().map_err(|_|AcpiError::Truncated)?);
+    if version!=1||status&!1!=0||image_type!=0||(status&1!=0&&image_address==0){return Err(AcpiError::MalformedEntry)}
+    Ok(BgrtInfo{version,status,image_type,image_address,offset_x:u32le(bytes,48)?,offset_y:u32le(bytes,52)?})
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct GtdtInfo { pub counter_control_base:u64,pub secure_el1_interrupt:u32,pub nonsecure_el1_interrupt:u32,pub virtual_el1_interrupt:u32,pub nonsecure_el2_interrupt:u32,pub counter_read_base:u64,pub platform_timer_count:u32,pub platform_timer_offset:u32 }
+pub fn parse_gtdt(bytes:&[u8])->Result<GtdtInfo,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"GTDT"))?;if h.length<96{return Err(AcpiError::BadLength)} let count=u32le(bytes,88)?;let offset=u32le(bytes,92)?;if count>0&&(offset<96||offset>=h.length){return Err(AcpiError::MalformedEntry)}
+    Ok(GtdtInfo{counter_control_base:u64::from_le_bytes(bytes[36..44].try_into().map_err(|_|AcpiError::Truncated)?),secure_el1_interrupt:u32le(bytes,48)?,nonsecure_el1_interrupt:u32le(bytes,56)?,virtual_el1_interrupt:u32le(bytes,64)?,nonsecure_el2_interrupt:u32le(bytes,72)?,counter_read_base:u64::from_le_bytes(bytes[80..88].try_into().map_err(|_|AcpiError::Truncated)?),platform_timer_count:count,platform_timer_offset:offset})
+}
+pub fn validate_pptt(bytes:&[u8])->Result<AcpiTableHeader,AcpiError>{
+    let h=validate_sdt(bytes,Some(*b"PPTT"))?;let end=h.length as usize;let mut off=36usize;while off<end{if off.checked_add(4).filter(|v|*v<=end).is_none(){return Err(AcpiError::MalformedEntry)}let size=bytes[off+1] as usize;if size<4||off.checked_add(size).filter(|v|*v<=end).is_none(){return Err(AcpiError::MalformedEntry)}off+=size;}Ok(h)
+}
+
 /// Maximum NUMA proximity domains retained from SRAT/SLIT firmware tables.
 pub const MAX_NUMA_DOMAINS:usize=64;
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
