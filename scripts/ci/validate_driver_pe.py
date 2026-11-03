@@ -1,9 +1,35 @@
 #!/usr/bin/env python3
-"""Validate every PE32+ driver image and its import contract."""
+"""Validate every PE32+ driver image and its import contract. Native driver images may import explicitly enumerated ntoskrnl exports; the loader resolves these before DriverEntry."""
 import struct
 from pathlib import Path
 
 EXPECTED_IMPORTS = {
+    "ataport.sys": {
+        "ntoskrnl.exe": [
+            "IoCompleteRequest", "IoCreateDevice", "IoDeleteDevice",
+            "IoAttachDeviceToDeviceStack", "IoDetachDevice", "IoCallDriver",
+            "IoCopyCurrentIrpStackLocationToNext", "IoSkipCurrentIrpStackLocation",
+            "IoSetCompletionRoutine", "IoPnPQueryBusInterface",
+            "IoPnPRegisterDeviceDriver",
+        ],
+    },
+    "pciidex.sys": {
+        "ntoskrnl.exe": [
+            "IoCreateDevice", "IoDeleteDevice", "IoAttachDeviceToDeviceStack",
+            "IoDetachDevice", "IoCallDriver", "IoSkipCurrentIrpStackLocation",
+            "IoSetCompletionRoutine", "IoPnPQueryBusInterface",
+            "IoPnPRegisterDeviceDriver",
+        ],
+    },
+    "pciide.sys": {
+        "ntoskrnl.exe": [
+            "IoCreateDevice", "IoDeleteDevice", "IoAttachDeviceToDeviceStack",
+            "IoDetachDevice", "IoCallDriver", "IoSkipCurrentIrpStackLocation",
+            "IoCopyCurrentIrpStackLocationToNext", "IoSetCompletionRoutine",
+            "IoPnPQueryBusInterface", "IoPnPRegisterDeviceDriver",
+            "IoAllocateIrp", "IoGetNextIrpStackLocation", "IoFreeIrp", "DbgPrint",
+        ],
+    },
     "pci.sys": {
         "ntoskrnl.exe": ["IoCreateDevice", "IoDeleteDevice", "ExAllocatePoolWithTag", "ExFreePoolWithTag"],
     },
