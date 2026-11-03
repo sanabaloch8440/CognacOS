@@ -693,3 +693,6 @@ mod ntstatus_adapter_tests {
 
 /// Versioned port/miniport ABI shared by ataport.sys and controller drivers.
 pub mod ata_port;
+
+/// Disk-class identity, geometry, and partition discovery.
+pub mod disk_class;
