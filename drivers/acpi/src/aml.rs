@@ -185,9 +185,8 @@ fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:
                     if !matches!(existing,AmlObjectType::Root|AmlObjectType::Scope|AmlObjectType::Device|AmlObjectType::Processor|AmlObjectType::PowerResource|AmlObjectType::ThermalZone){return Err(AmlError::InvalidParent)}
                     
                 } else if kind==AmlObjectType::External && existing==AmlObjectType::External {
-                    // Repeated External declarations are compatible only when
-                    // the object kind and method argument count agree.
-                    if ns.nodes[found as usize].external_object_type!=flags && ns.nodes[found as usize].external_object_type!=0{return Err(AmlError::DuplicateName)}
+                    // The External parser validates repeated declaration
+                    // compatibility after it has decoded the declared type.
                 } else if existing==AmlObjectType::External && ns.nodes[found as usize].external_placeholder {
                     ns.nodes[found as usize].object_type=kind;
                     ns.nodes[found as usize].method_flags=flags;
@@ -383,7 +382,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8)->Resu
                 let alias_index=resolve_path(ns,parent,&alias,true,AmlObjectType::Alias,0,0,0)?;
                 ns.nodes[alias_index as usize].alias_target=target;
             }
-            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};let id=resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;let node=&mut ns.nodes[id as usize];node.external_placeholder=true;node.external_owner=ns.loading_table;node.external_object_type=object_type;node.external_method_flags=flags;}
+            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};let id=resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;let node=&mut ns.nodes[id as usize];if node.external_placeholder&&(node.external_object_type!=object_type||node.external_method_flags!=flags){return Err(AmlError::DuplicateName)}node.external_placeholder=true;node.external_owner=ns.loading_table;node.external_object_type=object_type;node.external_method_flags=flags;}
             0x5b=>{
                 let ext=c.byte()?;
                 match ext{
