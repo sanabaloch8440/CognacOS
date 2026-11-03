@@ -678,7 +678,8 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
                 let Some(slot)=mutants.records.iter().position(|record|record.object==0) else {
                     return 0xC000_009A_u32 as i32;
                 };
-                mutants.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned:false};
+                let abandoned=unsafe{object.cast::<u8>().add(48).read()&1!=0};
+                mutants.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned};
             }
         }
         let all_signalled = current_id.is_some_and(|id|object_list.iter().copied().all(|object|{
