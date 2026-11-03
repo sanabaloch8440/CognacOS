@@ -76,10 +76,8 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
         loop{
             let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{
-                // No owner and no queued waiter: retire the registry entry.
-                // The caller-owned header remains initialized and is registered
-                // again on its next wait operation.
-                if !record.abandoned { *record=MutantRecord::EMPTY; }
+                // Retirement is deferred until wait-all groups have been
+                // re-evaluated below; they do not use the single-waiter queue.
                 break (old,None,STATUS_SUCCESS)
             };
             if waiter.timed_out{
@@ -98,6 +96,17 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         let _=crate::thread::complete_wait(id,status);
     }
     complete_ready_wait_all_groups();
+    // Retire only after wait-all reservation has had a chance to acquire the
+    // now-signalled mutant. The group lookup is completed before taking MUTANTS
+    // to preserve the GROUPS -> MUTANTS lock order used by wait-all callbacks.
+    if !crate::dispatcher::has_wait_all_object(object as u64) {
+        let mut table=MUTANTS.lock();
+        if let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) {
+            if record.owner==0&&record.recursion==0&&!record.abandoned {
+                *record=MutantRecord::EMPTY;
+            }
+        }
+    }
     old
 }
 pub unsafe extern "win64" fn ke_release_mutex(object:*mut DispatcherHeader,wait:u8)->i32{
