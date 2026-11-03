@@ -551,7 +551,7 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
             // KeInitializeMutex has a void ABI. If its internal bounded
             // registry is exhausted, do not enqueue forever on an object that
             // can never acquire ownership or be released by the mutant path.
-            if status.is_none()&&!mutant_is_registered(object){return STATUS_INSUFFICIENT_RESOURCES;}
+            if status.is_none()&&!mutant_is_registered(object){return 0xC000_009A_u32 as i32;}
             status
         };
         if let Some(status)=acquired{return status}
