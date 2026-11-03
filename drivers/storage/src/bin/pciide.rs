@@ -174,15 +174,13 @@ fn assigned_port_range(resources: &IdeResourceSet, start: u64, length: u64) -> b
     })
 }
 
-fn assigned_port_base(resources: &IdeResourceSet, minimum_length: u32, ordinal: usize) -> Option<u16> {
+fn assigned_port_resource(resources: &IdeResourceSet, ordinal: usize) -> Option<(u16, u32)> {
     let mut seen = 0usize;
     for resource in resources.entries[..resources.count].iter().flatten() {
-        if resource.kind != ResourceKind::Port || resource.length < minimum_length { continue; }
-        // x86 IN/OUT instructions address a 16-bit I/O-port space. Refuse
-        // truncated BAR addresses instead of silently aliasing another port.
+        if resource.kind != ResourceKind::Port { continue; }
         let end = resource.start.checked_add(resource.length as u64)?;
-        if resource.start > u16::MAX as u64 || end > (u16::MAX as u64) + 1 { continue; }
-        if seen == ordinal { return Some(resource.start as u16); }
+        if resource.start > u16::MAX as u64 || end > (u16::MAX as u64) + 1 { return None; }
+        if seen == ordinal { return Some((resource.start as u16, resource.length)); }
         seen += 1;
     }
     None
@@ -211,11 +209,10 @@ fn initialize_compatibility_channels(extension: &mut PciIdeFdoExtension) -> i32 
             // BAR0/1 are primary command/control, BAR2/3 secondary.
             let command_ordinal = if secondary { 2 } else { 0 };
             let control_ordinal = command_ordinal + 1;
-            let Some(command) = assigned_port_base(resources, 8, command_ordinal) else { continue; };
-            let Some(control_bar) = assigned_port_base(resources, 3, control_ordinal) else { continue; };
+            let Some((command, command_size)) = assigned_port_resource(resources, command_ordinal) else { continue; };
+            let Some((control_bar, control_size)) = assigned_port_resource(resources, control_ordinal) else { continue; };
+            if command_size < 8 || control_size < 3 { continue; }
             let Some(control) = control_bar.checked_add(2) else { continue; };
-            if !assigned_port_range(resources, command as u64, 8)
-                || !assigned_port_range(resources, control_bar as u64, 3) { continue; }
             (command, control)
         } else {
             if !assigned_port_range(resources, legacy_command_resource, command_len)
