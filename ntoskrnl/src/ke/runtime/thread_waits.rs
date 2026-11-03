@@ -512,7 +512,10 @@ fn consume_wait_all_object(thread_id:u64,object_id:u64)->i32{
         if record.owner==thread_id{record.recursion=record.recursion.saturating_add(1);}
         else{record.owner=thread_id;record.recursion=1;}
         let abandoned=record.abandoned;record.abandoned=false;
-        unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);}
+        unsafe{
+            object.cast::<u8>().add(48).write(0);
+            (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);
+        }
         return if abandoned{0x80}else{STATUS_SUCCESS};
     }
     // The caller holds DISPATCHER_OBJECT_LOCK. Notification objects remain
