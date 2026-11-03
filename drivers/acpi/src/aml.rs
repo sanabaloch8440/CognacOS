@@ -420,7 +420,9 @@ struct ParseContext { term_offset:usize, opcode:Option<u8>, namespace_parent:u16
 fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8,context:&mut ParseContext)->Result<(),AmlError>{
     if depth>32{return Err(AmlError::BadDefinitionBlock)}
     while c.pos<c.end{
+        let term_offset=c.pos;
         let op=c.byte()?;
+        *context=ParseContext{term_offset,opcode:Some(op),namespace_parent:parent};
         match op{
             0x10|0x14=>{
                 let (_,end)=decode_package_length(c.bytes,c.pos,c.end)?;
