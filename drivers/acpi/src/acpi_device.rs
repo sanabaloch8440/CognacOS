@@ -144,6 +144,10 @@ fn evaluate_method_value_with_args(
  if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
  let value=aml_exec::execute_method_typed_with_sync(aml,namespace,method,args,64,sync)?;
  match value.kind{
+  // AML methods without an explicit Return have an Empty result. The
+  // caller of programming methods such as _SRS treats successful execution
+  // as the operation result and does not interpret this placeholder value.
+  AmlValueKind::Empty=>Ok(AcpiMethodValue::Integer(0)),
   AmlValueKind::Integer=>Ok(AcpiMethodValue::Integer(value.integer)),
   AmlValueKind::String=>{
    let length=value.byte_length as usize;
