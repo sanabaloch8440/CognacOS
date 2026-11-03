@@ -347,6 +347,34 @@ fn encode_extended_irq(output:&mut [u8],cursor:&mut usize,flags:u8,interrupts:&[
 }
 
 #[cfg(test)]
+mod cm_resource_list_tests{
+ use super::*;
+ #[test]
+ fn parses_windows_x64_start_device_resource_list(){
+  let mut bytes=[0u8;60];
+  bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+  bytes[4..8].copy_from_slice(&5u32.to_le_bytes());
+  bytes[8..12].copy_from_slice(&0u32.to_le_bytes());
+  bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+  bytes[14..16].copy_from_slice(&1u16.to_le_bytes());
+  bytes[16..20].copy_from_slice(&2u32.to_le_bytes());
+  // Port descriptor: exclusive, 16-bit decode, 0x3f8..0x3ff.
+  bytes[20]=1;bytes[21]=1;bytes[22..24].copy_from_slice(&2u16.to_le_bytes());
+  bytes[24..32].copy_from_slice(&0x3f8u64.to_le_bytes());
+  bytes[32..36].copy_from_slice(&8u32.to_le_bytes());
+  // Level-triggered, shared interrupt with vector 9.
+  bytes[40]=2;bytes[41]=3;bytes[42..44].copy_from_slice(&0u16.to_le_bytes());
+  bytes[44..48].copy_from_slice(&9u32.to_le_bytes());
+  bytes[48..52].copy_from_slice(&9u32.to_le_bytes());
+  bytes[52..60].copy_from_slice(&u64::MAX.to_le_bytes());
+  let parsed=parse_cm_resource_list(&bytes).unwrap();
+  assert_eq!(parsed.count,2);
+  assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x3f8,maximum:0x3f8,length:8,decode_16_bit:true,..})));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
+ }
+}
+
+#[cfg(test)]
 mod assigned_resource_encoding_tests{
  use super::*;
  #[test]
