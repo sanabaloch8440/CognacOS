@@ -10,7 +10,7 @@ EXPECTED_IMPORTS = {
             "IoAttachDeviceToDeviceStack", "IoDetachDevice", "IoCallDriver",
             "IoCopyCurrentIrpStackLocationToNext", "IoSkipCurrentIrpStackLocation",
             "IoSetCompletionRoutine", "IoPnPQueryBusInterface",
-            "IoPnPRegisterDeviceDriver", "IoPnPEnumerateBus", "IoMountFAT32Volume",
+            "IoPnPRegisterDeviceDriver", "IoPnPEnumerateBus", "IoMountFAT32Volume", "IoFAT32StorageRoundTripTest",
         ],
     },
     "disk.sys": {
