@@ -64,6 +64,23 @@ impl<'a,'b> Machine<'a,'b>{
  }
  fn integer_value(value:u64)->AmlRuntimeValue{let mut out=AmlRuntimeValue::EMPTY;out.kind=AmlValueKind::Integer;out.integer=value;out}
  fn uninitialized_value()->AmlRuntimeValue{let mut out=AmlRuntimeValue::EMPTY;out.kind=AmlValueKind::Uninitialized;out}
+ fn to_bcd(value:u64,width_bits:u8)->Result<u64,ExecError>{
+  let digits=(width_bits/4) as usize;let mut remaining=value;let mut result=0u64;
+  for index in 0..digits{result|=(remaining%10)<<(index*4);remaining/=10;}
+  if remaining!=0{return Err(ExecError::TargetTypeMismatch)}
+  Ok(result)
+ }
+ fn from_bcd(value:u64,width_bits:u8)->Result<u64,ExecError>{
+  let digits=(width_bits/4) as usize;let mut result=0u64;let mut multiplier=1u64;
+  for index in 0..digits{
+   let digit=(value>>(index*4))&0xf;
+   if digit>9{return Err(ExecError::TargetTypeMismatch)}
+   result=result.checked_add(digit.checked_mul(multiplier).ok_or(ExecError::TargetTypeMismatch)?)
+       .ok_or(ExecError::TargetTypeMismatch)?;
+   multiplier=multiplier.checked_mul(10).ok_or(ExecError::TargetTypeMismatch)?;
+  }
+  Ok(result)
+ }
  fn integer_mask(&self)->u64{if self.integer_width_bits==32{u32::MAX as u64}else{u64::MAX}}
  fn normalize(&self,value:u64)->u64{value&self.integer_mask()}
  fn operand_integer(&self,value:&AmlRuntimeValue)->Result<u64,ExecError>{to_integer_implicit(value,self.integer_width_bits).map_err(|_|ExecError::NonIntegerName)}
@@ -251,6 +268,18 @@ impl<'a,'b> Machine<'a,'b>{
   self.step()?;let op=r.byte()?;
   match op{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
+   0x5b=>{
+    let extended=r.byte()?;
+    let operand=self.term_depth(r,depth+1)?;
+    let result=match extended{
+     0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
+     0x29=>Self::to_bcd(operand,self.integer_width_bits)?,
+     _=>return Err(ExecError::UnsupportedOpcode),
+    };
+    let target=self.target(r)?;
+    self.store_value(target,Self::integer_value(result),StoreMode::CopyObject)?;
+    Ok(result)
+   }
    0x71|0x83=>{let value=self.term_value(r)?;self.operand_integer(&value)},
    0x96..=0x99|0x9c=>{let value=self.conversion_value(r,op)?;self.operand_integer(&value)},0x0a=>Ok(r.byte()? as u64),
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
@@ -752,6 +781,14 @@ mod tests{
   assert_eq!(evaluate_term_argument(&[0x7b,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0,6)));
   assert_eq!(evaluate_term_argument(&[0x7d,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0xff,6)));
   assert_eq!(evaluate_term_argument(&[0x77,0x0a,7,0x0a,6,0x00]),Ok((42,6)));
+ }
+ #[test]fn executes_to_bcd_and_from_bcd_extended_conversion_opcodes(){
+  // Decimal 305419896 is packed as eight BCD digits: 0x30541989.
+  assert_eq!(evaluate_term_argument(&[0x5b,0x29,0x0c,0x78,0x56,0x34,0x12,0x00]),Ok((0x30541989,8)));
+  assert_eq!(evaluate_term_argument(&[0x5b,0x28,0x0c,0x89,0x19,0x54,0x30,0x00]),Ok((305419896,8)));
+  assert_eq!(evaluate_term_argument(&[0x5b,0x28,0x0c,0xfa,0x12,0x00,0x00,0x00]),Err(ExecError::TargetTypeMismatch));
+  // A 64-bit BCD result cannot encode more than sixteen decimal digits.
+  assert_eq!(evaluate_term_argument(&[0x5b,0x29,0x0e,0x00,0xe1,0xf5,0x05,0x00,0x00,0x00,0x00]),Err(ExecError::TargetTypeMismatch));
  }
  #[test]fn evaluates_logical_and_all_bitwise_operator_families(){
   assert_eq!(evaluate_term_argument(&[0x7b,0x0a,0xf0,0x0a,0x0f,0x00]),Ok((0,6)));
