@@ -612,13 +612,13 @@ mod tests{
     }
     #[test]fn parses_processor_powerresource_and_thermalzone_fixed_prefixes(){
         let aml=[
-            0x5b,0x83,0x0b,b'C',b'P',b'U',b'0',0,0,0,0,0,0,
-            0x5b,0x84,0x08,b'P',b'W',b'R',b'0',0,0,0,
+            0x5b,0x83,0x0b,b'C',b'P',b'U',b'0',0x42,0x78,0x56,0x34,0x12,0x06,
+            0x5b,0x84,0x08,b'P',b'W',b'R',b'0',3,0x67,0x45,
             0x5b,0x85,0x05,b'T',b'Z',b'0',b'_'
         ];
         let mut ns=AmlNamespace::new();assert!(load_definition_block(&aml,&mut ns).is_ok());
-        assert_eq!(ns.nodes[1].object_type,AmlObjectType::Processor);assert_eq!(ns.nodes[1].processor_id,0);assert_eq!(ns.nodes[1].processor_pblk_address,0);assert_eq!(ns.nodes[1].processor_pblk_length,0);
-        assert_eq!(ns.nodes[2].object_type,AmlObjectType::PowerResource);assert_eq!(ns.nodes[2].power_resource_system_level,0);assert_eq!(ns.nodes[2].power_resource_order,0);
+        assert_eq!(ns.nodes[1].object_type,AmlObjectType::Processor);assert_eq!(ns.nodes[1].processor_id,0x42);assert_eq!(ns.nodes[1].processor_pblk_address,0x12345678);assert_eq!(ns.nodes[1].processor_pblk_length,6);
+        assert_eq!(ns.nodes[2].object_type,AmlObjectType::PowerResource);assert_eq!(ns.nodes[2].power_resource_system_level,3);assert_eq!(ns.nodes[2].power_resource_order,0x4567);
         assert_eq!(ns.nodes[3].object_type,AmlObjectType::ThermalZone);
     }
     #[test]fn rejects_zero_length_and_malformed_access_fields(){
