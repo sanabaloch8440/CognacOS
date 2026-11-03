@@ -478,7 +478,6 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
 /// parent disappears are also removed; surviving aliases/fields are invalidated
 /// if their referenced target belonged to the unloaded table.
 pub fn unload_definition_block(namespace:&mut AmlNamespace,table_id:u32)->usize{
-    if table_id==0{return 0}
     let old_count=namespace.count;
     // A real declaration may temporarily satisfy an External placeholder
     // from an earlier table. When its owning table unloads, restore that
