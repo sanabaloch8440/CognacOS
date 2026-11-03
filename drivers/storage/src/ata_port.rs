@@ -52,19 +52,22 @@ pub type AtaMiniportInitialize = unsafe extern "win64" fn(
     translated_resources: *const c_void,
 ) -> i32;
 pub type AtaMiniportStart = unsafe extern "win64" fn(miniport_context: *mut c_void) -> i32;
+/// Synchronous PIO submission contract. The port invokes this only from a
+/// PASSIVE_LEVEL request path; the miniport must finish the bounded transfer
+/// before returning and report the exact byte count. Asynchronous/DMA queues
+/// require a later interface version with cancellation and rundown services.
 pub type AtaMiniportSubmit = unsafe extern "win64" fn(
     miniport_context: *mut c_void,
     request: *const AtaPortRequest,
-    request_context: *mut c_void,
-    completion: AtaPortCompletion,
+    bytes_transferred: *mut u32,
 ) -> i32;
 pub type AtaMiniportReset = unsafe extern "win64" fn(miniport_context: *mut c_void) -> i32;
 pub type AtaMiniportStop = unsafe extern "win64" fn(miniport_context: *mut c_void) -> i32;
 pub type AtaMiniportUnload = unsafe extern "win64" fn(miniport_context: *mut c_void);
 
 /// Controller miniports register this table with ataport during AddDevice/start.
-/// The port driver owns IRP queueing, cancellation, request lifetime, DMA mapping,
-/// timeout/reset policy and PnP teardown; the miniport owns controller registers.
+/// Version 1 intentionally supports bounded synchronous PIO only. The port owns
+/// IRP validation/completion and request lifetime; the miniport owns registers.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AtaPortMiniportInterface {
@@ -176,14 +179,6 @@ impl AtaRequestTable {
         if s.state != AtaRequestState::Queued { return Err(0xC000_0184u32 as i32); }
         s.state = AtaRequestState::Submitted; Ok(())
     }
-    /// Atomically claim a submitted request for its one completion callback.
-    /// The caller validates byte count/status and releases the slot afterwards.
-    pub fn take_for_completion(&mut self, id: u64) -> Result<(*mut c_void, u32), i32> {
-        let s = self.find_mut(id)?;
-        if s.state != AtaRequestState::Submitted { return Err(0xC000_0184u32 as i32); }
-        s.state = AtaRequestState::Completing;
-        Ok((s.request_context, s.expected_bytes))
-    }
     pub fn begin_completion(&mut self, id: u64, bytes: u32) -> Result<*mut c_void, i32> {
         let s = self.find_mut(id)?;
         if s.state != AtaRequestState::Submitted || bytes > s.expected_bytes {
@@ -228,9 +223,7 @@ mod request_table_tests {
         let id = q.reserve(core::ptr::null_mut(), 4096).unwrap();
         q.mark_submitted(id).unwrap();
         assert!(q.begin_completion(id, 4097).is_err());
-        assert!(q.release(id).is_err());
-        let (context, expected) = q.take_for_completion(id).unwrap();
-        assert!(context.is_null()); assert_eq!(expected, 4096);
+        assert!(q.begin_completion(id, 512).is_ok());
         q.release(id).unwrap();
         assert_eq!(q.outstanding(), 0);
         assert!(q.mark_submitted(id).is_err());
