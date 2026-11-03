@@ -86,6 +86,7 @@ pub struct AtaPortMiniportInterface {
 pub type AtaPortRegisterMiniport = unsafe extern "win64" fn(
     interface: *const AtaPortMiniportInterface,
 ) -> i32;
+pub type AtaPortUnregisterMiniport = unsafe extern "win64" fn(miniport_context: *mut c_void) -> i32;
 
 /// Versioned port services exposed to miniports. DMA and interrupt services are
 /// supplied by ntoskrnl/HAL, never reimplemented by pciide.sys.
@@ -95,6 +96,7 @@ pub struct AtaPortServices {
     pub size: u32,
     pub version: u32,
     pub register_miniport: Option<AtaPortRegisterMiniport>,
+    pub unregister_miniport: Option<AtaPortUnregisterMiniport>,
     pub allocate_common_buffer: Option<unsafe extern "win64" fn(*mut c_void, u32, *mut u64) -> *mut c_void>,
     pub free_common_buffer: Option<unsafe extern "win64" fn(*mut c_void, *mut c_void, u64, u32)>,
     pub connect_interrupt: Option<unsafe extern "win64" fn(*mut c_void) -> i32>,
