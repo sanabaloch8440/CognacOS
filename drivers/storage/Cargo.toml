@@ -38,3 +38,7 @@ path = "src/bin/pciide.rs"
 [[bin]]
 name = "atapi"
 path = "src/bin/atapi.rs"
+
+[[bin]]
+name = "partmgr"
+path = "src/bin/partmgr.rs"
