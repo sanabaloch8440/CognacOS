@@ -256,7 +256,7 @@ mod tests{
     fn field_read_write_preserves_adjacent_bits(){
         // OperationRegion(REGN,SystemMemory,0,8); Field(REGN,Preserve){Offset? FOO:5}
         let aml=[0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,8,
-                 0x5b,0x81,0x0e,b'R',b'E',b'G',b'N',0x01,0x01,0x00,b'F',b'O',b'O',b'_',0x05];
+                 0x5b,0x81,0x0d,b'R',b'E',b'G',b'N',0x01,0x01,0x00,b'F',b'O',b'O',b'_',0x05];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let id=ns.find_child(0,*b"FOO_").unwrap();
         let mut mem=Memory{bytes:[0b1011_0100;32],locked:false};
