@@ -8,6 +8,8 @@
 
 #![no_std]
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
+use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,AmlValueKind};
+use crate::aml_runtime::to_integer_implicit;
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit}
@@ -25,11 +27,13 @@ impl<'a> Reader<'a>{
 enum Target{Null,Local(usize),Arg(usize)}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(u64),Break,ContinueLoop}
-struct Machine<'a>{locals:[u64;8],args:[u64;7],steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
+struct Machine<'a>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:AmlObjectArena,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
 impl<'a> Machine<'a>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn target(r:&mut Reader<'_>)->Result<Target,ExecError>{let op=r.byte()?;match op{0x00=>Ok(Target::Null),0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),_=>Err(ExecError::BadTarget)}}
- fn store(&mut self,t:Target,v:u64){match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=v,Target::Arg(i)=>self.args[i]=v}}
+ fn integer_value(value:u64)->AmlRuntimeValue{let mut out=AmlRuntimeValue::EMPTY;out.kind=AmlValueKind::Integer;out.integer=value;out}
+ fn operand_integer(&self,value:&AmlRuntimeValue)->Result<u64,ExecError>{to_integer_implicit(value,self.integer_width_bits).map_err(|_|ExecError::NonIntegerName)}
+ fn store(&mut self,t:Target,v:u64){let value=Self::integer_value(v);match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=value,Target::Arg(i)=>self.args[i]=value}}
  fn term(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{self.term_depth(r,0)}
  fn term_depth(&mut self,r:&mut Reader<'_>,depth:u8)->Result<u64,ExecError>{
   if depth>32{return Err(ExecError::NestingLimit)}
@@ -39,7 +43,7 @@ impl<'a> Machine<'a>{
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
-   0x60..=0x67=>Ok(self.locals[(op-0x60)as usize]),0x68..=0x6e=>Ok(self.args[(op-0x68)as usize]),
+   0x60..=0x67=>self.operand_integer(&self.locals[(op-0x60)as usize]),0x68..=0x6e=>self.operand_integer(&self.args[(op-0x68)as usize]),
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
     let v=match op{
@@ -56,7 +60,7 @@ impl<'a> Machine<'a>{
    }
    0x75|0x76=>{
     let t=Self::target(r)?;
-    let current=match t{Target::Null=>0,Target::Local(i)=>self.locals[i],Target::Arg(i)=>self.args[i]};
+    let current=match t{Target::Null=>0,Target::Local(i)=>self.operand_integer(&self.locals[i])?,Target::Arg(i)=>self.operand_integer(&self.args[i])?};
     let value=if op==0x75{current.wrapping_add(1)}else{current.wrapping_sub(1)};
     self.store(t,value);Ok(value)
    }
@@ -85,15 +89,15 @@ impl<'a> Machine<'a>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[0u64;7];
       for slot in call_args.iter_mut().take(count){*slot=self.term(r)?;}
-      execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1)
+      execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits)
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
       let end=start.checked_add(entry.body_length as usize).ok_or(ExecError::InvalidMethod)?;
       if end>self.aml.len(){return Err(ExecError::InvalidMethod)}
-      let (value,consumed)=evaluate_term_argument(&self.aml[start..end])?;
-      if consumed!=end-start{return Err(ExecError::NonIntegerName)}
-      Ok(value)
+      let value_id=decode_namespace_name(self.aml,self.namespace,canonical,&mut self.arena).map_err(|_|ExecError::NonIntegerName)?;
+      let value=*self.arena.get(value_id).ok_or(ExecError::NonIntegerName)?;
+      self.operand_integer(&value)
      }
      _=>Err(ExecError::NonIntegerName),
     }
@@ -147,7 +151,8 @@ impl<'a> Machine<'a>{
 /// evaluate BufferSize expressions without guessing their encoded length.
 pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
  let namespace=AmlNamespace::new();
- let mut machine=Machine{locals:[0;8],args:[0;7],steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
+ let zero=Machine::integer_value(0);
+ let mut machine=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
  let mut reader=Reader{bytes,pos:0,end:bytes.len()};
  let value=machine.term(&mut reader)?;
  Ok((value,reader.pos))
@@ -157,7 +162,7 @@ pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
 /// Only integer arguments and scalar operations are currently supported.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64],call_depth:u8)->Result<u64,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64],call_depth:u8,integer_width_bits:u8)->Result<u64,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
@@ -166,18 +171,57 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  let expected=(node.method_flags&7)as usize;if args.len()!=expected||args.len()>7{return Err(ExecError::BadArgumentCount)}
  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
  if end>aml.len(){return Err(ExecError::InvalidMethod)}
- let mut m=Machine{locals:[0;8],args:[0;7],steps:0,aml,namespace,scope:node.parent,call_depth};m.args[..args.len()].copy_from_slice(args);
+ if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
+ let zero=Machine::integer_value(0);
+ let mut m=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
+ for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=Machine::integer_value(value);}
  let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(value)
+}
+
+
+/// Execute a scalar-returning AML method using the Integer width encoded by
+/// the containing DefinitionBlock (32 bits for revision 1, otherwise 64).
+pub fn execute_method_with_integer_width(aml:&[u8],namespace:&AmlNamespace,
+    method_index:u16,args:&[u64],integer_width_bits:u8)->Result<AmlValue,ExecError>{
+    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits).map(AmlValue::Integer)
 }
 
 /// Execute a loaded method with a fresh AML frame. Nested invocations receive
 /// independent Local/Arg storage and share only the bounded per-frame budget.
 pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[u64])->Result<AmlValue,ExecError>{
- execute_method_inner(aml,namespace,method_index,args,0).map(AmlValue::Integer)
+ execute_method_inner(aml,namespace,method_index,args,0,64).map(AmlValue::Integer)
 }
 #[cfg(test)]
 mod tests{
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
+ #[test]fn implicit_source_conversion_reads_string_and_buffer_name_objects(){
+  let string_aml=[
+   0x08,b'S',b'T',b'R',b'0',0x0d,b'2',b'A',0,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'S',b'T',b'R',b'0',0x01,0x00
+  ];
+  let mut ns=AmlNamespace::new();load_definition_block(&string_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&string_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x2b));
+
+  let buffer_aml=[
+   0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,0x34,0x12,
+   0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x72,b'B',b'U',b'F',b'0',0x01,0x00
+  ];
+  let mut ns=AmlNamespace::new();load_definition_block(&buffer_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&buffer_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x1235));
+ }
+
+ #[test]fn method_local_and_argument_string_values_use_implicit_integer_conversion(){
+  let mut namespace=AmlNamespace::new();
+  let mut aml=[0x14,0x0d,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,0xa4,0x72,0x60,0x01,0x00];
+  load_definition_block(&aml,&mut namespace).unwrap();
+  let id=namespace.find_child(0,*b"TEST").unwrap();
+  // Existing public entry point passes Integer args; typed Name operands are
+  // exercised above while Local/Arg scalar values remain width-aware.
+  assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
  #[test]fn invokes_nested_method_with_an_independent_local_frame(){
   // MTH0 copies Arg0 to its Local0 and returns it. MTH1 keeps 7 in its own
   // Local0 while invoking MTH0; the nested frame must not overwrite it.
