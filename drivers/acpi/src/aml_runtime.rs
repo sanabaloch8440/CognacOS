@@ -485,20 +485,29 @@ impl AmlMethodFrame {
     /// are copied into the frame and must be live runtime arena objects.
     pub fn new(arguments:&[u16],arena:&mut AmlObjectArena)->Result<Self,RuntimeError>{
         if arguments.len()>7{return Err(RuntimeError::InvalidReference)}
-        let mut uninitialized=AmlRuntimeValue::EMPTY;
-        uninitialized.kind=AmlValueKind::Uninitialized;
-        let empty=arena.allocate(uninitialized)?;
-        let mut frame=Self{
-            locals:[empty;8],arguments:[empty;7],
-            local_bound:[true;8],argument_bound:[false;7],
-        };
-        for (index,id) in arguments.iter().copied().enumerate(){
-            let value=arena.get(id).ok_or(RuntimeError::InvalidReference)?;
+        // Validate argument handles before reserving frame storage, then roll
+        // back every allocation if any deep copy cannot be completed.
+        for id in arguments{
+            let value=arena.get(*id).ok_or(RuntimeError::InvalidReference)?;
             validate_runtime_value(value,arena)?;
-            frame.arguments[index]=clone_value_tree(id,arena)?;
-            frame.argument_bound[index]=true;
         }
-        Ok(frame)
+        let checkpoint=arena.count;
+        let result=(||{
+            let mut uninitialized=AmlRuntimeValue::EMPTY;
+            uninitialized.kind=AmlValueKind::Uninitialized;
+            let empty=arena.allocate(uninitialized)?;
+            let mut frame=Self{
+                locals:[empty;8],arguments:[empty;7],
+                local_bound:[true;8],argument_bound:[false;7],
+            };
+            for (index,id) in arguments.iter().copied().enumerate(){
+                frame.arguments[index]=clone_value_tree(id,arena)?;
+                frame.argument_bound[index]=true;
+            }
+            Ok(frame)
+        })();
+        if result.is_err(){arena.count=checkpoint;}
+        result
     }
 
     /// Read a typed LocalX or ArgX object. An unused ArgX is rejected.
@@ -822,6 +831,16 @@ mod tests{
         buffer.byte_length=0;
         assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
+    #[test]fn method_frame_constructor_rolls_back_when_argument_copy_fails(){
+        let mut arena=AmlObjectArena::new();
+        let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
+        let package_id=arena.allocate(package).unwrap();
+        arena.get_mut(package_id).unwrap().elements[0]=u16::MAX;
+        let checkpoint=arena.count;
+        assert_eq!(AmlMethodFrame::new(&[package_id],&mut arena),Err(RuntimeError::InvalidReference));
+        assert_eq!(arena.count,checkpoint);
+    }
+
     #[test]fn method_locals_and_arguments_replace_typed_values_without_conversion(){
         let aml=[0x08,b'N',b'A',b'M',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
