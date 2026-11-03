@@ -1,6 +1,5 @@
-//! Bounded, integer-only AML method execution core.
-//! This constrained interpreter executes a safe scalar subset and fails closed
-//! on unsupported AML terms and address-space access.
+//! Bounded AML method execution with typed scalar/data operands and target stores.
+//! This constrained interpreter fails closed on unsupported AML terms and hardware access.
 /*
  * FIXME(ACPI-PRODUCTION) — AML method execution
  * FIXME(ACPI-PRODUCTION): This is a constrained AML executor, not yet a full production interpreter. Intended completion: exact operand and target semantics, control flow, references, method arguments/locals and serialization, mutexes/events/Global Lock, namespace mutation, OperationRegion/Field handlers, module-level execution, _OSI policy, budgets/timeouts, and cleanup on every exit path. Keep hardware access behind validated region handlers; never execute AML in interrupt context. Add differential tests against ACPICA for every supported opcode.
@@ -9,10 +8,10 @@
 #![no_std]
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
 use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,AmlValueKind};
-use crate::aml_runtime::to_integer_implicit;
+use crate::aml_runtime::{to_integer_implicit,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -24,21 +23,70 @@ impl<'a> Reader<'a>{
  fn pkg_end(&mut self)->Result<usize,ExecError>{let (_,e)=decode_package_length(self.bytes,self.pos,self.end).map_err(|_|ExecError::BadPackage)?;Ok(e)}
 }
 #[derive(Clone,Copy)]
-enum Target{Null,Local(usize),Arg(usize)}
+enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(u64),Break,ContinueLoop}
-struct Machine<'a>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:AmlObjectArena,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
+struct Machine<'a>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:AmlObjectArena,bindings:AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8}
 impl<'a> Machine<'a>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
- fn target(r:&mut Reader<'_>)->Result<Target,ExecError>{let op=r.byte()?;match op{0x00=>Ok(Target::Null),0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),_=>Err(ExecError::BadTarget)}}
+ fn name_reference(&mut self,node:u16)->Result<AmlReference,ExecError>{
+  let reference=self.bindings.reference_node(self.namespace,node).map_err(|_|ExecError::BadTarget)?;
+  match dereference(reference,&self.bindings,&self.arena){
+   Ok(_)=>Ok(reference),
+   Err(RuntimeError::UnboundNode)=>{
+    let value=decode_namespace_name(self.aml,self.namespace,node,&mut self.arena)
+        .map_err(|_|ExecError::NonIntegerName)?;
+    self.bindings.bind_checked(self.namespace,node,value,&self.arena)
+        .map_err(|_|ExecError::NonIntegerName)?;
+    Ok(reference)
+   }
+   Err(_)=>Err(ExecError::NonIntegerName),
+  }
+ }
+ fn target(&mut self,r:&mut Reader<'_>)->Result<Target,ExecError>{
+  let op=r.byte()?;
+  match op{
+   0x00=>Ok(Target::Null),
+   0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),
+   0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),
+   _=>{
+    r.pos-=1;
+    let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::BadTarget)?;
+    r.pos=next;
+    let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::BadTarget)?;
+    let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
+    let entry=self.namespace.nodes.get(canonical as usize)
+        .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
+    if entry.object_type!=AmlObjectType::Name{return Err(ExecError::BadTarget)}
+    Ok(Target::Reference(self.name_reference(canonical)?))
+   }
+  }
+ }
  fn integer_value(value:u64)->AmlRuntimeValue{let mut out=AmlRuntimeValue::EMPTY;out.kind=AmlValueKind::Integer;out.integer=value;out}
  fn integer_mask(&self)->u64{if self.integer_width_bits==32{u32::MAX as u64}else{u64::MAX}}
  fn normalize(&self,value:u64)->u64{value&self.integer_mask()}
  fn operand_integer(&self,value:&AmlRuntimeValue)->Result<u64,ExecError>{to_integer_implicit(value,self.integer_width_bits).map_err(|_|ExecError::NonIntegerName)}
- fn store(&mut self,t:Target,v:u64){let value=Self::integer_value(self.normalize(v));match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=value,Target::Arg(i)=>self.args[i]=value}}
+ fn store(&mut self,t:Target,v:u64)->Result<(),ExecError>{
+  self.store_value(t,Self::integer_value(self.normalize(v)),StoreMode::Store)
+ }
  fn term(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{self.term_depth(r,0)}
- fn store_value(&mut self,t:Target,value:AmlRuntimeValue){
-  match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=value,Target::Arg(i)=>self.args[i]=value}
+ fn store_value(&mut self,t:Target,value:AmlRuntimeValue,mode:StoreMode)->Result<(),ExecError>{
+  match t{
+   Target::Null=>Ok(()),
+   Target::Local(i)=>{self.locals[i]=value;Ok(())},
+   Target::Arg(i)=>{self.args[i]=value;Ok(())},
+   Target::Reference(reference)=>{
+    let checkpoint=self.arena.count;
+    let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;
+    match store_reference_with_mode(reference,id,mode,&mut self.bindings,self.namespace,&mut self.arena){
+     Ok(())=>Ok(()),
+     Err(error)=>{
+      self.arena.count=checkpoint;
+      Err(match error{RuntimeError::TypeMismatch|RuntimeError::ValueTooLarge|RuntimeError::EmptyBuffer|RuntimeError::InvalidIntegerString=>ExecError::TargetTypeMismatch,_=>ExecError::NonIntegerName})
+     }
+    }
+   }
+  }
  }
  /// Evaluate a TermArg without prematurely coercing Local/Arg/Name objects.
  /// Operators fall back to the scalar evaluator and therefore produce Integer.
@@ -66,9 +114,8 @@ impl<'a> Machine<'a>{
         .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::NameNotFound)?;
     match entry.object_type{
      AmlObjectType::Name=>{
-      let id=decode_namespace_name(self.aml,self.namespace,canonical,&mut self.arena)
-          .map_err(|_|ExecError::NonIntegerName)?;
-      Ok(*self.arena.get(id).ok_or(ExecError::NonIntegerName)?)
+      let reference=self.name_reference(canonical)?;
+      dereference(reference,&self.bindings,&self.arena).map_err(|_|ExecError::NonIntegerName)
      }
      AmlObjectType::Method=>{
       let count=(entry.method_flags&7) as usize;
@@ -103,29 +150,29 @@ impl<'a> Machine<'a>{
      0x79=>if b>=self.integer_width_bits as u64{0}else{a<<b},0x7a=>if b>=self.integer_width_bits as u64{0}else{a>>b},
      0x7b=>a&b,0x7c=>!(a&b),0x7d=>a|b,0x7e=>!(a|b),0x85=>{if b==0{return Err(ExecError::DivideByZero)}a%b},_=>a^b
     };
-    let v=self.normalize(v);let t=Self::target(r)?;self.store(t,v);Ok(v)
+    let v=self.normalize(v);let t=self.target(r)?;self.store(t,v)?;Ok(v)
    }
    0x81|0x82=>{
     let value=self.term_depth(r,depth+1)?;
     let value=self.normalize(value);
     let result=if value==0{0}else if op==0x81{self.integer_width_bits as u64-if self.integer_width_bits==32{(value as u32).leading_zeros() as u64}else{value.leading_zeros() as u64}}else{value.trailing_zeros() as u64+1};
-    let t=Self::target(r)?;self.store(t,result);Ok(result)
+    let t=self.target(r)?;self.store(t,result)?;Ok(result)
    }
    0x75|0x76=>{
-    let t=Self::target(r)?;
-    let current=match t{Target::Null=>0,Target::Local(i)=>self.operand_integer(&self.locals[i])?,Target::Arg(i)=>self.operand_integer(&self.args[i])?};
+    let t=self.target(r)?;
+    let current=match t{Target::Null=>0,Target::Local(i)=>self.operand_integer(&self.locals[i])?,Target::Arg(i)=>self.operand_integer(&self.args[i])?,Target::Reference(reference)=>{let value=dereference(reference,&self.bindings,&self.arena).map_err(|_|ExecError::NonIntegerName)?;self.operand_integer(&value)?}};
     let value=if op==0x75{current.wrapping_add(1)}else{current.wrapping_sub(1)};
-    let value=self.normalize(value);self.store(t,value);Ok(value)
+    let value=self.normalize(value);self.store(t,value)?;Ok(value)
    }
    0x78=>{
     let dividend=self.term_depth(r,depth+1)?;let divisor=self.term_depth(r,depth+1)?;
     if divisor==0{return Err(ExecError::DivideByZero)}
     let remainder=dividend%divisor;let quotient=dividend/divisor;
     // AML Divide operand order is Dividend, Divisor, Remainder, Quotient.
-    let rem=Self::target(r)?;let q=Self::target(r)?;
-    self.store(rem,remainder);self.store(q,quotient);Ok(self.normalize(quotient))
+    let rem=self.target(r)?;let q=self.target(r)?;
+    self.store(rem,remainder)?;self.store(q,quotient)?;Ok(self.normalize(quotient))
    }
-   0x80=>{let operand=self.term_depth(r,depth+1)?;let v=self.normalize(!operand);let t=Self::target(r)?;self.store(t,v);Ok(v)},
+   0x80=>{let operand=self.term_depth(r,depth+1)?;let v=self.normalize(!operand);let t=self.target(r)?;self.store(t,v)?;Ok(v)},
    0x90=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0&&b!=0)as u64)},
    0x91=>{let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;Ok((a!=0||b!=0)as u64)},
    0x92=>Ok((self.term_depth(r,depth+1)?==0)as u64),
@@ -148,8 +195,8 @@ impl<'a> Machine<'a>{
       let start=entry.body_start as usize;
       let end=start.checked_add(entry.body_length as usize).ok_or(ExecError::InvalidMethod)?;
       if end>self.aml.len(){return Err(ExecError::InvalidMethod)}
-      let value_id=decode_namespace_name(self.aml,self.namespace,canonical,&mut self.arena).map_err(|_|ExecError::NonIntegerName)?;
-      let value=*self.arena.get(value_id).ok_or(ExecError::NonIntegerName)?;
+      let reference=self.name_reference(canonical)?;
+      let value=dereference(reference,&self.bindings,&self.arena).map_err(|_|ExecError::NonIntegerName)?;
       self.operand_integer(&value)
      }
      _=>Err(ExecError::NonIntegerName),
@@ -165,7 +212,8 @@ impl<'a> Machine<'a>{
    match op{
     0xa3=>{},
     0xa4=>return Ok(ExecFlow::Return(self.term(r)?)),
-    0x70=>{let v=self.term_value(r)?;let t=Self::target(r)?;self.store_value(t,v);},
+    0x70=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::Store)?;},
+    0x9d=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::CopyObject)?;},
     0xa0|0xa2=>{
      let end=r.pkg_end()?;let plen=1+((r.bytes[r.pos]>>6)as usize);let begin=r.pos+plen;
      if begin>end{return Err(ExecError::BadPackage)}
@@ -205,7 +253,7 @@ impl<'a> Machine<'a>{
 pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
  let namespace=AmlNamespace::new();
  let zero=Machine::integer_value(0);
- let mut machine=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
+ let mut machine=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),bindings:AmlBindings::with_aml_revision(2),integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0};
  let mut reader=Reader{bytes,pos:0,end:bytes.len()};
  let value=machine.term(&mut reader)?;
  Ok((value,reader.pos))
@@ -226,7 +274,7 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  if end>aml.len(){return Err(ExecError::InvalidMethod)}
  if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
  let zero=Machine::integer_value(0);
- let mut m=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
+ let mut m=Machine{locals:[zero;8],args:[zero;7],arena:AmlObjectArena::new(),bindings:AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2}),integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth};
  for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
  let mut r=Reader{bytes:aml,pos:start,end};let value=match m.execute(&mut r,0)?{ExecFlow::Continue=>0,ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl)};Ok(value)
 }
@@ -282,6 +330,28 @@ mod tests{
   // Existing public entry point passes Integer args; typed Name operands are
   // exercised above while Local/Arg scalar values remain width-aware.
   assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn store_and_copy_object_apply_distinct_named_buffer_target_rules(){
+  let common=[
+   0x08,b'S',b'T',b'R',b'0',0x0d,b'A',b'B',0,
+   0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,0,0
+  ];
+  let mut store_aml=common.to_vec();
+  store_aml.extend_from_slice(&[0x14,0x17,b'T',b'E',b'S',b'T',0,
+      0x70,b'S',b'T',b'R',b'0',b'B',b'U',b'F',b'0',
+      0xa4,0x72,b'B',b'U',b'F',b'0',0x01,0x00]);
+  let mut ns=AmlNamespace::new();load_definition_block(&store_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&store_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x4242));
+
+  let mut copy_aml=common.to_vec();
+  copy_aml.extend_from_slice(&[0x14,0x17,b'T',b'E',b'S',b'T',0,
+      0x9d,b'S',b'T',b'R',b'0',b'B',b'U',b'F',b'0',
+      0xa4,0x72,b'B',b'U',b'F',b'0',0x01,0x00]);
+  let mut ns=AmlNamespace::new();load_definition_block(&copy_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&copy_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0xac));
  }
 
  #[test]fn store_preserves_typed_name_and_argument_values_in_locals(){
