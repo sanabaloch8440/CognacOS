@@ -43,8 +43,6 @@ const IRP_MN_USER_FS_REQUEST: u8 = 0;
 const FILE_USE_FILE_POINTER_POSITION: i64 = -2;
 const IRP_MJ_FLUSH_BUFFERS: u8 = 9;
 
-type MountedFat = FatFilesystem<block_device::Fat32BlockDevice>;
-
 static DRIVER_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static DRIVER_INIT: AtomicUsize = AtomicUsize::new(0);
 static VOLUME_DEVICE: AtomicUsize = AtomicUsize::new(0);
