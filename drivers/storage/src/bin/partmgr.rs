@@ -156,6 +156,7 @@ fn partition_identity(disk_id:u64,p:Partition)->u64{
 }
 
 unsafe fn scan_partitions(ext:*mut PartMgrFdoExtension)->i32{
+ if unsafe{(*ext).relations.count}!=0{return STATUS_SUCCESS}
  let descriptor=unsafe{(*ext).descriptor};
  let lower=unsafe{(*ext).lower};
  let mut mbr=[0u8;512];
