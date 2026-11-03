@@ -403,7 +403,7 @@ mod tests{
         assert_eq!(int_value.kind,AmlValueKind::Integer);assert_eq!(int_value.integer,0x2a);
         store_reference(bindings.reference_node(&ns,buf_node).unwrap(),source_id,&mut bindings,&ns,&mut arena).unwrap();
         let buffer=dereference(bindings.reference_node(&ns,buf_node).unwrap(),&bindings,&arena).unwrap();
-        assert_eq!(buffer.kind,AmlValueKind::Buffer);assert_eq!(buffer.byte_length,4);assert_eq!(&buffer.bytes[..4],b"2aZ\\0");
+        assert_eq!(buffer.kind,AmlValueKind::Buffer);assert_eq!(buffer.byte_length,4);assert_eq!(&buffer.bytes[..4],b"2aZ\0");
         let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=0x2a;
         let integer_id=arena.allocate(integer).unwrap();
         store_reference(bindings.reference_node(&ns,str_node).unwrap(),integer_id,&mut bindings,&ns,&mut arena).unwrap();
