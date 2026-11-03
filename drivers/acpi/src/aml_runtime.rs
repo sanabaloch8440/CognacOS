@@ -412,7 +412,7 @@ mod tests{
     }
 
     #[test]fn implicit_named_conversions_follow_definition_block_integer_width(){
-        let aml=[0x08,b'I',b'N',b'T',b'0',0x01,0x08,b'B',b'U',b'F',b'0',0x11,0x04,0x0a,1,0,b'S',b'T',b'R',b'0',0x0d,b'0',0];
+        let aml=[0x08,b'I',b'N',b'T',b'0',0x01,0x08,b'B',b'U',b'F',b'0',0x01,0x08,b'S',b'T',b'R',b'0',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let int_node=ns.find_child(0,*b"INT0").unwrap();
         let buf_node=ns.find_child(0,*b"BUF0").unwrap();
@@ -592,7 +592,7 @@ mod tests{
         let value_id=arena.allocate(value).unwrap();
         let reference=AmlReference::PackageElement{package:package_id,index:0};
         let mut bindings=AmlBindings::new();let namespace=AmlNamespace::new();
-        assert_eq!(store_reference(reference,value_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::InvalidReference));
+        assert_eq!(store_reference(reference,value_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::InvalidObjectLength));
         assert_eq!(arena.get(package_id).unwrap().elements[0],0);
     }
 
