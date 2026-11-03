@@ -34,7 +34,7 @@ impl IoManagerBlockDevice {
         if end>self.capacity{return Err(DiskError::OutOfRange)}
         if major!=IRP_MJ_FLUSH_BUFFERS&&(length==0||buffer.is_null()){return Err(DiskError::InvalidGeometry)}
         let stack_size=unsafe{(*self.device).stack_size.max(1)};
-        let irp=unsafe{wdm::io_allocate_irp(stack_size,0)};
+        let irp=unsafe{wdm::io_allocate_irp(stack_size as i8,0)};
         if irp.is_null(){return Err(DiskError::DeviceFailure)}
         let stack=unsafe{wdm::io_get_next_irp_stack_location(irp)};
         if stack.is_null(){unsafe{wdm::io_free_irp(irp)};return Err(DiskError::DeviceFailure)}
