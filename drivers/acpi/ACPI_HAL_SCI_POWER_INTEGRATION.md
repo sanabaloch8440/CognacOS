@@ -95,8 +95,8 @@ Tests: trip conversion/bounds, _ALx/_TZD relationships, callback rundown, therma
 
 ### Validation snapshot
 
-- ACPI unit-test workflow for commit `7cd5aa79a38df97c87fe7a956146c01da005ccac`: passed.
-- UEFI/kernel workflow for that commit: failed before kernel/QEMU boot because the ACPI library test suite reported 308 passed and 7 failed. The failures were in synchronized AML method invocation, GPE deferred re-enable, QWord bus-number resources, assigned-resource/SRS round-trip, CM resource-list IRQ decoding, and IndexField access.
-- Commit `9eafd5a6a7bdefdc6c6de1ba805e01479bfb41dd` additionally hardens the SystemIO write bound check. Its workflow result must be checked independently; the earlier run does not validate this follow-up commit.
+- Fixed all seven regressions identified in the earlier UEFI workflow: corrected `_SRS` test AML package lengths and argument counts; corrected QWord descriptor encoding/fixture lengths; modeled GPE status W1C behavior in the test backend; corrected the Windows CM interrupt flag expectation; and corrected IndexField Preserve-rule read accounting.
+- ACPI unit-test workflow for commit `594e9d95a951485d6337c1680e6fb8e3c1291954`: passed. The separate UEFI/kernel workflow for that commit is still running; it has not yet reached the QEMU boot test.
+- Earlier UEFI run `41724422941` reached the ACPI suite and exposed three remaining fixture/expectation issues after the first batch; these were fixed in `d19ff7a` and `594e9d9`. Do not use the earlier `8e2f7df` run as validation of the final test fixes.
 
-This remains an integration workstream, not a claim of ACPI v6 or Windows 11 driver compatibility. The next required architectural change is a versioned ACPI-specific HAL interface that the driver can obtain through a supported kernel interface-discovery path; only then should SCI registration and deferred dispatch be wired end to end.
+This remains an integration workstream, not a claim of ACPI v6 or Windows 11 driver compatibility. The HAL GAS module is still not consumed by the ACPI driver, and the driver currently has no live `GasIo` implementation, SCI ISR registration, or ISR-to-DPC/work-item dispatch. The next architectural change is a versioned ACPI HAL interface with a real WDM `IRP_MN_QUERY_INTERFACE` discovery endpoint; it must be backed by the kernel's actual HAL device/service lifecycle rather than a fabricated Windows export. After discovery is working, wire GAS, SCI route ownership, deferred AML execution, and unload rundown.
