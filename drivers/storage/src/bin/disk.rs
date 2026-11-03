@@ -6,7 +6,7 @@
 //! separate upper layers; this driver does not parse FAT metadata.
 use core::ffi::c_void;
 use cognacos_nt_abi::{
-    io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
+    io::{DEVICE_OBJECT, DRIVER_EXTENSION, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
     ntstatus::*,
     types::PVOID,
 };
@@ -106,6 +106,11 @@ IMPORT IoDeleteDevice
 IMPORT IoAttachDeviceToDeviceStack
 IMPORT IoDetachDevice
 IMPORT IoCallDriver
+IMPORT KeWaitForSingleObject
+IMPORT KeSetEvent
+IMPORT KeInitializeEvent
+IMPORT IoFreeIrp
+IMPORT IoAllocateIrp
 
 IMPORT IoCompleteRequest
 .section .data.imports.ntoskrnl,"aw",@progbits
@@ -121,6 +126,11 @@ IAT IoDeleteDevice
 IAT IoAttachDeviceToDeviceStack
 IAT IoDetachDevice
 IAT IoCallDriver
+IAT KeWaitForSingleObject
+IAT KeSetEvent
+IAT KeInitializeEvent
+IAT IoFreeIrp
+IAT IoAllocateIrp
 
 IAT IoCompleteRequest
 "#);
