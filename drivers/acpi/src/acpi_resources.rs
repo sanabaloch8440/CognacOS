@@ -54,7 +54,7 @@ fn address_space(p:&[u8],width:u8)->Result<Resource,ResourceError>{
     };
     validate_range(min,max,len)?;
     match space{
-        0=>Ok(Resource::Memory{minimum:min,maximum:max,alignment:align,length:len,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:width}),
+        0=>Ok(Resource::Memory{minimum:min,maximum:max,alignment:align,length:len,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:match width{2=>0,4=>1,8=>2,_=>0}}),
         1=>Ok(Resource::Io{minimum:min,maximum:max,alignment:align,length:len,decode_16_bit:flags&1!=0}),
         2=>Ok(Resource::BusNumber{minimum:min,maximum:max,length:len}),
         _=>Err(ResourceError::UnsupportedDescriptor),
@@ -227,9 +227,10 @@ pub fn parse_resource_requirements_template(bytes: &[u8]) -> Result<ResourceAlte
             continue;
         }
         if header_length == 1 && kind == 0x0f {
-            if length != 1 || in_dependent || pos != bytes.len() {
+            if length != 1 || pos != bytes.len() {
                 return Err(ResourceError::InvalidLength);
             }
+            if in_dependent { return Err(ResourceError::InvalidDescriptor); }
             if payload[0] != 0 && bytes.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)) != 0 {
                 return Err(ResourceError::InvalidDescriptor);
             }
@@ -268,7 +269,7 @@ mod dependent_requirement_tests {
     #[test]
     fn dependent_groups_become_full_alternatives_with_common_resources() {
         // A common IRQ plus two dependent DMA choices, each with priority 1.
-        let bytes = [0x23, 0x10, 0x01, 0x31, 0x01, 0x2a, 0x01, 0x00,
+        let bytes = [0x22, 0x10, 0x01, 0x31, 0x01, 0x2a, 0x01, 0x00,
                      0x38, 0x31, 0x01, 0x2a, 0x04, 0x00, 0x38, 0x79, 0x00];
         let parsed = parse_resource_requirements_template(&bytes).unwrap();
         assert_eq!(parsed.count, 2);
