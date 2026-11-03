@@ -481,3 +481,73 @@ mod tests{
     }
 
 }
+
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PowerResourcePackageError{InvalidDevice,MissingObject,UnsupportedObject,MalformedPackage,TooManyResources,UnresolvedReference,NotPowerResource}
+fn resolve_package_name(ns:&AmlNamespace,scope:u16,bytes:&[u8],pos:&mut usize,end:usize)->Result<u16,PowerResourcePackageError>{
+ let mut current=scope;
+ let mut absolute=false;
+ if bytes.get(*pos)==Some(&0x5c){*pos+=1;current=0;absolute=true;}
+ while bytes.get(*pos)==Some(&0x5e){
+  *pos+=1;
+  current=ns.nodes.get(current as usize).ok_or(PowerResourcePackageError::UnresolvedReference)?.parent;
+ }
+ let prefix=bytes.get(*pos).copied().ok_or(PowerResourcePackageError::MalformedPackage)?;
+ let count=match prefix{
+  0x00=>return Err(PowerResourcePackageError::MalformedPackage),
+  0x2e=>{*pos+=1;2usize},
+  0x2f=>{*pos+=1;let n=*bytes.get(*pos).ok_or(PowerResourcePackageError::MalformedPackage)? as usize;*pos+=1;if n==0||n>8{return Err(PowerResourcePackageError::MalformedPackage)}n},
+  _=>1,
+ };
+ let mut first=true;
+ let mut resolved=u16::MAX;
+ for _ in 0..count{
+  let name=bytes.get(*pos..pos.checked_add(4).ok_or(PowerResourcePackageError::MalformedPackage)?)
+   .filter(|_|pos.checked_add(4).is_some_and(|e|e<=end))
+   .ok_or(PowerResourcePackageError::MalformedPackage)?;
+  let segment=[name[0],name[1],name[2],name[3]];*pos+=4;
+  if first&&!absolute&&scope!=0{
+   let mut candidate=current;let mut found=None;
+   loop{
+    if let Some(node)=ns.find_child(candidate,segment){found=Some(node);break}
+    if candidate==0{break}
+    candidate=ns.nodes[candidate as usize].parent;
+   }
+   resolved=found.ok_or(PowerResourcePackageError::UnresolvedReference)?;
+  }else{
+   resolved=ns.find_child(current,segment).ok_or(PowerResourcePackageError::UnresolvedReference)?;
+  }
+  current=resolved;first=false;
+ }
+ ns.resolve_alias(resolved).map_err(|_|PowerResourcePackageError::UnresolvedReference)
+}
+/// Decode a static _PR0.._PR3 Name(Package(...)) into namespace PowerResource
+/// node IDs. This deliberately rejects non-reference package members rather
+/// than guessing. Method-valued _PRx is evaluated by the typed runtime adapter.
+pub fn decode_power_resource_package(
+ ns:&AmlNamespace,aml:&[u8],device:u16,name:[u8;4],output:&mut [u16;8],
+)->Result<usize,PowerResourcePackageError>{
+ let device_node=ns.nodes.get(device as usize).filter(|_|(device as usize)<ns.count)
+  .ok_or(PowerResourcePackageError::InvalidDevice)?;
+ if !matches!(device_node.object_type,AmlObjectType::Device|AmlObjectType::Processor){return Err(PowerResourcePackageError::InvalidDevice)}
+ let object=ns.find_child(device,name).ok_or(PowerResourcePackageError::MissingObject)?;
+ let node=&ns.nodes[object as usize];
+ if node.object_type!=AmlObjectType::Name{return Err(PowerResourcePackageError::UnsupportedObject)}
+ let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).filter(|v|*v<=aml.len()).ok_or(PowerResourcePackageError::MalformedPackage)?;
+ let body=&aml[start..end];
+ if body.first()!=Some(&0x12)||body.len()<3{return Err(PowerResourcePackageError::MalformedPackage)}
+ let (_,package_end)=decode_package_length(body,1,body.len()).map_err(|_|PowerResourcePackageError::MalformedPackage)?;
+ let length_bytes=1+((body[1]>>6) as usize);
+ let mut pos=1+length_bytes;
+ let count=*body.get(pos).ok_or(PowerResourcePackageError::MalformedPackage)? as usize;pos+=1;
+ if count>output.len()||count>8{return Err(PowerResourcePackageError::TooManyResources)}
+ for index in 0..count{
+  let resource=resolve_package_name(ns,device,body,&mut pos,package_end)?;
+  if ns.nodes[resource as usize].object_type!=AmlObjectType::PowerResource{return Err(PowerResourcePackageError::NotPowerResource)}
+  if output[..index].contains(&resource){return Err(PowerResourcePackageError::MalformedPackage)}
+  output[index]=resource;
+ }
+ if pos!=package_end{return Err(PowerResourcePackageError::MalformedPackage)}
+ Ok(count)
+}
