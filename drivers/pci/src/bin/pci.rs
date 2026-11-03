@@ -4,7 +4,7 @@
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_pci::EcamWindowExt;
-use cognacos_nt_abi::{bus::{PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
+use cognacos_nt_abi::{bus::{BUS_INTERFACE_STANDARD, BUS_INTERFACE_STANDARD_VERSION, GUID_BUS_INTERFACE_STANDARD, PCI_WHICHSPACE_CONFIG, PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
 use cognacos_nt_abi::object::UNICODE_STRING;
 
 unsafe extern "win64" {
@@ -16,6 +16,8 @@ unsafe extern "win64" {
     fn IoDeleteDevice(device: *mut DEVICE_OBJECT);
     fn ExAllocatePoolWithTag(pool_type: u32, number_of_bytes: usize, tag: u32) -> PVOID;
     fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
+    fn ObfReferenceObject(object: PVOID);
+    fn ObDereferenceObject(object: PVOID);
 }
 
 // These are ordinary PE import thunks. The PE conversion step turns the
@@ -221,6 +223,108 @@ pub unsafe extern "win64" fn CognacPciEnumerateInventory() -> i32 {
     })();
     INVENTORY_BUSY.store(false, Ordering::Release);
     result
+}
+
+/// Standard WDM interface reference callbacks. The context is the PDO
+/// itself, so outstanding interface references keep the device object alive.
+unsafe extern "win64" fn pci_bus_interface_reference(context:PVOID) {
+    if !context.is_null() { unsafe { ObfReferenceObject(context); } }
+}
+unsafe extern "win64" fn pci_bus_interface_dereference(context:PVOID) {
+    if !context.is_null() { unsafe { ObDereferenceObject(context); } }
+}
+
+/// BUS_INTERFACE_STANDARD GetBusData callback. The PDO's immutable BDF is
+/// resolved against the firmware-provided ECAM windows; no project-private
+/// PCI information interface is exposed to function drivers.
+unsafe extern "win64" fn pci_bus_get_data(
+    context:PVOID, data_type:u32, buffer:PVOID, offset:u32, length:u32,
+)->u32 {
+    if context.is_null() || buffer.is_null() || data_type != PCI_WHICHSPACE_CONFIG
+        || length == 0 || offset >= 4096 || offset.checked_add(length).is_none()
+        || offset + length > 4096 {
+        return 0;
+    }
+    let device=context.cast::<DEVICE_OBJECT>();
+    let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
+    if extension.is_null() || unsafe{(*extension).magic!=PCI_PDO_EXTENSION_MAGIC || (*extension).version!=1} {
+        return 0;
+    }
+    let information=unsafe{(*extension).information};
+    let address=HANDOFF.load(Ordering::Acquire);
+    if address==0{return 0}
+    let handoff=unsafe{&*(address as *const PciDriverHandoff)};
+    if handoff.magic!=HANDOFF_MAGIC || handoff.version!=HANDOFF_VERSION
+        || handoff.window_count as usize>MAX_WINDOWS { return 0; }
+    for window in handoff.windows.iter().take(handoff.window_count as usize) {
+        if window.segment!=information.segment || information.bus<window.bus_start || information.bus>window.bus_end {
+            continue;
+        }
+        let mut copied=0u32;
+        while copied<length {
+            let current=offset+copied;
+            let Ok(value) = (unsafe{window.read_u8(
+                information.segment,information.bus,information.device,information.function,current as u16
+            )}) else { break };
+            unsafe{buffer.cast::<u8>().add(copied as usize).write(value);}
+            copied+=1;
+        }
+        return copied;
+    }
+    0
+}
+
+/// Keep configuration writes fail-closed for standard header and capability
+/// registers. Vendor-specific extended configuration space may be written
+/// through the parent bus only when the caller requests PCI config space.
+unsafe extern "win64" fn pci_bus_set_data(
+    context:PVOID,data_type:u32,buffer:PVOID,offset:u32,length:u32,
+)->u32 {
+    if context.is_null() || buffer.is_null() || data_type!=PCI_WHICHSPACE_CONFIG
+        || length==0 || offset<0x100 || offset>=4096 || offset.checked_add(length).is_none()
+        || offset+length>4096 { return 0; }
+    let device=context.cast::<DEVICE_OBJECT>();
+    let extension=unsafe{(*device).device_extension.cast::<PciPdoExtension>()};
+    if extension.is_null() || unsafe{(*extension).magic!=PCI_PDO_EXTENSION_MAGIC || (*extension).version!=1} { return 0; }
+    let information=unsafe{(*extension).information};
+    let address=HANDOFF.load(Ordering::Acquire);
+    if address==0{return 0}
+    let handoff=unsafe{&*(address as *const PciDriverHandoff)};
+    if handoff.magic!=HANDOFF_MAGIC || handoff.version!=HANDOFF_VERSION
+        || handoff.window_count as usize>MAX_WINDOWS { return 0; }
+    for window in handoff.windows.iter().take(handoff.window_count as usize) {
+        if window.segment!=information.segment || information.bus<window.bus_start || information.bus>window.bus_end { continue; }
+        let mut written=0u32;
+        while written<length {
+            let current=offset+written;
+            let value=unsafe{buffer.cast::<u8>().add(written as usize).read()};
+            if unsafe{window.write_u8(information.segment,information.bus,information.device,information.function,current as u16,value)}.is_err(){break}
+            written+=1;
+        }
+        return written;
+    }
+    0
+}
+
+/// Publish the Microsoft WDM BUS_INTERFACE_STANDARD to a function PDO.
+unsafe fn query_standard_bus_interface(device:*mut DEVICE_OBJECT,version:u16,size:u16,output:PVOID)->i32 {
+    if device.is_null() || output.is_null() || version as u32!=BUS_INTERFACE_STANDARD_VERSION
+        || (size as usize)<core::mem::size_of::<BUS_INTERFACE_STANDARD>() {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let interface=BUS_INTERFACE_STANDARD {
+        size:core::mem::size_of::<BUS_INTERFACE_STANDARD>() as u16,
+        version:BUS_INTERFACE_STANDARD_VERSION as u16,
+        context:device.cast(),
+        interface_reference:Some(pci_bus_interface_reference),
+        interface_dereference:Some(pci_bus_interface_dereference),
+        translate_bus_address:core::ptr::null_mut(),
+        get_dma_adapter:core::ptr::null_mut(),
+        set_bus_data:Some(pci_bus_set_data),
+        get_bus_data:Some(pci_bus_get_data),
+    };
+    unsafe{core::ptr::write_unaligned(output.cast::<BUS_INTERFACE_STANDARD>(),interface);}
+    STATUS_SUCCESS
 }
 
 unsafe extern "win64" fn query_pdo_information(
@@ -573,6 +677,8 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
             let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut PCI_BUS_INTERFACE>()) };
             if guid.is_null() || output.is_null() {
                 STATUS_INVALID_PARAMETER
+            } else if unsafe { *guid } == GUID_BUS_INTERFACE_STANDARD {
+                unsafe { query_standard_bus_interface(device,version,size,output.cast()) }
             } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_IDE_RESOURCE_INTERFACE {
                 if version as u32 != cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE_VERSION
                     || (size as usize) < core::mem::size_of::<cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE>()
