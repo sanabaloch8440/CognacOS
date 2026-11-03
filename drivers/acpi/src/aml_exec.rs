@@ -479,7 +479,7 @@ mod tests{
   assert_eq!(&value.bytes[..3],b"OK\0");
 
   let to_string=[0x08,b'B',b'U',b'F',b'0',0x11,0x06,0x0a,3,b'O',b'K',0,
-   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x9c,b'B',b'U',b'F',b'0',0x0a,3];
+   0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x9c,b'B',b'U',b'F',b'0',0x0a,3,0x00];
   let mut ns=AmlNamespace::new();load_definition_block(&to_string,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   let value=execute_method_typed_with_values(&to_string,&ns,id,&[],64).unwrap();
