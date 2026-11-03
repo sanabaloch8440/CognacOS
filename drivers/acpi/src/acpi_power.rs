@@ -13,6 +13,7 @@ impl WakeResource{pub const EMPTY:Self=Self{gpe_device_path:[0;64],gpe_device_pa
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WakeInfo{pub resources:[WakeResource;MAX_WAKE_RESOURCES],pub resource_count:u8,pub deepest_sleep_state:u8}
 impl WakeInfo{pub const EMPTY:Self=Self{resources:[WakeResource::EMPTY;MAX_WAKE_RESOURCES],resource_count:0,deepest_sleep_state:0};}
+/// Validate and normalize _PRW wake resources and the deepest supported system sleep state.
 pub fn build_wake_info(gpe:WakeResource,deepest_sleep_state:u64,additional_gpes:&[WakeResource])->Result<WakeInfo,PowerError>{
  if deepest_sleep_state>5{return Err(PowerError::InvalidSleepState)}
  if additional_gpes.len()>=MAX_WAKE_RESOURCES{return Err(PowerError::TooManyWakeResources)}
@@ -35,14 +36,19 @@ pub trait AcpiPowerMethodInvoker{
  fn invoke(&mut self,method:PowerMethod)->bool;
  fn evaluate_prw(&mut self)->Result<Option<WakeInfo>,PowerError>;
 }
+/// Evaluate and decode a device's _PRS resource alternatives; this does not arbitrate them.
 pub fn evaluate_prs(i:&mut impl AcpiPowerMethodInvoker)->Result<ResourceList,PowerError>{Ok(parse_resource_template(i.evaluate_prs()?)?)}
+/// Ask the firmware backend to program a previously selected resource configuration through _SRS.
 pub fn apply_srs(i:&mut impl AcpiPowerMethodInvoker,r:&ResourceList)->Result<(),PowerError>{if i.set_srs(r){Ok(())}else{Err(PowerError::MethodFailed)}}
+/// Evaluate _PRW through the firmware backend and return its validated wake description.
 pub fn evaluate_prw(i:&mut impl AcpiPowerMethodInvoker)->Result<Option<WakeInfo>,PowerError>{i.evaluate_prw()}
+/// Invoke the matching _PS0 through _PS3 method and update cached D-state only after success.
 pub fn transition_power(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState,target:u8)->Result<(),PowerError>{
  if target>3{return Err(PowerError::InvalidState)}if target==s.d_state{return Ok(())}
  let method=match target{0=>PowerMethod::PowerD0,1=>PowerMethod::PowerD1,2=>PowerMethod::PowerD2,3=>PowerMethod::PowerD3,_=>return Err(PowerError::InvalidState)};
  if !i.invoke(method){return Err(PowerError::MethodFailed)}s.d_state=target;Ok(())
 }
+/// Invoke the device disable policy method and commit disabled state only after success.
 pub fn disable_device(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState)->Result<(),PowerError>{
  if s.disabled{return Ok(())}if !i.invoke(PowerMethod::Disable){return Err(PowerError::MethodFailed)}s.disabled=true;Ok(())
 }
