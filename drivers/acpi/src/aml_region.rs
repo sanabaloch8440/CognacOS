@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn decodes_system_memory_region_and_bounds_accesses(){
         // OperationRegion(REGN, SystemMemory, 0x1000, 0x20)
-        let aml=[0x5b,0x80,b'R',b'E',b'G',b'N',0x00,0x0c,0x00,0x10,0,0,0,0x0a,0x20];
+        let aml=[0x5b,0x80,b'R',b'E',b'G',b'N',0x00,0x0b,0x00,0x10,0x0a,0x20];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let id=ns.find_child(0,*b"REGN").unwrap();
         let mut table=OperationRegionTable::new();table.load_node(&aml,&ns,id).unwrap();
