@@ -4,7 +4,7 @@
 //! requests, serializes miniport registration, and dispatches bounded PIO I/O.
 //! The controller-specific PCI IDE function driver attaches above this FDO
 //! and registers its implementation with IOCTL_ATA_PORT_REGISTER_MINIPORT.
-use core::{cell::UnsafeCell, ffi::c_void, sync::atomic::{AtomicBool, Ordering}};
+use core::{ffi::c_void, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_nt_abi::{
     bus::{GUID_PCI_DEVICE_INTERFACE, PCI_DEVICE_INTERFACE, PCI_DEVICE_INFORMATION},
     io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION},
@@ -274,7 +274,7 @@ unsafe extern "win64" fn add_device(driver:*mut c_void,pdo:*mut DEVICE_OBJECT)->
  let status=unsafe{IoPnPQueryBusInterface(pdo,&GUID_PCI_DEVICE_INTERFACE,core::mem::size_of::<PCI_DEVICE_INTERFACE>() as u16,cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION as u16,interface.as_mut_ptr().cast())};
  if status!=STATUS_SUCCESS{return STATUS_NOT_SUPPORTED}
  let interface=unsafe{interface.assume_init()};
- if interface.header.size as usize<core::mem::size_of::<PCI_DEVICE_INTERFACE>()||interface.header.version as u32!=cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION{return STATUS_REVISION_MISMATCH}
+ if (interface.header.size as usize)<core::mem::size_of::<PCI_DEVICE_INTERFACE>()||interface.header.version as u32!=cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION{return STATUS_REVISION_MISMATCH}
  let Some(query)=interface.query_information else{return STATUS_NOT_SUPPORTED};
  let mut info=PCI_DEVICE_INFORMATION::default();let status=unsafe{query(interface.header.context,&mut info)};if status!=STATUS_SUCCESS{return status}
  if info.class_code!=PCI_CLASS_MASS_STORAGE||info.subclass!=PCI_SUBCLASS_IDE{return STATUS_NOT_SUPPORTED}
