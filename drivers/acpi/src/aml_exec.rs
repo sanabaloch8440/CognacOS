@@ -88,6 +88,10 @@ impl<'a,'b> Machine<'a,'b>{
   let value=self.args[index];
   if value.kind==AmlValueKind::ObjectReference{
    let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;
+   let reference=match reference{
+    AmlReference::NamespaceNode(node)=>self.name_reference(node)?,
+    other=>other,
+   };
    dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)
   }else{Ok(value)}
  }
@@ -99,6 +103,10 @@ impl<'a,'b> Machine<'a,'b>{
     let current=self.args[i];
     if current.kind==AmlValueKind::ObjectReference{
      let reference=reference_from_value(&current).map_err(|_|ExecError::NonIntegerName)?;
+     let reference=match reference{
+      AmlReference::NamespaceNode(node)=>self.name_reference(node)?,
+      other=>other,
+     };
      self.store_reference_value(reference,value,mode)
     }else{self.args[i]=value;Ok(())}
    }
