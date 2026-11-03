@@ -35,6 +35,28 @@ pub trait AmlMethodSynchronizer:Sync{
  fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>;
  fn release(&self,method_index:u16);
 }
+/// Run a non-interpreter method-result decoder under the method's implicit mutex.
+/// This is used only by bounded fast paths that decode a direct Return(String,
+/// Buffer, or Package) without entering the AML execution machine. The closure
+/// is always followed by release, including ordinary error returns.
+pub fn with_method_synchronization<T>(
+ namespace:&AmlNamespace,
+ method_index:u16,
+ sync:&dyn AmlMethodSynchronizer,
+ operation:impl FnOnce()->Result<T,ExecError>,
+)->Result<T,ExecError>{
+ let node=namespace.nodes.get(method_index as usize)
+  .filter(|_|(method_index as usize)<namespace.count)
+  .ok_or(ExecError::InvalidMethod)?;
+ if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
+ if node.method_flags&0x08==0{return operation()}
+ let sync_level=(node.method_flags>>4)&0x0f;
+ if sync_level!=0{return Err(ExecError::SyncLevelViolation)}
+ sync.acquire(method_index,sync_level)?;
+ let result=operation();
+ sync.release(method_index);
+ result
+}
 struct NoMethodSynchronizer;
 static NO_METHOD_SYNCHRONIZER:NoMethodSynchronizer=NoMethodSynchronizer;
 impl AmlMethodSynchronizer for NoMethodSynchronizer{
