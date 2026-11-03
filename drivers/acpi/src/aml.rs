@@ -748,7 +748,7 @@ mod tests{
             0x5b,0x80,b'R',b'E',b'G',b'N',0,0x0a,0,0x0a,16,
             0x5b,0x80,b'I',b'N',b'D',b'X',1,0x0a,0,0x0a,1,
             0x5b,0x80,b'D',b'A',b'T',b'A',1,0x0a,0,0x0a,1,
-            0x5b,0x86,0x17,b'I',b'N',b'D',b'X',b'D',b'A',b'T',b'A',0,0x03,0x00,0x0c,0x01,0x02,b'I',b'N',b'D',b'X',b'F',b'L',b'D',b'0',8,
+            0x5b,0x86,0x18,b'I',b'N',b'D',b'X',b'D',b'A',b'T',b'A',0,0x03,0x00,0x0c,0x01,0x02,b'I',b'N',b'D',b'X',b'F',b'L',b'D',b'0',8,
             0x5b,0x87,0x11,b'R',b'E',b'G',b'N',b'I',b'N',b'D',b'X',0x0a,1,0,b'B',b'F',b'L',b'D',8
         ];
         let mut ns=AmlNamespace::new();assert_eq!(load_definition_block(&aml,&mut ns),Ok(()));
