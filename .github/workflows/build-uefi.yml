@@ -718,23 +718,17 @@ jobs:
           mkdir -p build/fat32-root
           printf '%s' 'CognacOS FAT32 data volume' > build/fat32-root/README.txt
           printf '%s' '................................' > build/fat32-root/COGNACOS.TST
-          loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
-          cleanup_loop() { sudo losetup -d "$loopdev" 2>/dev/null || true; }
-          trap cleanup_loop EXIT
-          sudo udevadm settle
-          if [[ ! -b "${loopdev}p2" ]]; then
-            echo "GPT FAT32 data partition was not exposed as ${loopdev}p2" >&2
-            sudo parted -s build/cognacos-uefi.img print
-            exit 1
-          fi
-          sudo mkfs.vfat -F 32 -n COGNACDATA "${loopdev}p2"
-          mcopy -i "${loopdev}p2" build/fat32-root/README.txt ::/README.txt
-          mcopy -i "${loopdev}p2" build/fat32-root/COGNACOS.TST ::/COGNACOS.TST
-          mcopy -i "${loopdev}p2" ::/README.txt build/fat32-readback.txt
+          # Format the second GPT partition through mtools' byte-offset support.
+          # This avoids attaching a loop partition and then accessing its block node
+          # as an unprivileged runner user (which fails with /dev/loopNp2 EACCES).
+          data_offset=$((65 * 1024 * 1024))
+          data_sectors=$((190 * 1024 * 1024 / 512))
+          mformat -i "build/cognacos-uefi.img@@${data_offset}" -F -T "${data_sectors}" -v COGNACDATA ::
+          mcopy -i "build/cognacos-uefi.img@@${data_offset}" build/fat32-root/README.txt ::/README.txt
+          mcopy -i "build/cognacos-uefi.img@@${data_offset}" build/fat32-root/COGNACOS.TST ::/COGNACOS.TST
+          mcopy -i "build/cognacos-uefi.img@@${data_offset}" ::/README.txt build/fat32-readback.txt
           cmp build/fat32-root/README.txt build/fat32-readback.txt
           echo "FAT32 data volume verified and seeded with the kernel storage round-trip fixture."
-          cleanup_loop
-          trap - EXIT
       - name: Validate source-level QEMU crash resolver
         run: |
           set -euo pipefail
