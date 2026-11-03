@@ -305,6 +305,30 @@ impl AmlTableManager {
     /// Evaluate ACPI-1 identity objects for a device owned by this loaded table.
     /// AML method execution is routed through the manager's in-flight execution
     /// gate so unload and table replacement cannot race device identification.
+    /// Evaluate a ThermalZone's _TMP and thermal trip methods using the same
+    /// table-ownership checks and serialized AML gate as device identity.
+    pub fn evaluate_thermal_zone<G:AmlExecutionGate,I:AcpiMethodInvoker>(
+        &self,handle:TableHandle,table_bytes:&[&[u8]],zone:u16,gate:&G,method_runtime:&mut I,
+    )->Result<acpi_device::AcpiThermalZoneData,TableError>{
+        let info=self.table_info(handle)?;
+        if zone<info.namespace_start||zone>=info.namespace_end{return Err(TableError::InvalidHandle)}
+        if table_bytes.len()<self.count{return Err(TableError::InvalidHandle)}
+        let mut aml_tables:[&[u8];MAX_AML_TABLES]=[&[];MAX_AML_TABLES];
+        for slot in 0..self.count{
+            let bytes=table_bytes[slot];let record=self.records[slot];
+            if !record.active{return Err(TableError::InvalidHandle)}
+            let header=parse_sdt_header(bytes)?;
+            if header.signature!=record.info.signature||header.length!=record.info.length
+                ||header.checksum!=record.info.checksum||fingerprint(&bytes[..header.length as usize])!=record.info.content_fingerprint{
+                return Err(TableError::InvalidHandle)
+            }
+            aml_tables[slot]=&bytes[SDT_HEADER_SIZE..header.length as usize];
+        }
+        let mut invoker=GatedDeviceInvoker{inner:method_runtime,gate};
+        acpi_device::evaluate_thermal_zone(&self.namespace,&aml_tables[..self.count],zone,&mut invoker)
+            .map_err(TableError::DeviceIdentity)
+    }
+
     pub fn evaluate_device_identity<G:AmlExecutionGate,I:AcpiMethodInvoker>(&self,handle:TableHandle,table_bytes:&[&[u8]],device:u16,gate:&G,method_runtime:&mut I)->Result<AcpiDeviceIdentity,TableError>{
         let info=self.table_info(handle)?;
         if device<info.namespace_start||device>=info.namespace_end{return Err(TableError::InvalidHandle)}
