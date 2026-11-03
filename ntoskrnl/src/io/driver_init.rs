@@ -205,6 +205,9 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
         unsafe {
             extension_ptr.write(DRIVER_EXTENSION {
                 driver_object: driver_ptr.cast(),
+                driver_init: None,
+                driver_start_io: None,
+                driver_unload: None,
                 add_device: None,
                 count: 0,
                 service_key_name: (*driver_ptr).driver_name,
