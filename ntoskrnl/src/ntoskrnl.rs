@@ -141,20 +141,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   if requested.eq_ignore_ascii_case(b"SeQuerySessionIdToken") { return Some(se::runtime::SeQuerySessionIdToken as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeQuerySessionIdTokenEx") { return Some(se::runtime::SeQuerySessionIdTokenEx as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeQueryAuthenticationIdToken") { return Some(se::runtime::SeQueryAuthenticationIdToken as usize as u64); }
-  let direct = if requested.eq_ignore_ascii_case(b"IoRegisterDriverInterface") {
-   Some(driver_loader::IoRegisterDriverInterface as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoQueryDriverInterface") {
-   Some(driver_loader::IoQueryDriverInterface as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoRegisterDriverReinitialization") {
+  let direct = if requested.eq_ignore_ascii_case(b"IoRegisterDriverReinitialization") {
    Some(driver_loader::IoRegisterDriverReinitialization as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPQueryBusInterface") {
-   Some(crate::io::IoPnPQueryBusInterface as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPRegisterDeviceDriver") {
-   Some(crate::io::IoPnPRegisterDeviceDriver as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPProcessBusRelations") {
-   Some(crate::io::IoPnPProcessBusRelations as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPEnumerateBus") {
-   Some(crate::io::IoPnPEnumerateBus as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCreateDevice") {
    Some(crate::io::io_create_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoDeleteDevice") {
