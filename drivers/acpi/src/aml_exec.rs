@@ -517,6 +517,16 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
 #[cfg(test)]
 mod tests{
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
+ use core::sync::atomic::{AtomicUsize,Ordering};
+ struct RecordingSync{acquires:AtomicUsize,releases:AtomicUsize,last_method:AtomicUsize,last_level:AtomicUsize}
+ impl RecordingSync{fn new()->Self{Self{acquires:AtomicUsize::new(0),releases:AtomicUsize::new(0),last_method:AtomicUsize::new(usize::MAX),last_level:AtomicUsize::new(usize::MAX)}}}
+ impl AmlMethodSynchronizer for RecordingSync{
+  fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>{
+   self.acquires.fetch_add(1,Ordering::SeqCst);self.last_method.store(method_index as usize,Ordering::SeqCst);
+   self.last_level.store(sync_level as usize,Ordering::SeqCst);Ok(())
+  }
+  fn release(&self,_method_index:u16){self.releases.fetch_add(1,Ordering::SeqCst);}
+ }
  #[test]fn executes_explicit_aml_conversion_opcodes_and_stores_typed_targets(){
   let decimal=[0x08,b'S',b'T',b'R',b'0',0x0d,b'4',b'2',0,
    0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x99,b'S',b'T',b'R',b'0',0x00];
@@ -745,6 +755,45 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"RECU").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::CallDepthLimit));
+ }
+ #[test]fn serialized_method_requires_host_sync_and_releases_its_implicit_mutex(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0x38,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]),Err(ExecError::SynchronizationUnavailable));
+
+  let sync=RecordingSync::new();
+  let value=execute_method_typed_with_sync(&aml,&ns,id,&[],64,&sync).unwrap();
+  assert_eq!(value.kind,AmlValueKind::Integer);assert_eq!(value.integer,1);
+  assert_eq!(sync.acquires.load(Ordering::SeqCst),1);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),1);
+  assert_eq!(sync.last_method.load(Ordering::SeqCst),id as usize);
+  assert_eq!(sync.last_level.load(Ordering::SeqCst),3);
+ }
+ #[test]fn serialized_method_releases_implicit_mutex_after_execution_error(){
+  let aml=[0x14,0x07,b'T',b'E',b'S',b'T',0x18,0x16];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();let sync=RecordingSync::new();
+  assert_eq!(execute_method_typed_with_sync(&aml,&ns,id,&[],64,&sync),Err(ExecError::UnsupportedOpcode));
+  assert_eq!(sync.acquires.load(Ordering::SeqCst),1);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),1);
+ }
+ #[test]fn serialized_nested_methods_enforce_monotonic_sync_levels(){
+  let allowed=[0x14,0x08,b'I',b'N',b'N',b'R',0x38,0xa4,0x01,
+   0x14,0x0b,b'O',b'U',b'T',b'R',0x28,0xa4,b'I',b'N',b'N',b'R'];
+  let mut ns=AmlNamespace::new();load_definition_block(&allowed,&mut ns).unwrap();
+  let id=ns.find_child(0,*b'OUTR').unwrap();let sync=RecordingSync::new();
+  assert_eq!(execute_method_typed_with_sync(&allowed,&ns,id,&[],64,&sync).unwrap().integer,1);
+  assert_eq!(sync.acquires.load(Ordering::SeqCst),2);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),2);
+
+  let denied=[0x14,0x08,b'I',b'N',b'N',b'R',0x28,0xa4,0x01,
+   0x14,0x0b,b'O',b'U',b'T',b'R',0x38,0xa4,b'I',b'N',b'N',b'R'];
+  let mut ns=AmlNamespace::new();load_definition_block(&denied,&mut ns).unwrap();
+  let id=ns.find_child(0,*b'OUTR').unwrap();let sync=RecordingSync::new();
+  assert_eq!(execute_method_typed_with_sync(&denied,&ns,id,&[],64,&sync),Err(ExecError::SyncLevelViolation));
+  assert_eq!(sync.acquires.load(Ordering::SeqCst),1);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),1);
  }
  #[test]fn executes_integer_method_with_arg_and_add(){
   let aml=[0x14,0x0c,b'T',b'E',b'S',b'T',1,0xa4,0x72,0x68,0x0a,2,0x00];
