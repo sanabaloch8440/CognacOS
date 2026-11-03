@@ -444,7 +444,8 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
         | Err(crate::acpi::AcpiError::BadLength)
         | Err(crate::acpi::AcpiError::BadChecksum)
         | Err(crate::acpi::AcpiError::MalformedEntry)
-        | Err(crate::acpi::AcpiError::AddressOutOfRange) => STATUS_INVALID_PARAMETER,
+        | Err(crate::acpi::AcpiError::AddressOutOfRange)
+        | Err(crate::acpi::AcpiError::DuplicateTable) => STATUS_INVALID_PARAMETER,
     }
 }
 
