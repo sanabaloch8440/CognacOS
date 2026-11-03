@@ -10,7 +10,7 @@
 
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
 use crate::aml_exec::{self,ExecError};
-use crate::aml_objects::MAX_AML_BYTES;
+use crate::aml_objects::{AmlRuntimeValue,AmlValueKind,MAX_AML_BYTES};
 
 pub const DEVICE_PRESENT:u32=1;
 pub const DEVICE_ENABLED:u32=2;
@@ -62,6 +62,17 @@ pub enum AcpiMethodValue {
 }
 pub trait AcpiMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>;
+
+    /// Invoke a method with typed AML TermArg objects. The default preserves
+    /// compatibility for scalar-only test invokers while refusing to silently
+    /// discard arguments supplied to firmware methods such as _SRS.
+    fn evaluate_value_with_args(
+        &mut self,namespace:&AmlNamespace,aml:&[u8],method:u16,
+        args:&[AmlRuntimeValue],
+    )->Result<AcpiMethodValue,ExecError>{
+        if !args.is_empty(){return Err(ExecError::BadArgumentCount)}
+        self.evaluate_value(namespace,aml,method)
+    }
 }
 pub struct IntegerMethodInvoker;
 /// ACPI method invoker backed by the kernel's dispatcher-object mutex API.
@@ -117,6 +128,38 @@ impl AcpiMethodInvoker for IntegerMethodInvoker{
 impl AcpiMethodInvoker for SynchronizedMethodInvoker<'_>{
  fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
   evaluate_method_value(namespace,aml,method,Some(self.synchronizer))
+ }
+ fn evaluate_value_with_args(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16,args:&[AmlRuntimeValue])->Result<AcpiMethodValue,ExecError>{
+  evaluate_method_value_with_args(namespace,aml,method,args,self.synchronizer)
+ }
+}
+
+fn evaluate_method_value_with_args(
+ namespace:&AmlNamespace,aml:&[u8],method:u16,args:&[AmlRuntimeValue],
+ sync:&dyn aml_exec::AmlMethodSynchronizer,
+)->Result<AcpiMethodValue,ExecError>{
+ let node=namespace.nodes.get(method as usize)
+  .filter(|_|(method as usize)<namespace.count)
+  .ok_or(ExecError::InvalidMethod)?;
+ if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
+ let value=aml_exec::execute_method_typed_with_sync(aml,namespace,method,args,64,sync)?;
+ match value.kind{
+  // AML methods without an explicit Return have an Empty result. The
+  // caller of programming methods such as _SRS treats successful execution
+  // as the operation result and does not interpret this placeholder value.
+  AmlValueKind::Empty=>Ok(AcpiMethodValue::Integer(0)),
+  AmlValueKind::Integer=>Ok(AcpiMethodValue::Integer(value.integer)),
+  AmlValueKind::String=>{
+   let length=value.byte_length as usize;
+   let id=AcpiId::from_bytes(&value.bytes[..length]).map_err(|_|ExecError::UnsupportedReturnType)?;
+   Ok(AcpiMethodValue::String(id))
+  }
+  AmlValueKind::Buffer=>{
+   let length=value.byte_length as usize;
+   if length>MAX_AML_BYTES{return Err(ExecError::UnsupportedReturnType)}
+   Ok(AcpiMethodValue::Buffer{bytes:value.bytes,length:length as u16})
+  }
+  _=>Err(ExecError::UnsupportedReturnType),
  }
 }
 
@@ -395,6 +438,31 @@ mod tests{
         assert_eq!(invoker.evaluate_value(&ns,&aml,method).unwrap(),AcpiMethodValue::String(AcpiId::from_bytes(b"ACME0001").unwrap()));
         assert_eq!(sync.acquired.load(core::sync::atomic::Ordering::SeqCst),1);
         assert_eq!(sync.released.load(core::sync::atomic::Ordering::SeqCst),1);
+    }
+    #[test]fn synchronized_invoker_passes_typed_buffer_arguments_to_methods(){
+        let mut aml=std::vec::Vec::new();
+        add_method(&mut aml,*b"_SRS",&[0xa4,0x68]);
+        aml[1]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();crate::aml::load_definition_block(&aml,&mut ns).unwrap();
+        let method=ns.find_child(0,*b"_SRS").unwrap();
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=3;buffer.bytes[..3].copy_from_slice(&[0x22,0x10,0x79]);
+        let sync=SyncRecorder::new();
+        let mut invoker=SynchronizedMethodInvoker{synchronizer:&sync};
+        assert_eq!(invoker.evaluate_value_with_args(&ns,&aml,method,&[buffer]).unwrap(),
+            AcpiMethodValue::Buffer{bytes:{let mut b=[0u8;MAX_AML_BYTES];b[..3].copy_from_slice(&[0x22,0x10,0x79]);b},length:3});
+    }
+    #[test]fn synchronized_invoker_accepts_srs_method_without_return_object(){
+        let mut aml=std::vec::Vec::new();
+        add_method(&mut aml,*b"_SRS",&[0xa3]);
+        aml[1]=(aml.len()-2) as u8;
+        let mut ns=AmlNamespace::new();crate::aml::load_definition_block(&aml,&mut ns).unwrap();
+        let method=ns.find_child(0,*b"_SRS").unwrap();
+        let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
+        buffer.byte_length=2;buffer.bytes[..2].copy_from_slice(&[0x79,0]);
+        let sync=SyncRecorder::new();
+        let mut invoker=SynchronizedMethodInvoker{synchronizer:&sync};
+        assert_eq!(invoker.evaluate_value_with_args(&ns,&aml,method,&[buffer]).unwrap(),AcpiMethodValue::Integer(0));
     }
     #[test]fn synchronized_invoker_fails_closed_when_serialized_method_lock_fails(){
         let mut aml=std::vec::Vec::new();

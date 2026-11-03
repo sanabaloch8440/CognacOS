@@ -61,6 +61,62 @@ fn address_space(p:&[u8],width:u8)->Result<Resource,ResourceError>{
     }
 }
 
+/// Parse the raw CM_RESOURCE_LIST supplied in IRP_MN_START_DEVICE.
+/// This parser accepts one FULL_RESOURCE_DESCRIPTOR (the ACPI bus PDO's
+/// resource set) and the Windows x64 20-byte PARTIAL_RESOURCE_DESCRIPTOR ABI.
+pub fn parse_cm_resource_list(bytes:&[u8])->Result<ResourceList,ResourceError>{
+    if bytes.len()<20||u32le(bytes,0)?!=1{return Err(ResourceError::InvalidLength)}
+    let count=u32le(bytes,16)? as usize;
+    if count>MAX_RESOURCES{return Err(ResourceError::TooManyResources)}
+    let required=20usize.checked_add(count.checked_mul(20).ok_or(ResourceError::IntegerOverflow)?)
+        .ok_or(ResourceError::IntegerOverflow)?;
+    if required>bytes.len(){return Err(ResourceError::Truncated)}
+    let mut out=ResourceList::EMPTY;
+    for index in 0..count{
+        let offset=20+index*20;
+        let kind=bytes[offset];
+        let share=bytes[offset+1];
+        let flags=u16le(bytes,offset+2)?;
+        let resource=match kind{
+            1=>{
+                let base=u64le(bytes,offset+4)?;
+                let length=u32le(bytes,offset+12)? as u64;
+                validate_range(base,base,length)?;
+                Resource::Io{minimum:base,maximum:base,alignment:1,length,decode_16_bit:flags&2!=0}
+            }
+            2=>{
+                let vector=u32le(bytes,offset+8)?;
+                let mut interrupts=[0u32;8];interrupts[0]=vector;
+                let mut irq_flags=if flags&1==0{2}else{0};
+                if share==3{irq_flags|=8;}
+                Resource::ExtendedIrq{flags:irq_flags,interrupts,count:1}
+            }
+            3=>{
+                let base=u64le(bytes,offset+4)?;
+                let length=u32le(bytes,offset+12)? as u64;
+                validate_range(base,base,length)?;
+                Resource::Memory{minimum:base,maximum:base,alignment:1,length,
+                    writeable:flags&1==0,cacheable:flags&0x20!=0,kind:2}
+            }
+            4=>{
+                let channel=u32le(bytes,offset+4)?;
+                if channel>=8{return Err(ResourceError::InvalidDescriptor)}
+                Resource::Dma{channels:1u8<<(channel as u8),transfer_size:0,bus_master:false}
+            }
+            6=>{
+                let base=u32le(bytes,offset+4)? as u64;
+                let length=u32le(bytes,offset+8)? as u64;
+                if length==0{return Err(ResourceError::InvalidDescriptor)}
+                let maximum=base.checked_add(length-1).ok_or(ResourceError::IntegerOverflow)?;
+                Resource::BusNumber{minimum:base,maximum,length}
+            }
+            _=>return Err(ResourceError::UnsupportedDescriptor),
+        };
+        out.push(resource)?;
+    }
+    Ok(out)
+}
+
 /// Parse one complete `_CRS` resource template. No result escapes on failure.
 /// Unknown descriptor kinds fail closed; EndTag must be present and final.
 /// A zero EndTag checksum means checksum validation is not required by firmware.
@@ -113,6 +169,339 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
         }
     }
     if !ended{return Err(ResourceError::MissingEndTag)} Ok(out)
+}
+
+/// Return true when an allocated bus-relative resource satisfies one
+/// descriptor from an _PRS alternative. The caller supplies resources
+/// selected by the PnP arbiter, not translated HAL addresses.
+fn allocation_satisfies(requirement:Resource,allocated:Resource)->bool{
+    match (requirement,allocated){
+        (Resource::Io{minimum,maximum,alignment,length,decode_16_bit},
+         Resource::Io{minimum:base,length:actual,decode_16_bit:actual_decode,..}) =>
+            actual==length&&decode_16_bit==actual_decode&&base>=minimum&&base<=maximum
+                &&(alignment<=1||base%alignment==0),
+        (Resource::Memory{minimum,maximum,alignment,length,writeable,cacheable,..},
+         Resource::Memory{minimum:base,length:actual,writeable:actual_writeable,cacheable:actual_cacheable,..}) =>
+            actual==length&&writeable==actual_writeable&&cacheable==actual_cacheable
+                &&base>=minimum&&base<=maximum&&(alignment<=1||base%alignment==0),
+        (Resource::BusNumber{minimum,maximum,length},
+         Resource::BusNumber{minimum:base,length:actual,..}) =>
+            actual==length&&base>=minimum&&base<=maximum,
+        (Resource::Irq{mask,level_triggered,active_low,shared,..},
+         Resource::Irq{mask:allocated_mask,level_triggered:a_level,active_low:a_low,shared:a_shared,..}) =>
+            allocated_mask.count_ones()==1&&mask&allocated_mask!=0
+                &&level_triggered==a_level&&active_low==a_low&&shared==a_shared,
+        (Resource::Irq{mask,level_triggered,active_low,shared,..},
+         Resource::ExtendedIrq{flags,interrupts,count}) =>
+            count==1&&interrupts[0]<16&&mask&(1u16<<interrupts[0])!=0
+                &&level_triggered==(flags&2!=0)&&shared==(flags&8!=0),
+        (Resource::ExtendedIrq{flags,interrupts,count},
+         Resource::ExtendedIrq{flags:actual_flags,interrupts:actual,count:actual_count}) =>
+            count>0&&count<=8&&actual_count>0&&actual_count<=8
+                &&(flags&0x0a)==(actual_flags&0x0a)
+                &&actual[..actual_count as usize].iter().all(|gsi|interrupts[..count as usize].contains(gsi)),
+        (Resource::ExtendedIrq{flags,interrupts,count},
+         Resource::Irq{mask,level_triggered,active_low,shared,..}) =>
+            count>0&&count<=8&&mask.count_ones()==1
+                &&interrupts[..count as usize].contains(&(mask.trailing_zeros()))
+                &&(flags&2!=0)==level_triggered&&(flags&8!=0)==shared,
+        (Resource::Dma{channels,transfer_size,bus_master},
+         Resource::Dma{channels:allocated,transfer_size:actual_size,bus_master:actual_master}) =>
+            allocated.count_ones()==1&&channels&allocated!=0
+                &&transfer_size==actual_size&&bus_master==actual_master,
+        _=>false,
+    }
+}
+
+/// Verify that a PnP arbiter allocation satisfies one complete _PRS
+/// alternative. Resources are matched as a multiset (order-independent),
+/// and the returned list is the arbiter's bus-relative assignment.
+pub fn select_assigned_resources(
+    alternatives:&ResourceAlternatives,
+    allocated:&ResourceList,
+)->Result<ResourceList,ResourceError>{
+    if alternatives.count==0||alternatives.count>alternatives.entries.len()
+        ||allocated.count>allocated.entries.len(){return Err(ResourceError::InvalidDescriptor)}
+    let allocated_count=allocated.entries[..allocated.count].iter()
+        .flatten().filter(|r|!matches!(r,Resource::EndTag{..})).count();
+    for alternative in alternatives.entries[..alternatives.count].iter(){
+        if alternative.count>alternative.entries.len(){return Err(ResourceError::InvalidDescriptor)}
+        let required: [Option<Resource>;MAX_RESOURCES]=alternative.entries;
+        let required_count=required[..alternative.count].iter().flatten()
+            .filter(|r|!matches!(r,Resource::EndTag{..})).count();
+        if required_count!=allocated_count{continue}
+        let mut used=[false;MAX_RESOURCES];
+        let mut matched=true;
+        for req in required[..alternative.count].iter().flatten(){
+            if matches!(req,Resource::EndTag{..}){continue}
+            let mut found=None;
+            for (index,candidate) in allocated.entries[..allocated.count].iter().enumerate(){
+                if used[index]{continue}
+                if let Some(candidate)=candidate{
+                    if allocation_satisfies(*req,*candidate){found=Some(index);break}
+                }
+            }
+            if let Some(index)=found{used[index]=true}else{matched=false;break}
+        }
+        if matched{
+            let mut selected=ResourceList::EMPTY;
+            let mut consumed=[false;MAX_RESOURCES];
+            for req in required[..alternative.count].iter().flatten(){
+                if matches!(req,Resource::EndTag{..}){continue}
+                let mut found=None;
+                for (index,candidate) in allocated.entries[..allocated.count].iter().enumerate(){
+                    if consumed[index]{continue}
+                    if let Some(candidate)=candidate{
+                        if allocation_satisfies(*req,*candidate){found=Some((index,*candidate));break}
+                    }
+                }
+                let Some((index,candidate))=found else{return Err(ResourceError::InvalidDescriptor)};
+                consumed[index]=true;
+                selected.push(project_assignment(*req,candidate).ok_or(ResourceError::InvalidDescriptor)?)?;
+            }
+            return Ok(selected)
+        }
+    }
+    Err(ResourceError::InvalidDescriptor)
+}
+
+/// Project an arbiter-selected address/vector onto the matching _PRS
+/// descriptor so polarity, wake, decode, and memory attributes are retained.
+fn project_assignment(requirement:Resource,allocated:Resource)->Option<Resource>{
+    match (requirement,allocated){
+        (Resource::Io{alignment,length,decode_16_bit,..},Resource::Io{minimum:base,length:actual,..}) if length==actual=>
+            Some(Resource::Io{minimum:base,maximum:base,alignment,length,decode_16_bit}),
+        (Resource::Memory{alignment,length,writeable,cacheable,kind,..},Resource::Memory{minimum:base,length:actual,..}) if length==actual=>
+            Some(Resource::Memory{minimum:base,maximum:base,alignment,length,writeable,cacheable,kind}),
+        (Resource::BusNumber{length,..},Resource::BusNumber{minimum:base,length:actual,..}) if length==actual=>
+            Some(Resource::BusNumber{minimum:base,maximum:base+length-1,length}),
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,..},Resource::Irq{mask,..}) if mask.count_ones()==1=>
+            Some(Resource::Irq{mask,level_triggered,active_low,shared,wake_capable}),
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,..},Resource::ExtendedIrq{interrupts,count,..}) if count==1=>{
+            let gsi=interrupts[0];
+            if gsi<16{Some(Resource::Irq{mask:1u16<<(gsi as u16),level_triggered,active_low,shared,wake_capable})}
+            else{Some(Resource::ExtendedIrq{flags:(if level_triggered{2}else{0})|(if active_low{4}else{0})|(if shared{8}else{0})|(if wake_capable{0x10}else{0}),interrupts,count:1})}
+        }
+        (Resource::ExtendedIrq{flags,..},Resource::ExtendedIrq{interrupts,count,..}) if count>0&&count<=8=>
+            Some(Resource::ExtendedIrq{flags,interrupts,count}),
+        (Resource::ExtendedIrq{flags,..},Resource::Irq{mask,..}) if mask.count_ones()==1=>{
+            let mut interrupts=[0u32;8];interrupts[0]=mask.trailing_zeros();
+            Some(Resource::ExtendedIrq{flags,interrupts,count:1})
+        },
+        (Resource::Dma{transfer_size,bus_master,..},Resource::Dma{channels,..})=>
+            Some(Resource::Dma{channels,transfer_size,bus_master}),
+        _=>None,
+    }
+}
+
+/// Strict post-programming comparison. CM_RESOURCE_LIST does not carry all
+/// ACPI electrical attributes, so _PRS arbitration deliberately ignores those
+/// fields; a fresh _CRS readback must match them exactly.
+fn current_resource_matches(expected:Resource,current:Resource)->bool{
+    if !allocation_satisfies(current,expected){return false}
+    match (expected,current){
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,..},
+         Resource::Irq{level_triggered:a,active_low:b,shared:c,wake_capable:d,..}) =>
+            level_triggered==a&&active_low==b&&shared==c&&wake_capable==d,
+        (Resource::Irq{level_triggered,active_low,shared,wake_capable,mask},
+         Resource::ExtendedIrq{flags,interrupts,count}) =>
+            count==1&&count<=8&&mask&(1u16.checked_shl(interrupts[0]).unwrap_or(0))!=0
+                &&level_triggered==(flags&2!=0)&&active_low==(flags&4!=0)
+                &&shared==(flags&8!=0)&&wake_capable==(flags&0x10!=0),
+        (Resource::ExtendedIrq{flags,interrupts,count},
+         Resource::ExtendedIrq{flags:actual_flags,interrupts:actual,count:actual_count}) =>
+            count==actual_count&&count>0&&count<=8&&flags&0x1e==actual_flags&0x1e
+                &&interrupts[..count as usize]==actual[..actual_count as usize],
+        (Resource::ExtendedIrq{flags,interrupts,count},
+         Resource::Irq{mask,level_triggered,active_low,shared,wake_capable,..}) =>
+            count>0&&count<=8&&mask.count_ones()==1
+                &&interrupts[..count as usize].contains(&mask.trailing_zeros())
+                &&(flags&2!=0)==level_triggered&&(flags&4!=0)==active_low
+                &&(flags&8!=0)==shared&&(flags&0x10!=0)==wake_capable,
+        _=>true,
+    }
+}
+
+/// Verify that firmware's post-_SRS _CRS describes the exact allocation
+/// selected by the PnP arbiter. Matching is order-independent and rejects
+/// missing, duplicated, or additional non-EndTag resources.
+pub fn verify_current_resources(
+    allocated:&ResourceList,
+    current:&ResourceList,
+)->Result<(),ResourceError>{
+    if allocated.count>allocated.entries.len()||current.count>current.entries.len(){
+        return Err(ResourceError::InvalidDescriptor)
+    }
+    let expected_count=allocated.entries[..allocated.count].iter().flatten()
+        .filter(|r|!matches!(r,Resource::EndTag{..})).count();
+    let current_count=current.entries[..current.count].iter().flatten()
+        .filter(|r|!matches!(r,Resource::EndTag{..})).count();
+    if expected_count!=current_count{return Err(ResourceError::InvalidDescriptor)}
+    let mut used=[false;MAX_RESOURCES];
+    for expected in allocated.entries[..allocated.count].iter().flatten(){
+        if matches!(expected,Resource::EndTag{..}){continue}
+        let mut found=None;
+        for (index,candidate) in current.entries[..current.count].iter().enumerate(){
+            if used[index]{continue}
+            if let Some(candidate)=candidate{
+                if current_resource_matches(*expected,*candidate){found=Some(index);break}
+            }
+        }
+        if let Some(index)=found{used[index]=true}else{return Err(ResourceError::InvalidDescriptor)}
+    }
+    Ok(())
+}
+
+/// Encode an allocated resource list as an ACPI resource template suitable
+/// for _SRS. Address descriptors use QWord form to avoid truncating 64-bit
+/// physical apertures; interrupts use Extended IRQ descriptors.
+pub fn encode_resource_template(resources:&ResourceList,output:&mut [u8])->Result<usize,ResourceError>{
+    if resources.count>resources.entries.len(){return Err(ResourceError::InvalidDescriptor)}
+    let mut cursor=0usize;
+    for resource in resources.entries[..resources.count].iter().flatten(){
+        match *resource{
+            Resource::Io{minimum,maximum,alignment,length,decode_16_bit}=>{
+                encode_qword_address(output,&mut cursor,1,if decode_16_bit{1}else{0},0,alignment,minimum,maximum,length)?;
+            }
+            Resource::Memory{minimum,maximum,alignment,length,writeable,cacheable,..}=>{
+                encode_qword_address(output,&mut cursor,0,0,(if writeable{1}else{0})|(if cacheable{2}else{0}),alignment,minimum,maximum,length)?;
+            }
+            Resource::BusNumber{minimum,maximum,length}=>{
+                encode_qword_address(output,&mut cursor,2,0,0,1,minimum,maximum,length)?;
+            }
+            Resource::Irq{mask,level_triggered,active_low,shared,wake_capable}=>{
+                let mut interrupts=[0u32;8];let mut count=0usize;
+                for irq in 0..16u32{if mask&(1u16<<irq)!=0{interrupts[count]=irq;count+=1;}}
+                if count==0||count>8{return Err(ResourceError::UnsupportedDescriptor)}
+                let flags=(if level_triggered{2}else{0})|(if active_low{4}else{0})|(if shared{8}else{0})|(if wake_capable{0x10}else{0});
+                encode_extended_irq(output,&mut cursor,flags,&interrupts[..count])?;
+            }
+            Resource::ExtendedIrq{flags,interrupts,count}=>{
+                if count==0||count>8{return Err(ResourceError::InvalidDescriptor)}
+                encode_extended_irq(output,&mut cursor,flags,&interrupts[..count as usize])?;
+            }
+            Resource::Dma{channels,transfer_size,bus_master}=>{
+                let flags=(transfer_size&3)|if bus_master{4}else{0};
+                put_resource_bytes(output,&mut cursor,&[0x2a,channels,flags])?;
+            }
+            Resource::EndTag{..}=>{},
+        }
+    }
+    let end=cursor.checked_add(2).ok_or(ResourceError::IntegerOverflow)?;
+    if end>output.len(){return Err(ResourceError::Truncated)}
+    output[cursor]=0x79;output[cursor+1]=0;
+    let checksum=output[..end].iter().fold(0u8,|sum,b|sum.wrapping_add(*b));
+    output[cursor+1]=0u8.wrapping_sub(checksum);
+    Ok(end)
+}
+
+fn put_resource_bytes(output:&mut [u8],cursor:&mut usize,bytes:&[u8])->Result<(),ResourceError>{
+    let end=cursor.checked_add(bytes.len()).ok_or(ResourceError::IntegerOverflow)?;
+    if end>output.len(){return Err(ResourceError::Truncated)}
+    output[*cursor..end].copy_from_slice(bytes);*cursor=end;Ok(())
+}
+fn encode_qword_address(output:&mut [u8],cursor:&mut usize,space:u8,flags:u8,type_flags:u8,
+    alignment:u64,minimum:u64,maximum:u64,length:u64)->Result<(),ResourceError>{
+    validate_range(minimum,maximum,length)?;
+    let mut descriptor=[0u8;46];
+    descriptor[0]=0x8a;descriptor[1]=43;descriptor[2]=space;
+    descriptor[3]=flags;descriptor[4]=type_flags;
+    descriptor[5..13].copy_from_slice(&alignment.to_le_bytes());
+    descriptor[13..21].copy_from_slice(&minimum.to_le_bytes());
+    descriptor[21..29].copy_from_slice(&maximum.to_le_bytes());
+    descriptor[29..37].copy_from_slice(&0u64.to_le_bytes());
+    descriptor[37..45].copy_from_slice(&length.to_le_bytes());
+    put_resource_bytes(output,cursor,&descriptor)
+}
+fn encode_extended_irq(output:&mut [u8],cursor:&mut usize,flags:u8,interrupts:&[u32])->Result<(),ResourceError>{
+    if interrupts.is_empty()||interrupts.len()>8{return Err(ResourceError::InvalidDescriptor)}
+    let payload=2usize.checked_add(interrupts.len().checked_mul(4).ok_or(ResourceError::IntegerOverflow)?)
+        .ok_or(ResourceError::IntegerOverflow)?;
+    let mut descriptor=[0u8;37];descriptor[0]=0x89;
+    descriptor[1]=payload as u8;descriptor[2]=0;descriptor[3]=flags;
+    descriptor[4]=interrupts.len() as u8;
+    for (index,gsi) in interrupts.iter().enumerate(){
+        let offset=5+index*4;descriptor[offset..offset+4].copy_from_slice(&gsi.to_le_bytes());
+    }
+    put_resource_bytes(output,cursor,&descriptor[..3+payload])
+}
+
+#[cfg(test)]
+mod cm_resource_list_tests{
+ use super::*;
+ #[test]
+ fn parses_windows_x64_start_device_resource_list(){
+  let mut bytes=[0u8;60];
+  bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+  bytes[4..8].copy_from_slice(&5u32.to_le_bytes());
+  bytes[8..12].copy_from_slice(&0u32.to_le_bytes());
+  bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+  bytes[14..16].copy_from_slice(&1u16.to_le_bytes());
+  bytes[16..20].copy_from_slice(&2u32.to_le_bytes());
+  // Port descriptor: exclusive, 16-bit decode, 0x3f8..0x3ff.
+  bytes[20]=1;bytes[21]=1;bytes[22..24].copy_from_slice(&2u16.to_le_bytes());
+  bytes[24..32].copy_from_slice(&0x3f8u64.to_le_bytes());
+  bytes[32..36].copy_from_slice(&8u32.to_le_bytes());
+  // Level-triggered, shared interrupt with vector 9.
+  bytes[40]=2;bytes[41]=3;bytes[42..44].copy_from_slice(&0u16.to_le_bytes());
+  bytes[44..48].copy_from_slice(&9u32.to_le_bytes());
+  bytes[48..52].copy_from_slice(&9u32.to_le_bytes());
+  bytes[52..60].copy_from_slice(&u64::MAX.to_le_bytes());
+  let parsed=parse_cm_resource_list(&bytes).unwrap();
+  assert_eq!(parsed.count,2);
+  assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x3f8,maximum:0x3f8,length:8,decode_16_bit:true,..})));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0e,count:1,interrupts,..}) if interrupts[0]==9));
+ }
+}
+
+#[cfg(test)]
+mod assigned_resource_encoding_tests{
+ use super::*;
+ #[test]
+ fn selects_arbiter_allocation_and_round_trips_srs_template(){
+  let mut requirement=ResourceList::EMPTY;
+  requirement.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  requirement.entries[1]=Some(Resource::ExtendedIrq{flags:0x0e,interrupts:[5,9,0,0,0,0,0,0],count:2});
+  requirement.count=2;
+  let mut alternatives=ResourceAlternatives::EMPTY;
+  alternatives.entries[0]=requirement;alternatives.count=1;
+
+  let mut allocated=ResourceList::EMPTY;
+  allocated.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:1,length:0x100,decode_16_bit:true});
+  allocated.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[9,0,0,0,0,0,0,0],count:1});
+  allocated.count=2;
+  let selected=select_assigned_resources(&alternatives,&allocated).unwrap();
+  assert!(matches!(selected.entries[1],Some(Resource::ExtendedIrq{flags:0x0e,count:1,interrupts,..}) if interrupts[0]==9));
+
+  let mut bytes=[0u8;128];
+  let length=encode_resource_template(&selected,&mut bytes).unwrap();
+  let parsed=parse_resource_template(&bytes[..length]).unwrap();
+  assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x1100,maximum:0x1100,length:0x100,..})));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
+ }
+ #[test]
+ fn verifies_post_srs_crs_against_selected_bus_relative_assignment(){
+  let mut expected=ResourceList::EMPTY;
+  expected.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:0x100,length:0x100,decode_16_bit:true});
+  expected.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[9,0,0,0,0,0,0,0],count:1});
+  expected.count=2;
+  let mut current=expected;
+  current.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  assert_eq!(verify_current_resources(&expected,&current),Ok(()));
+  current.entries[1]=Some(Resource::ExtendedIrq{flags:0x02,interrupts:[9,0,0,0,0,0,0,0],count:1});
+  assert_eq!(verify_current_resources(&expected,&current),Err(ResourceError::InvalidDescriptor));
+ }
+ #[test]
+ fn rejects_allocations_outside_every_prs_alternative(){
+  let mut required=ResourceList::EMPTY;
+  required.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  required.count=1;
+  let mut alternatives=ResourceAlternatives::EMPTY;alternatives.entries[0]=required;alternatives.count=1;
+  let mut allocated=ResourceList::EMPTY;
+  allocated.entries[0]=Some(Resource::Io{minimum:0x1081,maximum:0x1081,alignment:1,length:0x100,decode_16_bit:true});
+  allocated.count=1;
+  assert_eq!(select_assigned_resources(&alternatives,&allocated),Err(ResourceError::InvalidDescriptor));
+ }
 }
 
 #[cfg(test)] extern crate std;

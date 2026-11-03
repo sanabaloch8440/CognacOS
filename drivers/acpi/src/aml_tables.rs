@@ -379,6 +379,33 @@ impl AmlTableManager {
         result
     }
 
+    /// Invoke a loaded AML method with typed runtime arguments while the
+    /// owning definition table is pinned by the execution gate. This is used
+    /// for firmware programming methods such as _SRS(Buffer).
+    pub fn invoke_method_value_with_args<G:AmlExecutionGate,I:AcpiMethodInvoker>(
+        &self,handle:TableHandle,bytes:&[u8],method_index:u16,gate:&G,
+        method_runtime:&mut I,args:&[crate::aml_objects::AmlRuntimeValue],
+    )->Result<AcpiMethodValue,TableError>{
+        gate.enter_method().map_err(|_|TableError::ExecutionBusy)?;
+        let result=(||{
+            let info=self.table_info(handle)?;
+            let header=parse_sdt_header(bytes)?;
+            if header.length!=info.length||header.signature!=info.signature||header.checksum!=info.checksum
+                ||fingerprint(&bytes[..header.length as usize])!=info.content_fingerprint{
+                return Err(TableError::InvalidHandle)
+            }
+            if method_index<info.namespace_start||method_index>=info.namespace_end{
+                return Err(TableError::InvalidHandle)
+            }
+            method_runtime.evaluate_value_with_args(
+                &self.namespace,&bytes[SDT_HEADER_SIZE..info.length as usize],
+                method_index,args,
+            ).map_err(TableError::MethodExecution)
+        })();
+        gate.leave_method();
+        result
+    }
+
     /// Evaluate a resource method and copy its typed Buffer result into
     /// caller-owned storage. Non-buffer results and undersized output fail
     /// without truncation; method entry remains protected by the table gate.

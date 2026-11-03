@@ -466,7 +466,16 @@ fn read_pdo_resource_template(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,nam
  let resource_node=manager.namespace().find_child(ext.node,name).ok_or(STATUS_NOT_SUPPORTED)?;
  let scratch=unsafe{ExAllocatePoolWithTag(PAGED_POOL,65536,ACPI_POOL_TAG)};
  if scratch.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
- let length=match manager.read_named_buffer(handle,aml,resource_node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
+ let output=unsafe{core::slice::from_raw_parts_mut(scratch,65536)};
+ let read_result=match manager.namespace().nodes[resource_node as usize].object_type{
+  acpi::aml::AmlObjectType::Method=>{
+   let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+   manager.read_method_buffer(handle,aml,resource_node,gate,&mut runtime,output)
+  }
+  acpi::aml::AmlObjectType::Name=>manager.read_named_buffer(handle,aml,resource_node,gate,output),
+  _=>Err(acpi::aml_tables::TableError::BufferRead(acpi::aml_buffer::BufferError::NotBuffer)),
+ };
+ let length=match read_result{
   Ok(n)=>n,Err(_)=>{unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};return Err(STATUS_NOT_SUPPORTED)}
  };
  let parsed=acpi::acpi_resources::parse_resource_template(unsafe{core::slice::from_raw_parts(scratch,length)});
@@ -494,7 +503,16 @@ fn read_pdo_resource_alternatives(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT
  let resource_node=manager.namespace().find_child(ext.node,*b"_PRS").ok_or(STATUS_NOT_SUPPORTED)?;
  let scratch=unsafe{ExAllocatePoolWithTag(PAGED_POOL,65536,ACPI_POOL_TAG)};
  if scratch.is_null(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
- let length=match manager.read_named_buffer(handle,aml,resource_node,gate,unsafe{core::slice::from_raw_parts_mut(scratch,65536)}){
+ let output=unsafe{core::slice::from_raw_parts_mut(scratch,65536)};
+ let read_result=match manager.namespace().nodes[resource_node as usize].object_type{
+  acpi::aml::AmlObjectType::Method=>{
+   let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+   manager.read_method_buffer(handle,aml,resource_node,gate,&mut runtime,output)
+  }
+  acpi::aml::AmlObjectType::Name=>manager.read_named_buffer(handle,aml,resource_node,gate,output),
+  _=>Err(acpi::aml_tables::TableError::BufferRead(acpi::aml_buffer::BufferError::NotBuffer)),
+ };
+ let length=match read_result{
   Ok(n)=>n,Err(_)=>{unsafe{ExFreePoolWithTag(scratch,ACPI_POOL_TAG)};return Err(STATUS_NOT_SUPPORTED)}
  };
  let parsed=acpi::acpi_resources::parse_resource_requirements_template(unsafe{core::slice::from_raw_parts(scratch,length)});
@@ -511,6 +529,77 @@ unsafe fn query_pdo_resource_requirements(device:*mut cognacos_nt_abi::io::DEVIC
  }
 }
 
+/// Read the raw (bus-relative) CM_RESOURCE_LIST from the START_DEVICE
+/// stack parameters. The IRP owns this buffer for the duration of dispatch.
+unsafe fn read_start_allocated_resources(
+ stack:*mut cognacos_nt_abi::io::IO_STACK_LOCATION,
+)->Result<acpi::acpi_resources::ResourceList,i32>{
+ if stack.is_null(){return Err(STATUS_INVALID_PARAMETER)}
+ let list=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<*const u8>())};
+ if list.is_null(){return Ok(acpi::acpi_resources::ResourceList::EMPTY)}
+ let full_count=unsafe{core::ptr::read_unaligned(list.cast::<u32>())};
+ if full_count!=1{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
+ let partial_count=unsafe{core::ptr::read_unaligned(list.add(16).cast::<u32>())} as usize;
+ if partial_count>acpi::acpi_resources::MAX_RESOURCES{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
+ let length=20usize.checked_add(partial_count.checked_mul(20).ok_or(STATUS_INVALID_PARAMETER)?)
+     .ok_or(STATUS_INVALID_PARAMETER)?;
+ let bytes=unsafe{core::slice::from_raw_parts(list,length)};
+ acpi::acpi_resources::parse_cm_resource_list(bytes).map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)
+}
+
+/// Program _SRS with the PnP arbiter's raw allocation and do not allow the
+/// child PDO to start until a fresh _CRS readback exactly describes it.
+unsafe fn program_and_verify_pdo_resources(
+ device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,
+ stack:*mut cognacos_nt_abi::io::IO_STACK_LOCATION,
+)->i32{
+ let allocated=match unsafe{read_start_allocated_resources(stack)}{
+  Ok(resources)=>resources,Err(status)=>return status,
+ };
+ let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+ if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{return STATUS_INVALID_PARAMETER}
+ let ext=unsafe{&*ext};let handle=match ext.table{Some(value)=>value,None=>return STATUS_INVALID_PARAMETER};
+ if ext.aml_bytes.is_null()||ext.aml_length<36{return STATUS_INVALID_PARAMETER}
+ let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+ let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
+ let gate=unsafe{&*STATE.aml_barrier.get()};
+ let mut expected=allocated;
+
+ if manager.namespace().find_child(ext.node,*b"_PRS").is_some(){
+  let alternatives=match read_pdo_resource_alternatives(device){
+   Ok(value)=>value,Err(status)=>return status,
+  };
+  let selected=match acpi::acpi_resources::select_assigned_resources(&alternatives,&allocated){
+   Ok(value)=>value,Err(_)=>return STATUS_DEVICE_CONFIGURATION_ERROR,
+  };
+  expected=selected;
+  let mut template=[0u8;acpi::aml_objects::MAX_AML_BYTES];
+  let template_length=match acpi::acpi_resources::encode_resource_template(&selected,&mut template){
+   Ok(length)=>length,Err(_)=>return STATUS_DEVICE_CONFIGURATION_ERROR,
+  };
+  if let Some(srs_node)=manager.namespace().find_child(ext.node,*b"_SRS"){
+   if manager.namespace().nodes[srs_node as usize].object_type!=acpi::aml::AmlObjectType::Method{
+    return STATUS_DEVICE_CONFIGURATION_ERROR
+   }
+   let mut argument=acpi::aml_objects::AmlRuntimeValue::EMPTY;
+   argument.kind=acpi::aml_objects::AmlValueKind::Buffer;
+   argument.byte_length=template_length as u16;
+   argument.bytes[..template_length].copy_from_slice(&template[..template_length]);
+   let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+   if manager.invoke_method_value_with_args(handle,aml,srs_node,gate,&mut runtime,core::slice::from_ref(&argument)).is_err(){
+    return STATUS_DEVICE_CONFIGURATION_ERROR
+   }
+  }
+ }
+ let current=match read_pdo_resource_template(device,*b"_CRS"){
+  Ok(value)=>value,Err(status)=>return status,
+ };
+ match acpi::acpi_resources::verify_current_resources(&expected,&current){
+  Ok(())=>STATUS_SUCCESS,
+  Err(_)=>STATUS_DEVICE_CONFIGURATION_ERROR,
+ }
+}
+
 unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     let Some(_operation)=AcpiOperationGuard::enter() else{return STATUS_DEVICE_NOT_READY;};
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -523,13 +612,12 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
     let mut information = 0usize;
     let status = match unsafe { (*stack).minor_function } {
         // The ACPI bus FDO may start once its firmware namespace is ready.
-        // A child PDO must not be reported started until its selected _PRS
-        // configuration has been programmed through _SRS and the resulting
-        // _CRS has been verified. The typed-buffer AML path is not ready yet.
         IRP_MN_START_DEVICE if device==unsafe{ACPI_BUS_DEVICE}
             && STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
-        // Fail closed rather than falsely publishing an unprogrammed PDO.
-        IRP_MN_START_DEVICE if device!=unsafe{ACPI_BUS_DEVICE} => STATUS_NOT_SUPPORTED,
+        // Child PDO start is transactional: use the PnP arbiter's raw
+        // allocation, execute _SRS when present, then verify the live _CRS.
+        IRP_MN_START_DEVICE if device!=unsafe{ACPI_BUS_DEVICE} =>
+            unsafe{program_and_verify_pdo_resources(device,stack)},
         IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
         IRP_MN_QUERY_DEVICE_RELATIONS => {
             let relation_type=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
