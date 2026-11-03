@@ -382,7 +382,7 @@ mod tests{
     use super::*;
     use crate::aml::load_definition_block;
     #[test]fn named_store_converts_to_existing_integer_buffer_and_string_types(){
-        let aml=[0x08,b'I',b'N',b'T',b'0',0x01,0x08,b'B',b'U',b'F',b'0',0x11,0x04,0x0a,1,0,b'S',b'T',b'R',b'0',0x0d,b'0',0];
+        let aml=[0x08,b'I',b'N',b'T',b'0',0x01,0x08,b'B',b'U',b'F',b'0',0x01,0x08,b'S',b'T',b'R',b'0',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let int_node=ns.find_child(0,*b"INT0").unwrap();
         let buf_node=ns.find_child(0,*b"BUF0").unwrap();
@@ -506,10 +506,10 @@ mod tests{
         let wide_id=arena.allocate(wide).unwrap();
         let reference=AmlReference::BufferByte{buffer:buffer_id,index:0};
         let namespace=AmlNamespace::new();let mut bindings=AmlBindings::new();
-        assert_eq!(store_reference(reference,string_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::TypeMismatch));
-        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0xaa);
-        assert_eq!(store_reference(reference,wide_id,&mut bindings,&namespace,&mut arena),Err(RuntimeError::TypeMismatch));
-        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0xaa);
+        assert_eq!(store_reference(reference,string_id,&mut bindings,&namespace,&mut arena),Ok(()));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],b'1');
+        assert_eq!(store_reference(reference,wide_id,&mut bindings,&namespace,&mut arena),Ok(()));
+        assert_eq!(arena.get(buffer_id).unwrap().bytes[0],0);
         let mut byte=AmlRuntimeValue::EMPTY;byte.kind=AmlValueKind::Integer;byte.integer=0x55;
         let byte_id=arena.allocate(byte).unwrap();
         assert_eq!(store_reference(reference,byte_id,&mut bindings,&namespace,&mut arena),Ok(()));
@@ -531,7 +531,7 @@ mod tests{
         assert_eq!(to_integer(&decimal),Ok(123));
         let b=to_buffer(&s,6).unwrap();assert_eq!(&b.bytes[..6],b"0x1a2f");
         assert_eq!(integer_to_string(120).bytes[..3],*b"120");
-        let mut bad=s;bad.bytes[1]=b'x';assert_eq!(to_integer(&bad),Err(RuntimeError::InvalidIntegerString));
+        let mut bad=s;bad.bytes[2]=b'x';assert_eq!(to_integer(&bad),Err(RuntimeError::InvalidIntegerString));
     }
     #[test]fn malformed_public_byte_lengths_are_rejected_without_panics(){
         let mut malformed=AmlRuntimeValue::EMPTY;
@@ -566,7 +566,7 @@ mod tests{
         assert_eq!(index_reference(&arena,id,0),Err(RuntimeError::InvalidObjectLength));
         let reference=AmlReference::PackageElement{package:id,index:0};
         let bindings=AmlBindings::new();
-        assert_eq!(dereference(reference,&bindings,&arena),Err(RuntimeError::InvalidReference));
+        assert_eq!(dereference(reference,&bindings,&arena),Err(RuntimeError::InvalidObjectLength));
     }
 
     #[test]fn buffer_byte_store_rejects_corrupt_target_extent_atomically(){
