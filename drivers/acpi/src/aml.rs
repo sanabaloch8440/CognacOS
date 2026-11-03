@@ -646,7 +646,7 @@ mod tests{
     #[test]fn cross_table_duplicate_definitions_are_rejected_atomically(){
         let mut ns=AmlNamespace::new();
         load_definition_block_owned(&[0x08,b'V',b'A',b'L',b'0',0x01],&mut ns,1).unwrap();
-        assert_eq!(load_definition_block_owned(&[0x08,b'V',b'A',b'L',b'0',0x02],&mut ns,2),Err(AmlError::DuplicateName));
+        assert_eq!(load_definition_block_owned(&[0x08,b'V',b'A',b'L',b'0',0x00],&mut ns,2),Err(AmlError::DuplicateName));
         assert_eq!(ns.count,2);assert_eq!(ns.nodes[1].source_table,1);
     }
     #[test]fn failed_cross_table_definition_rolls_back_external_promotion(){
