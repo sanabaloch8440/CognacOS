@@ -64,31 +64,60 @@ pub trait AcpiMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>;
 }
 pub struct IntegerMethodInvoker;
-impl AcpiMethodInvoker for IntegerMethodInvoker {
-    fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
-        let node=namespace.nodes.get(method as usize).filter(|_|(method as usize)<namespace.count).ok_or(ExecError::InvalidMethod)?;
-        let start=node.body_start as usize;
-        let end=start.checked_add(node.body_length as usize).filter(|end|*end<=aml.len()).ok_or(ExecError::InvalidMethod)?;
-        let body=&aml[start..end];
-        // Fast-path direct Return(String/Package) objects. Integer/control-flow
-        // methods continue through the bounded AML scalar executor.
-        if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x0d){
-            let text=&body[2..];let n=text.iter().position(|b|*b==0).ok_or(ExecError::Truncated)?;
-            if n+3!=body.len(){return Err(ExecError::InvalidMethod)}
-            return Ok(AcpiMethodValue::String(AcpiId::from_bytes(&text[..n]).map_err(|_|ExecError::InvalidMethod)?));
-        }
-        if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x12){
-            let (ids,count)=decode_package_ids(&body[1..]).map_err(|_|ExecError::InvalidMethod)?;
-            return Ok(AcpiMethodValue::CompatibleIds{ids,count});
-        }
-        if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x11){
-            let mut bytes=[0u8;MAX_AML_BYTES];
-            let length=crate::aml_buffer::decode_returned_buffer(body,&mut bytes)
-                .map_err(|_|ExecError::InvalidMethod)?;
-            return Ok(AcpiMethodValue::Buffer{bytes,length:length as u16});
-        }
-        Ok(AcpiMethodValue::Integer(aml_exec::execute_method(aml,namespace,method,&[])?.integer()))
-    }
+/// ACPI method invoker backed by the kernel's dispatcher-object mutex API.
+/// The synchronizer is supplied by the WDM adapter; the parser remains
+/// independent of kernel ABI and can still be exercised with host test doubles.
+pub struct SynchronizedMethodInvoker<'a>{pub synchronizer:&'a dyn aml_exec::AmlMethodSynchronizer}
+
+fn evaluate_method_value(
+ namespace:&AmlNamespace,aml:&[u8],method:u16,
+ sync:Option<&dyn aml_exec::AmlMethodSynchronizer>,
+)->Result<AcpiMethodValue,ExecError>{
+ let node=namespace.nodes.get(method as usize).filter(|_|(method as usize)<namespace.count).ok_or(ExecError::InvalidMethod)?;
+ let start=node.body_start as usize;
+ let end=start.checked_add(node.body_length as usize).filter(|end|*end<=aml.len()).ok_or(ExecError::InvalidMethod)?;
+ let body=&aml[start..end];
+ // Direct data returns avoid allocating interpreter objects, but serialized
+ // methods still acquire their namespace method mutex around this fast path.
+ let direct=||->Result<AcpiMethodValue,ExecError>{
+  if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x0d){
+   let text=&body[2..];let n=text.iter().position(|b|*b==0).ok_or(ExecError::Truncated)?;
+   if n+3!=body.len(){return Err(ExecError::InvalidMethod)}
+   return Ok(AcpiMethodValue::String(AcpiId::from_bytes(&text[..n]).map_err(|_|ExecError::InvalidMethod)?));
+  }
+  if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x12){
+   let (ids,count)=decode_package_ids(&body[1..]).map_err(|_|ExecError::InvalidMethod)?;
+   return Ok(AcpiMethodValue::CompatibleIds{ids,count});
+  }
+  if body.first()==Some(&0xa4)&&body.get(1)==Some(&0x11){
+   let mut bytes=[0u8;MAX_AML_BYTES];
+   let length=crate::aml_buffer::decode_returned_buffer(body,&mut bytes).map_err(|_|ExecError::InvalidMethod)?;
+   return Ok(AcpiMethodValue::Buffer{bytes,length:length as u16});
+  }
+  match sync{
+   Some(provider)=>Ok(AcpiMethodValue::Integer(aml_exec::execute_method_with_sync(aml,namespace,method,&[],64,provider)?.integer())),
+   None=>Ok(AcpiMethodValue::Integer(aml_exec::execute_method(aml,namespace,method,&[])?.integer())),
+  }
+ };
+ // The interpreter manages its own lock for scalar/control-flow methods.
+ // Only direct-return fast paths need the external guard here.
+ let is_direct=body.first()==Some(&0xa4)&&matches!(body.get(1),Some(0x0d|0x11|0x12));
+ if is_direct {
+  if let Some(provider)=sync {
+   return aml_exec::with_method_synchronization(namespace,method,provider,direct);
+  }
+ }
+ direct()
+}
+impl AcpiMethodInvoker for IntegerMethodInvoker{
+ fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
+  evaluate_method_value(namespace,aml,method,None)
+ }
+}
+impl AcpiMethodInvoker for SynchronizedMethodInvoker<'_>{
+ fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
+  evaluate_method_value(namespace,aml,method,Some(self.synchronizer))
+ }
 }
 
 enum DataValue<'a>{Integer(u64),String(&'a [u8]),Package(&'a [u8])}
