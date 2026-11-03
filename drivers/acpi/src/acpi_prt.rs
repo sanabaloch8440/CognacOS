@@ -104,3 +104,17 @@ pub fn resolve_route<R: LinkDeviceResolver>(table: &PrtTable, address: u32, pin:
         assert_eq!(resolve_route(&table, 0x0003_0000, 1, &Resolver), Ok(23));
     }
 }
+
+
+#[cfg(test)] mod acpi_v6_prt_function_wildcard {
+ use super::*;
+ 
+ #[test] fn function_wildcard_matches_only_its_device_and_pin() {
+  let entries=[EvaluatedPrtElement{address:0x0004_ffff,pin:2,source_path:None,source_index:19}];
+  let table=build_prt_table(&entries).unwrap();
+  assert!(matches!(table.find(0x0004_0007,2).unwrap().source,InterruptSource::DirectGsi{gsi:19}));
+  assert!(table.find(0x0005_0007,2).is_none());
+  assert!(table.find(0x0004_0007,1).is_none());
+ }
+
+}
