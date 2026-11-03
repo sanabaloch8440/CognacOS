@@ -720,16 +720,16 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
  }
  #[test]fn control_flow_executes_else_only_when_if_predicate_is_false(){
-  let aml=[0x14,0x10,b'T',b'E',b'S',b'T',0,
+  let aml=[0x14,0x0f,b'T',b'E',b'S',b'T',0,
    0xa0,0x04,0x00,0xa4,0x01,
-   0xa1,0x05,0xa4,0x0a,2];
+   0xa1,0x04,0xa4,0x0a,2];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(2));
 
-  let true_aml=[0x14,0x10,b'T',b'E',b'S',b'T',0,
+  let true_aml=[0x14,0x0f,b'T',b'E',b'S',b'T',0,
    0xa0,0x04,0x01,0xa4,0x01,
-   0xa1,0x05,0xa4,0x0a,2];
+   0xa1,0x04,0xa4,0x0a,2];
   let mut ns=AmlNamespace::new();load_definition_block(&true_aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&true_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
