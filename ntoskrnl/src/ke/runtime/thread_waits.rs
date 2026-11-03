@@ -665,6 +665,19 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
         // thread. Queue objects are excluded above because entry transfer is
         // consumptive and cannot participate in wait-all reservation.
         let mut mutants=MUTANTS.lock();
+        // Register idle mutants when a wait-all operation first encounters
+        // them. The ordinary single-object wait path performs the same lazy
+        // registration; keeping the two paths consistent avoids a false
+        // unsignalled result for an available, initialized mutex.
+        for object in object_list.iter().copied() {
+            if unsafe{(*object).kind}==MUTANT_OBJECT
+                && !mutants.records.iter().any(|record|record.object==object as usize) {
+                let Some(slot)=mutants.records.iter().position(|record|record.object==0) else {
+                    return 0xC000_009A_u32 as i32;
+                };
+                mutants.records[slot]=MutantRecord{object:object as usize,owner:0,recursion:0,abandoned:false};
+            }
+        }
         let all_signalled = current_id.is_some_and(|id|object_list.iter().copied().all(|object|{
             if unsafe{(*object).kind}==MUTANT_OBJECT{
                 mutants.records.iter().find(|r|r.object==object as usize).is_some_and(|r|r.owner==0||r.owner==id)
