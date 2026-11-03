@@ -269,7 +269,7 @@ mod dependent_requirement_tests {
     #[test]
     fn dependent_groups_become_full_alternatives_with_common_resources() {
         // A common IRQ plus two dependent DMA choices, each with priority 1.
-        let bytes = [0x22, 0x10, 0x01, 0x31, 0x01, 0x2a, 0x01, 0x00,
+        let bytes = [0x22, 0x10, 0x00, 0x31, 0x01, 0x2a, 0x01, 0x00,
                      0x38, 0x31, 0x01, 0x2a, 0x04, 0x00, 0x38, 0x79, 0x00];
         let parsed = parse_resource_requirements_template(&bytes).unwrap();
         assert_eq!(parsed.count, 2);
