@@ -137,6 +137,8 @@ pub struct IoStackLocation {
     pub context: *mut c_void,
 }
 const _: () = assert!(core::mem::size_of::<IoStackLocation>() == IO_STACK_LOCATION_SIZE_X64);
+const _: () = assert!(core::mem::offset_of!(IoStackLocation, parameters) == 0x08);
+const _: () = assert!(core::mem::offset_of!(IoStackLocation, device_object) == 0x28);
 #[repr(C)]
 struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, mount_in_progress: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], vpb: Vpb, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
