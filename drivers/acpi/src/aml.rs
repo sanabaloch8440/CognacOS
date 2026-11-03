@@ -634,6 +634,21 @@ mod tests{
         assert_eq!(unload_definition_block(&mut ns,1),1);
         assert!(ns.find_child(0,*b"MET0").is_none());
     }
+    #[test]fn repeated_external_declarations_must_match_and_keep_original_owner(){
+        let mut ns=AmlNamespace::new();
+        load_definition_block_owned(&[0x15,b'M',b'E',b'T',b'0',8,1],&mut ns,1).unwrap();
+        load_definition_block_owned(&[0x15,b'M',b'E',b'T',b'0',8,1],&mut ns,2).unwrap();
+        let id=ns.find_child(0,*b"MET0").unwrap() as usize;
+        assert_eq!(ns.nodes[id].external_owner,1);
+        assert_eq!(load_definition_block_owned(&[0x15,b'M',b'E',b'T',b'0',8,2],&mut ns,3),Err(AmlError::DuplicateName));
+        assert_eq!(ns.nodes[id].external_owner,1);
+    }
+    #[test]fn cross_table_duplicate_definitions_are_rejected_atomically(){
+        let mut ns=AmlNamespace::new();
+        load_definition_block_owned(&[0x08,b'V',b'A',b'L',b'0',0x01],&mut ns,1).unwrap();
+        assert_eq!(load_definition_block_owned(&[0x08,b'V',b'A',b'L',b'0',0x02],&mut ns,2),Err(AmlError::DuplicateName));
+        assert_eq!(ns.count,2);assert_eq!(ns.nodes[1].source_table,1);
+    }
     #[test]fn failed_cross_table_definition_rolls_back_external_promotion(){
         let mut ns=AmlNamespace::new();
         load_definition_block_owned(&[0x15,b'M',b'E',b'T',b'0',8,0],&mut ns,1).unwrap();
