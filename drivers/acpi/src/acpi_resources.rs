@@ -186,6 +186,36 @@ pub fn select_assigned_resources(
     Err(ResourceError::InvalidDescriptor)
 }
 
+/// Verify that firmware's post-_SRS _CRS describes the exact allocation
+/// selected by the PnP arbiter. Matching is order-independent and rejects
+/// missing, duplicated, or additional non-EndTag resources.
+pub fn verify_current_resources(
+    allocated:&ResourceList,
+    current:&ResourceList,
+)->Result<(),ResourceError>{
+    if allocated.count>allocated.entries.len()||current.count>current.entries.len(){
+        return Err(ResourceError::InvalidDescriptor)
+    }
+    let expected_count=allocated.entries[..allocated.count].iter().flatten()
+        .filter(|r|!matches!(r,Resource::EndTag{..})).count();
+    let current_count=current.entries[..current.count].iter().flatten()
+        .filter(|r|!matches!(r,Resource::EndTag{..})).count();
+    if expected_count!=current_count{return Err(ResourceError::InvalidDescriptor)}
+    let mut used=[false;MAX_RESOURCES];
+    for expected in allocated.entries[..allocated.count].iter().flatten(){
+        if matches!(expected,Resource::EndTag{..}){continue}
+        let mut found=None;
+        for (index,candidate) in current.entries[..current.count].iter().enumerate(){
+            if used[index]{continue}
+            if let Some(candidate)=candidate{
+                if allocation_satisfies(*candidate,*expected){found=Some(index);break}
+            }
+        }
+        if let Some(index)=found{used[index]=true}else{return Err(ResourceError::InvalidDescriptor)}
+    }
+    Ok(())
+}
+
 /// Encode an allocated resource list as an ACPI resource template suitable
 /// for _SRS. Address descriptors use QWord form to avoid truncating 64-bit
 /// physical apertures; interrupts use Extended IRQ descriptors.
