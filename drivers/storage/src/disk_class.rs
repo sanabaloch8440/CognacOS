@@ -332,6 +332,55 @@ mod tests {
     }
 
     #[test]
+    fn gpt_parser_checks_header_and_entry_crcs_and_publishes_partition() {
+        let mut entries=[0u8;128];
+        entries[0..16].copy_from_slice(&[0x28,0x73,0x2a,0xc1,0x1f,0xf8,0xd2,0x11,0xba,0x4b,0x00,0xa0,0xc9,0x3e,0xc9,0x3b]);
+        entries[16..32].copy_from_slice(&[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]);
+        entries[32..40].copy_from_slice(&2048u64.to_le_bytes());
+        entries[40..48].copy_from_slice(&4095u64.to_le_bytes());
+        let mut header=[0u8;512];
+        header[..8].copy_from_slice(GPT_SIGNATURE);
+        header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        header[12..16].copy_from_slice(&92u32.to_le_bytes());
+        header[24..32].copy_from_slice(&1u64.to_le_bytes());
+        header[32..40].copy_from_slice(&99_999u64.to_le_bytes());
+        header[40..48].copy_from_slice(&34u64.to_le_bytes());
+        header[48..56].copy_from_slice(&99_966u64.to_le_bytes());
+        header[72..80].copy_from_slice(&2u64.to_le_bytes());
+        header[80..84].copy_from_slice(&1u32.to_le_bytes());
+        header[84..88].copy_from_slice(&128u32.to_le_bytes());
+        header[88..92].copy_from_slice(&crc32(&entries).to_le_bytes());
+        header[16..20].fill(0);
+        let checksum=crc32(&header[..92]);
+        header[16..20].copy_from_slice(&checksum.to_le_bytes());
+        let table=parse_gpt(&header,&entries,geometry()).unwrap();
+        assert_eq!(table.style,PartitionStyle::Gpt);
+        assert_eq!(table.count,1);
+        assert_eq!(table.entries[0].start_lba,2048);
+        assert_eq!(table.entries[0].sector_count,2048);
+        header[16]^=1;
+        assert_eq!(parse_gpt(&header,&entries,geometry()),Err(StorageError::DeviceError));
+    }
+
+    #[test]
+    fn identify_honors_advertised_four_kib_logical_sectors() {
+        let mut words=[0u16;256];
+        words[49]=1<<9;words[60]=4096;
+        words[83]=1<<10;
+        words[100]=4096;
+        words[106]=0x4000|(1<<12);
+        words[117]=2048;
+        for (base,text) in [(10,b"SERIAL-0001".as_slice()),(27,b"QEMU 4K DISK".as_slice())] {
+            for (index,pair) in text.chunks(2).enumerate() {
+                words[base+index]=((pair[0] as u16)<<8)|pair.get(1).copied().unwrap_or(b' ') as u16;
+            }
+        }
+        let disk=parse_ata_identify(&words).unwrap();
+        assert_eq!(disk.geometry.logical_sector_size,4096);
+        assert_eq!(disk.geometry.physical_sector_size,4096);
+    }
+
+    #[test]
     fn partition_table_rejects_overlapping_entries() {
         let mut table = PartitionTable::empty(PartitionStyle::Mbr);
         table.push(Partition { number: 1, start_lba: 10, sector_count: 20, ..Partition::EMPTY }, geometry()).unwrap();
