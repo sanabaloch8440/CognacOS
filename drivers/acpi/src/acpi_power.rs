@@ -76,3 +76,15 @@ pub fn disable_device(i:&mut impl AcpiPowerMethodInvoker,s:&mut DevicePowerState
  #[test]fn prw_sleep_state_checked(){let g=WakeResource{gpe_number:12,..WakeResource::EMPTY};assert_eq!(build_wake_info(g,6,&[]),Err(PowerError::InvalidSleepState));assert_eq!(build_wake_info(g,3,&[]).unwrap().deepest_sleep_state,3);}
  #[test]fn disable_failure_does_not_commit(){let mut f=fake(false);let mut s=DevicePowerState::INITIAL;assert_eq!(disable_device(&mut f,&mut s),Err(PowerError::MethodFailed));assert!(!s.disabled);}
 }
+
+#[cfg(test)] mod acpi_v6_srs_success_path {
+ use super::*;
+ 
+ #[test] fn successful_srs_application_is_reported_without_premature_state_mutation() {
+  let mut firmware=fake(true);
+  let mut state=DevicePowerState::INITIAL;
+  apply_srs(&mut firmware,&ResourceList::EMPTY).unwrap();
+  assert_eq!(state.d_state,0);
+ }
+
+}
