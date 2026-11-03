@@ -383,7 +383,7 @@ pub fn transition_device_with_resources(
  target:u8,
 )->Result<(),PowerResourceError>{
  if target>3{return Err(PowerResourceError::InvalidPowerState)}
- if target==state.d_state{return Ok(())}
+ if target==state.d_state&&state.active_resource_count!=0{return Ok(())}
  let mut desired=[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES];
  let desired_count=firmware.evaluate_prx(device_node,target,&mut desired)?;
  if desired_count>desired.len(){return Err(PowerResourceError::TooManyDependencies)}
@@ -406,9 +406,19 @@ pub fn transition_device_with_resources(
   return Err(error)
  }
  let old=state.active_resources;let old_count=state.active_resource_count as usize;
+ let mut released=[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES];let mut released_count=0usize;
  for resource in old[..old_count].iter().copied(){
   if !desired[..desired_count].contains(&resource){
-   graph.release(resource,&mut FirmwarePowerResourceBackend{firmware})?;
+   if let Err(error)=graph.release(resource,&mut FirmwarePowerResourceBackend{firmware}){
+    // Best-effort rollback restores the old device method state and resource
+    // references before returning failure to the WDM power IRP.
+    let rollback_method=match state.d_state{0=>*b"_PS0",1=>*b"_PS1",2=>*b"_PS2",3=>*b"_PS3",_=>*b"____"};
+    let _=firmware.invoke_device_method(device_node,rollback_method);
+    while released_count>0{released_count-=1;let _=graph.acquire(released[released_count],&mut FirmwarePowerResourceBackend{firmware});}
+    while new_count>0{new_count-=1;let _=graph.release(newly_acquired[new_count],&mut FirmwarePowerResourceBackend{firmware});}
+    return Err(error)
+   }
+   released[released_count]=resource;released_count+=1;
   }
  }
  state.active_resources=[u16::MAX;MAX_POWER_RESOURCE_DEPENDENCIES];
