@@ -396,7 +396,29 @@ unsafe extern "win64" fn power_dispatch(
  let state=(raw>>32) as u32;
  let status=match minor{
   IRP_MN_QUERY_POWER=>{
-   if state_type==1&&(1..=4).contains(&state){STATUS_SUCCESS}
+   if state_type==1&&(1..=4).contains(&state){
+    if device==unsafe{ACPI_BUS_DEVICE}{STATUS_SUCCESS}
+    else{
+     let ext=unsafe{(*device).device_extension.cast::<AcpiPdoExtension>()};
+     if ext.is_null()||unsafe{(*ext).signature}!=ACPI_PDO_SIGNATURE{STATUS_INVALID_PARAMETER}
+     else{
+      let ext=unsafe{&*ext};
+      match ext.table{
+       None=>STATUS_DEVICE_NOT_READY,
+       Some(handle)=>{
+        let aml=unsafe{core::slice::from_raw_parts(ext.aml_bytes,ext.aml_length)};
+        let manager=unsafe{(*STATE.aml_manager.get()).assume_init_ref()};
+        let gate=unsafe{&*STATE.aml_barrier.get()};
+        let mut firmware=NativeAcpiPowerFirmware{manager,gate,device_handle:handle,device_aml:aml};
+        match acpi::acpi_power::query_device_power_policy(&mut firmware,ext.node,8){
+         Ok((_current_dstate,_performance_limit,_external_power))=>STATUS_SUCCESS,
+         Err(_)=>STATUS_DEVICE_CONFIGURATION_ERROR,
+        }
+       }
+      }
+     }
+    }
+   }
    else if state_type==0&&(1..=6).contains(&state){STATUS_SUCCESS}
    else{STATUS_INVALID_DEVICE_REQUEST}
   }
