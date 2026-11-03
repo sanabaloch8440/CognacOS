@@ -536,10 +536,11 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
 mod tests{
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
  use core::sync::atomic::{AtomicUsize,Ordering};
- struct RecordingSync{acquires:AtomicUsize,releases:AtomicUsize,last_method:AtomicUsize,last_level:AtomicUsize}
- impl RecordingSync{fn new()->Self{Self{acquires:AtomicUsize::new(0),releases:AtomicUsize::new(0),last_method:AtomicUsize::new(usize::MAX),last_level:AtomicUsize::new(usize::MAX)}}}
+ struct RecordingSync{acquires:AtomicUsize,releases:AtomicUsize,last_method:AtomicUsize,last_level:AtomicUsize,busy:bool}
+ impl RecordingSync{fn new()->Self{Self{acquires:AtomicUsize::new(0),releases:AtomicUsize::new(0),last_method:AtomicUsize::new(usize::MAX),last_level:AtomicUsize::new(usize::MAX),busy:false}}}
  impl AmlMethodSynchronizer for RecordingSync{
   fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>{
+   if self.busy{return Err(ExecError::ExecutionBusy)}
    self.acquires.fetch_add(1,Ordering::SeqCst);self.last_method.store(method_index as usize,Ordering::SeqCst);
    self.last_level.store(sync_level as usize,Ordering::SeqCst);Ok(())
   }
@@ -803,6 +804,15 @@ mod tests{
   assert_eq!(sync.releases.load(Ordering::SeqCst),1);
   assert_eq!(sync.last_method.load(Ordering::SeqCst),id as usize);
   assert_eq!(sync.last_level.load(Ordering::SeqCst),3);
+ }
+ #[test]fn serialized_method_propagates_busy_lock_without_releasing_unowned_mutex(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0x18,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let sync=RecordingSync{busy:true,..RecordingSync::new()};
+  assert_eq!(execute_method_typed_with_sync(&aml,&ns,id,&[],64,&sync),Err(ExecError::ExecutionBusy));
+  assert_eq!(sync.acquires.load(Ordering::SeqCst),0);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),0);
  }
  #[test]fn serialized_method_releases_implicit_mutex_after_execution_error(){
   let aml=[0x14,0x07,b'T',b'E',b'S',b'T',0x18,0x16];
