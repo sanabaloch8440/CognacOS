@@ -5,7 +5,7 @@ from pathlib import Path
 
 EXPECTED_IMPORTS = {
     "pci.sys": {
-        "ntoskrnl.exe": ["IoCreateDevice", "IoDeleteDevice"],
+        "ntoskrnl.exe": ["IoCreateDevice", "IoDeleteDevice", "ExAllocatePoolWithTag", "ExFreePoolWithTag"],
     },
     "acpi.sys": {
         "hal.dll": ["HalAcpiGetTableEx"],
