@@ -37,6 +37,56 @@ impl<'a> Machine<'a>{
  fn operand_integer(&self,value:&AmlRuntimeValue)->Result<u64,ExecError>{to_integer_implicit(value,self.integer_width_bits).map_err(|_|ExecError::NonIntegerName)}
  fn store(&mut self,t:Target,v:u64){let value=Self::integer_value(self.normalize(v));match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=value,Target::Arg(i)=>self.args[i]=value}}
  fn term(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{self.term_depth(r,0)}
+ fn store_value(&mut self,t:Target,value:AmlRuntimeValue){
+  match t{Target::Null=>{},Target::Local(i)=>self.locals[i]=value,Target::Arg(i)=>self.args[i]=value}
+ }
+ /// Evaluate a TermArg without prematurely coercing Local/Arg/Name objects.
+ /// Operators fall back to the scalar evaluator and therefore produce Integer.
+ fn term_value(&mut self,r:&mut Reader<'_>)->Result<AmlRuntimeValue,ExecError>{
+  let start=r.pos;let op=r.byte()?;
+  match op{
+   0x00=>Ok(Self::integer_value(0)),0x01=>Ok(Self::integer_value(1)),
+   0xff=>Ok(Self::integer_value(self.integer_mask())),
+   0x0a=>Ok(Self::integer_value(r.byte()? as u64)),
+   0x0b=>{let b=r.take(2)?;Ok(Self::integer_value(u16::from_le_bytes([b[0],b[1]]) as u64))},
+   0x0c=>{let b=r.take(4)?;Ok(Self::integer_value(u32::from_le_bytes([b[0],b[1],b[2],b[3]]) as u64))},
+   0x0e=>{
+    if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}
+    let b=r.take(8)?;Ok(Self::integer_value(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?)))
+   }
+   0x60..=0x67=>Ok(self.locals[(op-0x60) as usize]),
+   0x68..=0x6e=>Ok(self.args[(op-0x68) as usize]),
+   0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
+    r.pos=start;
+    let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;
+    r.pos=next;
+    let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
+    let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;
+    let entry=*self.namespace.nodes.get(canonical as usize)
+        .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::NameNotFound)?;
+    match entry.object_type{
+     AmlObjectType::Name=>{
+      let id=decode_namespace_name(self.aml,self.namespace,canonical,&mut self.arena)
+          .map_err(|_|ExecError::NonIntegerName)?;
+      Ok(*self.arena.get(id).ok_or(ExecError::NonIntegerName)?)
+     }
+     AmlObjectType::Method=>{
+      let count=(entry.method_flags&7) as usize;
+      let mut call_args=[Self::integer_value(0);7];
+      for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
+      let value=execute_method_inner(self.aml,self.namespace,canonical,
+          &call_args[..count],self.call_depth+1,self.integer_width_bits)?;
+      Ok(Self::integer_value(value))
+     }
+     _=>Err(ExecError::NonIntegerName),
+    }
+   }
+   _=>{
+    r.pos=start;
+    self.term(r).map(Self::integer_value)
+   }
+  }
+ }
  fn term_depth(&mut self,r:&mut Reader<'_>,depth:u8)->Result<u64,ExecError>{
   if depth>32{return Err(ExecError::NestingLimit)}
   self.step()?;let op=r.byte()?;
@@ -91,7 +141,7 @@ impl<'a> Machine<'a>{
      AmlObjectType::Method=>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
-      for slot in call_args.iter_mut().take(count){*slot=Self::integer_value(self.term(r)?);}
+      for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
       execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits)
      }
      AmlObjectType::Name=>{
@@ -115,7 +165,7 @@ impl<'a> Machine<'a>{
    match op{
     0xa3=>{},
     0xa4=>return Ok(ExecFlow::Return(self.term(r)?)),
-    0x70=>{let v=self.term(r)?;let t=Self::target(r)?;self.store(t,v);},
+    0x70=>{let v=self.term_value(r)?;let t=Self::target(r)?;self.store_value(t,v);},
     0xa0|0xa2=>{
      let end=r.pkg_end()?;let plen=1+((r.bytes[r.pos]>>6)as usize);let begin=r.pos+plen;
      if begin>end{return Err(ExecError::BadPackage)}
@@ -232,6 +282,25 @@ mod tests{
   // Existing public entry point passes Integer args; typed Name operands are
   // exercised above while Local/Arg scalar values remain width-aware.
   assert_eq!(execute_method(&aml,&namespace,id,&[41]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn store_preserves_typed_name_and_argument_values_in_locals(){
+  let name_aml=[
+   0x08,b'S',b'T',b'R',b'0',0x0d,b'2',b'A',0,
+   0x14,0x11,b'T',b'E',b'S',b'T',0,0x70,b'S',b'T',b'R',b'0',0x60,
+   0xa4,0x72,0x60,0x01,0x00
+  ];
+  let mut ns=AmlNamespace::new();load_definition_block(&name_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&name_aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x2b));
+
+  let arg_aml=[0x14,0x0e,b'T',b'E',b'S',b'T',1,0x70,0x68,0x60,
+      0xa4,0x72,0x60,0x01,0x00];
+  let mut ns=AmlNamespace::new();load_definition_block(&arg_aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;
+  string.byte_length=2;string.bytes[..2].copy_from_slice(b"2A");
+  assert_eq!(execute_method_with_values(&arg_aml,&ns,id,&[string],64).unwrap(),AmlValue::Integer(0x2b));
  }
 
  #[test]fn typed_string_and_buffer_arguments_use_implicit_integer_conversion(){
