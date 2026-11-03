@@ -24,6 +24,7 @@ const DISK_PDO_MAGIC:u64=0x434f_474e_4449_534b;
 const PARTITION_PDO_MAGIC:u64=0x434f_474e_5054_4e50;
 const PARTITION_ENUMERATOR_ID:u32=0x5041_5254;
 const IOCTL_DISK_GET_LENGTH_INFO:u32=0x0007_405c;
+const IOCTL_STORAGE_GET_DEVICE_NUMBER:u32=0x002d_1080;
 const GPT_ENTRY_BUFFER_BYTES:usize=16*1024;
 
 #[repr(C)]
@@ -36,6 +37,8 @@ struct PartMgrFdoExtension{
  magic:u64,lower:*mut DEVICE_OBJECT,physical:*mut DEVICE_OBJECT,self_device:*mut DEVICE_OBJECT,driver:*mut DRIVER_OBJECT,
  descriptor:DiskDescriptor,relations:DeviceRelations,
 }
+#[repr(C)]
+struct StorageDeviceNumber{device_type:u32,device_number:u32,partition_number:u32}
 #[repr(C)]
 struct PartitionPdoExtension{
  magic:u64,parent:*mut DEVICE_OBJECT,partition:Partition,geometry:Geometry,stable_id:u64,
@@ -245,6 +248,14 @@ unsafe fn dispatch_partition(device:*mut DEVICE_OBJECT,ext:*mut PartitionPdoExte
    if buffer.is_null()||output<8{return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}}
    unsafe{core::ptr::write_unaligned(buffer.cast::<i64>(),bytes as i64)}
    return unsafe{complete(irp,STATUS_SUCCESS,8)}
+  }
+  if code==IOCTL_STORAGE_GET_DEVICE_NUMBER{
+   let output=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
+   let buffer=unsafe{(*irp).associated_irp[0] as *mut u8};
+   if buffer.is_null()||output<core::mem::size_of::<StorageDeviceNumber>() as u32{return unsafe{complete(irp,STATUS_BUFFER_TOO_SMALL,0)}}
+   let number=StorageDeviceNumber{device_type:FILE_DEVICE_DISK,device_number:unsafe{(*parent_ext).descriptor.identity.stable_id as u32},partition_number:unsafe{(*ext).partition.number}};
+   unsafe{core::ptr::write_unaligned(buffer.cast::<StorageDeviceNumber>(),number);}
+   return unsafe{complete(irp,STATUS_SUCCESS,core::mem::size_of::<StorageDeviceNumber>())}
   }
  }
  if major==IRP_MJ_READ||major==IRP_MJ_WRITE{
