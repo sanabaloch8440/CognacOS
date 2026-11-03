@@ -32,6 +32,6 @@ jobs:
       - name: Run firmware discovery regression suites
         shell: bash
         run: |
-          for suite in rsdp_validation_regression_tests root_table_validation_regression_tests dsdt_resolution_tests firmware_table_policy_tests remaining_firmware_table_tests acpi_5_6_revision_tests numa_table_tests fadt_gas_tests aml::tests aml_tables::tests; do
+          for suite in rsdp_validation_regression_tests root_table_validation_regression_tests dsdt_resolution_tests firmware_table_policy_tests remaining_firmware_table_tests acpi_5_6_revision_tests numa_table_tests fadt_gas_tests aml::tests aml_runtime::tests aml_tables::tests; do
             cargo test --target x86_64-unknown-linux-gnu --manifest-path drivers/acpi/Cargo.toml --lib "$suite"
           done
