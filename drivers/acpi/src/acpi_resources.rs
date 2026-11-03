@@ -404,13 +404,13 @@ fn encode_qword_address(output:&mut [u8],cursor:&mut usize,space:u8,flags:u8,typ
     alignment:u64,minimum:u64,maximum:u64,length:u64)->Result<(),ResourceError>{
     validate_range(minimum,maximum,length)?;
     let mut descriptor=[0u8;46];
-    descriptor[0]=0x8a;descriptor[1]=43;descriptor[2]=space;
-    descriptor[3]=flags;descriptor[4]=type_flags;
-    descriptor[5..13].copy_from_slice(&alignment.to_le_bytes());
-    descriptor[13..21].copy_from_slice(&minimum.to_le_bytes());
-    descriptor[21..29].copy_from_slice(&maximum.to_le_bytes());
-    descriptor[29..37].copy_from_slice(&0u64.to_le_bytes());
-    descriptor[37..45].copy_from_slice(&length.to_le_bytes());
+    descriptor[0]=0x8a;descriptor[1]=43;descriptor[2]=0;
+    descriptor[3]=space;descriptor[4]=flags;descriptor[5]=type_flags;
+    descriptor[6..14].copy_from_slice(&alignment.to_le_bytes());
+    descriptor[14..22].copy_from_slice(&minimum.to_le_bytes());
+    descriptor[22..30].copy_from_slice(&maximum.to_le_bytes());
+    descriptor[30..38].copy_from_slice(&0u64.to_le_bytes());
+    descriptor[38..46].copy_from_slice(&length.to_le_bytes());
     put_resource_bytes(output,cursor,&descriptor)
 }
 fn encode_extended_irq(output:&mut [u8],cursor:&mut usize,flags:u8,interrupts:&[u32])->Result<(),ResourceError>{
@@ -450,7 +450,7 @@ mod cm_resource_list_tests{
   let parsed=parse_cm_resource_list(&bytes).unwrap();
   assert_eq!(parsed.count,2);
   assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x3f8,maximum:0x3f8,length:8,decode_16_bit:true,..})));
-  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0e,count:1,interrupts,..}) if interrupts[0]==9));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
  }
 }
 
@@ -477,7 +477,7 @@ mod assigned_resource_encoding_tests{
   let length=encode_resource_template(&selected,&mut bytes).unwrap();
   let parsed=parse_resource_template(&bytes[..length]).unwrap();
   assert!(matches!(parsed.entries[0],Some(Resource::Io{minimum:0x1100,maximum:0x1100,length:0x100,..})));
-  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0a,count:1,interrupts,..}) if interrupts[0]==9));
+  assert!(matches!(parsed.entries[1],Some(Resource::ExtendedIrq{flags:0x0e,count:1,interrupts,..}) if interrupts[0]==9));
  }
  #[test]
  fn verifies_post_srs_crs_against_selected_bus_relative_assignment(){
@@ -793,7 +793,7 @@ mod dependent_requirement_tests {
  use super::*;
  
  #[test] fn parses_qword_bus_number_window() {
-  let mut bytes=[0u8;48]; bytes[0]=0x8a; bytes[1]=43; bytes[2]=2;
+  let mut bytes=[0u8;48]; bytes[0]=0x8a; bytes[1]=43; bytes[2]=0; bytes[3]=2;
   bytes[14..22].copy_from_slice(&0x20u64.to_le_bytes());
   bytes[22..30].copy_from_slice(&0x2fu64.to_le_bytes());
   bytes[30..38].copy_from_slice(&1u64.to_le_bytes());

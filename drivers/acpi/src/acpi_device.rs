@@ -455,7 +455,7 @@ mod tests{
     #[test]fn synchronized_invoker_passes_typed_buffer_arguments_to_methods(){
         let mut aml=std::vec::Vec::new();
         add_method(&mut aml,*b"_SRS",&[0xa4,0x68]);
-        aml[1]=(aml.len()-2) as u8;
+        aml[1]=(aml.len()-1) as u8;aml[6]=1;
         let mut ns=AmlNamespace::new();crate::aml::load_definition_block(&aml,&mut ns).unwrap();
         let method=ns.find_child(0,*b"_SRS").unwrap();
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
@@ -468,7 +468,7 @@ mod tests{
     #[test]fn synchronized_invoker_accepts_srs_method_without_return_object(){
         let mut aml=std::vec::Vec::new();
         add_method(&mut aml,*b"_SRS",&[0xa3]);
-        aml[1]=(aml.len()-2) as u8;
+        aml[1]=(aml.len()-1) as u8;aml[6]=1;
         let mut ns=AmlNamespace::new();crate::aml::load_definition_block(&aml,&mut ns).unwrap();
         let method=ns.find_child(0,*b"_SRS").unwrap();
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;

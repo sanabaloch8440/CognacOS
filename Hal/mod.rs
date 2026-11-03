@@ -5,6 +5,9 @@
 //! Windows HAL or WDK implementation. Interrupt delivery remains disabled
 //! until the IDT, APIC routing, and timer are completely installed.
 
+#[path = "acpi_gas.rs"]
+pub mod acpi_gas;
+
 #[path = "apic.rs"]
 mod apic;
 

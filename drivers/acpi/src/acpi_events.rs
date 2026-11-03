@@ -286,7 +286,7 @@ mod tests{
  }
  struct Io{regs:[u8;32],writes:usize}
  impl GasIo for Io{fn read(&mut self,g:AcpiGas,_:u8)->Result<u64,EventError>{Ok(self.regs[g.address as usize] as u64)}fn write(&mut self,g:AcpiGas,_:u8,v:u64)->Result<(),EventError>{self.regs[g.address as usize]=v as u8;self.writes+=1;Ok(())}}
- impl GpeIo for Io{}
+ impl GpeIo for Io{fn clear_status_w1c(&mut self,g:AcpiGas,mask:u8)->Result<(),EventError>{self.regs[g.address as usize]&=!mask;self.writes+=1;Ok(())}}
  struct Exec{calls:usize}impl GpeMethodExecutor for Exec{fn execute_gpe_method(&mut self,_:u16)->Result<(),EventError>{self.calls+=1;Ok(())}}
  #[test]fn sleep_register_plan_preserves_unrelated_hardware_reduced_bits(){
   let registers=AcpiPlatformRegisters{model:AcpiHardwareModel::HardwareReduced,pm1a_control:None,pm1b_control:None,sleep_control:Some(gas(1)),sleep_status:None,gpe0:None,gpe1:None};
