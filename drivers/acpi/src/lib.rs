@@ -1233,7 +1233,7 @@ mod numa_table_tests {
     #[test]
     fn rejects_overlapping_mcfg_bus_ranges_within_a_segment() {
         let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
         b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
         b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
         b[60..68].copy_from_slice(&0x9000_0000u64.to_le_bytes());
@@ -1244,7 +1244,7 @@ mod numa_table_tests {
     #[test]
     fn rejects_physical_ecam_alias_even_across_segments() {
         let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
         b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
         b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
         b[60..68].copy_from_slice(&0x8070_0000u64.to_le_bytes());
@@ -1255,7 +1255,7 @@ mod numa_table_tests {
     #[test]
     fn accepts_disjoint_mcfg_ranges_and_segments() {
         let mut b=vec![0u8;44+32];b[0..4].copy_from_slice(b"MCFG");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
         b[44..52].copy_from_slice(&0x8000_0000u64.to_le_bytes());
         b[52..54].copy_from_slice(&0u16.to_le_bytes());b[54]=0;b[55]=7;
         b[60..68].copy_from_slice(&0x9000_0000u64.to_le_bytes());
@@ -1290,7 +1290,7 @@ mod numa_table_tests {
     #[test]
     fn rejects_overlapping_enabled_srat_memory_affinities() {
         let mut b=vec![0u8;48+40+40];b[0..4].copy_from_slice(b"SRAT");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
         b[48]=1;b[49]=40;b[56..64].copy_from_slice(&0x1000u64.to_le_bytes());
         b[64..72].copy_from_slice(&0x4000u64.to_le_bytes());b[76..80].copy_from_slice(&1u32.to_le_bytes());
         b[88]=1;b[89]=40;b[96..104].copy_from_slice(&0x3000u64.to_le_bytes());
@@ -1300,7 +1300,7 @@ mod numa_table_tests {
     #[test]
     fn rejects_duplicate_enabled_srat_processor_ids() {
         let mut b=vec![0u8;48+16+16];b[0..4].copy_from_slice(b"SRAT");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
         b[48]=0;b[49]=16;b[51]=7;b[52..56].copy_from_slice(&1u32.to_le_bytes());
         b[64]=0;b[65]=16;b[67]=7;b[68..72].copy_from_slice(&1u32.to_le_bytes());
         finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
@@ -1308,7 +1308,7 @@ mod numa_table_tests {
     #[test]
     fn rejects_reserved_srat_affinity_flags() {
         let mut b=vec![0u8;64];b[0..4].copy_from_slice(b"SRAT");
-        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        let table_len=b.len() as u32;b[4..8].copy_from_slice(&table_len.to_le_bytes());
         b[48]=0;b[49]=16;b[52..56].copy_from_slice(&2u32.to_le_bytes());
         finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
     }
