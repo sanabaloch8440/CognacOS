@@ -993,8 +993,7 @@ fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager
   if thermal_count==acpi::acpi_events::MAX_THERMAL_ZONES{return Err(STATUS_INSUFFICIENT_RESOURCES)}
   let handle=handles.get(node.source_table as usize).and_then(|h|*h).ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
   let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
-  let data=manager.evaluate_thermal_zone(handle,table_sources,index as u16,gate,&mut runtime)
-   .map_err(table_error_to_status)?;
+  let Ok(data)=manager.evaluate_thermal_zone(handle,table_sources,index as u16,gate,&mut runtime) else{continue};
   thermal[thermal_count]=acpi::acpi_events::ThermalZone{
    node:data.node,temperature_deci_kelvin:data.temperature_deci_kelvin,
    passive_trip:data.passive_trip,hot_trip:data.hot_trip,critical_trip:data.critical_trip,
@@ -1153,6 +1152,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         let handle=match loaded_ssdts[index]{Some(handle)=>handle,None=>return STATUS_DEVICE_CONFIGURATION_ERROR};
         if let Err(status)=collect_device_identities(manager,handle,&table_sources[..loaded_ssdt_count+1],loaded_ssdt_tables[index],gate,records,&mut identity_count){return status;}
     }
+    STATE.device_count.store(identity_count,Ordering::Release);
     let mut table_handles:[Option<acpi::aml_tables::TableHandle>;acpi::aml_tables::MAX_AML_TABLES]=[None;acpi::aml_tables::MAX_AML_TABLES];
     table_handles[0]=Some(dsdt_handle);
     for index in 0..loaded_ssdt_count{table_handles[index+1]=loaded_ssdts[index];}
