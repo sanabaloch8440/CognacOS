@@ -231,10 +231,10 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  }
  if major==IRP_MJ_CREATE||major==IRP_MJ_CLOSE{return unsafe{complete(irp,STATUS_SUCCESS,0)}}
  if major==IRP_MJ_INTERNAL_DEVICE_CONTROL{
-  // DeviceIoControl: IOCTL code +16 and METHOD_NEITHER Type3InputBuffer +24
+  // DeviceIoControl: IOCTL code +8 and METHOD_NEITHER Type3InputBuffer +16
   // relative to Parameters, matching the x64 WDM IO_STACK_LOCATION layout.
-  let code=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(16).cast::<u32>())};
-  let input=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(24).cast::<*const c_void>())};
+  let code=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<u32>())};
+  let input=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().add(16).cast::<*const c_void>())};
   let (status,information)=match code{
    IOCTL_ATA_PORT_REGISTER_MINIPORT=>(unsafe{register_miniport(ext,input.cast())},0),
    IOCTL_ATA_PORT_UNREGISTER_MINIPORT=>(unsafe{unregister_miniport(ext,input.cast_mut())},0),
