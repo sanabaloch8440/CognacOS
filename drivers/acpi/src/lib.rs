@@ -1436,3 +1436,56 @@ mod root_table_validation_regression_tests {
         assert_eq!(find_table_with_mapper(&mapper, 0x1000, *b"FACP", 0), Err(AcpiError::AddressOutOfRange));
     }
 }
+
+#[cfg(test)]
+mod dsdt_resolution_tests {
+    use super::*;
+    struct Mapper<'a> {
+        rsdp: &'a [u8], xsdt: &'a [u8], fadt: &'a [u8], dsdt: &'a [u8],
+        rsdp_addr: u64, xsdt_addr: u64, fadt_addr: u64, dsdt_addr: u64,
+    }
+    impl AcpiPhysicalMapper for Mapper<'_> {
+        fn map_physical<'a>(&'a self, address: u64, length: usize) -> Result<&'a [u8], AcpiError> {
+            let bytes = if address == self.rsdp_addr { self.rsdp }
+                else if address == self.xsdt_addr { self.xsdt }
+                else if address == self.fadt_addr { self.fadt }
+                else if address == self.dsdt_addr { self.dsdt }
+                else { return Err(AcpiError::AddressOutOfRange); };
+            if length > bytes.len() { return Err(AcpiError::Truncated); }
+            Ok(&bytes[..length])
+        }
+    }
+    fn finish(bytes: &mut [u8], checksum_index: usize) {
+        bytes[checksum_index] = 0;
+        bytes[checksum_index] = 0u8.wrapping_sub(bytes.iter().fold(0u8, |s, b| s.wrapping_add(*b)));
+    }
+    }
+    #[test]
+    fn resolves_dsdt_from_extended_fadt_pointer() {
+        let mut rsdp = [0u8; 36]; rsdp[..8].copy_from_slice(b"RSD PTR "); rsdp[15] = 2;
+        rsdp[20..24].copy_from_slice(&36u32.to_le_bytes()); rsdp[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+        finish(&mut rsdp, 8); finish(&mut rsdp, 32);
+        let mut xsdt = [0u8; 44]; xsdt[..4].copy_from_slice(b"XSDT"); xsdt[4..8].copy_from_slice(&44u32.to_le_bytes());
+        xsdt[36..44].copy_from_slice(&0x3000u64.to_le_bytes()); finish(&mut xsdt, 9);
+        let mut fadt = [0u8; 148]; fadt[..4].copy_from_slice(b"FACP"); fadt[4..8].copy_from_slice(&148u32.to_le_bytes());
+        fadt[40..44].copy_from_slice(&0x4000u32.to_le_bytes()); fadt[140..148].copy_from_slice(&0x1_0000_4000u64.to_le_bytes()); finish(&mut fadt, 9);
+        let mut dsdt = [0u8; 36]; dsdt[..4].copy_from_slice(b"DSDT"); dsdt[4..8].copy_from_slice(&36u32.to_le_bytes()); finish(&mut dsdt, 9);
+        let mapper = Mapper { rsdp: &rsdp, xsdt: &xsdt, fadt: &fadt, dsdt: &dsdt, rsdp_addr: 0x1000, xsdt_addr: 0x2000, fadt_addr: 0x3000, dsdt_addr: 0x1_0000_4000 };
+        let found = find_dsdt_with_mapper(&mapper, 0x1000).unwrap();
+        assert_eq!(found.get(0..4), Some(&b"DSDT"[..]));
+    }
+    #[test]
+    fn falls_back_to_legacy_dsdt_pointer_when_extended_pointer_is_zero() {
+        let mut rsdp = [0u8; 36]; rsdp[..8].copy_from_slice(b"RSD PTR "); rsdp[15] = 2;
+        rsdp[20..24].copy_from_slice(&36u32.to_le_bytes()); rsdp[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+        finish(&mut rsdp, 8); finish(&mut rsdp, 32);
+        let mut xsdt = [0u8; 44]; xsdt[..4].copy_from_slice(b"XSDT"); xsdt[4..8].copy_from_slice(&44u32.to_le_bytes());
+        xsdt[36..44].copy_from_slice(&0x3000u64.to_le_bytes()); finish(&mut xsdt, 9);
+        let mut fadt = [0u8; 148]; fadt[..4].copy_from_slice(b"FACP"); fadt[4..8].copy_from_slice(&148u32.to_le_bytes());
+        fadt[40..44].copy_from_slice(&0x4000u32.to_le_bytes()); finish(&mut fadt, 9);
+        let mut dsdt = [0u8; 36]; dsdt[..4].copy_from_slice(b"DSDT"); dsdt[4..8].copy_from_slice(&36u32.to_le_bytes()); finish(&mut dsdt, 9);
+        let mapper = Mapper { rsdp: &rsdp, xsdt: &xsdt, fadt: &fadt, dsdt: &dsdt, rsdp_addr: 0x1000, xsdt_addr: 0x2000, fadt_addr: 0x3000, dsdt_addr: 0x4000 };
+        let found = find_dsdt_with_mapper(&mapper, 0x1000).unwrap();
+        assert_eq!(found.get(0..4), Some(&b"DSDT"[..]));
+    }
+}
