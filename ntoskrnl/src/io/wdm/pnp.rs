@@ -354,10 +354,19 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
   ptr::write_unaligned(stack.cast::<u8>().add(4).cast::<*mut c_void>(),allocated as *mut c_void);
   ptr::write_unaligned(stack.cast::<u8>().add(12).cast::<*mut c_void>(),translated as *mut c_void);
  }
+ // Reserve translated resources before the START_DEVICE IRP reaches the
+ // stack. The tentative claim is committed only by terminal completion.
+ let resource_status=unsafe{io_prepare_pnp_resources(dispatch_device,irp,minor,allocated,translated)};
+ if resource_status!=STATUS_SUCCESS{
+  unsafe{io_free_irp(irp);io_dereference_device_object(device);}
+  return resource_status
+ }
  {
   let mut manager=PNP_MANAGER.lock();
   let Some(slot)=manager.managed_irps.iter_mut().find(|s|!s.used) else {
-   drop(manager);unsafe{io_free_irp(irp);io_dereference_device_object(device)};
+   drop(manager);
+   io_finish_pnp_resources(irp,dispatch_device,minor,STATUS_INSUFFICIENT_RESOURCES);
+   unsafe{io_free_irp(irp);io_dereference_device_object(device)};
    return STATUS_INSUFFICIENT_RESOURCES
   };
   *slot=ManagedPnpIrp{used:true,irp,device:dispatch_device,minor,returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise,enumerate_bus:minor==0x07};
@@ -380,6 +389,7 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  };
  let mut final_status=status;
  if let Some(request)=completed {
+  io_finish_pnp_resources(request.irp,request.device,request.minor,request.status);
   if request.enumerate_bus&&request.status==STATUS_SUCCESS {
    let relations=unsafe{read_ptr((*request.irp).bytes.as_ptr(),IRP_INFORMATION_OFFSET)};
    let _=unsafe{IoPnPProcessBusRelations(request.device,relations.cast::<DeviceRelations>())};
@@ -406,6 +416,7 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
   if slot.returned{let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
  };
  if let Some(request)=completed {
+  io_finish_pnp_resources(request.irp,request.device,request.minor,status);
   if request.enumerate_bus&&status==STATUS_SUCCESS {
    let relations=unsafe{read_ptr((*request.irp).bytes.as_ptr(),IRP_INFORMATION_OFFSET)};
    let _=unsafe{IoPnPProcessBusRelations(request.device,relations.cast::<DeviceRelations>())};
