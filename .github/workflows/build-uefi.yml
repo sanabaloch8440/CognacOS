@@ -693,8 +693,7 @@ jobs:
           parted -s build/cognacos-uefi.img mklabel gpt
           parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 65MiB
           parted -s build/cognacos-uefi.img set 1 esp on
-          parted -s build/cognacos-uefi.img mkpart COGNACDATA ext4 65MiB 240MiB
-          parted -s build/cognacos-uefi.img mkpart COGNACDEBUG ext4 240MiB 255MiB
+          parted -s build/cognacos-uefi.img mkpart COGNACDATA fat32 65MiB 255MiB
           mformat -i build/cognacos-uefi.img@@1048576 -F -T 131072 ::
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
@@ -712,26 +711,24 @@ jobs:
           if [[ -f build/EFI/BOOT/beep.sys ]]; then
             mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/beep.sys ::/EFI/BOOT/beep.sys
           fi
-          mkdir -p build/ext4-root
-          printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
-          dd if=/dev/urandom of=build/ext4-root/pagefile.sys bs=1M count=64 status=none
+          mkdir -p build/fat32-root
+          printf '%s' 'CognacOS FAT32 data volume' > build/fat32-root/README.txt
+          printf '%s' '................................' > build/fat32-root/COGNACOS.TST
           loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
           cleanup_loop() { sudo losetup -d "$loopdev" 2>/dev/null || true; }
           trap cleanup_loop EXIT
           sudo udevadm settle
           if [[ ! -b "${loopdev}p2" ]]; then
-            echo "GPT ext4 data partition was not exposed as ${loopdev}p2" >&2
+            echo "GPT FAT32 data partition was not exposed as ${loopdev}p2" >&2
             sudo parted -s build/cognacos-uefi.img print
             exit 1
           fi
-          sudo mkfs.ext4 -F -q -L COGNACDATA -O ^metadata_csum,^huge_file,^dir_nlink,^extra_isize,^dir_index,^has_journal -d build/ext4-root "${loopdev}p2"
-          sudo debugfs -R 'cat /README.txt' "${loopdev}p2" 2>/dev/null > build/ext4-readback.txt
-          printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-expected.txt
-          cmp build/ext4-expected.txt build/ext4-readback.txt
-          sudo debugfs -R 'stat /pagefile.sys' "${loopdev}p2" 2>/dev/null | tee build/pagefile-stat.txt
-          grep -Eq 'Size: 67108864' build/pagefile-stat.txt
-          grep -Eq 'Blockcount: 131072' build/pagefile-stat.txt
-          echo "Ext4 volume verified: README contents and preallocated /pagefile.sys."
+          sudo mkfs.vfat -F 32 -n COGNACDATA "${loopdev}p2"
+          mcopy -i "${loopdev}p2" build/fat32-root/README.txt ::/README.txt
+          mcopy -i "${loopdev}p2" build/fat32-root/COGNACOS.TST ::/COGNACOS.TST
+          mcopy -i "${loopdev}p2" ::/README.txt build/fat32-readback.txt
+          cmp build/fat32-root/README.txt build/fat32-readback.txt
+          echo "FAT32 data volume verified and seeded with the kernel storage round-trip fixture."
           cleanup_loop
           trap - EXIT
       - name: Validate source-level QEMU crash resolver
@@ -881,11 +878,10 @@ jobs:
           grep -F 'Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).' build/serial.log
           grep -F 'Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.' build/serial.log
           grep -F 'Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.' build/serial.log
-          grep -F 'ext4: partition superblock read through the registered partition READ interface.' build/serial.log
-          grep -F 'Guest ext4 README.txt bytes match expected content exactly.' build/serial.log
-          grep -F 'Guest ext4 WRITE IRP modified existing README data and read it back exactly.' build/serial.log
-          grep -F 'Guest ext4 README.txt restored and verified byte-for-byte after write test.' build/serial.log
-          grep -F 'Guest ATA/GPT/ext4 read/write end-to-end test passed.' build/serial.log
+          mcopy -i build/cognacos-uefi.img@@68157440 ::/COGNACOS.TST build/fat32-storage-test-readback.bin
+          printf '%s' 'COGNACOS FAT32 PIO PASS 00000000' > build/fat32-storage-test-expected.bin
+          cmp build/fat32-storage-test-expected.bin build/fat32-storage-test-readback.bin
+          echo 'Guest FAT32 partition PDO read/write/flush round-trip passed.'
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
           if grep -Fq 'CognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.' build/serial.log; then
             echo 'RING3 NTDLL RESULT: PASS'
