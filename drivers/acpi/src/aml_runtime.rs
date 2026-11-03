@@ -39,6 +39,28 @@ fn validate_runtime_value(value:&AmlRuntimeValue,arena:&AmlObjectArena)->Result<
                 if arena.get(*child).is_none(){return Err(RuntimeError::InvalidReference)}
             }
         }
+        AmlValueKind::ObjectReference=>{
+            match reference_from_value(value)?{
+                AmlReference::NamespaceNode(node)=>{
+                    if node as usize>=MAX_NAMESPACE_NODES{return Err(RuntimeError::InvalidReference)}
+                }
+                AmlReference::PackageElement{package,index}=>{
+                    let object=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
+                    if object.kind!=AmlValueKind::Package||index as usize>=checked_element_count(object)?{
+                        return Err(RuntimeError::InvalidReference)
+                    }
+                }
+                AmlReference::BufferByte{buffer,index}=>{
+                    let object=arena.get(buffer).ok_or(RuntimeError::InvalidReference)?;
+                    if object.kind!=AmlValueKind::Buffer||index as usize>=checked_byte_length(object)?{
+                        return Err(RuntimeError::InvalidReference)
+                    }
+                }
+                AmlReference::BufferField{buffer,bit_offset,bit_width}=>{
+                    checked_buffer_field(arena,buffer,bit_offset,bit_width)?;
+                }
+            }
+        }
         _=>{}
     }
     Ok(())
@@ -95,6 +117,38 @@ fn clone_value_tree(value_id:u16,arena:&mut AmlObjectArena)->Result<u16,RuntimeE
     }
 }
 
+
+/// Encode a runtime reference into the compact arena-safe object value.
+pub fn make_object_reference(reference:AmlReference)->AmlRuntimeValue{
+    let mut value=AmlRuntimeValue::EMPTY;
+    value.kind=AmlValueKind::ObjectReference;
+    match reference{
+        AmlReference::NamespaceNode(node)=>{value.reference_kind=0;value.reference_id=node;}
+        AmlReference::PackageElement{package,index}=>{value.reference_kind=1;value.reference_id=package;value.reference_index=index as u16;}
+        AmlReference::BufferByte{buffer,index}=>{value.reference_kind=2;value.reference_id=buffer;value.reference_index=index;}
+        AmlReference::BufferField{buffer,bit_offset,bit_width}=>{
+            value.reference_kind=3;value.reference_id=buffer;
+            value.reference_index=bit_offset;value.reference_bit_width=bit_width;
+        }
+    }
+    value
+}
+
+/// Decode a compact ObjectReference value into a checked runtime target.
+pub fn reference_from_value(value:&AmlRuntimeValue)->Result<AmlReference,RuntimeError>{
+    if value.kind!=AmlValueKind::ObjectReference{return Err(RuntimeError::TypeMismatch)}
+    match value.reference_kind{
+        0=>Ok(AmlReference::NamespaceNode(value.reference_id)),
+        1=>{
+            if value.reference_index>u8::MAX as u16{return Err(RuntimeError::InvalidReference)}
+            Ok(AmlReference::PackageElement{package:value.reference_id,index:value.reference_index as u8})
+        }
+        2=>Ok(AmlReference::BufferByte{buffer:value.reference_id,index:value.reference_index}),
+        3=>Ok(AmlReference::BufferField{buffer:value.reference_id,
+            bit_offset:value.reference_index,bit_width:value.reference_bit_width}),
+        _=>Err(RuntimeError::InvalidReference),
+    }
+}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlReference {
@@ -576,7 +630,11 @@ impl AmlMethodFrame {
             AmlTarget::Argument(index)=>{
                 let slot=index as usize;
                 if slot>=7||!self.argument_bound[slot]{return Err(RuntimeError::InvalidReference)}
-                self.arguments[slot]
+                let value=*arena.get(self.arguments[slot]).ok_or(RuntimeError::InvalidReference)?;
+                if value.kind==AmlValueKind::ObjectReference{
+                    return dereference(reference_from_value(&value)?,bindings,arena)
+                }
+                return Ok(value)
             }
             AmlTarget::Reference(reference)=>return dereference(reference,bindings,arena),
             AmlTarget::Null=>return Err(RuntimeError::InvalidReference),
@@ -604,8 +662,14 @@ impl AmlMethodFrame {
             AmlTarget::Argument(index)=>{
                 let slot=index as usize;
                 if slot>=7||!self.argument_bound[slot]{return Err(RuntimeError::InvalidReference)}
-                let stored=clone_value_tree(value,arena)?;
-                self.arguments[slot]=stored;Ok(())
+                let current=*arena.get(self.arguments[slot]).ok_or(RuntimeError::InvalidReference)?;
+                if current.kind==AmlValueKind::ObjectReference{
+                    store_reference_with_mode(reference_from_value(&current)?,value,mode,
+                        bindings,namespace,arena)
+                }else{
+                    let stored=clone_value_tree(value,arena)?;
+                    self.arguments[slot]=stored;Ok(())
+                }
             }
             AmlTarget::Reference(reference)=>
                 store_reference_with_mode(reference,value,mode,bindings,namespace,arena),
@@ -943,6 +1007,33 @@ mod tests{
         buffer.byte_length=0;
         assert_eq!(to_integer(&buffer),Err(RuntimeError::EmptyBuffer));
     }
+    #[test]fn argument_object_references_auto_dereference_on_read_and_store(){
+        let aml=[0x08,b'N',b'A',b'M',b'0',0x01];
+        let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"NAM0").unwrap();
+        let mut arena=AmlObjectArena::new();
+        let mut original=AmlRuntimeValue::EMPTY;original.kind=AmlValueKind::Integer;original.integer=7;
+        let original_id=arena.allocate(original).unwrap();
+        let mut bindings=AmlBindings::new();bindings.bind(&namespace,node,original_id).unwrap();
+        let reference=make_object_reference(AmlReference::NamespaceNode(node));
+        let reference_id=arena.allocate(reference).unwrap();
+        let mut frame=AmlMethodFrame::new(&[reference_id],&mut arena).unwrap();
+        let read=frame.read(AmlTarget::Argument(0),&bindings,&namespace,&arena).unwrap();
+        assert_eq!(read.kind,AmlValueKind::Integer);assert_eq!(read.integer,7);
+        let mut replacement=AmlRuntimeValue::EMPTY;replacement.kind=AmlValueKind::Integer;replacement.integer=99;
+        let replacement_id=arena.allocate(replacement).unwrap();
+        frame.store(AmlTarget::Argument(0),replacement_id,StoreMode::Store,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        let read=dereference(bindings.reference_node(&namespace,node).unwrap(),&bindings,&arena).unwrap();
+        assert_eq!(read.integer,99);
+        // LocalX does not auto-dereference: it replaces the reference value.
+        frame.store(AmlTarget::Local(0),reference_id,StoreMode::Store,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        frame.store(AmlTarget::Local(0),replacement_id,StoreMode::Store,
+            &mut bindings,&namespace,&mut arena).unwrap();
+        assert_eq!(frame.read(AmlTarget::Local(0),&bindings,&namespace,&arena).unwrap().integer,99);
+    }
+
     #[test]fn method_frame_constructor_rolls_back_when_argument_copy_fails(){
         let mut arena=AmlObjectArena::new();
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
