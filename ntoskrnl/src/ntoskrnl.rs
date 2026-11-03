@@ -169,8 +169,6 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_build_device_io_control_request as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCancelIrp") {
    Some(crate::io::io_cancel_irp as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoSetCancelRoutine") {
-   Some(crate::io::io_set_cancel_routine as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCsqInitialize") {
    Some(crate::io::io_csq_initialize as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCsqInitializeEx") {
@@ -219,34 +217,16 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_detach_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoInitializeIrp") {
    Some(crate::io::io_initialize_irp as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoCopyCurrentIrpStackLocationToNext") {
-   Some(crate::io::io_copy_current_irp_stack_location_to_next as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoSkipCurrentIrpStackLocation") {
-   Some(crate::io::io_skip_current_irp_stack_location as usize)
   } else if requested.eq_ignore_ascii_case(b"MmLockPagableDataSection") {
    Some(mm::runtime::mm_lock_pagable_data_section as usize)
   } else if requested.eq_ignore_ascii_case(b"MmUnlockPagableImageSection") {
    Some(mm::runtime::mm_unlock_pagable_image_section as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetRequestorSessionId") {
    Some(crate::io::io_get_requestor_session_id as usize)
-  } else if requested.eq_ignore_ascii_case(b"MmFreeMdl") {
-   Some(mm::runtime::mm_free_mdl as usize)
-  } else if requested.eq_ignore_ascii_case(b"MmPrepareMdlForReuse") {
-   Some(mm::runtime::mm_prepare_mdl_for_reuse as usize)
-  } else if requested.eq_ignore_ascii_case(b"MmBuildPartialMdl") {
-   Some(mm::runtime::mm_build_partial_mdl as usize)
-  } else if requested.eq_ignore_ascii_case(b"KeRaiseIrql") {
-   Some(ke::runtime::ke_raise_irql as usize)
-  } else if requested.eq_ignore_ascii_case(b"KeQueryInterruptTime") {
-   Some(ke::runtime::ke_query_interrupt_time as usize)
   } else if requested.eq_ignore_ascii_case(b"KeQueryInterruptTimePrecise") {
    Some(ke::runtime::ke_query_interrupt_time_precise as usize)
   } else if requested.eq_ignore_ascii_case(b"KeQueryUnbiasedInterruptTime") {
    Some(ke::runtime::ke_query_unbiased_interrupt_time as usize)
-  } else if requested.eq_ignore_ascii_case(b"KeQueryTickCount") {
-   Some(ke::runtime::ke_query_tick_count as usize)
-  } else if requested.eq_ignore_ascii_case(b"KeQuerySystemTime") {
-   Some(ke::runtime::ke_query_system_time as usize)
   } else if requested.eq_ignore_ascii_case(b"KeQuerySystemTimePrecise") {
    Some(ke::runtime::ke_query_system_time_precise as usize)
   } else if requested.eq_ignore_ascii_case(b"KeGetCurrentThread") {
@@ -921,16 +901,16 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmMapIoSpace")) == Some(mm::runtime::mm_map_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentProcessorNumber")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentProcessorNumber")).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryActiveProcessors")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryTimeIncrement")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeShouldYieldProcessor")).is_some()
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeRaiseIrql")).is_some()
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryInterruptTime")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeRaiseIrql")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryInterruptTime")).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryInterruptTimePrecise")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryUnbiasedInterruptTime")).is_some()
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryTickCount")).is_some()
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQuerySystemTime")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryTickCount")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQuerySystemTime")).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQuerySystemTimePrecise")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentThread")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryHighestNodeNumber")).is_some()
