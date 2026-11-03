@@ -10,7 +10,7 @@
 
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length};
 use crate::aml_exec::{self,ExecError};
-use crate::aml_objects::MAX_AML_BYTES;
+use crate::aml_objects::{AmlRuntimeValue,AmlValueKind,MAX_AML_BYTES};
 
 pub const DEVICE_PRESENT:u32=1;
 pub const DEVICE_ENABLED:u32=2;
@@ -62,6 +62,17 @@ pub enum AcpiMethodValue {
 }
 pub trait AcpiMethodInvoker {
     fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>;
+
+    /// Invoke a method with typed AML TermArg objects. The default preserves
+    /// compatibility for scalar-only test invokers while refusing to silently
+    /// discard arguments supplied to firmware methods such as _SRS.
+    fn evaluate_value_with_args(
+        &mut self,namespace:&AmlNamespace,aml:&[u8],method:u16,
+        args:&[AmlRuntimeValue],
+    )->Result<AcpiMethodValue,ExecError>{
+        if !args.is_empty(){return Err(ExecError::BadArgumentCount)}
+        self.evaluate_value(namespace,aml,method)
+    }
 }
 pub struct IntegerMethodInvoker;
 /// ACPI method invoker backed by the kernel's dispatcher-object mutex API.
@@ -117,6 +128,34 @@ impl AcpiMethodInvoker for IntegerMethodInvoker{
 impl AcpiMethodInvoker for SynchronizedMethodInvoker<'_>{
  fn evaluate_value(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16)->Result<AcpiMethodValue,ExecError>{
   evaluate_method_value(namespace,aml,method,Some(self.synchronizer))
+ }
+ fn evaluate_value_with_args(&mut self,namespace:&AmlNamespace,aml:&[u8],method:u16,args:&[AmlRuntimeValue])->Result<AcpiMethodValue,ExecError>{
+  evaluate_method_value_with_args(namespace,aml,method,args,self.synchronizer)
+ }
+}
+
+fn evaluate_method_value_with_args(
+ namespace:&AmlNamespace,aml:&[u8],method:u16,args:&[AmlRuntimeValue],
+ sync:&dyn aml_exec::AmlMethodSynchronizer,
+)->Result<AcpiMethodValue,ExecError>{
+ let node=namespace.nodes.get(method as usize)
+  .filter(|_|(method as usize)<namespace.count)
+  .ok_or(ExecError::InvalidMethod)?;
+ if node.object_type!=AmlObjectType::Method{return Err(ExecError::InvalidMethod)}
+ let value=aml_exec::execute_method_typed_with_sync(aml,namespace,method,args,64,sync)?;
+ match value.kind{
+  AmlValueKind::Integer=>Ok(AcpiMethodValue::Integer(value.integer)),
+  AmlValueKind::String=>{
+   let length=value.byte_length as usize;
+   let id=AcpiId::from_bytes(&value.bytes[..length]).map_err(|_|ExecError::UnsupportedReturnType)?;
+   Ok(AcpiMethodValue::String(id))
+  }
+  AmlValueKind::Buffer=>{
+   let length=value.byte_length as usize;
+   if length>MAX_AML_BYTES{return Err(ExecError::UnsupportedReturnType)}
+   Ok(AcpiMethodValue::Buffer{bytes:value.bytes,length:length as u16})
+  }
+  _=>Err(ExecError::UnsupportedReturnType),
  }
 }
 
