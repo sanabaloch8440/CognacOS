@@ -596,7 +596,24 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
  let table=unsafe{&mut *TABLE.0.get()};
  let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
  let bits=unsafe{&mut *BITS.0.get()};let start=find_free_extent(bits,pages).ok_or(Error::NoVirtualSpace)?;
- for n in 0..pages { bits[(start+n)/64]|=1u64<<((start+n)%64); unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = 1; } }
+ // Never reuse stale residency/swap metadata when a virtual extent is recycled.
+ // Demand-zero pool pages begin writable and non-executable (RW/NX).
+ let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
+ let swapped=unsafe{&mut *SWAPPED_BITS.0.get()};
+ let slots=unsafe{&mut *SWAP_SLOTS.0.get()};
+ let flags=unsafe{&mut *PAGE_FLAGS.0.get()};
+ for n in 0..pages {
+  let page=start+n;
+  let word=page/64;let mask=1u64<<(page%64);
+  if swapped[word]&mask!=0 && slots[page]!=u16::MAX {
+   let _=crate::pagefile::free_slot(slots[page] as u32);
+  }
+  bits[word]|=mask;
+  mapped[word]&=!mask;
+  swapped[word]&=!mask;
+  slots[page]=u16::MAX;
+  flags[page]=3;
+ }
  table[ti]=Extent{start,pages,pageable:true,owns_frames:true,live:true};
  Ok((BASE+start as u64*PAGE) as *mut u8)
 }
