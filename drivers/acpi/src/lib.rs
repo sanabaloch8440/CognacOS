@@ -566,7 +566,7 @@ pub fn parse_srat(bytes:&[u8])->Result<SratInfo,AcpiError>{
         if size<2||off.checked_add(size).filter(|e|*e<=end).is_none(){return Err(AcpiError::MalformedEntry)}
         let e=&bytes[off..off+size];
         match kind{
-            0 if size==16=>{
+            0 if size>=16=>{
                 if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=(e[2] as u32)|((e[9] as u32)<<8)|((e[10] as u32)<<16)|((e[11] as u32)<<24);
                 let flags=u32le(e,4)?;
@@ -575,7 +575,7 @@ pub fn parse_srat(bytes:&[u8])->Result<SratInfo,AcpiError>{
                 if flags&1!=0&&out.cpus.iter().take(out.cpu_count).any(|cpu|cpu.enabled&&cpu.apic_id==apic_id){return Err(AcpiError::MalformedEntry)}
                 out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id,enabled:flags&1!=0,x2apic:false};out.cpu_count+=1;
             }
-            1 if size==40=>{
+            1 if size>=40=>{
                 if out.memory_count==out.memory.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=u32le(e,2)?;
                 let base=u64::from_le_bytes(e[8..16].try_into().map_err(|_|AcpiError::Truncated)?);
@@ -586,7 +586,7 @@ pub fn parse_srat(bytes:&[u8])->Result<SratInfo,AcpiError>{
                 if flags&1!=0&&out.memory.iter().take(out.memory_count).any(|old|old.enabled&&base<old.base.saturating_add(old.length)&&old.base<end){return Err(AcpiError::MalformedEntry)}
                 out.memory[out.memory_count]=NumaMemoryAffinity{proximity_domain:domain,base,length,enabled:flags&1!=0,hot_pluggable:flags&2!=0,non_volatile:flags&4!=0};out.memory_count+=1;
             }
-            2 if size==24=>{
+            2 if size>=24=>{
                 if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=u32le(e,4)?;let apic_id=u32le(e,8)?;let flags=u32le(e,12)?;
                 if flags&!1!=0{return Err(AcpiError::MalformedEntry)}
