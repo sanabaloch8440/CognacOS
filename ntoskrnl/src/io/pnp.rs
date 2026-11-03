@@ -367,8 +367,9 @@ pub fn remove_pnp_device_object(device: *mut crate::io::DeviceObject, status: i3
 /// table. The bus driver owns identity construction; the kernel owns the PDO
 /// reference and lifecycle. identity_hash must be stable and unique within
 /// enumerator_id (ACPI uses its namespace-node identity).
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn IoPnPRegisterBusDevice(
+/// Kernel-private PnP registration helper. It is not part of the Windows
+/// ntoskrnl export ABI and must not be exposed as a PE import.
+pub(crate) unsafe extern "win64" fn io_pnp_register_bus_device_private(
     enumerator_id:u32,
     identity_hash:u64,
     device:*mut crate::io::DeviceObject,
