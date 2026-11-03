@@ -15,14 +15,7 @@
 
 ## Documentation
 
-- [Current roadmap](roadmap.md) — remaining work and acceptance criteria
-- [Documentation website](https://umarfarooq7869.github.io/CognacOS/)
-- [Windows 11 x64 Ke compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md)
-- [Windows 11 x64 Se compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md)
-- [SYSTEM hive and driver configuration](docs/system-hive-driver-configuration.md) — control-set selection and registry-backed driver metadata
-- [Boot security guide](docs/boot-security.md)
-- [Keyboard driver stack](docs/keyboard-driver-stack.md) — kbdclass, kbdhid, HIDClass, and i8042prt
-- [USB driver stack](docs/usb-driver-stack.md) — Windows-style xHCI, UCX-equivalent, hub, and HID boundaries
+
 
 ## Implemented foundations
 
@@ -32,18 +25,6 @@
 - Initial NT-style Object Manager, security, WDM/IRP rundown, registry/REGF, ext-family filesystem, and PE32+ loader components.
 - A shared no_std NT ABI crate (shared/nt-abi) and Rust NTDLL native-service paths for selected VM, ETW, ALPC/section, registry, and process operations.
 - GitHub Actions build, ABI/image checks, host-side tests, and OVMF/QEMU boot/SMP validation paths.
-
-These are implementation foundations, not declarations of full Windows 11 compatibility. A feature is validated only when its relevant tests pass on the current revision.
-
-## Highest-priority remaining work
-
-1. **Restore green CI:** diagnose and fix the current QEMU boot-smoke failure, then pass the full build, NTDLL export/ABI checks, QEMU boot, and SMP matrix on the latest commit.
-2. **Prove memory isolation:** pass adversarial CPL3 and same-VA cross-process tests; stress address-space teardown against faults, copies, pinning, and unmapping; implement user working-set trimming and pagefile-backed paging.
-3. **Finish safe I/O rundown:** exercise cancel/completion/unload races in-kernel under QEMU SMP and fault injection before expanding storage support.
-4. **Complete native loader semantics:** finish dependency-order DllMain/TLS initialization, reference-counted unload, Known DLL/API-set and activation-context resolution, and a disk-backed VFS provider. The initial `LdrLoadDll` bridge now maps staged system DLLs through the bounded PE dependency transaction.
-5. **Complete process/object semantics:** move to process-owned handle tables and finish token lifecycle, user APC/SEH delivery, and scheduler-backed waits.
-6. **Advance storage and registry:** integrate disk-backed VFS/partitions and PCI/AHCI/NVMe with a safe DMA/IOMMU backend; add crash-safe writable ext filesystem operations and remaining REGF log/security semantics.
-7. **Validate Windows ABI claims:** automate signature/layout/export checks, add targeted WDK-style tests, and test representative drivers only when their dependencies and safety prerequisites exist.
 
 ## Repository map
 
