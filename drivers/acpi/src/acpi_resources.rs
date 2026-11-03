@@ -115,6 +115,151 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
     if !ended{return Err(ResourceError::MissingEndTag)} Ok(out)
 }
 
+/// Return true when an allocated bus-relative resource satisfies one
+/// descriptor from an _PRS alternative. The caller supplies resources
+/// selected by the PnP arbiter, not translated HAL addresses.
+fn allocation_satisfies(requirement:Resource,allocated:Resource)->bool{
+    match (requirement,allocated){
+        (Resource::Io{minimum,maximum,alignment,length,..},
+         Resource::Io{minimum:base,length:actual,..}) =>
+            actual==length&&base>=minimum&&base<=maximum
+                &&(alignment<=1||base%alignment==0),
+        (Resource::Memory{minimum,maximum,alignment,length,..},
+         Resource::Memory{minimum:base,length:actual,..}) =>
+            actual==length&&base>=minimum&&base<=maximum
+                &&(alignment<=1||base%alignment==0),
+        (Resource::BusNumber{minimum,maximum,length},
+         Resource::BusNumber{minimum:base,length:actual,..}) =>
+            actual==length&&base>=minimum&&base<=maximum,
+        (Resource::Irq{mask,level_triggered,active_low,shared,..},
+         Resource::Irq{mask:allocated_mask,level_triggered:a_level,active_low:a_low,shared:a_shared,..}) =>
+            allocated_mask.count_ones()==1&&mask&allocated_mask!=0
+                &&level_triggered==a_level&&active_low==a_low&&shared==a_shared,
+        (Resource::Irq{mask,level_triggered,active_low,shared,..},
+         Resource::ExtendedIrq{flags,interrupts,count}) =>
+            count==1&&mask&(1u16.checked_shl(interrupts[0]).unwrap_or(0) as u16)!=0
+                &&level_triggered==(flags&2!=0)&&active_low==(flags&4!=0)&&shared==(flags&8!=0),
+        (Resource::ExtendedIrq{flags,interrupts,count,..},
+         Resource::ExtendedIrq{flags:actual_flags,interrupts:actual,count:actual_count}) =>
+            count>0&&actual_count>0&&flags&0x1e==actual_flags&0x1e
+                &&actual[..actual_count as usize].iter().all(|gsi|interrupts[..count as usize].contains(gsi)),
+        (Resource::Dma{channels,transfer_size,bus_master},
+         Resource::Dma{channels:allocated,transfer_size:actual_size,bus_master:actual_master}) =>
+            allocated.count_ones()==1&&channels&allocated!=0
+                &&transfer_size==actual_size&&bus_master==actual_master,
+        _=>false,
+    }
+}
+
+/// Verify that a PnP arbiter allocation satisfies one complete _PRS
+/// alternative. Resources are matched as a multiset (order-independent),
+/// and the returned list is the arbiter's bus-relative assignment.
+pub fn select_assigned_resources(
+    alternatives:&ResourceAlternatives,
+    allocated:&ResourceList,
+)->Result<ResourceList,ResourceError>{
+    if alternatives.count==0||alternatives.count>alternatives.entries.len()
+        ||allocated.count>allocated.entries.len(){return Err(ResourceError::InvalidDescriptor)}
+    let allocated_count=allocated.entries[..allocated.count].iter()
+        .flatten().filter(|r|!matches!(r,Resource::EndTag{..})).count();
+    for alternative in alternatives.entries[..alternatives.count].iter(){
+        if alternative.count>alternative.entries.len(){return Err(ResourceError::InvalidDescriptor)}
+        let required: [Option<Resource>;MAX_RESOURCES]=alternative.entries;
+        let required_count=required[..alternative.count].iter().flatten()
+            .filter(|r|!matches!(r,Resource::EndTag{..})).count();
+        if required_count!=allocated_count{continue}
+        let mut used=[false;MAX_RESOURCES];
+        let mut matched=true;
+        for req in required[..alternative.count].iter().flatten(){
+            if matches!(req,Resource::EndTag{..}){continue}
+            let mut found=None;
+            for (index,candidate) in allocated.entries[..allocated.count].iter().enumerate(){
+                if used[index]{continue}
+                if let Some(candidate)=candidate{
+                    if allocation_satisfies(*req,*candidate){found=Some(index);break}
+                }
+            }
+            if let Some(index)=found{used[index]=true}else{matched=false;break}
+        }
+        if matched{return Ok(*allocated)}
+    }
+    Err(ResourceError::InvalidDescriptor)
+}
+
+/// Encode an allocated resource list as an ACPI resource template suitable
+/// for _SRS. Address descriptors use QWord form to avoid truncating 64-bit
+/// physical apertures; interrupts use Extended IRQ descriptors.
+pub fn encode_resource_template(resources:&ResourceList,output:&mut [u8])->Result<usize,ResourceError>{
+    if resources.count>resources.entries.len(){return Err(ResourceError::InvalidDescriptor)}
+    let mut cursor=0usize;
+    for resource in resources.entries[..resources.count].iter().flatten(){
+        match *resource{
+            Resource::Io{minimum,maximum,alignment,length,decode_16_bit:_}=>{
+                encode_qword_address(output,&mut cursor,1,0,0,alignment,minimum,maximum,length)?;
+            }
+            Resource::Memory{minimum,maximum,alignment,length,writeable,cacheable,..}=>{
+                encode_qword_address(output,&mut cursor,0,0,(if writeable{1}else{0})|(if cacheable{2}else{0}),alignment,minimum,maximum,length)?;
+            }
+            Resource::BusNumber{minimum,maximum,length}=>{
+                encode_qword_address(output,&mut cursor,2,0,0,1,minimum,maximum,length)?;
+            }
+            Resource::Irq{mask,level_triggered,active_low,shared,wake_capable}=>{
+                let mut interrupts=[0u32;8];let mut count=0usize;
+                for irq in 0..16u32{if mask&(1u16<<irq)!=0{interrupts[count]=irq;count+=1;}}
+                if count==0||count>8{return Err(ResourceError::UnsupportedDescriptor)}
+                let flags=(if level_triggered{2}else{0})|(if active_low{4}else{0})|(if shared{8}else{0})|(if wake_capable{0x10}else{0});
+                encode_extended_irq(output,&mut cursor,flags,&interrupts[..count])?;
+            }
+            Resource::ExtendedIrq{flags,interrupts,count}=>{
+                if count==0||count>8{return Err(ResourceError::InvalidDescriptor)}
+                encode_extended_irq(output,&mut cursor,flags,&interrupts[..count as usize])?;
+            }
+            Resource::Dma{channels,transfer_size,bus_master}=>{
+                let flags=(transfer_size&3)|if bus_master{4}else{0};
+                put_resource_bytes(output,&mut cursor,&[0x2a,channels,flags])?;
+            }
+            Resource::EndTag{..}=>{},
+        }
+    }
+    let end=cursor.checked_add(2).ok_or(ResourceError::IntegerOverflow)?;
+    if end>output.len(){return Err(ResourceError::Truncated)}
+    output[cursor]=0x79;output[cursor+1]=0;
+    let checksum=output[..end].iter().fold(0u8,|sum,b|sum.wrapping_add(*b));
+    output[cursor+1]=0u8.wrapping_sub(checksum);
+    Ok(end)
+}
+
+fn put_resource_bytes(output:&mut [u8],cursor:&mut usize,bytes:&[u8])->Result<(),ResourceError>{
+    let end=cursor.checked_add(bytes.len()).ok_or(ResourceError::IntegerOverflow)?;
+    if end>output.len(){return Err(ResourceError::Truncated)}
+    output[*cursor..end].copy_from_slice(bytes);*cursor=end;Ok(())
+}
+fn encode_qword_address(output:&mut [u8],cursor:&mut usize,space:u8,flags:u8,type_flags:u8,
+    alignment:u64,minimum:u64,maximum:u64,length:u64)->Result<(),ResourceError>{
+    validate_range(minimum,maximum,length)?;
+    let mut descriptor=[0u8;46];
+    descriptor[0]=0x8a;descriptor[1]=43;descriptor[2]=space;
+    descriptor[3]=flags;descriptor[4]=type_flags;
+    descriptor[5..13].copy_from_slice(&alignment.to_le_bytes());
+    descriptor[13..21].copy_from_slice(&minimum.to_le_bytes());
+    descriptor[21..29].copy_from_slice(&maximum.to_le_bytes());
+    descriptor[29..37].copy_from_slice(&0u64.to_le_bytes());
+    descriptor[37..45].copy_from_slice(&length.to_le_bytes());
+    put_resource_bytes(output,cursor,&descriptor)
+}
+fn encode_extended_irq(output:&mut [u8],cursor:&mut usize,flags:u8,interrupts:&[u32])->Result<(),ResourceError>{
+    if interrupts.is_empty()||interrupts.len()>8{return Err(ResourceError::InvalidDescriptor)}
+    let payload=2usize.checked_add(interrupts.len().checked_mul(4).ok_or(ResourceError::IntegerOverflow)?)
+        .ok_or(ResourceError::IntegerOverflow)?;
+    let mut descriptor=[0u8;37];descriptor[0]=0x89;
+    descriptor[1]=payload as u8;descriptor[2]=0;descriptor[3]=flags;
+    descriptor[4]=interrupts.len() as u8;
+    for (index,gsi) in interrupts.iter().enumerate(){
+        let offset=5+index*4;descriptor[offset..offset+4].copy_from_slice(&gsi.to_le_bytes());
+    }
+    put_resource_bytes(output,cursor,&descriptor[..3+payload])
+}
+
 #[cfg(test)] extern crate std;
 #[cfg(test)] mod tests{
  use super::*;
