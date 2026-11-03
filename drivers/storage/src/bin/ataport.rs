@@ -139,9 +139,8 @@ unsafe fn register_miniport(ext:*mut AtaPortFdoExtension,table:*const AtaPortMin
  if candidate.size as usize!=core::mem::size_of::<AtaPortMiniportInterface>()||candidate.version!=ATA_PORT_INTERFACE_VERSION||candidate.submit.is_none(){return STATUS_REVISION_MISMATCH}
  {
   let _guard=Guard::acquire();
-  if unsafe{(*ext).started==0||(*ext).removing!=0}{return STATUS_DEVICE_NOT_READY}
+  if unsafe{(*ext).started!=1||(*ext).removing!=0}{return STATUS_DEVICE_NOT_READY}
   if unsafe{(*ext).miniport.is_some()}{return STATUS_DEVICE_BUSY}
-  // Reserve registration without invoking controller callbacks under the spin lock.
   unsafe{(*ext).started=2;}
  }
  let mut status=STATUS_SUCCESS;
@@ -149,13 +148,14 @@ unsafe fn register_miniport(ext:*mut AtaPortFdoExtension,table:*const AtaPortMin
  if status==STATUS_SUCCESS {
   if let Some(start)=candidate.start {status=unsafe{start(candidate.miniport_context)};}
  }
- let _guard=Guard::acquire();
- if status==STATUS_SUCCESS {
-  unsafe{(*ext).miniport=Some(candidate);(*ext).started=1;}
- } else {
-  unsafe{(*ext).started=1;}
+ if status!=STATUS_SUCCESS {
+  if let Some(stop)=candidate.stop {let _=unsafe{stop(candidate.miniport_context)};}
+  let _guard=Guard::acquire();unsafe{(*ext).started=1;}
+  return status;
  }
- status
+ let _guard=Guard::acquire();
+ unsafe{(*ext).miniport=Some(candidate);(*ext).started=1;}
+ STATUS_SUCCESS
 }
 unsafe fn unregister_miniport(ext:*mut AtaPortFdoExtension,context:*mut c_void)->i32{
  let current={
@@ -165,14 +165,11 @@ unsafe fn unregister_miniport(ext:*mut AtaPortFdoExtension,context:*mut c_void)-
   unsafe{(*ext).started=2;(*ext).miniport=None;}
   current
  };
- // No new requests can enter after the miniport pointer is cleared. Drain the
- // bounded synchronous PIO rundown before the controller context is released.
  while unsafe{(*ext).active_requests}!=0 {core::hint::spin_loop();}
  let mut status=STATUS_SUCCESS;
  if let Some(stop)=current.stop {status=unsafe{stop(current.miniport_context)};}
  if let Some(unload)=current.unload {unsafe{unload(current.miniport_context)};}
- let _guard=Guard::acquire();
- unsafe{(*ext).started=1;}
+ let _guard=Guard::acquire();unsafe{(*ext).started=1;}
  status
 }
 
@@ -227,7 +224,7 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
  let operation=match major{IRP_MJ_READ=>AtaPortOperation::Read,IRP_MJ_WRITE=>AtaPortOperation::Write,IRP_MJ_FLUSH_BUFFERS=>AtaPortOperation::Flush,_=>return unsafe{complete(irp,STATUS_INVALID_DEVICE_REQUEST,0)}};
  let miniport={
   let _guard=Guard::acquire();
-  if unsafe{(*ext).started!=0&&(*ext).removing==0} {
+  if unsafe{(*ext).started==1&&(*ext).removing==0} {
    let current=unsafe{(*ext).miniport};
    if let Some(current)=current {
     unsafe{(*ext).active_requests=(*ext).active_requests.saturating_add(1);}
