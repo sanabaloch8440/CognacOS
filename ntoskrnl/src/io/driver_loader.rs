@@ -316,6 +316,20 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
   crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
   return Err(DriverLoadError::EntryFailed(status));
  }
+ // WDM AddDevice is published through DRIVER_EXTENSION by DriverEntry.
+ // The kernel PnP manager consumes that standard field internally; drivers
+ // never import a CognacOS-private IoPnPRegisterDeviceDriver export.
+ let extension=unsafe{(*driver_object).driver_extension.cast::<crate::nt_abi::io::DRIVER_EXTENSION>()};
+ if !extension.is_null() {
+  if let Some(add_device)=unsafe{(*extension).add_device} {
+   let callback:crate::io::wdm::PnpAddDeviceRoutine=unsafe{core::mem::transmute(add_device)};
+   let pnp_status=unsafe{crate::io::wdm::IoPnPRegisterDeviceDriver(driver_object.cast(),Some(callback))};
+   if pnp_status<0 {
+    crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
+    return Err(DriverLoadError::EntryFailed(pnp_status));
+   }
+  }
+ }
  Ok(LoadedDriver{image_base:base,image_size:image_size as u32,entry_point:entry,status})
 }
 
