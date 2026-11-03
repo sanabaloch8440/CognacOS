@@ -191,6 +191,9 @@ struct AcpiState {
     platform_registers: UnsafeCell<MaybeUninit<acpi::acpi_events::AcpiPlatformRegisters>>,
     gpe_controller: UnsafeCell<MaybeUninit<acpi::acpi_events::GpeController>>,
     power_resources: UnsafeCell<MaybeUninit<acpi::acpi_power::PowerResourceGraph>>,
+    thermal_zones: UnsafeCell<MaybeUninit<[acpi::acpi_events::ThermalZone;acpi::acpi_events::MAX_THERMAL_ZONES]>>,
+    thermal_zone_count: core::sync::atomic::AtomicUsize,
+    ec_query_methods: UnsafeCell<MaybeUninit<[u16;256]>>,
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
     dmar_present: AtomicBool,
@@ -210,6 +213,9 @@ static STATE: AcpiState = AcpiState {
     platform_registers: UnsafeCell::new(MaybeUninit::uninit()),
     gpe_controller: UnsafeCell::new(MaybeUninit::new(acpi::acpi_events::GpeController::new())),
     power_resources: UnsafeCell::new(MaybeUninit::new(acpi::acpi_power::PowerResourceGraph::new())),
+    thermal_zones: UnsafeCell::new(MaybeUninit::new([acpi::acpi_events::ThermalZone::EMPTY;acpi::acpi_events::MAX_THERMAL_ZONES])),
+    thermal_zone_count: core::sync::atomic::AtomicUsize::new(0),
+    ec_query_methods: UnsafeCell::new(MaybeUninit::new([u16::MAX;256])),
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
     dmar_present: AtomicBool::new(false),
@@ -943,7 +949,7 @@ fn parse_hex_digit(value:u8)->Option<u8>{
 }
 /// Discover fixed-hardware GPE methods and PowerResource namespace objects
 /// after all DSDT/SSDT definition blocks have been loaded.
-fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager)->Result<(),i32>{
+fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager,table_sources:&[&[u8]],handles:&[Option<acpi::aml_tables::TableHandle>],gate:&acpi::aml_tables::AmlExecutionBarrier)->Result<(),i32>{
  let platform=unsafe{(*STATE.platform_registers.get()).assume_init_ref()};
  let gpe=unsafe{(*STATE.gpe_controller.get()).assume_init_mut()};
  if let Some((gas,length,base))=platform.gpe0{
@@ -978,6 +984,39 @@ fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager
   let order=u8::try_from(node.power_resource_order).map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
   graph.register(index as u16,node.power_resource_system_level,order,false)
    .map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
+ }
+ // Evaluate each ThermalZone's temperature and trip points at PASSIVE_LEVEL.
+ let thermal=unsafe{(*STATE.thermal_zones.get()).assume_init_mut()};
+ let mut thermal_count=0usize;
+ for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+  if node.object_type!=acpi::aml::AmlObjectType::ThermalZone{continue}
+  if thermal_count==acpi::acpi_events::MAX_THERMAL_ZONES{return Err(STATUS_INSUFFICIENT_RESOURCES)}
+  let handle=handles.get(node.source_table as usize).and_then(|h|*h).ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+  let mut runtime=acpi::acpi_device::SynchronizedMethodInvoker{synchronizer:&KERNEL_AML_METHOD_SYNCHRONIZER};
+  let data=manager.evaluate_thermal_zone(handle,table_sources,index as u16,gate,&mut runtime)
+   .map_err(table_error_to_status)?;
+  thermal[thermal_count]=acpi::acpi_events::ThermalZone{
+   node:data.node,temperature_deci_kelvin:data.temperature_deci_kelvin,
+   passive_trip:data.passive_trip,hot_trip:data.hot_trip,critical_trip:data.critical_trip,
+   active_trip:data.active_trip,active_count:data.active_count,
+  };
+  thermal_count+=1;
+ }
+ STATE.thermal_zone_count.store(thermal_count,Ordering::Release);
+ // Discover EC query methods by PNP0C09 HID. Query bytes are queued by the
+ // future EC/SCI backend; _Qxx methods are never executed in the SCI ISR.
+ let query_map=unsafe{(*STATE.ec_query_methods.get()).assume_init_mut()};
+ let records=unsafe{(*STATE.device_records.get()).assume_init_ref()};
+ let record_count=STATE.device_count.load(Ordering::Acquire);
+ for record in records[..record_count].iter(){
+  if !record.identity.has_hid||record.identity.hid.as_bytes()!=b"PNP0C09"{continue}
+  for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
+   if node.parent!=record.node||node.object_type!=acpi::aml::AmlObjectType::Method||node.name[0]!=b'_'||node.name[1]!=b'Q'{continue}
+   let (Some(hi),Some(lo))=(parse_hex_digit(node.name[2]),parse_hex_digit(node.name[3]))else{continue};
+   let query=((hi<<4)|lo) as usize;
+   if query_map[query]!=u16::MAX{return Err(STATUS_DEVICE_CONFIGURATION_ERROR)}
+   query_map[query]=index as u16;
+  }
  }
  Ok(())
 }
@@ -1114,7 +1153,10 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         let handle=match loaded_ssdts[index]{Some(handle)=>handle,None=>return STATUS_DEVICE_CONFIGURATION_ERROR};
         if let Err(status)=collect_device_identities(manager,handle,&table_sources[..loaded_ssdt_count+1],loaded_ssdt_tables[index],gate,records,&mut identity_count){return status;}
     }
-    if let Err(status)=discover_power_and_event_namespace(manager){return status;}
+    let mut table_handles:[Option<acpi::aml_tables::TableHandle>;acpi::aml_tables::MAX_AML_TABLES]=[None;acpi::aml_tables::MAX_AML_TABLES];
+    table_handles[0]=Some(dsdt_handle);
+    for index in 0..loaded_ssdt_count{table_handles[index+1]=loaded_ssdts[index];}
+    if let Err(status)=discover_power_and_event_namespace(manager,&table_sources[..loaded_ssdt_count+1],&table_handles[..loaded_ssdt_count+1],gate){return status;}
     // Create an ACPI bus device and real WDM PDOs for firmware devices
     // reported present and enabled. Each PDO owns an immutable identity copy.
     // Namespace records include devices that are disabled or absent; only
