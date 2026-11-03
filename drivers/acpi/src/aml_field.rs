@@ -11,7 +11,7 @@
 use core::sync::atomic::{AtomicBool,AtomicU16,AtomicU64,Ordering};
 use crate::aml::{AmlNamespace,AmlObjectType};
 
-pub const MAX_FIELD_BITS:u32=64;
+pub const MAX_FIELD_BITS:u32=4096;
 pub const DEFAULT_SPIN_LIMIT:u32=100_000;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -316,5 +316,83 @@ mod tests{
         assert_eq!(write_field_with_aml(&aml,&ns,1,0xc6,&mut io),Ok(()));
         assert_eq!(io.bank,2);assert_eq!(io.value,0xc6);
     }
+
+
+/// Read a bounded Field of up to MAX_FIELD_BITS into a caller-owned little-endian bit buffer.
+/// This supports AML fields wider than an Integer while retaining strict output bounds.
+pub fn read_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,io:&mut I,output:&mut [u8])->Result<usize,FieldError>{
+    let n=field_node(ns,id)?;
+    let required=(n.body_length as usize+7)/8;
+    if output.len()<required{return Err(FieldError::InvalidLength)}
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
+    let width=access_bytes(n.field_access_type)?;
+    let unit_bits=width as u64*8;
+    let start=n.body_start as u64;
+    let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
+    let operation=||{
+        output[..required].fill(0);
+        let mut cached_unit=u64::MAX;let mut cached_value=0u64;
+        for bit in start..end{
+            let unit=(bit/unit_bits)*width as u64;
+            if unit!=cached_unit{
+                cached_value=io.read(n.field_region,unit,width).map_err(|_|FieldError::IoFailure)?&unit_mask(width);
+                cached_unit=unit;
+            }
+            let value=(cached_value>>((bit%unit_bits) as u32))&1;
+            let relative=(bit-start) as usize;
+            if value!=0{output[relative/8]|=1<<(relative%8);}
+        }
+        Ok(required)
+    };
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=operation();
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
+
+/// Write a bounded little-endian bit buffer into a Field wider than an AML Integer.
+/// Uncovered bits in each access unit follow the Field's declared update rule.
+pub fn write_field_buffer<I:FieldIo>(ns:&AmlNamespace,id:u16,input:&[u8],io:&mut I)->Result<(),FieldError>{
+    let n=field_node(ns,id)?;
+    let required=(n.body_length as usize+7)/8;
+    if input.len()<required{return Err(FieldError::InvalidLength)}
+    if n.field_access_attribute!=0||n.field_access_length!=0{return Err(FieldError::UnsupportedAccess)}
+    let width=access_bytes(n.field_access_type)?;
+    let unit_bits=width as u64*8;
+    let start=n.body_start as u64;
+    let end=start.checked_add(n.body_length as u64).ok_or(FieldError::AddressOverflow)?;
+    let operation=||{
+        let first=(start/unit_bits)*width as u64;
+        let last=((end-1)/unit_bits)*width as u64;
+        let mut unit=first;
+        while unit<=last{
+            let unit_start=unit.checked_mul(8).ok_or(FieldError::AddressOverflow)?;
+            let unit_end=unit_start.checked_add(unit_bits).ok_or(FieldError::AddressOverflow)?;
+            let overlap_start=start.max(unit_start);let overlap_end=end.min(unit_end);
+            let shift=(overlap_start-unit_start) as u32;let count=(overlap_end-overlap_start) as u32;
+            let field_shift=(overlap_start-start) as usize;
+            let low_mask=if count==64{u64::MAX}else{(1u64<<count)-1};
+            let mask=if count==64{u64::MAX}else{low_mask<<shift};
+            let mut incoming=0u64;
+            for bit in 0..count as usize{
+                let source=field_shift+bit;
+                if input[source/8]&(1<<(source%8))!=0{incoming|=1u64<<bit;}
+            }
+            let incoming=if count==64{incoming}else{incoming<<shift};
+            let old=match n.field_update_rule{
+                0=>io.read(n.field_region,unit,width).map_err(|_|FieldError::IoFailure)?&unit_mask(width),
+                1=>unit_mask(width),2=>0,_=>return Err(FieldError::UnsupportedAccess),
+            };
+            io.write(n.field_region,unit,width,((old&!mask)|(incoming&mask))&unit_mask(width))
+                .map_err(|_|FieldError::IoFailure)?;
+            unit=unit.checked_add(width as u64).ok_or(FieldError::AddressOverflow)?;
+        }
+        Ok(())
+    };
+    if n.field_lock_rule!=0{io.begin_locked_access().map_err(|_|FieldError::LockFailure)?;}
+    let result=operation();
+    if n.field_lock_rule!=0&&io.end_locked_access().is_err(){return Err(FieldError::UnlockFailure)}
+    result
+}
 
 }
