@@ -901,7 +901,7 @@ mod tests{
         assert_eq!(load_definition_block(&buffer,&mut ns),Err(AmlError::Truncated));
         assert_eq!(ns.count,1);
         // VarPackage requires a count TermArg within its own package.
-        let varpackage=[0x08,b'B',b'A',b'D',b'6',0x13,0x02];
+        let varpackage=[0x08,b'B',b'A',b'D',b'6',0x13,0x02,0x0a];
         assert_eq!(load_definition_block(&varpackage,&mut ns),Err(AmlError::Truncated));
         assert_eq!(ns.count,1);
     }
