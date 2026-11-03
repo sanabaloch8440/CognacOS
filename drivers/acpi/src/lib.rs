@@ -566,25 +566,31 @@ pub fn parse_srat(bytes:&[u8])->Result<SratInfo,AcpiError>{
         if size<2||off.checked_add(size).filter(|e|*e<=end).is_none(){return Err(AcpiError::MalformedEntry)}
         let e=&bytes[off..off+size];
         match kind{
-            0 if size>=16=>{
+            0 if size==16=>{
                 if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=(e[2] as u32)|((e[9] as u32)<<8)|((e[10] as u32)<<16)|((e[11] as u32)<<24);
                 let flags=u32le(e,4)?;
-                out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id:e[3] as u32,enabled:flags&1!=0,x2apic:false};out.cpu_count+=1;
+                if flags&!1!=0{return Err(AcpiError::MalformedEntry)}
+                let apic_id=e[3] as u32;
+                if flags&1!=0&&out.cpus.iter().take(out.cpu_count).any(|cpu|cpu.enabled&&cpu.apic_id==apic_id){return Err(AcpiError::MalformedEntry)}
+                out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id,enabled:flags&1!=0,x2apic:false};out.cpu_count+=1;
             }
-            1 if size>=40=>{
+            1 if size==40=>{
                 if out.memory_count==out.memory.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=u32le(e,2)?;
                 let base=u64::from_le_bytes(e[8..16].try_into().map_err(|_|AcpiError::Truncated)?);
                 let length=u64::from_le_bytes(e[16..24].try_into().map_err(|_|AcpiError::Truncated)?);
                 let flags=u32le(e,28)?;
-                if length==0||base.checked_add(length).is_none(){return Err(AcpiError::MalformedEntry)}
-                out.memory[out.memory_count]=NumaMemoryAffinity{proximity_domain:domain,base,length,
-                    enabled:flags&1!=0,hot_pluggable:flags&2!=0,non_volatile:flags&4!=0};out.memory_count+=1;
+                let end=base.checked_add(length).ok_or(AcpiError::MalformedEntry)?;
+                if length==0||base&0xfff!=0||length&0xfff!=0||flags&!7!=0{return Err(AcpiError::MalformedEntry)}
+                if flags&1!=0&&out.memory.iter().take(out.memory_count).any(|old|old.enabled&&base<old.base.saturating_add(old.length)&&old.base<end){return Err(AcpiError::MalformedEntry)}
+                out.memory[out.memory_count]=NumaMemoryAffinity{proximity_domain:domain,base,length,enabled:flags&1!=0,hot_pluggable:flags&2!=0,non_volatile:flags&4!=0};out.memory_count+=1;
             }
-            2 if size>=24=>{
+            2 if size==24=>{
                 if out.cpu_count==out.cpus.len(){return Err(AcpiError::TooManyEntries)}
                 let domain=u32le(e,4)?;let apic_id=u32le(e,8)?;let flags=u32le(e,12)?;
+                if flags&!1!=0{return Err(AcpiError::MalformedEntry)}
+                if flags&1!=0&&out.cpus.iter().take(out.cpu_count).any(|cpu|cpu.enabled&&cpu.apic_id==apic_id){return Err(AcpiError::MalformedEntry)}
                 out.cpus[out.cpu_count]=NumaCpuAffinity{proximity_domain:domain,apic_id,enabled:flags&1!=0,x2apic:true};out.cpu_count+=1;
             }
             _=>{}
@@ -1281,6 +1287,32 @@ mod numa_table_tests {
         assert_eq!(s.distance(0,1),Some(20));assert_eq!(s.distance(1,0),Some(25));
         b[44]=9;finish(&mut b);assert_eq!(parse_slit(&b),Err(AcpiError::MalformedEntry));
     }
+    #[test]
+    fn rejects_overlapping_enabled_srat_memory_affinities() {
+        let mut b=vec![0u8;48+40+40];b[0..4].copy_from_slice(b"SRAT");
+        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        b[48]=1;b[49]=40;b[56..64].copy_from_slice(&0x1000u64.to_le_bytes());
+        b[64..72].copy_from_slice(&0x4000u64.to_le_bytes());b[76..80].copy_from_slice(&1u32.to_le_bytes());
+        b[88]=1;b[89]=40;b[96..104].copy_from_slice(&0x3000u64.to_le_bytes());
+        b[104..112].copy_from_slice(&0x2000u64.to_le_bytes());b[116..120].copy_from_slice(&1u32.to_le_bytes());
+        finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_duplicate_enabled_srat_processor_ids() {
+        let mut b=vec![0u8;48+16+16];b[0..4].copy_from_slice(b"SRAT");
+        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        b[48]=0;b[49]=16;b[51]=7;b[52..56].copy_from_slice(&1u32.to_le_bytes());
+        b[64]=0;b[65]=16;b[67]=7;b[68..72].copy_from_slice(&1u32.to_le_bytes());
+        finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn rejects_reserved_srat_affinity_flags() {
+        let mut b=vec![0u8;64];b[0..4].copy_from_slice(b"SRAT");
+        b[4..8].copy_from_slice(&(b.len() as u32).to_le_bytes());
+        b[48]=0;b[49]=16;b[52..56].copy_from_slice(&2u32.to_le_bytes());
+        finish(&mut b);assert_eq!(parse_srat(&b),Err(AcpiError::MalformedEntry));
+    }
+
     #[test]
     fn rejects_srat_memory_range_overflow(){
         let mut b=vec![0u8;88];b[0..4].copy_from_slice(b"SRAT");b[4..8].copy_from_slice(&(88u32).to_le_bytes());
