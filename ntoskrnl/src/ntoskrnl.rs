@@ -41,8 +41,15 @@ pub fn exports() -> impl Iterator<Item = Export> {
 /// Validate the implemented page-table translation and checked-copy ABI surface.
 pub fn memory_manager_self_test() -> bool { mm::runtime::self_test() }
 
-/// Return an address only when the requested symbol has an ABI-correct callable
-/// implementation. Export presence alone is not sufficient to resolve a driver import.
+/// Return an address only when the requested symbol is present in the pinned
+/// Windows 11 x64 manifest and has an ABI-correct callable implementation.
+/// Private kernel helpers must never become PE-visible ntoskrnl exports.
+fn is_pinned_export_name(requested: &[u8]) -> bool {
+ manifest_26100::ENTRIES.iter().any(|entry| {
+  entry.name.is_some_and(|name| name.as_bytes().eq_ignore_ascii_case(requested))
+ })
+}
+
 pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  // Windows x64 HAL imports are resolved separately from ntoskrnl imports.
  // Only signature-compatible implementations are returned; unsupported HAL
@@ -54,6 +61,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   };
  }
  if !(dll.eq_ignore_ascii_case(b"ntoskrnl.exe") || dll.eq_ignore_ascii_case(b"ntkrnlmp.exe") || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) { return None; }
+ // Fast-path implementation tables are not export lists. Gate every named
+ // import against the pinned Windows 11 x64 export manifest first.
+ if let ImportSymbol::Name(requested) = symbol {
+  if !is_pinned_export_name(requested) { return None; }
+ }
  // Cache Manager exports are resolved only to implemented, ABI-specific routines.
  if let ImportSymbol::Name(requested) = symbol {
   let cache = if requested.eq_ignore_ascii_case(b"CcInitializeCacheMap") { Some(cc::cc_initialize_cache_map as usize) }
@@ -143,28 +155,12 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   if requested.eq_ignore_ascii_case(b"SeQueryAuthenticationIdToken") { return Some(se::runtime::SeQueryAuthenticationIdToken as usize as u64); }
   let direct = if requested.eq_ignore_ascii_case(b"IoRegisterDriverReinitialization") {
    Some(driver_loader::IoRegisterDriverReinitialization as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPQueryBusInterface") {
-   Some(crate::io::IoPnPQueryBusInterface as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPRegisterDeviceDriver") {
-   Some(crate::io::IoPnPRegisterDeviceDriver as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPProcessBusRelations") {
-   Some(crate::io::IoPnPProcessBusRelations as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPEnumerateBus") {
-   Some(crate::io::IoPnPEnumerateBus as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoPnPRegisterBusDevice") {
-   Some(crate::io::pnp::IoPnPRegisterBusDevice as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoMarkBusEnumeratedPdo") {
-   Some(crate::io::io_mark_bus_enumerated_pdo as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoCreateDevice") {
+   Some(crate::io::io_create_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCreateDevice") {
    Some(crate::io::io_create_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoDeleteDevice") {
    Some(crate::io::io_delete_device as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoUnloadDriver") {
-   Some(crate::io::io_unload_driver as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoReferenceDeviceObject") {
-   Some(crate::io::io_reference_device_object as usize)
-  } else if requested.eq_ignore_ascii_case(b"IoDereferenceDeviceObject") {
-   Some(crate::io::io_dereference_device_object as usize)
   } else if requested.eq_ignore_ascii_case(b"IoAllocateMdl") {
    Some(crate::io::io_allocate_mdl as usize)
   } else if requested.eq_ignore_ascii_case(b"IoFreeMdl") {
@@ -336,9 +332,6 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   } else if requested.eq_ignore_ascii_case(b"KeRemoveGroupAffinityEx") { Some(ke::runtime::ke_remove_group_affinity_ex as usize)
   } else if requested.eq_ignore_ascii_case(b"KeAndGroupAffinityEx") { Some(ke::runtime::ke_and_group_affinity_ex as usize)
   } else if requested.eq_ignore_ascii_case(b"KeQueryGroupAffinityEx") { Some(ke::runtime::ke_query_group_affinity_ex as usize)
-  } else if requested.eq_ignore_ascii_case(b"CognacQueryXStateConfiguration") { Some(ke::runtime::CognacQueryXStateConfiguration as usize)
-  } else if requested.eq_ignore_ascii_case(b"CognacSaveXState") { Some(ke::runtime::CognacSaveXState as usize)
-  } else if requested.eq_ignore_ascii_case(b"CognacRestoreXState") { Some(ke::runtime::CognacRestoreXState as usize)
   } else if requested.eq_ignore_ascii_case(b"KeSaveExtendedProcessorState") { Some(ke::runtime::KeSaveExtendedProcessorState as usize)
   } else if requested.eq_ignore_ascii_case(b"KeRestoreExtendedProcessorState") { Some(ke::runtime::KeRestoreExtendedProcessorState as usize)
   } else if requested.eq_ignore_ascii_case(b"KeGetXSaveFeatureFlags") { Some(ke::runtime::ke_get_xsave_feature_flags as usize)
@@ -912,8 +905,12 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmMapIoSpace")) == Some(mm::runtime::mm_map_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"MmUnmapIoSpace")) == Some(mm::runtime::mm_unmap_io_space as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoCreateDevice")) == Some(crate::io::io_create_device as usize as u64)
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoMarkBusEnumeratedPdo")) == Some(crate::io::io_mark_bus_enumerated_pdo as usize as u64)
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoPnPRegisterBusDevice")) == Some(crate::io::pnp::IoPnPRegisterBusDevice as usize as u64)
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoMarkBusEnumeratedPdo")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoPnPRegisterBusDevice")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoPnPProcessBusRelations")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoReferenceDeviceObject")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoDereferenceDeviceObject")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"CognacSaveXState")).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoDeleteDevice")) == Some(crate::io::io_delete_device as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoGetRelatedDeviceObject")) == Some(crate::io::io_get_related_device_object as usize as u64)
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"CcInitializeCacheMap")) == Some(cc::cc_initialize_cache_map as usize as u64)
