@@ -139,7 +139,7 @@ impl<'a,'b> Machine<'a,'b>{
     AmlValueKind::Buffer=>{
      let length=source.byte_length as usize;
      if length>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
-     if length.saturating_mul(4).saturating_sub(1)>MAX_AML_BYTES{return Err(ExecError::TargetTypeMismatch)}
+     if length.saturating_mul(4).saturating_sub(1)>source.bytes.len(){return Err(ExecError::TargetTypeMismatch)}
      let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;let mut out=0usize;
      for byte in source.bytes[..length].iter(){
       if out!=0{value.bytes[out]=b',';out+=1;}
