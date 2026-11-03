@@ -889,6 +889,22 @@ mod tests{
         assert_eq!(ns.count,1);
     }
 
+    #[test]fn rejects_malformed_package_counts_and_truncated_buffer_size(){
+        // Package(2) has only one element: its payload must end exactly at
+        // the package boundary and cannot silently accept missing elements.
+        let package_count=[0x08,b'B',b'A',b'D',b'4',0x12,0x05,2,0x01];
+        let mut ns=AmlNamespace::new();
+        assert_eq!(load_definition_block(&package_count,&mut ns),Err(AmlError::Truncated));
+        assert_eq!(ns.count,1);
+        // Buffer package with a truncated DWord BufferSize expression.
+        let buffer=[0x08,b'B',b'A',b'D',b'5',0x11,0x06,0x0c,1,2];
+        assert_eq!(load_definition_block(&buffer,&mut ns),Err(AmlError::Truncated));
+        assert_eq!(ns.count,1);
+        // VarPackage requires a count TermArg within its own package.
+        let varpackage=[0x08,b'B',b'A',b'D',b'6',0x13,0x02];
+        assert_eq!(load_definition_block(&varpackage,&mut ns),Err(AmlError::Truncated));
+        assert_eq!(ns.count,1);
+    }
     #[test]fn rejects_unterminated_string_inside_package(){
         let aml=[0x08,b'B',b'A',b'D',b'1',0x12,0x05,1,0x0d,b'x',b'y'];
         let mut ns=AmlNamespace::new();
