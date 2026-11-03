@@ -167,7 +167,13 @@ fn next_stack_location(irp:*mut IRP)->*mut IO_STACK_LOCATION {
 }
 unsafe fn copy_current_irp_stack_location_to_next(irp:*mut IRP) {
  let current=current_stack_location(irp);let next=next_stack_location(irp);
- if !current.is_null()&&!next.is_null(){unsafe{core::ptr::copy(current,next,1)}}
+ if !current.is_null()&&!next.is_null(){unsafe{
+  let bytes=core::mem::offset_of!(IO_STACK_LOCATION,completion_routine);
+  core::ptr::copy_nonoverlapping(current.cast::<u8>(),next.cast::<u8>(),bytes);
+  (*next).control=0;
+  (*next).completion_routine=None;
+  (*next).context=core::ptr::null_mut();
+ }}
 }
 unsafe fn skip_current_irp_stack_location(irp:*mut IRP) {
  if irp.is_null(){return}
@@ -184,7 +190,7 @@ unsafe fn set_completion_routine(
  if success!=0{control|=0x40}
  if error!=0{control|=0x80}
  if cancel!=0{control|=0x20}
- unsafe{(*next).completion_routine=routine;(*next).context=context;(*next).control|=control;}
+ unsafe{(*next).completion_routine=routine;(*next).context=context;(*next).control=control;}
 }
 
 /// Completion for a synchronous WDM IRP_MN_QUERY_INTERFACE request. Returning
@@ -457,10 +463,10 @@ unsafe extern "win64" fn dispatch(device:*mut DEVICE_OBJECT,irp:*mut IRP)->i32{
   if minor==IRP_MN_REMOVE_DEVICE {
    let physical=unsafe{(*ext).physical};
    unsafe{(*ext).relations=AtaPortDeviceRelations::EMPTY;}
-   unsafe{set_completion_routine(irp,Some(remove_complete),device.cast(),1,1,1);skip_current_irp_stack_location(irp);return IoCallDriver((*ext).lower,irp);}
+   unsafe{set_completion_routine(irp,Some(remove_complete),device.cast(),1,1,1);copy_current_irp_stack_location_to_next(irp);return IoCallDriver((*ext).lower,irp);}
   }
   if minor==IRP_MN_START_DEVICE||minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL {
-   unsafe{set_completion_routine(irp,Some(pnp_complete),device.cast(),1,1,1);skip_current_irp_stack_location(irp);return IoCallDriver((*ext).lower,irp);}
+   unsafe{set_completion_routine(irp,Some(pnp_complete),device.cast(),1,1,1);copy_current_irp_stack_location_to_next(irp);return IoCallDriver((*ext).lower,irp);}
   }
   unsafe{skip_current_irp_stack_location(irp);return IoCallDriver((*ext).lower,irp);}
  }
