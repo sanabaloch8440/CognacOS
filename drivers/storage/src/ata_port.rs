@@ -6,6 +6,9 @@ use core::ffi::c_void;
 
 pub const ATA_PORT_INTERFACE_VERSION: u32 = 1;
 pub const ATA_PORT_MAX_SG_ELEMENTS: u32 = 128;
+pub const ATA_PORT_MAX_PIO_SECTORS: u32 = 256;
+/// Low two request flag bits select the channel/device slot (0..=3).
+pub const ATA_PORT_REQUEST_DEVICE_INDEX_MASK: u32 = 0x3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +30,7 @@ pub struct AtaPortRequest {
     pub request_id: u64,
     pub lba: u64,
     pub sector_count: u32,
+    /// Request flags; low two bits select the channel/device slot.
     pub flags: u32,
     /// Kernel-owned, nonpaged system buffer for PIO transfers. The port driver
     /// accepts this only for buffered IRPs; miniports must never dereference a
@@ -116,7 +120,7 @@ pub fn validate_request(request: &AtaPortRequest) -> Result<u32, i32> {
     }
     match request.operation {
         AtaPortOperation::Read | AtaPortOperation::Write => {
-            if request.sector_count == 0 || request.system_buffer.is_null() {
+            if request.sector_count == 0 || request.sector_count > ATA_PORT_MAX_PIO_SECTORS || request.system_buffer.is_null() {
                 return Err(STATUS_INVALID_PARAMETER);
             }
             let bytes = request.sector_count.checked_mul(512)
@@ -262,6 +266,8 @@ mod request_validation_tests {
         let mut write = base(AtaPortOperation::Write);
         write.sector_count = 256;
         assert_eq!(validate_request(&write), Ok(256 * 512));
+        write.sector_count = 257;
+        assert!(validate_request(&write).is_err());
         write.sector_count = u32::MAX;
         assert!(validate_request(&write).is_err());
         write.sector_count = 1;
