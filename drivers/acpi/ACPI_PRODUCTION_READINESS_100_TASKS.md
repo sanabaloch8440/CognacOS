@@ -34,7 +34,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 21. [x] Implement integer constants and AML revision-dependent integer width semantics.
 22. [x] Validate Buffer, Package, and VarPackage payloads and nested package boundaries.
 23. [x] Reject unterminated strings and malformed encodings without scanning past table bounds.
-24. [ ] Report unsupported opcode with table, byte offset, opcode, and enclosing namespace object.
+24. [x] Report unsupported opcode with table ID, term-boundary byte offset, opcode, and enclosing namespace path; operand failures are attributed to their owning term.
 25. [ ] Create an iASL/ACPICA-derived parser conformance corpus.
 
 ## AML execution and runtime objects
@@ -161,3 +161,8 @@ Highlights:
 - Field offset/length conversions are checked; zero-width ReservedField handling and explicit namespace-capacity diagnostics have regression coverage.
 
 The UEFI/QEMU build workflow remains failing separately and is not represented as passing by this ACPI library-test result.
+
+
+## AML diagnostic context verification
+
+Task 24 was verified on commit `96520689707d3bf20c2405fa79b4597861c01582` by ACPI Rust unit-test workflow run `41577363837`. The job compiled all ACPI library tests and ran the firmware/AML suites; its log explicitly reports both `structured_diagnostic_identifies_nested_term_and_scope_parent` and `structured_diagnostic_tracks_nested_scope_path` passing. Diagnostic offsets are term-boundary offsets, not guaranteed exact inner operand cursors.
