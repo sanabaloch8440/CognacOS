@@ -115,12 +115,17 @@ pub fn validate_request(request: &AtaPortRequest) -> Result<u32, i32> {
     const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010u32 as i32;
     if request.size as usize != core::mem::size_of::<AtaPortRequest>()
         || request.sg_count > ATA_PORT_MAX_SG_ELEMENTS
+        || request.flags & !ATA_PORT_REQUEST_DEVICE_INDEX_MASK != 0
+        || request.timeout_ms == 0
     {
         return Err(STATUS_INVALID_PARAMETER);
     }
     match request.operation {
         AtaPortOperation::Read | AtaPortOperation::Write => {
-            if request.sector_count == 0 || request.sector_count > ATA_PORT_MAX_PIO_SECTORS || request.system_buffer.is_null() {
+            if request.sector_count == 0 || request.sector_count > ATA_PORT_MAX_PIO_SECTORS
+                || request.system_buffer.is_null() || request.sg_count != 0
+                || !request.sg_list.is_null() || !request.packet_cdb.is_null()
+                || request.packet_cdb_length != 0 {
                 return Err(STATUS_INVALID_PARAMETER);
             }
             let bytes = request.sector_count.checked_mul(512)
