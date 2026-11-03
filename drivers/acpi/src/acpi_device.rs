@@ -313,7 +313,13 @@ mod tests{
         add_method(&mut aml,*b"_UID",&[0xa4,0x0d,b'S',b'E',b'R',b'I',b'A',b'L',b'-',b'7',0]);
         add_method(&mut aml,*b"_STA",&[0xa4,0x0a,0x0f]);
         add_method(&mut aml,*b"_ADR",&[0xa4,0x0c,0x34,0x12,0,0]);
-        aml[2]=(aml.len()-2) as u8;
+        let package_length=aml.len()-2+1; // Include the second PkgLength byte when extended encoding is needed.
+        if package_length<0x40 {
+            aml[2]=package_length as u8;
+        } else {
+            aml[2]=0x40|((package_length&0x0f) as u8);
+            aml.insert(3,(package_length>>4) as u8);
+        }
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let dev=ns.find_child(0,*b"DEV0").unwrap();
         let result=evaluate_device_identity(&ns,&one_table(&aml),dev,&mut IntegerMethodInvoker).unwrap();
