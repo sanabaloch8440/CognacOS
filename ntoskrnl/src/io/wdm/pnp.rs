@@ -366,6 +366,9 @@ pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rela
  }
  manager.enumerations=manager.enumerations.wrapping_add(1);
  drop(manager);
+ // Preserve the first lifecycle failure while still processing every child.
+ // This result belongs to bus-relations publication, not the binding routine.
+ let mut result=STATUS_SUCCESS;
  // Existing relations retained their original reference; release the
  // speculative reference acquired for this refresh.
  for child in duplicate_refs[..duplicate_count].iter().copied(){unsafe{io_dereference_device_object(child)}}
