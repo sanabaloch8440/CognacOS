@@ -91,33 +91,80 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  if resource_owner.is_null(){return STATUS_INVALID_PARAMETER}
  let mut raw=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
  let mut resources=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
- let raw_count=match unsafe{parse_cm_resource_list(allocated,&mut raw)}{Ok(n)=>n,Err(e)=>return e};
- let count=match unsafe{parse_cm_resource_list(translated,&mut resources)}{Ok(n)=>n,Err(e)=>return e};
- if allocated.is_null()!=translated.is_null()||raw_count!=count{return STATUS_INVALID_PARAMETER}
- // Translation may relocate a resource but cannot change its resource class.
- // In particular, a bus must not turn a DMA channel into an IRQ or MMIO claim.
+ let raw_count=match unsafe{parse_cm_resource_list(allocated,&mut raw)}{
+  Ok(n)=>n,Err(e)=>{unsafe{io_dereference_device_object(resource_owner)};return e}
+ };
+ let count=match unsafe{parse_cm_resource_list(translated,&mut resources)}{
+  Ok(n)=>n,Err(e)=>{unsafe{io_dereference_device_object(resource_owner)};return e}
+ };
+ if allocated.is_null()!=translated.is_null()||raw_count!=count{
+  unsafe{io_dereference_device_object(resource_owner)};return STATUS_INVALID_PARAMETER
+ }
  for i in 0..count {
-  if raw[i].kind!=resources[i].kind{return STATUS_INVALID_PARAMETER}
+  if raw[i].kind!=resources[i].kind{
+   unsafe{io_dereference_device_object(resource_owner)};return STATUS_INVALID_PARAMETER
+  }
   for j in i+1..count {
-   if resources_overlap(&resources[i],&resources[j]) { return STATUS_INVALID_PARAMETER; }
+   if resources_overlap(&resources[i],&resources[j]){
+    unsafe{io_dereference_device_object(resource_owner)};return STATUS_INVALID_PARAMETER
+   }
   }
  }
- let mut arbiter=RESOURCE_ARBITER.lock();
- if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed){return STATUS_SUCCESS}
- if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&!c.committed){return STATUS_DEVICE_BUSY}
- for r in resources[..count].iter() {
-  for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=resource_owner) {
-   let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length};
-   if claim.owner!=resource_owner && resources_overlap(r,&existing){return STATUS_DEVICE_BUSY}
+ if count==0{
+  unsafe{io_dereference_device_object(resource_owner)};
+  return STATUS_SUCCESS
+ }
+ // Every ResourceClaim owns one object reference. Acquire them before the
+ // arbiter lock to preserve the WDM -> resource-arbiter lock order.
+ let mut owner_refs=[ptr::null_mut::<DeviceObject>();MAX_RESOURCES_PER_DEVICE];
+ owner_refs[0]=resource_owner;
+ for i in 1..count{
+  let reference=unsafe{io_reference_device_object(resource_owner)};
+  if reference.is_null(){
+   for held in owner_refs[..i].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
+   return STATUS_DELETE_PENDING
+  }
+  owner_refs[i]=reference;
+ }
+ let mut result=STATUS_SUCCESS;
+ {
+  let mut arbiter=RESOURCE_ARBITER.lock();
+  let duplicate=arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed);
+  if duplicate {
+   result=STATUS_SUCCESS;
+  }else if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&!c.committed){
+   result=STATUS_DEVICE_BUSY;
+  }else{
+   for r in resources[..count].iter(){
+    for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=resource_owner){
+     let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length};
+     if resources_overlap(r,&existing){result=STATUS_DEVICE_BUSY;break}
+    }
+    if result!=STATUS_SUCCESS{break}
+   }
+   if result==STATUS_SUCCESS{
+    let free_count=arbiter.claims.iter().filter(|c|!c.used).count();
+    if free_count<count{result=STATUS_INSUFFICIENT_RESOURCES}
+    else{
+     for i in 0..count{
+      let slot=arbiter.claims.iter_mut().find(|c|!c.used).unwrap();
+      let r=resources[i];
+      *slot=ResourceClaim{used:true,owner:owner_refs[i],irp,kind:r.kind,start:r.start,length:r.length,committed:false};
+     }
+    }
+   }
   }
  }
- let free_count=arbiter.claims.iter().filter(|c|!c.used).count();
- if free_count<count{return STATUS_INSUFFICIENT_RESOURCES}
- for r in resources[..count].iter() {
-  let Some(slot)=arbiter.claims.iter_mut().find(|c|!c.used) else{return STATUS_INSUFFICIENT_RESOURCES};
-  *slot=ResourceClaim{used:true,owner:resource_owner,irp,kind:r.kind,start:r.start,length:r.length,committed:false};
+ // On duplicate or failure the speculative references were not transferred
+ // into the arbiter. Successful insertion transfers one ref per claim.
+ let transferred=result==STATUS_SUCCESS&&{
+  let arbiter=RESOURCE_ARBITER.lock();
+  arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed)
+ };
+ if !transferred{
+  for held in owner_refs[..count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
  }
- STATUS_SUCCESS
+ result
 }
 
 /// Resolve a PnP resource transaction only when IoCompleteRequest reaches the
@@ -125,37 +172,55 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
 /// starts replace prior claims. Stop/remove release committed reservations.
 pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,minor:u8,status:i32){
  if irp.is_null()||device.is_null(){return}
- // Only the top-of-stack completion owns the transaction. Claims are attached
- // to the stack base so filters cannot double-reserve or prematurely release them.
  if unsafe{io_get_attached_device(device)}!=device{return}
  let resource_owner=unsafe{io_get_device_attachment_base_ref(device)};
  if resource_owner.is_null(){return}
  let device_deleting={let state=WDM.lock();state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)).is_none_or(|s|s.deleting)};
  let effective_status=if minor==IRP_MN_START_DEVICE&&device_deleting{STATUS_DELETE_PENDING}else{status};
- let mut arbiter=RESOURCE_ARBITER.lock();
- if minor==IRP_MN_START_DEVICE {
-  let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed);
-  if effective_status==STATUS_SUCCESS {
-   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner&&c.committed){*c=ResourceClaim::EMPTY;}
-   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){c.committed=true;c.irp=ptr::null_mut();}
-  } else if has_pending {
-   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){*c=ResourceClaim::EMPTY;}
+ let mut released=[ptr::null_mut::<DeviceObject>();MAX_PNP_RESOURCE_CLAIMS];
+ let mut released_count=0usize;
+ {
+  let mut arbiter=RESOURCE_ARBITER.lock();
+  if minor==IRP_MN_START_DEVICE {
+   let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed);
+   if effective_status==STATUS_SUCCESS {
+    for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner&&c.committed){
+     released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+    }
+    for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
+     claim.committed=true;claim.irp=ptr::null_mut();
+    }
+   }else if has_pending{
+    for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
+     released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+    }
+   }
+  }else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL){
+   for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner){
+    released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+   }
   }
- } else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL) {
-  for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner){*c=ResourceClaim::EMPTY;}
  }
+ for held in released[..released_count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
+ unsafe{io_dereference_device_object(resource_owner)};
 }
 
 /// Explicitly release a device's committed resources after a successful
 /// STOP_DEVICE/REMOVE_DEVICE completion. Safe to call repeatedly.
 pub(crate) fn io_release_pnp_resources(device:*mut DeviceObject){
  if device.is_null(){return}
- // Resolve the stack base before taking the arbiter lock. START takes the
- // WDM lock first and the resource lock second; preserve that global order.
  let owner=unsafe{io_get_device_attachment_base_ref(device)};
  if owner.is_null(){return}
- let mut arbiter=RESOURCE_ARBITER.lock();
- for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner){*c=ResourceClaim::EMPTY;}
+ let mut released=[ptr::null_mut::<DeviceObject>();MAX_PNP_RESOURCE_CLAIMS];
+ let mut released_count=0usize;
+ {
+  let mut arbiter=RESOURCE_ARBITER.lock();
+  for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner){
+   released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+  }
+ }
+ for held in released[..released_count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
+ unsafe{io_dereference_device_object(owner)};
 }
 
 /// PnP manager bookkeeping for bus-enumerated device relations. The bus driver
