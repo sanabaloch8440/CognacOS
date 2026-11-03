@@ -949,11 +949,12 @@ fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager
  let graph=unsafe{(*STATE.power_resources.get()).assume_init_mut()};
  for (index,node) in manager.namespace().nodes[..manager.namespace().count].iter().enumerate(){
   if node.object_type!=acpi::aml::AmlObjectType::PowerResource{continue}
-  if manager.namespace().find_child(index as u16,*b"_ON").is_none()
+  if manager.namespace().find_child(index as u16,*b"_ON_").is_none()
    ||manager.namespace().find_child(index as u16,*b"_OFF").is_none(){
    return Err(STATUS_DEVICE_CONFIGURATION_ERROR)
   }
-  graph.register(index as u16,node.power_resource_system_level,node.power_resource_order,false)
+  let order=u8::try_from(node.power_resource_order).map_err(|_|STATUS_DEVICE_CONFIGURATION_ERROR)?;
+  graph.register(index as u16,node.power_resource_system_level,order,false)
    .map_err(|_|STATUS_INSUFFICIENT_RESOURCES)?;
  }
  Ok(())
