@@ -127,7 +127,7 @@ mod multiple_alternative_tests{
  use crate::acpi_resources::{Resource,ResourceAlternatives,ResourceList};
  #[test]fn emits_multiple_complete_io_resource_lists(){
   let mut alternatives=ResourceAlternatives::EMPTY;
-  for channel in [1u8,4u8]{
+  for channel in [2u8,16u8]{
    let mut list=ResourceList::EMPTY;
    list.entries[0]=Some(Resource::Dma{channels:channel,transfer_size:0,bus_master:false});list.count=1;
    alternatives.entries[alternatives.count]=list;alternatives.count+=1;
