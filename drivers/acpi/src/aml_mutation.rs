@@ -1,0 +1,250 @@
+//! Transactional AML namespace mutations used by executing AML terms.
+//!
+//! The parser's definition-block namespace remains immutable while a method is
+//! executing. This bounded mutation layer is the single path for method-created
+//! namespace objects (Name, Alias, and BufferField). It never performs firmware
+//! I/O and never allocates from the global heap.
+#![no_std]
+
+use crate::aml::{AmlNamespace, AmlNode, AmlObjectType, AmlError, MAX_NAMESPACE_NODES};
+use crate::aml_objects::{AmlObjectArena, AmlValueKind};
+use crate::aml_runtime::{AmlBindings, AmlReference, RuntimeError, StoreMode,
+    make_object_reference, store_reference_with_mode, validate_runtime_value};
+
+/// Runtime-created field descriptors are separate from OperationRegion Field
+/// metadata: their backing store is an AML Buffer object, not a namespace node.
+pub const MAX_DYNAMIC_BUFFER_FIELDS: usize = 128;
+pub const DYNAMIC_OBJECT_OWNER: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AmlDynamicBufferField {
+    pub namespace_node: u16,
+    pub buffer_value: u16,
+    pub bit_offset: u32,
+    pub bit_width: u32,
+    pub owner_table: u32,
+}
+
+impl AmlDynamicBufferField {
+    const EMPTY: Self = Self {
+        namespace_node: u16::MAX, buffer_value: u16::MAX,
+        bit_offset: 0, bit_width: 0, owner_table: 0,
+    };
+}
+
+/// Fixed-capacity dynamic-object side table. A single instance belongs to one
+/// AML namespace/runtime and must outlive every method that can reference it.
+pub struct AmlDynamicNamespace {
+    fields: [AmlDynamicBufferField; MAX_DYNAMIC_BUFFER_FIELDS],
+    field_count: usize,
+}
+
+impl AmlDynamicNamespace {
+    pub const fn new() -> Self {
+        Self { fields: [AmlDynamicBufferField::EMPTY; MAX_DYNAMIC_BUFFER_FIELDS], field_count: 0 }
+    }
+
+    pub const fn field_count(&self) -> usize { self.field_count }
+
+    fn validate_parent(namespace: &AmlNamespace, parent: u16) -> Result<(), AmlError> {
+        let node = namespace.nodes.get(parent as usize)
+            .filter(|_| (parent as usize) < namespace.count)
+            .ok_or(AmlError::InvalidParent)?;
+        if !matches!(node.object_type, AmlObjectType::Root | AmlObjectType::Scope
+            | AmlObjectType::Device | AmlObjectType::Processor
+            | AmlObjectType::PowerResource | AmlObjectType::ThermalZone) {
+            return Err(AmlError::InvalidParent);
+        }
+        Ok(())
+    }
+
+    fn insert(namespace: &mut AmlNamespace, parent: u16, name: [u8; 4],
+        kind: AmlObjectType, owner_table: u32) -> Result<u16, AmlError> {
+        Self::validate_parent(namespace, parent)?;
+        if namespace.find_child(parent, name).is_some() { return Err(AmlError::DuplicateName); }
+        if namespace.count >= MAX_NAMESPACE_NODES {
+            return Err(AmlError::NamespaceCapacity {
+                capacity: MAX_NAMESPACE_NODES, requested: namespace.count.saturating_add(1),
+            });
+        }
+        let index = namespace.count;
+        let mut node = AmlNode::ROOT;
+        node.parent = parent;
+        node.name = name;
+        node.object_type = kind;
+        node.source_table = owner_table;
+        namespace.nodes[index] = node;
+        namespace.count += 1;
+        Ok(index as u16)
+    }
+
+    /// Create a method-time Name object and bind its initial value. The caller
+    /// supplies the current DefinitionBlock owner so table teardown can account
+    /// for dynamic descendants consistently with statically loaded objects.
+    pub fn create_name(&mut self, namespace: &mut AmlNamespace, bindings: &mut AmlBindings,
+        arena: &AmlObjectArena, parent: u16, name: [u8; 4], value: u16,
+        owner_table: u32) -> Result<u16, RuntimeError> {
+        let object = arena.get(value).ok_or(RuntimeError::InvalidReference)?;
+        validate_runtime_value(object, arena)?;
+        let node = Self::insert(namespace, parent, name, AmlObjectType::Name, owner_table)
+            .map_err(|_| RuntimeError::InvalidNode)?;
+        if let Err(error) = bindings.bind_checked(namespace, node, value, arena) {
+            namespace.count -= 1;
+            namespace.nodes[namespace.count] = AmlNode::ROOT;
+            return Err(error);
+        }
+        Ok(node)
+    }
+
+    /// Create an Alias to the canonical target. Alias chains are flattened at
+    /// creation, so a later target alias change cannot introduce a cycle.
+    pub fn create_alias(&mut self, namespace: &mut AmlNamespace, parent: u16,
+        name: [u8; 4], target: u16, owner_table: u32) -> Result<u16, AmlError> {
+        let canonical = namespace.resolve_alias(target)?;
+        if canonical as usize >= namespace.count { return Err(AmlError::InvalidParent); }
+        let node = Self::insert(namespace, parent, name, AmlObjectType::Alias, owner_table)?;
+        namespace.nodes[node as usize].alias_target = canonical;
+        Ok(node)
+    }
+
+    /// Implement CreateBit/Byte/Word/DWord/QWordField and CreateField's shared
+    /// namespace mutation. Width and offset are in bits, matching AML semantics.
+    /// The backing Buffer extent is checked before publishing the namespace node.
+    pub fn create_buffer_field(&mut self, namespace: &mut AmlNamespace,
+        arena: &AmlObjectArena, parent: u16, name: [u8; 4], buffer_value: u16,
+        bit_offset: u32, bit_width: u32, owner_table: u32) -> Result<u16, RuntimeError> {
+        let buffer = arena.get(buffer_value).ok_or(RuntimeError::InvalidReference)?;
+        if buffer.kind != AmlValueKind::Buffer || buffer.byte_length as usize > buffer.bytes.len()
+            || bit_width == 0 {
+            return Err(RuntimeError::TypeMismatch);
+        }
+        let end = bit_offset.checked_add(bit_width).ok_or(RuntimeError::ValueTooLarge)?;
+        let extent = (buffer.byte_length as u32).checked_mul(8).ok_or(RuntimeError::ValueTooLarge)?;
+        if end > extent { return Err(RuntimeError::InvalidReference); }
+        if self.field_count >= self.fields.len() { return Err(RuntimeError::ValueTooLarge); }
+        let node = Self::insert(namespace, parent, name, AmlObjectType::Field, owner_table)
+            .map_err(|_| RuntimeError::InvalidNode)?;
+        self.fields[self.field_count] = AmlDynamicBufferField {
+            namespace_node: node, buffer_value, bit_offset, bit_width, owner_table,
+        };
+        self.field_count += 1;
+        Ok(node)
+    }
+
+    pub fn buffer_field(&self, namespace: &AmlNamespace, node: u16)
+        -> Result<AmlDynamicBufferField, RuntimeError> {
+        if node as usize >= namespace.count { return Err(RuntimeError::InvalidNode); }
+        self.fields[..self.field_count].iter().find(|field| field.namespace_node == node)
+            .copied().ok_or(RuntimeError::InvalidReference)
+    }
+
+    /// AML Store/CopyObject against an existing namespace Name uses the same
+    /// typed conversion and ownership rules as ordinary interpreter targets.
+    pub fn store_name(&mut self, namespace: &AmlNamespace, bindings: &mut AmlBindings,
+        arena: &mut AmlObjectArena, node: u16, value: u16, mode: StoreMode)
+        -> Result<(), RuntimeError> {
+        let reference = AmlReference::NamespaceNode(node);
+        store_reference_with_mode(reference, value, mode, bindings, namespace, arena)
+    }
+
+    pub fn field_reference(&self, namespace: &AmlNamespace, node: u16)
+        -> Result<crate::aml_runtime::AmlReference, RuntimeError> {
+        let field = self.buffer_field(namespace, node)?;
+        Ok(crate::aml_runtime::AmlReference::BufferField {
+            buffer: field.buffer_value,
+            bit_offset: u16::try_from(field.bit_offset).map_err(|_| RuntimeError::ValueTooLarge)?,
+            bit_width: u16::try_from(field.bit_width).map_err(|_| RuntimeError::ValueTooLarge)?,
+        })
+    }
+
+    /// Device/Name references used by AML ReferenceOf and dynamic Alias users.
+    pub fn object_reference(node: u16) -> AmlRuntimeReference {
+        AmlRuntimeReference(make_object_reference(AmlReference::NamespaceNode(node)))
+    }
+}
+
+impl Default for AmlDynamicNamespace { fn default() -> Self { Self::new() } }
+
+/// Small wrapper keeps the exported helper's return type explicit without
+/// exposing mutable namespace internals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AmlRuntimeReference(pub crate::aml_objects::AmlRuntimeValue);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aml_objects::{AmlObjectArena, AmlRuntimeValue};
+
+    fn integer(arena: &mut AmlObjectArena, value: u64) -> u16 {
+        let mut object = AmlRuntimeValue::EMPTY;
+        object.kind = AmlValueKind::Integer;
+        object.integer = value;
+        arena.allocate(object).unwrap()
+    }
+
+    #[test]
+    fn creates_name_and_alias_with_canonical_target() {
+        let mut namespace = AmlNamespace::new();
+        let mut dynamic = AmlDynamicNamespace::new();
+        let mut bindings = AmlBindings::new();
+        let mut arena = AmlObjectArena::new();
+        let value = integer(&mut arena, 0x42);
+        let name = dynamic.create_name(&mut namespace, &mut bindings, &arena,
+            0, *b"TEST", value, 7).unwrap();
+        let alias = dynamic.create_alias(&mut namespace, 0, *b"ALIA", name, 7).unwrap();
+        assert_eq!(namespace.resolve_alias(alias), Ok(name));
+        assert_eq!(namespace.nodes[name as usize].source_table, 7);
+    }
+
+    #[test]
+    fn rejects_duplicate_or_non_container_parent_without_mutation() {
+        let mut namespace = AmlNamespace::new();
+        let mut dynamic = AmlDynamicNamespace::new();
+        let mut bindings = AmlBindings::new();
+        let mut arena = AmlObjectArena::new();
+        let value = integer(&mut arena, 1);
+        dynamic.create_name(&mut namespace, &mut bindings, &arena, 0,
+            *b"TEST", value, 1).unwrap();
+        let before = namespace.count;
+        assert_eq!(dynamic.create_name(&mut namespace, &mut bindings, &arena, 0,
+            *b"TEST", value, 1), Err(RuntimeError::InvalidNode));
+        assert_eq!(namespace.count, before);
+        assert_eq!(dynamic.create_name(&mut namespace, &mut bindings, &arena, 1,
+            *b"FAIL", value, 1), Err(RuntimeError::InvalidNode));
+        assert_eq!(namespace.count, before);
+    }
+
+    #[test]
+    fn create_field_validates_buffer_extent_and_publishes_descriptor_atomically() {
+        let mut namespace = AmlNamespace::new();
+        let mut dynamic = AmlDynamicNamespace::new();
+        let mut arena = AmlObjectArena::new();
+        let mut buffer = AmlRuntimeValue::EMPTY;
+        buffer.kind = AmlValueKind::Buffer;
+        buffer.byte_length = 4;
+        let buffer_id = arena.allocate(buffer).unwrap();
+        let field = dynamic.create_buffer_field(&mut namespace, &arena, 0,
+            *b"FLD0", buffer_id, 4, 12, 9).unwrap();
+        let descriptor = dynamic.buffer_field(&namespace, field).unwrap();
+        assert_eq!((descriptor.bit_offset, descriptor.bit_width), (4, 12));
+        let before = namespace.count;
+        assert_eq!(dynamic.create_buffer_field(&mut namespace, &arena, 0,
+            *b"BAD0", buffer_id, 31, 2, 9), Err(RuntimeError::InvalidReference));
+        assert_eq!(namespace.count, before);
+    }
+
+    #[test]
+    fn dynamic_field_width_must_fit_runtime_reference_abi() {
+        let mut namespace = AmlNamespace::new();
+        let mut dynamic = AmlDynamicNamespace::new();
+        let mut arena = AmlObjectArena::new();
+        let mut buffer = AmlRuntimeValue::EMPTY;
+        buffer.kind = AmlValueKind::Buffer;
+        buffer.byte_length = 256;
+        let id = arena.allocate(buffer).unwrap();
+        let field = dynamic.create_buffer_field(&mut namespace, &arena, 0,
+            *b"WIDE", id, 0, 65_536, 1);
+        assert_eq!(field, Err(RuntimeError::ValueTooLarge));
+        assert_eq!(namespace.count, 1);
+    }
+}
