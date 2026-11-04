@@ -307,10 +307,16 @@ pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
 
 static WDM_CANCEL_SELF_TEST_CALLBACKS: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
+static WDM_CANCEL_SELF_TEST_LOCK_HELD: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 const STATUS_CANCELLED_SELF_TEST: i32 = 0xC000_0120u32 as i32;
 
 unsafe extern "win64" fn wdm_cancel_self_test_cancel(_device: *mut DeviceObject, irp: *mut Irp) {
     WDM_CANCEL_SELF_TEST_CALLBACKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    WDM_CANCEL_SELF_TEST_LOCK_HELD.store(
+        IO_CANCEL_SPIN_LOCK.load(core::sync::atomic::Ordering::Acquire),
+        core::sync::atomic::Ordering::Release,
+    );
     // Driver cancel routines are entered with the cancel spin lock held.
     let cancel_irql = unsafe { *ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_IRQL_OFFSET) };
     unsafe { io_release_cancel_spin_lock(cancel_irql); }
@@ -328,6 +334,7 @@ unsafe extern "win64" fn wdm_cancel_self_test_dispatch(_device: *mut DeviceObjec
 /// path after the executive scheduler and SMP processors are online.
 pub fn io_cancel_self_test() -> bool {
     WDM_CANCEL_SELF_TEST_CALLBACKS.store(0, core::sync::atomic::Ordering::Release);
+    WDM_CANCEL_SELF_TEST_LOCK_HELD.store(false, core::sync::atomic::Ordering::Release);
     let mut driver: DriverObject = unsafe { core::mem::zeroed() };
     driver.major_function[IRP_MJ_READ as usize] = Some(wdm_cancel_self_test_dispatch);
     let mut device: *mut DeviceObject = ptr::null_mut();
@@ -354,7 +361,10 @@ pub fn io_cancel_self_test() -> bool {
     let final_status = unsafe { io_get_irp_status(irp) };
     let callbacks = WDM_CANCEL_SELF_TEST_CALLBACKS.load(core::sync::atomic::Ordering::Acquire);
     unsafe { io_free_irp(irp); io_delete_device(device); }
-    cancelled != 0 && final_status == STATUS_CANCELLED_SELF_TEST && callbacks == 1
+    cancelled != 0
+        && final_status == STATUS_CANCELLED_SELF_TEST
+        && callbacks == 1
+        && WDM_CANCEL_SELF_TEST_LOCK_HELD.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Resolve a counted device name to a registered device object. This is the
