@@ -220,8 +220,6 @@ pub unsafe extern "win64" fn DriverEntry(driver: *mut DRIVER_OBJECT, _context: P
 }
 }
 
-#[panic_handler]
-
 /// WDK inline macro equivalents: these are local source helpers, not PE imports.
 fn current_stack_location(irp:*mut IRP)->*mut IO_STACK_LOCATION {
  if irp.is_null(){return core::ptr::null_mut()}
@@ -294,6 +292,7 @@ unsafe fn query_pci_bus_interface(
  if status==STATUS_PENDING{io_status}else if status>=0{io_status}else{status}
 }
 
+#[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
 }
