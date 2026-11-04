@@ -85,7 +85,7 @@ unsafe fn parse_cm_resource_list(list:*const c_void,is_translated:bool,out:&mut[
       (unsafe{read_u16_at(base,off+4)} as u32,unsafe{read_u16_at(base,off+6)},
        unsafe{read_u32_at(base,off+8)},unsafe{read_u64_at(base,off+12)})
      };
-     if vector==0||affinity==0{return Err(STATUS_INVALID_PARAMETER)}
+     if is_translated&&(vector==0||affinity==0){return Err(STATUS_INVALID_PARAMETER)}
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
      out[count]=ParsedResource{kind,start:vector as u64,length:1,interface_type,bus_number,level,group,vector,affinity,flags,share};count+=1;
     }
@@ -764,4 +764,74 @@ pub fn device_power_state(device:*mut DeviceObject)->i32 {
  if device.is_null(){return -1}
  let state=WDM.lock();
  state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)).map(|s|s.power_state as i32).unwrap_or(-1)
+}
+
+#[cfg(test)]
+mod cm_resource_abi_tests {
+ use super::*;
+
+ fn put_u16(bytes:&mut [u8],offset:usize,value:u16){
+  bytes[offset..offset+2].copy_from_slice(&value.to_le_bytes());
+ }
+ fn put_u32(bytes:&mut [u8],offset:usize,value:u32){
+  bytes[offset..offset+4].copy_from_slice(&value.to_le_bytes());
+ }
+ fn put_u64(bytes:&mut [u8],offset:usize,value:u64){
+  bytes[offset..offset+8].copy_from_slice(&value.to_le_bytes());
+ }
+
+ #[test]
+ fn parses_x64_packed_cm_resource_descriptors_at_24_byte_stride(){
+  // CM_RESOURCE_LIST header (4), CM_FULL_RESOURCE_DESCRIPTOR header (16),
+  // and two 24-byte CM_PARTIAL_RESOURCE_DESCRIPTOR entries.
+  let mut translated=[0u8;4+16+48];
+  put_u32(&mut translated,0,1);
+  put_u32(&mut translated,4,1); // Isa
+  put_u32(&mut translated,8,0); // bus zero
+  put_u32(&mut translated,16,2); // two partial descriptors
+  let irq=20usize;
+  translated[irq]=CM_RESOURCE_INTERRUPT;
+  translated[irq+1]=1; // device-exclusive
+  put_u16(&mut translated,irq+2,0x0001); // latched
+  put_u16(&mut translated,irq+4,5); // translated DIRQL
+  put_u16(&mut translated,irq+6,0); // processor group
+  put_u32(&mut translated,irq+8,0x35); // translated system vector
+  put_u64(&mut translated,irq+12,1); // processor affinity
+  let mem=irq+24;
+  translated[mem]=CM_RESOURCE_MEMORY;
+  put_u64(&mut translated,mem+4,0xfee0_0000);
+  put_u32(&mut translated,mem+12,0x1000);
+
+  let mut parsed=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
+  let count=unsafe{parse_cm_resource_list(translated.as_ptr().cast(),true,&mut parsed)}.unwrap();
+  assert_eq!(count,2);
+  assert_eq!(parsed[0].vector,0x35);
+  assert_eq!(parsed[0].level,5);
+  assert_eq!(parsed[0].affinity,1);
+  assert_eq!(parsed[1].start,0xfee0_0000);
+  assert_eq!(parsed[1].length,0x1000);
+ }
+
+ #[test]
+ fn raw_interrupt_uses_bus_tuple_and_allows_bus_affinity_placeholder(){
+  let mut raw=[0u8;4+16+24];
+  put_u32(&mut raw,0,1);
+  put_u32(&mut raw,4,1); // Isa
+  put_u32(&mut raw,8,0);
+  put_u32(&mut raw,16,1);
+  let irq=20usize;
+  raw[irq]=CM_RESOURCE_INTERRUPT;
+  raw[irq+1]=1;
+  put_u16(&mut raw,irq+4,9);
+  put_u16(&mut raw,irq+6,0);
+  put_u32(&mut raw,irq+8,9);
+  put_u64(&mut raw,irq+12,0); // raw affinity is not used for system delivery
+
+  let mut parsed=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
+  let count=unsafe{parse_cm_resource_list(raw.as_ptr().cast(),false,&mut parsed)}.unwrap();
+  assert_eq!(count,1);
+  assert_eq!(parsed[0].level,9);
+  assert_eq!(parsed[0].vector,9);
+  assert_eq!(parsed[0].affinity,0);
+ }
 }
