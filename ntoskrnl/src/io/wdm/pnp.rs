@@ -99,7 +99,15 @@ unsafe fn parse_cm_resource_list(list:*const c_void,is_translated:bool,out:&mut[
 }
 fn resources_overlap(a:&ParsedResource,b:&ParsedResource)->bool{
  if a.kind!=b.kind{return false}
- if a.kind==CM_RESOURCE_INTERRUPT{return a.start==b.start}
+ if a.kind==CM_RESOURCE_INTERRUPT {
+  if a.start!=b.start{return false}
+  // Shared PCI INTx resources may overlap only when both assignments are
+  // explicitly shareable and level-sensitive. Edge-triggered/MSI resources
+  // never participate in line sharing.
+  let a_shared=a.share==3&&a.flags&0x0003==0;
+  let b_shared=b.share==3&&b.flags&0x0003==0;
+  return !(a_shared&&b_shared)
+ }
  let a_end=a.start.saturating_add(a.length);
  let b_end=b.start.saturating_add(b.length);
  a.start<b_end&&b.start<a_end
@@ -265,6 +273,7 @@ pub(crate) struct PnpLineInterruptResource {
  pub irql:u8,
  pub affinity:u64,
  pub interrupt_mode:u32,
+ pub share_vector:u8,
 }
 
 /// @partial implementation
@@ -290,14 +299,17 @@ pub(crate) fn io_query_pnp_line_interrupt_resource(
  let claim=found?;
  // CM_RESOURCE_INTERRUPT_MESSAGE = 0x0002; CM_RESOURCE_INTERRUPT_LATCHED = 0x0001.
  if claim.flags&0x0002!=0||claim.group!=0||claim.irql==0
-     ||claim.share==3||claim.affinity==0||!(0x20..=0xdf).contains(&claim.system_vector){
+     ||claim.affinity==0||!(0x20..=0xdf).contains(&claim.system_vector){
   return None;
  }
+ let interrupt_mode=if claim.flags&0x0001!=0{1}else{0};
+ if claim.share==3&&interrupt_mode!=0{return None;}
  Some(PnpLineInterruptResource{
   vector:claim.system_vector,
   irql:claim.irql as u8,
   affinity:claim.affinity,
-  interrupt_mode:if claim.flags&0x0001!=0{1}else{0},
+  interrupt_mode,
+  share_vector:if claim.share==3{1}else{0},
  })
 }
 
