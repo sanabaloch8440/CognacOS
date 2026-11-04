@@ -105,6 +105,42 @@ impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
    }
   }
  }
+ fn acquire_mutex(&self,mutex_index:u16,_sync_level:u8,timeout_ms:u16)->Result<bool,acpi::aml_exec::ExecError>{
+  let mutex=KERNEL_AML_METHOD_MUTEXES.get(mutex_index as usize)
+   .ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
+  loop{
+   match mutex.initialized.load(Ordering::Acquire){
+    2=>break,
+    0=>if mutex.initialized.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+     unsafe{KeInitializeMutex(mutex.object(),0);}
+     mutex.initialized.store(2,Ordering::Release);
+     break;
+    },
+    _=>core::hint::spin_loop(),
+   }
+  }
+  // KeWaitForSingleObject accepts a signed 100-ns relative interval. AML
+  // timeout 0xffff means infinite; every other value is milliseconds.
+  let relative_timeout=-(timeout_ms as i64)*10_000;
+  let timeout=if timeout_ms==u16::MAX{core::ptr::null()}else{&relative_timeout as *const i64};
+  let status=unsafe{KeWaitForSingleObject(mutex.object(),0,0,0,timeout)};
+  match status{
+   STATUS_SUCCESS|0x0000_0080=>Ok(true), // acquired, including abandoned ownership
+   0x0000_0102=>Ok(false),               // STATUS_TIMEOUT: AML Acquire returns Ones
+   _=>Err(acpi::aml_exec::ExecError::ExecutionBusy),
+  }
+ }
+ fn release_mutex(&self,mutex_index:u16)->Result<(),acpi::aml_exec::ExecError>{
+  let mutex=KERNEL_AML_METHOD_MUTEXES.get(mutex_index as usize)
+   .ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
+  if mutex.initialized.load(Ordering::Acquire)!=2{
+   return Err(acpi::aml_exec::ExecError::SynchronizationUnavailable)
+  }
+  // The dispatcher mutant table enforces current-thread ownership and
+  // recursive release semantics; AML's interpreter enforces LIFO SyncLevel.
+  unsafe{let _=KeReleaseMutex(mutex.object(),0);}
+  Ok(())
+ }
 }
 
 unsafe extern "win64" {
