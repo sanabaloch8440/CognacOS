@@ -40,7 +40,7 @@ fn read_u64_at(base:*const u8,off:usize)->u64 { unsafe{ptr::read_unaligned(base.
 /// exclusive range arbitration. Structure bounds/counts are capped to avoid
 /// unbounded traversal. As with the WDK ABI, the pointer must reference a
 /// readable kernel allocation for the duration of this call.
-unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_RESOURCES_PER_DEVICE])->Result<usize,i32>{
+unsafe fn parse_cm_resource_list(list:*const c_void,is_translated:bool,out:&mut[ParsedResource;MAX_RESOURCES_PER_DEVICE])->Result<usize,i32>{
  if list.is_null(){return Ok(0)}
  let base=list.cast::<u8>();
  let full_count=unsafe{read_u32_at(base,0)} as usize;
@@ -53,7 +53,7 @@ unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_
   if partial_count>MAX_PNP_PARTIAL_DESCRIPTORS{return Err(STATUS_INVALID_PARAMETER)}
   // WDK CM_PARTIAL_RESOURCE_DESCRIPTOR is 20 bytes on x64 (pack(4)):
   // four-byte header plus a 16-byte union, including 64-bit interrupt affinity.
-  const CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE:usize=20;
+  const CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE:usize=24;
   let descriptor_start=cursor.checked_add(16).ok_or(STATUS_INVALID_PARAMETER)?;
   let bytes=partial_count.checked_mul(CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).ok_or(STATUS_INVALID_PARAMETER)?;
   let end=descriptor_start.checked_add(bytes).ok_or(STATUS_INVALID_PARAMETER)?;
@@ -77,10 +77,14 @@ unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_
      out[count]=ParsedResource{kind,start,length,interface_type,bus_number,level:0,group:0,vector:0,affinity:0,flags,share};count+=1;
     }
     CM_RESOURCE_INTERRUPT=>{
-     let level=unsafe{read_u16_at(base,off+4)} as u32;
-     let group=unsafe{read_u16_at(base,off+6)};
-     let vector=unsafe{read_u32_at(base,off+8)};
-     let affinity=unsafe{read_u64_at(base,off+12)};
+     let (level,group,vector,affinity)=if flags&0x0002!=0&&!is_translated {
+      // Raw MSI descriptor: Group, Reserved, MessageCount, Vector, Affinity.
+      (0,unsafe{read_u16_at(base,off+4)},unsafe{read_u32_at(base,off+12)},unsafe{read_u64_at(base,off+16)})
+     } else {
+      // Line-based, or translated MSI descriptor: Level, Group, Vector, Affinity.
+      (unsafe{read_u16_at(base,off+4)} as u32,unsafe{read_u16_at(base,off+6)},
+       unsafe{read_u32_at(base,off+8)},unsafe{read_u64_at(base,off+12)})
+     };
      if vector==0||affinity==0{return Err(STATUS_INVALID_PARAMETER)}
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
      out[count]=ParsedResource{kind,start:vector as u64,length:1,interface_type,bus_number,level,group,vector,affinity,flags,share};count+=1;
@@ -113,10 +117,10 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  if resource_owner.is_null(){return STATUS_INVALID_PARAMETER}
  let mut raw=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
  let mut resources=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
- let raw_count=match unsafe{parse_cm_resource_list(allocated,&mut raw)}{
+ let raw_count=match unsafe{parse_cm_resource_list(allocated,false,&mut raw)}{
   Ok(n)=>n,Err(e)=>{unsafe{io_dereference_device_object(resource_owner)};return e}
  };
- let count=match unsafe{parse_cm_resource_list(translated,&mut resources)}{
+ let count=match unsafe{parse_cm_resource_list(translated,true,&mut resources)}{
   Ok(n)=>n,Err(e)=>{unsafe{io_dereference_device_object(resource_owner)};return e}
  };
  if allocated.is_null()!=translated.is_null()||raw_count!=count{
@@ -215,7 +219,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
    if effective_status==STATUS_SUCCESS {
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner&&c.committed){
      released[released_count]=claim.owner;released_count+=1;
-     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
       removed_translations[removed_count]=*claim;removed_count+=1;
      }
      *claim=ResourceClaim::EMPTY;
