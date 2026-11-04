@@ -10,9 +10,9 @@
 use crate::aml::{decode_package_length,AmlError,AmlNamespace,AmlObjectType};
 use crate::aml_exec::evaluate_term_argument;
 
-pub const MAX_AML_VALUES:usize=256;
+/// A 128-entry _PRT may require one outer Package, 128 route Packages,\n/// and four or more leaf values per route. Keep headroom for method temporaries.\npub const MAX_AML_VALUES:usize=1024;
 pub const MAX_AML_BYTES:usize=256;
-pub const MAX_PACKAGE_ELEMENTS:usize=32;
+/// ACPI _PRT packages may contain up to 128 routes; each route has four fields.\npub const MAX_PACKAGE_ELEMENTS:usize=128;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
