@@ -477,6 +477,32 @@ impl AmlTableManager {
     pub fn unload<G:AmlExecutionGate>(&mut self,handle:TableHandle,gate:&G)->Result<AmlTableInfo,TableError>{
         self.with_quiescence(gate,|manager|manager.unload_quiesced(handle))
     }
+
+    /// Production unload path for a live AML runtime. It drains method
+    /// execution, validates reverse-order unload, invalidates cached Name
+    /// bindings, removes the table's namespace nodes, and retires its dynamic
+    /// Create*Field objects as one quiesced operation.
+    pub fn unload_with_runtime<G:AmlExecutionGate>(&mut self,handle:TableHandle,
+        gate:&G,bindings:&mut crate::aml_runtime::AmlBindings)
+        ->Result<AmlTableInfo,TableError>{
+        self.with_quiescence(gate,|manager|{
+            if manager.count==0 || handle.slot as usize!=manager.count-1 {
+                return Err(TableError::UnloadOrder);
+            }
+            let record=manager.records[handle.slot as usize];
+            if !record.active || record.generation!=handle.generation {
+                return Err(TableError::InvalidHandle);
+            }
+            if manager.namespace.count!=record.info.namespace_end as usize {
+                return Err(TableError::NamespaceChanged);
+            }
+            if record.info.signature==*b"DSDT" && manager.count!=1 {
+                return Err(TableError::UnloadOrder);
+            }
+            bindings.invalidate_table(&manager.namespace,handle.slot as u32);
+            manager.unload_quiesced(handle)
+        })
+    }
     fn unload_quiesced(&mut self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
         if self.count==0||handle.slot as usize!=self.count-1{return Err(TableError::UnloadOrder)}
         let record=self.records[handle.slot as usize];
