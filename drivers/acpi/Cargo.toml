@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 cognacos-nt-abi = { path = "../../shared/nt-abi" }
+cognacos-hal-contract = { path = "../hal" }
 
 [lib]
 path = "src/lib.rs"
