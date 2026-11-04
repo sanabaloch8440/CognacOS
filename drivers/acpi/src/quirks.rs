@@ -549,7 +549,7 @@ mod tests {
     }
     #[test]
     fn missing_smbios_string_index_is_not_accepted_as_empty() {
-        assert_eq!(smbios_string(b"\\0\\0", 1), Err(SmbiosError::MalformedStructure));
+        assert_eq!(smbios_string(b"\0\0", 1), Err(SmbiosError::MalformedStructure));
     }
     #[test]
     fn dmi_match_is_case_insensitive_and_requires_all_fields() {
