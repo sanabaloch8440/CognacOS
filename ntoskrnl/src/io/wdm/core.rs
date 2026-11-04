@@ -40,7 +40,7 @@ pub use crate::nt_abi::ntstatus::{
 };
 pub const IRP_SIZE_X64: usize = 0xD0;
 pub const IO_STACK_LOCATION_SIZE_X64: usize = 0x48;
-const MAX_WDM_DEVICES: usize = 32;
+const INITIAL_WDM_DEVICE_SLOTS: usize = 32;
 const IRP_CANCEL_BATCH: usize = 64;
 const MAX_SYNC_IRP_THREADS:usize=128;
 const MAX_WDM_STACK_LOCATIONS: usize = 127;
@@ -196,9 +196,9 @@ impl<'a> Iterator for DeviceIterMut<'a>{
   let current=self.next;self.next=unsafe{(*current).next};Some(unsafe{&mut *current})
  }
 }
-struct DeviceTable{base:[DeviceSlot;MAX_WDM_DEVICES],overflow:*mut DeviceSlot}
+struct DeviceTable{base:[DeviceSlot;INITIAL_WDM_DEVICE_SLOTS],overflow:*mut DeviceSlot}
 impl DeviceTable{
- const fn new()->Self{Self{base:[const{DeviceSlot::empty()};MAX_WDM_DEVICES],overflow:ptr::null_mut()}}
+ const fn new()->Self{Self{base:[const{DeviceSlot::empty()};INITIAL_WDM_DEVICE_SLOTS],overflow:ptr::null_mut()}}
  fn iter(&self)->DeviceIter<'_>{DeviceIter{base:self.base.iter(),next:self.overflow}}
  fn iter_mut(&mut self)->DeviceIterMut<'_>{DeviceIterMut{base:self.base.iter_mut(),next:self.overflow,_marker:core::marker::PhantomData}}
  fn push_overflow(&mut self,slot:*mut DeviceSlot){unsafe{(*slot).next=self.overflow;}self.overflow=slot;}
