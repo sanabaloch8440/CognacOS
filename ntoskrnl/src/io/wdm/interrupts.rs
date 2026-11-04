@@ -32,7 +32,7 @@ pub unsafe extern "win64" fn io_connect_interrupt(
  const STATUS_INVALID_PARAMETER:i32=0xC000_000D_u32 as i32;
  const STATUS_NOT_SUPPORTED:i32=0xC000_00BB_u32 as i32;
  const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000_009A_u32 as i32;
- if interrupt_object_out.is_null()||service_context.is_null()||service_routine.is_none()
+ if interrupt_object_out.is_null()||service_routine.is_none()
   ||!(0x20..=0xdf).contains(&vector)||irql==0||synchronize_irql>irql||interrupt_mode>1||processor_enable_mask==0{return STATUS_INVALID_PARAMETER}
  unsafe{interrupt_object_out.write(core::ptr::null_mut())}
  if share_vector!=0||floating_save!=0{return STATUS_NOT_SUPPORTED}
@@ -59,4 +59,117 @@ pub unsafe extern "win64" fn io_disconnect_interrupt(interrupt_object:*mut core:
  let _=crate::hal::release_device_interrupt_vector(vector as u8);
  slot.routine.store(0,core::sync::atomic::Ordering::Release);slot.context.store(0,core::sync::atomic::Ordering::Release);
  slot.signature.store(0,core::sync::atomic::Ordering::Release);
+}
+
+
+// WDK IO_CONNECT_INTERRUPT_PARAMETERS (x64) version values.
+const CONNECT_FULLY_SPECIFIED: u32 = 0;
+const CONNECT_LINE_BASED: u32 = 1;
+const CONNECT_MESSAGE_BASED: u32 = 2;
+
+/// WDK layout: IO_CONNECT_INTERRUPT_FULLY_SPECIFIED_PARAMETERS.
+/// Keep field order and natural x64 alignment identical to wdm.h.
+#[repr(C)]
+struct IoConnectInterruptFullySpecified {
+    physical_device_object: *mut core::ffi::c_void,
+    interrupt_object: *mut *mut core::ffi::c_void,
+    service_routine: Option<InterruptServiceRoutine>,
+    service_context: *mut core::ffi::c_void,
+    spin_lock: *mut core::ffi::c_void,
+    synchronize_irql: u8,
+    floating_save: u8,
+    share_vector: u8,
+    _reserved: u8,
+    vector: u32,
+    irql: u8,
+    _reserved2: [u8; 3],
+    interrupt_mode: u32,
+    processor_enable_mask: u64,
+    group: u16,
+    _reserved3: [u8; 6],
+}
+
+#[repr(C)]
+struct IoConnectInterruptParameters {
+    version: u32,
+    _reserved: u32,
+    fully_specified: IoConnectInterruptFullySpecified,
+}
+
+/// Implements the WDM CONNECT_FULLY_SPECIFIED form. The PnP manager must
+/// supply a translated interrupt resource; this routine never derives a
+/// vector from a bus IRQ or allocates a replacement vector.
+#[unsafe(export_name = "IoConnectInterruptEx")]
+pub unsafe extern "win64" fn io_connect_interrupt_ex(
+    parameters: *mut IoConnectInterruptParameters,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+    const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
+    if parameters.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let params = unsafe { &mut *parameters };
+    match params.version {
+        CONNECT_FULLY_SPECIFIED => {}
+        CONNECT_LINE_BASED | CONNECT_MESSAGE_BASED => return STATUS_NOT_SUPPORTED,
+        _ => return STATUS_INVALID_PARAMETER,
+    }
+    let full = &mut params.fully_specified;
+    if full.physical_device_object.is_null()
+        || full.interrupt_object.is_null()
+        || full.service_routine.is_none()
+        || full.group != 0
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe {
+        full.interrupt_object.write(core::ptr::null_mut());
+    }
+    let status = unsafe {
+        io_connect_interrupt(
+            full.interrupt_object,
+            full.service_routine,
+            full.service_context,
+            full.spin_lock,
+            full.vector,
+            full.irql,
+            full.synchronize_irql,
+            full.interrupt_mode,
+            full.share_vector,
+            full.processor_enable_mask,
+            full.floating_save,
+        )
+    };
+    status
+}
+
+/// WDK disconnect parameters use a version followed by a pointer-sized
+/// connection context. Version zero carries the KINTERRUPT returned by the
+/// fully-specified connect operation.
+#[repr(C)]
+struct IoDisconnectInterruptParameters {
+    version: u32,
+    _reserved: u32,
+    connection_context: *mut core::ffi::c_void,
+}
+
+#[unsafe(export_name = "IoDisconnectInterruptEx")]
+pub unsafe extern "win64" fn io_disconnect_interrupt_ex(
+    parameters: *mut IoDisconnectInterruptParameters,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+    const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
+    if parameters.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let params = unsafe { &mut *parameters };
+    if params.version != CONNECT_FULLY_SPECIFIED {
+        return STATUS_NOT_SUPPORTED;
+    }
+    if params.connection_context.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { io_disconnect_interrupt(params.connection_context); }
+    params.connection_context = core::ptr::null_mut();
+    0
 }
