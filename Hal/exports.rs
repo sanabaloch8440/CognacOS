@@ -580,7 +580,9 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
 }
 
 pub fn resolve(name: &[u8]) -> Option<u64> {
-    if name.eq_ignore_ascii_case(b"HalAcpiGetSciServices") {
+    if name.eq_ignore_ascii_case(b"HalPciGetInterruptServices") {
+        Some(super::hal_pci_get_interrupt_services as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalAcpiGetSciServices") {
         Some(super::hal_acpi_get_sci_services as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalQueryRealTimeClock") {
         Some(hal_query_real_time_clock as usize as u64)
