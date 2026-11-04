@@ -200,6 +200,23 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  // into the arbiter. Successful insertion transfers one ref per claim.
  if !transferred{
   for held in owner_refs[..count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
+ }else{
+  // HalGetInterruptVector can be called from the driver's START_DEVICE path,
+  // before IoCompleteRequest commits the resource transaction. Publish these
+  // tentative mappings now; io_finish_pnp_resources rolls them back on failure.
+  for i in 0..count {
+   let raw_resource=raw[i];
+   let translated_resource=resources[i];
+   if translated_resource.kind==CM_RESOURCE_INTERRUPT
+       &&translated_resource.flags&0x0002==0
+       &&raw_resource.group==0&&translated_resource.group==0
+       &&translated_resource.level<=u8::MAX as u32 {
+    let _=crate::hal::register_bus_interrupt_translation(
+     raw_resource.interface_type,raw_resource.bus_number,raw_resource.level,raw_resource.vector,
+     translated_resource.vector,translated_resource.level as u8,translated_resource.affinity,
+    );
+   }
+  }
  }
  result
 }
@@ -218,8 +235,6 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
  let mut released_count=0usize;
  let mut removed_translations=[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS];
  let mut removed_count=0usize;
- let mut added_translations=[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS];
- let mut added_count=0usize;
  {
   let mut arbiter=RESOURCE_ARBITER.lock();
   if minor==IRP_MN_START_DEVICE {
@@ -234,13 +249,14 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
     }
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
      claim.committed=true;claim.irp=ptr::null_mut();
-     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
-      added_translations[added_count]=*claim;added_count+=1;
-     }
     }
    }else if has_pending{
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
-     released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+     released[released_count]=claim.owner;released_count+=1;
+     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
+      removed_translations[removed_count]=*claim;removed_count+=1;
+     }
+     *claim=ResourceClaim::EMPTY;
     }
    }
   }else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL){
@@ -255,12 +271,6 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
  }
  for claim in removed_translations[..removed_count].iter() {
   let _=crate::hal::unregister_bus_interrupt_translation(claim.interface_type,claim.bus_number,claim.bus_level,claim.bus_vector);
- }
- for claim in added_translations[..added_count].iter() {
-  if claim.irql<=u8::MAX as u32 {
-   let _=crate::hal::register_bus_interrupt_translation(claim.interface_type,claim.bus_number,
-    claim.bus_level,claim.bus_vector,claim.system_vector,claim.irql as u8,claim.affinity);
-  }
  }
  for held in released[..released_count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
  unsafe{io_dereference_device_object(resource_owner)};
@@ -279,8 +289,9 @@ pub(crate) fn io_validate_pnp_interrupt_resource(
  if owner.is_null(){return false}
  let valid={
   let arbiter=RESOURCE_ARBITER.lock();
+  let has_pending=arbiter.claims.iter().any(|claim|claim.used&&!claim.committed&&claim.owner==owner);
   arbiter.claims.iter().any(|claim|
-   claim.used&&claim.committed&&claim.owner==owner&&claim.kind==CM_RESOURCE_INTERRUPT
+   claim.used&&claim.committed!=has_pending&&claim.owner==owner&&claim.kind==CM_RESOURCE_INTERRUPT
     &&claim.flags&0x0002==0&&claim.system_vector==vector
     &&claim.irql==irql as u32&&claim.group==group
     &&claim.affinity==affinity
@@ -313,9 +324,10 @@ pub(crate) fn io_query_pnp_line_interrupt_resource(
  if owner.is_null(){return None}
  let found={
   let arbiter=RESOURCE_ARBITER.lock();
+  let has_pending=arbiter.claims.iter().any(|c|c.used&&!c.committed&&c.owner==owner);
   let mut selected=None;
   let mut count=0usize;
-  for claim in arbiter.claims.iter().filter(|c|c.used&&c.committed&&c.owner==owner&&c.kind==CM_RESOURCE_INTERRUPT){
+  for claim in arbiter.claims.iter().filter(|c|c.used&&c.committed!=has_pending&&c.owner==owner&&c.kind==CM_RESOURCE_INTERRUPT){
    count+=1;
    if count==1{selected=Some(*claim);}
   }
