@@ -12,8 +12,8 @@ const CM_RESOURCE_MEMORY:u8=3;
 #[derive(Clone,Copy)]
 struct ResourceClaim {
  used:bool, owner:*mut DeviceObject, irp:*mut Irp, kind:u8, start:u64, length:u64, committed:bool,
- interface_type:u32, bus_number:u32, bus_level:u32, bus_vector:u32,
- system_vector:u32, irql:u32, affinity:u64, flags:u16, share:u8,
+ interface_type:u32, bus_number:u32, bus_level:u32, bus_group:u16, bus_vector:u32,
+ system_vector:u32, irql:u32, group:u16, affinity:u64, flags:u16, share:u8,
 }
 unsafe impl Send for ResourceClaim {}
 impl ResourceClaim { const EMPTY:Self=Self{
@@ -26,10 +26,10 @@ static RESOURCE_ARBITER:IrqSpinLock<ResourceArbiter>=IrqSpinLock::new(ResourceAr
 #[derive(Clone,Copy)]
 struct ParsedResource {
  kind:u8, start:u64, length:u64, interface_type:u32, bus_number:u32,
- level:u32, vector:u32, affinity:u64, flags:u16, share:u8,
+ level:u32, group:u16, vector:u32, affinity:u64, flags:u16, share:u8,
 }
 impl ParsedResource { const EMPTY:Self=Self{
- kind:0,start:0,length:0,interface_type:0,bus_number:0,level:0,vector:0,affinity:0,flags:0,share:0,
+ kind:0,start:0,length:0,interface_type:0,bus_number:0,level:0,group:0,vector:0,affinity:0,flags:0,share:0,
 }; }
 
 fn read_u16_at(base:*const u8,off:usize)->u16 { unsafe{ptr::read_unaligned(base.add(off).cast::<u16>())} }
@@ -67,7 +67,7 @@ unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_
     4=>{
      let channel=unsafe{read_u32_at(base,off+4)} as u64;
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
-     out[count]=ParsedResource{kind:4,start:channel,length:1,interface_type,bus_number,level:0,vector:0,affinity:0,flags,share};count+=1;
+     out[count]=ParsedResource{kind:4,start:channel,length:1,interface_type,bus_number,level:0,group:0,vector:0,affinity:0,flags,share};count+=1;
     }
     CM_RESOURCE_PORT|CM_RESOURCE_MEMORY=>{
      let start=unsafe{read_u64_at(base,off+4)};
@@ -77,12 +77,13 @@ unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_
      out[count]=ParsedResource{kind,start,length,interface_type,bus_number,level:0,vector:0,affinity:0,flags,share};count+=1;
     }
     CM_RESOURCE_INTERRUPT=>{
-     let level=unsafe{read_u32_at(base,off+4)};
+     let level=unsafe{read_u16_at(base,off+4)} as u32;
+     let group=unsafe{read_u16_at(base,off+6)};
      let vector=unsafe{read_u32_at(base,off+8)};
      let affinity=unsafe{read_u64_at(base,off+12)};
      if vector==0||affinity==0{return Err(STATUS_INVALID_PARAMETER)}
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
-     out[count]=ParsedResource{kind,start:vector as u64,length:1,interface_type,bus_number,level,vector,affinity,flags,share};count+=1;
+     out[count]=ParsedResource{kind,start:vector as u64,length:1,interface_type,bus_number,level,group,vector,affinity,flags,share};count+=1;
     }
     7=>return Err(STATUS_INVALID_DEVICE_REQUEST), // Large-memory encoding needs architecture-specific decoding.
     _=>return Err(STATUS_INVALID_PARAMETER),
@@ -122,7 +123,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
   unsafe{io_dereference_device_object(resource_owner)};return STATUS_INVALID_PARAMETER
  }
  for i in 0..count {
-  if raw[i].kind!=resources[i].kind{
+  if raw[i].kind!=resources[i].kind || raw[i].interface_type!=resources[i].interface_type || raw[i].bus_number!=resources[i].bus_number{
    unsafe{io_dereference_device_object(resource_owner)};return STATUS_INVALID_PARAMETER
   }
   for j in i+1..count {
@@ -174,8 +175,8 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
       *slot=ResourceClaim{
        used:true,owner:owner_refs[i],irp,kind:r.kind,start:r.start,length:r.length,committed:false,
        interface_type:raw[i].interface_type,bus_number:raw[i].bus_number,
-       bus_level:raw[i].level,bus_vector:raw[i].vector,
-       system_vector:r.vector,irql:r.level,affinity:r.affinity,flags:r.flags,share:r.share,
+       bus_level:raw[i].level,bus_group:raw[i].group,bus_vector:raw[i].vector,
+       system_vector:r.vector,irql:r.level,group:r.group,affinity:r.affinity,flags:r.flags,share:r.share,
       };
      }
      transferred=true;
@@ -227,6 +228,49 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
  }
  for held in released[..released_count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
  unsafe{io_dereference_device_object(resource_owner)};
+}
+
+/// Translated line-based interrupt resource retained by the PnP arbiter.
+/// Only a single, non-shared, group-zero line interrupt is currently connectable.
+pub(crate) struct PnpLineInterruptResource {
+ pub vector:u32,
+ pub irql:u8,
+ pub affinity:u64,
+ pub interrupt_mode:u32,
+}
+
+/// @partial implementation
+/// Query the committed translated interrupt resource for CONNECT_LINE_BASED.
+/// Shared and message-signaled resources are rejected by the current dispatcher.
+pub(crate) fn io_query_pnp_line_interrupt_resource(
+ device:*mut DeviceObject,
+)->Option<PnpLineInterruptResource>{
+ if device.is_null(){return None}
+ let owner=unsafe{io_get_device_attachment_base_ref(device)};
+ if owner.is_null(){return None}
+ let found={
+  let arbiter=RESOURCE_ARBITER.lock();
+  let mut selected=None;
+  let mut count=0usize;
+  for claim in arbiter.claims.iter().filter(|c|c.used&&c.committed&&c.owner==owner&&c.kind==CM_RESOURCE_INTERRUPT){
+   count+=1;
+   if count==1{selected=Some(*claim);}
+  }
+  if count!=1{None}else{selected}
+ };
+ unsafe{io_dereference_device_object(owner)};
+ let claim=found?;
+ // CM_RESOURCE_INTERRUPT_MESSAGE = 0x0002; CM_RESOURCE_INTERRUPT_LATCHED = 0x0001.
+ if claim.flags&0x0002!=0||claim.group!=0||claim.irql==0
+     ||claim.share==3||claim.affinity==0||!(0x20..=0xdf).contains(&claim.system_vector){
+  return None;
+ }
+ Some(PnpLineInterruptResource{
+  vector:claim.system_vector,
+  irql:claim.irql as u8,
+  affinity:claim.affinity,
+  interrupt_mode:if claim.flags&0x0001!=0{1}else{0},
+ })
 }
 
 /// Explicitly release a device's committed resources after a successful
