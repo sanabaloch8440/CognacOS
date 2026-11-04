@@ -450,7 +450,8 @@ impl<'a,'b> Machine<'a,'b>{
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
-   0x60..=0x67=>self.operand_integer(&self.locals[(op-0x60)as usize]),0x68..=0x6e=>{let value=self.argument_value((op-0x68)as usize)?;self.operand_integer(&value)},
+   0x8a|0x8b|0x8c|0x8d|0x8f|0x5b=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)},
+   0x60..=0x67=>{let value=self.locals[(op-0x60)as usize];if value.kind==AmlValueKind::ObjectReference{let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;let deref=dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)?;self.operand_integer(&deref)}else{self.operand_integer(&value)}},0x68..=0x6e=>{let value=self.argument_value((op-0x68)as usize)?;self.operand_integer(&value)},
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
     let v=match op{
@@ -578,12 +579,13 @@ pub fn evaluate_term_argument_in_context(
     bytes: &[u8], arena: &mut AmlObjectArena, bindings: &mut AmlBindings,
 ) -> Result<(u64, usize), ExecError> {
     let namespace = AmlNamespace::new();
+    let mut dynamic = AmlDynamicNamespace::new();
     let checkpoint = arena.count;
     let empty = Machine::uninitialized_value();
     let mut machine = Machine {
         locals: [empty; 8], args: [empty; 7], arena, bindings,
         integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
-        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, current_sync_level: 0,
+        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, dynamic: &mut dynamic, current_sync_level: 0, owner_table: 0,
     };
     let mut reader = Reader { bytes, pos: 0, end: bytes.len() };
     let result = machine.term(&mut reader).map(|value| (value, reader.pos));
