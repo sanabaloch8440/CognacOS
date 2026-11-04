@@ -14,8 +14,8 @@ pub enum ResourceError { MissingEndTag, Truncated, InvalidLength, InvalidDescrip
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resource {
-    Io { minimum:u64, maximum:u64, alignment:u64, length:u64, decode_16_bit:bool },
-    Memory { minimum:u64, maximum:u64, alignment:u64, length:u64, writeable:bool, cacheable:bool, kind:u8 },
+    Io { minimum:u64, maximum:u64, alignment:u64, translation_offset:u64, length:u64, decode_16_bit:bool },
+    Memory { minimum:u64, maximum:u64, alignment:u64, translation_offset:u64, length:u64, writeable:bool, cacheable:bool, kind:u8 },
     Irq { mask:u16, level_triggered:bool, active_low:bool, shared:bool, wake_capable:bool },
     ExtendedIrq { flags:u8, interrupts:[u32;8], count:u8 },
     Dma { channels:u8, transfer_size:u8, bus_master:bool },
@@ -45,6 +45,7 @@ pub struct HostBridgeWindow {
     pub maximum: u64,
     pub length: u64,
     pub alignment: u64,
+    pub translation_offset: u64,
     pub memory_kind: u8,
     pub writeable: bool,
     pub cacheable: bool,
@@ -62,18 +63,18 @@ pub fn collect_host_bridge_windows(
     if resources.count > MAX_RESOURCES { return Err(ResourceError::TooManyResources); }
     let mut staged = [HostBridgeWindow {
         space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
-        length: 0, alignment: 0, memory_kind: 0, writeable: false, cacheable: false,
+        length: 0, alignment: 0, translation_offset: 0, memory_kind: 0, writeable: false, cacheable: false,
     }; MAX_HOST_BRIDGE_WINDOWS];
     let mut count = 0usize;
     for resource in resources.entries[..resources.count].iter().flatten() {
         let window = match *resource {
-            Resource::Io { minimum, maximum, alignment, length, .. } => Some(HostBridgeWindow {
-                space: HostBridgeAddressSpace::Io, minimum, maximum, length, alignment,
+            Resource::Io { minimum, maximum, alignment, translation_offset, length, .. } => Some(HostBridgeWindow {
+                space: HostBridgeAddressSpace::Io, minimum, maximum, length, alignment, translation_offset,
                 memory_kind: 0, writeable: false, cacheable: false,
             }),
-            Resource::Memory { minimum, maximum, alignment, length, writeable, cacheable, kind } =>
+            Resource::Memory { minimum, maximum, alignment, translation_offset, length, writeable, cacheable, kind } =>
                 Some(HostBridgeWindow {
-                    space: HostBridgeAddressSpace::Memory, minimum, maximum, length, alignment,
+                    space: HostBridgeAddressSpace::Memory, minimum, maximum, length, alignment, translation_offset,
                     memory_kind: kind, writeable, cacheable,
                 }),
             _ => None,
@@ -105,7 +106,7 @@ pub fn build_pci_host_bridge_resource_set(
     if bus_start > bus_end { return Err(ResourceError::InvalidDescriptor); }
     let mut windows = [HostBridgeWindow {
         space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
-        length: 0, alignment: 0, memory_kind: 0,
+        length: 0, alignment: 0, translation_offset: 0, memory_kind: 0,
         writeable: false, cacheable: false,
     }; MAX_HOST_BRIDGE_WINDOWS];
     let count = collect_host_bridge_windows(resources, &mut windows)?;
@@ -125,6 +126,7 @@ pub fn build_pci_host_bridge_resource_set(
             minimum: window.minimum,
             maximum: window.maximum,
             alignment: window.alignment,
+            translation_offset: window.translation_offset,
             length: window.length,
         };
     }
@@ -148,15 +150,15 @@ fn address_space(p:&[u8],width:u8)->Result<Resource,ResourceError>{
     let expected=match width{2=>13,4=>23,8=>43,_=>return Err(ResourceError::UnsupportedDescriptor)};
     if p.len()!=expected{return Err(ResourceError::InvalidLength)}
     let space=p[0];let flags=p[1];let type_flags=p[2];
-    let (min,max,align,len)=match width{
-        2=>(u16le(p,5)? as u64,u16le(p,7)? as u64,u16le(p,3)? as u64,u16le(p,11)? as u64),
-        4=>(u32le(p,7)? as u64,u32le(p,11)? as u64,u32le(p,3)? as u64,u32le(p,19)? as u64),
-        _=>(u64le(p,11)?,u64le(p,19)?,u64le(p,3)?,u64le(p,35)?),
+    let (min,max,align,translation_offset,len)=match width{
+        2=>(u16le(p,5)? as u64,u16le(p,7)? as u64,u16le(p,3)? as u64,u16le(p,9)? as u64,u16le(p,11)? as u64),
+        4=>(u32le(p,7)? as u64,u32le(p,11)? as u64,u32le(p,3)? as u64,u32le(p,15)? as u64,u32le(p,19)? as u64),
+        _=>(u64le(p,11)?,u64le(p,19)?,u64le(p,3)?,u64le(p,27)?,u64le(p,35)?),
     };
     validate_range(min,max,len)?;
     match space{
-        0=>Ok(Resource::Memory{minimum:min,maximum:max,alignment:align,length:len,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:match width{2=>0,4=>1,8=>2,_=>0}}),
-        1=>Ok(Resource::Io{minimum:min,maximum:max,alignment:align,length:len,decode_16_bit:flags&1!=0}),
+        0=>Ok(Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset,length:len,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:match width{2=>0,4=>1,8=>2,_=>0}}),
+        1=>Ok(Resource::Io{minimum:min,maximum:max,alignment:align,translation_offset,length:len,decode_16_bit:flags&1!=0}),
         2=>Ok(Resource::BusNumber{minimum:min,maximum:max,length:len}),
         _=>Err(ResourceError::UnsupportedDescriptor),
     }
@@ -232,9 +234,9 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                     Resource::Irq{mask,level_triggered:flags&1!=0,active_low:flags&8!=0,shared:flags&0x10!=0,wake_capable:flags&0x20!=0}},
                 0x05 if len==2=>Resource::Dma{channels:p[0],transfer_size:p[1]&3,bus_master:p[1]&4!=0},
                 0x08 if len==7=>{let min=u16le(p,1)? as u64;let max=u16le(p,3)? as u64;let align=p[5] as u64;let size=p[6] as u64;
-                    validate_range(min,max,size)?;Resource::Io{minimum:min,maximum:max,alignment:align,length:size,decode_16_bit:p[0]&1!=0}},
+                    validate_range(min,max,size)?;Resource::Io{minimum:min,maximum:max,alignment:align,translation_offset:0,length:size,decode_16_bit:p[0]&1!=0}},
                 0x09 if len==3=>{let base=u16le(p,0)? as u64;let size=p[2] as u64;
-                    validate_range(base,base,size)?;Resource::Io{minimum:base,maximum:base,alignment:1,length:size,decode_16_bit:true}},
+                    validate_range(base,base,size)?;Resource::Io{minimum:base,maximum:base,alignment:1,translation_offset:0,length:size,decode_16_bit:true}},
                 0x0f if len==1=>{out.push(Resource::EndTag{checksum:p[0]})?;pos=end;ended=true;if pos!=bytes.len(){return Err(ResourceError::InvalidLength)}
                     if p[0]!=0 && bytes.iter().fold(0u8,|sum,b|sum.wrapping_add(*b))!=0{return Err(ResourceError::InvalidDescriptor)} break;},
                 _=>return Err(ResourceError::UnsupportedDescriptor),
@@ -245,11 +247,11 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
             let p=slice(bytes,pos,len)?;let end=pos.checked_add(len).ok_or(ResourceError::IntegerOverflow)?;
             let item=match kind{
                 0x01 if len==9=>{let min=u16le(p,1)? as u64;let max=u16le(p,3)? as u64;let align=u16le(p,5)? as u64;let size=u16le(p,7)? as u64;
-                    validate_range(min,max,size)?;Resource::Memory{minimum:min,maximum:max,alignment:align,length:size,writeable:p[0]&1!=0,cacheable:false,kind:0}},
+                    validate_range(min,max,size)?;Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset:0,length:size,writeable:p[0]&1!=0,cacheable:false,kind:0}},
                 0x05 if len==17=>{let min=u32le(p,1)? as u64;let max=u32le(p,5)? as u64;let align=u32le(p,9)? as u64;let size=u32le(p,13)? as u64;
-                    validate_range(min,max,size)?;Resource::Memory{minimum:min,maximum:max,alignment:align,length:size,writeable:p[0]&1!=0,cacheable:false,kind:1}},
+                    validate_range(min,max,size)?;Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset:0,length:size,writeable:p[0]&1!=0,cacheable:false,kind:1}},
                 0x06 if len==9=>{let base=u32le(p,1)? as u64;let size=u32le(p,5)? as u64;
-                    validate_range(base,base,size)?;Resource::Memory{minimum:base,maximum:base,alignment:0,length:size,writeable:p[0]&1!=0,cacheable:false,kind:2}},
+                    validate_range(base,base,size)?;Resource::Memory{minimum:base,maximum:base,alignment:0,translation_offset:0,length:size,writeable:p[0]&1!=0,cacheable:false,kind:2}},
                 0x07=>address_space(p,4)?,
                 0x08=>address_space(p,2)?,
                 0x09 if len>=6=>{let flags=p[0];let count=p[1] as usize;if count==0||count>8||len!=2+count*4{return Err(ResourceError::InvalidLength)}
@@ -258,12 +260,12 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                 0x0a=>address_space(p,8)?,
                 0x0b if len==53=>{ // Extended address-space descriptor; fields follow QWord layout plus type-specific attributes.
                     let space=p[0];let flags=p[1];let type_flags=p[2];let min=u64le(p,11)?;let max=u64le(p,19)?;
-                    let align=u64le(p,27)?;let size=u64le(p,35)?;validate_range(min,max,size)?;
-                    match space{0=>Resource::Memory{minimum:min,maximum:max,alignment:align,length:size,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:8},
-                    1=>Resource::Io{minimum:min,maximum:max,alignment:align,length:size,decode_16_bit:flags&1!=0},
+                    let align=u64le(p,27)?;let translation_offset=u64le(p,35)?;let size=u64le(p,43)?;validate_range(min,max,size)?;
+                    match space{0=>Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset,length:size,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:8},
+                    1=>Resource::Io{minimum:min,maximum:max,alignment:align,translation_offset,length:size,decode_16_bit:flags&1!=0},
                     2=>Resource::BusNumber{minimum:min,maximum:max,length:size},_=>return Err(ResourceError::UnsupportedDescriptor)}},
                 0x0c if len==3=>{let base=u16le(p,0)? as u64;let size=p[2] as u64;
-                    validate_range(base,base,size)?;Resource::Io{minimum:base,maximum:base,alignment:1,length:size,decode_16_bit:true}},
+                    validate_range(base,base,size)?;Resource::Io{minimum:base,maximum:base,alignment:1,translation_offset:0,length:size,decode_16_bit:true}},
                 _=>return Err(ResourceError::UnsupportedDescriptor),
             };
             out.push(item)?;pos=end;
@@ -277,7 +279,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
 /// selected by the PnP arbiter, not translated HAL addresses.
 fn allocation_satisfies(requirement:Resource,allocated:Resource)->bool{
     match (requirement,allocated){
-        (Resource::Io{minimum,maximum,alignment,length,decode_16_bit},
+        (Resource::Io{minimum,maximum,alignment,length,decode_16_bit,..},
          Resource::Io{minimum:base,length:actual,decode_16_bit:actual_decode,..}) =>
             actual==length&&decode_16_bit==actual_decode&&base>=minimum&&base<=maximum
                 &&(alignment<=1||base%alignment==0),
@@ -461,7 +463,7 @@ pub fn encode_resource_template(resources:&ResourceList,output:&mut [u8])->Resul
     let mut cursor=0usize;
     for resource in resources.entries[..resources.count].iter().flatten(){
         match *resource{
-            Resource::Io{minimum,maximum,alignment,length,decode_16_bit}=>{
+            Resource::Io{minimum,maximum,alignment,length,decode_16_bit,..}=>{
                 encode_qword_address(output,&mut cursor,1,if decode_16_bit{1}else{0},0,alignment,minimum,maximum,length)?;
             }
             Resource::Memory{minimum,maximum,alignment,length,writeable,cacheable,..}=>{
@@ -561,14 +563,14 @@ mod assigned_resource_encoding_tests{
  #[test]
  fn selects_arbiter_allocation_and_round_trips_srs_template(){
   let mut requirement=ResourceList::EMPTY;
-  requirement.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  requirement.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,translation_offset:0,length:0x100,decode_16_bit:true});
   requirement.entries[1]=Some(Resource::ExtendedIrq{flags:0x0e,interrupts:[5,9,0,0,0,0,0,0],count:2});
   requirement.count=2;
   let mut alternatives=ResourceAlternatives::EMPTY;
   alternatives.entries[0]=requirement;alternatives.count=1;
 
   let mut allocated=ResourceList::EMPTY;
-  allocated.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:1,length:0x100,decode_16_bit:true});
+  allocated.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:1,translation_offset:0,length:0x100,decode_16_bit:true});
   allocated.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[9,0,0,0,0,0,0,0],count:1});
   allocated.count=2;
   let selected=select_assigned_resources(&alternatives,&allocated).unwrap();
@@ -583,11 +585,11 @@ mod assigned_resource_encoding_tests{
  #[test]
  fn verifies_post_srs_crs_against_selected_bus_relative_assignment(){
   let mut expected=ResourceList::EMPTY;
-  expected.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:0x100,length:0x100,decode_16_bit:true});
+  expected.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1100,alignment:0x100,translation_offset:0,length:0x100,decode_16_bit:true});
   expected.entries[1]=Some(Resource::ExtendedIrq{flags:0x0a,interrupts:[9,0,0,0,0,0,0,0],count:1});
   expected.count=2;
   let mut current=expected;
-  current.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  current.entries[0]=Some(Resource::Io{minimum:0x1100,maximum:0x1fff,alignment:0x100,translation_offset:0,length:0x100,decode_16_bit:true});
   assert_eq!(verify_current_resources(&expected,&current),Ok(()));
   current.entries[1]=Some(Resource::ExtendedIrq{flags:0x02,interrupts:[9,0,0,0,0,0,0,0],count:1});
   assert_eq!(verify_current_resources(&expected,&current),Err(ResourceError::InvalidDescriptor));
@@ -595,11 +597,11 @@ mod assigned_resource_encoding_tests{
  #[test]
  fn rejects_allocations_outside_every_prs_alternative(){
   let mut required=ResourceList::EMPTY;
-  required.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,length:0x100,decode_16_bit:true});
+  required.entries[0]=Some(Resource::Io{minimum:0x1000,maximum:0x1fff,alignment:0x100,translation_offset:0,length:0x100,decode_16_bit:true});
   required.count=1;
   let mut alternatives=ResourceAlternatives::EMPTY;alternatives.entries[0]=required;alternatives.count=1;
   let mut allocated=ResourceList::EMPTY;
-  allocated.entries[0]=Some(Resource::Io{minimum:0x1081,maximum:0x1081,alignment:1,length:0x100,decode_16_bit:true});
+  allocated.entries[0]=Some(Resource::Io{minimum:0x1081,maximum:0x1081,alignment:1,translation_offset:0,length:0x100,decode_16_bit:true});
   allocated.count=1;
   assert_eq!(select_assigned_resources(&alternatives,&allocated),Err(ResourceError::InvalidDescriptor));
  }
