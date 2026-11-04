@@ -46,7 +46,28 @@ impl AmlDynamicNamespace {
         Self { fields: [AmlDynamicBufferField::EMPTY; MAX_DYNAMIC_BUFFER_FIELDS], field_count: 0 }
     }
 
-    pub const fn field_count(&self) -> usize { self.field_count }
+    /// High-water mark of allocated field slots. IDs are never recycled after
+    /// unload, preventing stale ObjectReference values from resolving to a new field.
+    pub const fn field_count(&self) -> usize { self.fields.iter().filter(|field| field.namespace_node != u16::MAX).count() }
+
+    /// Retire every dynamic field owned by an unloading DefinitionBlock.
+    /// Slots become tombstones and are deliberately not reused during this
+    /// namespace lifetime, so outstanding references fail closed.
+    pub fn remove_owner_table(&mut self, owner_table: u32) -> usize {
+        let mut removed = 0;
+        for field in self.fields.iter_mut().take(self.field_count_high_water()) {
+            if field.namespace_node != u16::MAX && field.owner_table == owner_table {
+                *field = AmlDynamicBufferField::EMPTY;
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    fn field_count_high_water(&self) -> usize {
+        self.fields.iter().rposition(|field| field.namespace_node != u16::MAX)
+            .map_or(0, |index| index + 1)
+    }
 
     fn validate_parent(namespace: &AmlNamespace, parent: u16) -> Result<(), AmlError> {
         let node = namespace.nodes.get(parent as usize)
@@ -201,14 +222,14 @@ impl AmlDynamicNamespace {
         name: &AmlName) -> Result<u16, RuntimeError> {
         let (parent, leaf) = Self::resolve_field_parent(namespace, current, name)?;
         self.fields[..self.field_count].iter()
-            .find(|field| field.parent == parent && field.name == leaf)
+            .find(|field| field.namespace_node != u16::MAX && field.parent == parent && field.name == leaf)
             .map(|field| field.namespace_node).ok_or(RuntimeError::InvalidNode)
     }
 
     pub fn buffer_field(&self, namespace: &AmlNamespace, node: u16)
         -> Result<AmlDynamicBufferField, RuntimeError> {
         if (node as usize) < MAX_NAMESPACE_NODES && node as usize >= namespace.count { return Err(RuntimeError::InvalidNode); }
-        self.fields[..self.field_count].iter().find(|field| field.namespace_node == node)
+        self.fields[..self.field_count].iter().find(|field| field.namespace_node != u16::MAX && field.namespace_node == node)
             .copied().ok_or(RuntimeError::InvalidReference)
     }
 
