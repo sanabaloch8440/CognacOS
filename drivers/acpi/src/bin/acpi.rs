@@ -1758,10 +1758,28 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route(
             .map(|revision| if *revision >= 2 { 64 } else { 32 }) else {
                 return STATUS_DEVICE_CONFIGURATION_ERROR;
             };
-        let prt = match acpi::acpi_prt::evaluate_prt_object(
+        // AmlObjectArena is intentionally pool-backed here: its fixed
+        // object table is substantially larger than a kernel thread stack.
+        let arena_bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
+        let arena_allocation = unsafe {
+            ExAllocatePoolWithTag(PAGED_POOL, arena_bytes, ACPI_POOL_TAG)
+        };
+        if arena_allocation.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+        let arena = arena_allocation.cast::<acpi::aml_objects::AmlObjectArena>();
+        unsafe { arena.write(acpi::aml_objects::AmlObjectArena::new()); }
+        let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(
+            if aml_integer_width == 32 { 1 } else { 2 }
+        );
+        let prt_result = acpi::acpi_prt::evaluate_prt_object_in_context(
             namespace, &sources, record.node, aml_integer_width,
+            unsafe { &mut *arena }, &mut bindings,
             &KERNEL_AML_METHOD_SYNCHRONIZER, &resolver,
-        ) {
+        );
+        unsafe {
+            core::ptr::drop_in_place(arena);
+            ExFreePoolWithTag(arena_allocation, ACPI_POOL_TAG);
+        }
+        let prt = match prt_result {
             Ok(table) => table, Err(_) => return STATUS_NOT_FOUND,
         };
         let address = ((request.device as u32) << 16) | request.function as u32;
