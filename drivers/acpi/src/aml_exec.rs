@@ -656,6 +656,17 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
 }
 #[cfg(test)]
 mod tests{
+    fn test_arena() -> std::boxed::Box<AmlObjectArena> {
+        let mut storage = std::boxed::Box::<AmlObjectArena>::new_uninit();
+        unsafe {
+            core::ptr::write_bytes(
+                storage.as_mut_ptr().cast::<u8>(), 0,
+                core::mem::size_of::<AmlObjectArena>(),
+            );
+            storage.assume_init()
+        }
+    }
+
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
  use core::sync::atomic::{AtomicUsize,Ordering};
  struct RecordingSync{acquires:AtomicUsize,releases:AtomicUsize,last_method:AtomicUsize,last_level:AtomicUsize,busy:bool}
@@ -917,7 +928,7 @@ mod tests{
   let aml=[0x14,0x08,b'T',b'E',b'S',b'T',1,0xa4,0x68];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
-  let mut arena=AmlObjectArena::new();
+  let mut arena = test_arena();
   let mut child=AmlRuntimeValue::EMPTY;child.kind=AmlValueKind::Integer;child.integer=0x1234;
   let child_id=arena.allocate(child).unwrap();
   let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
