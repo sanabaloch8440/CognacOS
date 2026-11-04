@@ -1853,7 +1853,7 @@ mod explicit_mutex_tests {
  fn releases_mutex_when_method_faults_after_acquisition(){
   // Acquire, then execute an unsupported opcode. The invocation cleanup must
   // release its lock before returning the execution error.
-  let body=[0x70,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff,0x60,0x5b,0x7f];
+  let body=[0x70,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff,0x60,0x5b,0x7f,0x01];
   let (aml,ns,method)=load_mutex_method(0,&body);let sync=TestSync::new(true);
   assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::UnsupportedOpcode));
   assert_eq!(sync.releases.load(Ordering::SeqCst),1);
