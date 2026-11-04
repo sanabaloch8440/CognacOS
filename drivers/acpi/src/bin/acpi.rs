@@ -1753,10 +1753,11 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route(
         // AML Integer width is defined by the DefinitionBlock revision, not
         // by the ACPI table family or the host CPU mode.
         let prt_table_index = namespace.nodes[prt_object as usize].source_table as usize;
-        let aml_integer_width = sources.get(prt_table_index)
+        let Some(aml_integer_width) = sources.get(prt_table_index)
             .and_then(|table| table.get(8))
-            .map(|revision| if *revision >= 2 { 64 } else { 32 })
-            .ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+            .map(|revision| if *revision >= 2 { 64 } else { 32 }) else {
+                return STATUS_DEVICE_CONFIGURATION_ERROR;
+            };
         let prt = match acpi::acpi_prt::evaluate_prt_object(
             namespace, &sources, record.node, aml_integer_width,
             &KERNEL_AML_METHOD_SYNCHRONIZER, &resolver,
