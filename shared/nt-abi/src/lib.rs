@@ -109,6 +109,10 @@ pub mod bus {
     use crate::ntstatus::NTSTATUS;
 
     pub const ACPI_FIRMWARE_INTERFACE_VERSION: u32 = 1;
+    /// Version 2 uses a distinct interface GUID, as required by the WDM
+    /// driver-defined-interface versioning guidance. Version 1 and its layout
+    /// remain binary compatible and are never enlarged in place.
+    pub const ACPI_FIRMWARE_INTERFACE_VERSION_2: u32 = 2;
     pub const PCI_BUS_INTERFACE_VERSION: u32 = 3;
 
     /// Stable interface identifiers used by IRP_MN_QUERY_INTERFACE.
@@ -122,6 +126,12 @@ pub mod bus {
     }
     pub const GUID_ACPI_FIRMWARE_INTERFACE: GUID = GUID {
         data1: 0x7b7a_2a01, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+    /// ACPI firmware interface v2. A new GUID is used instead of changing
+    /// the size/version contract behind GUID_ACPI_FIRMWARE_INTERFACE.
+    pub const GUID_ACPI_FIRMWARE_INTERFACE_V2: GUID = GUID {
+        data1: 0x7b7a_2a04, data2: 0x5d31, data3: 0x4f18,
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
     };
     pub const GUID_PCI_BUS_INTERFACE: GUID = GUID {
@@ -220,6 +230,56 @@ pub mod bus {
         pub header: INTERFACE_HEADER,
         pub query_table: PACPI_QUERY_TABLE,
     }
+
+    /// PCI coordinates used by the ACPI _PRT routing service. Pin is the
+    /// PCI Interrupt Pin register value (1..=4), not the zero-based _PRT pin.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct ACPI_PCI_INTERRUPT_ROUTE_REQUEST {
+        pub segment: u16,
+        pub bus: u8,
+        pub device: u8,
+        pub function: u8,
+        pub pin: u8,
+        pub reserved: u16,
+    }
+
+    /// Resolved electrical route. Boolean values are UCHAR-sized for a stable
+    /// C ABI; reserved bytes must be zero on output.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct ACPI_PCI_INTERRUPT_ROUTE {
+        pub gsi: u32,
+        pub active_low: u8,
+        pub level_triggered: u8,
+        pub reserved: [u8; 2],
+    }
+
+    pub type PACPI_QUERY_PCI_INTERRUPT_ROUTE = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            request: *const ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
+            route: *mut ACPI_PCI_INTERRUPT_ROUTE,
+        ) -> NTSTATUS,
+    >;
+
+    /// ACPI firmware interface v2. The common WDM INTERFACE header remains
+    /// first, and v1's query_table callback is preserved byte-for-byte before
+    /// appending the PCI _PRT route query.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct ACPI_FIRMWARE_INTERFACE_V2 {
+        pub header: INTERFACE_HEADER,
+        pub query_table: PACPI_QUERY_TABLE,
+        pub query_pci_interrupt_route: PACPI_QUERY_PCI_INTERRUPT_ROUTE,
+    }
+
+    const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() == 0x28);
+    const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>() == 0x30);
+    const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V2, query_table) == 0x20);
+    const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V2, query_pci_interrupt_route) == 0x28);
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>() == 8);
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>() == 8);
 
     /// PCI configuration-space access provided by pci.sys. Device and
     /// function are conventional PCI coordinates; segment and bus are
@@ -416,6 +476,10 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<INTERFACE_HEADER>(), 0x20);
                 assert_eq!(core::mem::offset_of!(INTERFACE_HEADER, context), 0x08);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
+                assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>(), 0x30);
+                assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>(), 8);
+                assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>(), 8);
+                assert_ne!(GUID_ACPI_FIRMWARE_INTERFACE, GUID_ACPI_FIRMWARE_INTERFACE_V2);
                 assert_eq!(core::mem::size_of::<PCI_BRIDGE_INFORMATION>(), 0x08);
                 assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x50);
                 assert_eq!(core::mem::size_of::<PCI_DEVICE_INTERFACE>(), 0x28);
