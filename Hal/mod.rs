@@ -1393,6 +1393,19 @@ mod driver_service_publication_tests {
     }
 
     #[test]
+    fn pci_interrupt_service_table_exposes_separate_mask_register_enable_disable_and_teardown() {
+        let table = pci_interrupt_service_table();
+        assert!(table.compatible());
+        assert!(table.allocate_vector.is_some());
+        assert!(table.configure_masked.is_some());
+        assert!(table.register_isr.is_some());
+        assert!(table.enable.is_some());
+        assert!(table.disable.is_some());
+        assert!(table.unregister.is_some());
+        assert!(table.release_vector.is_some());
+    }
+
+    #[test]
     fn base_service_table_is_versioned_and_exposes_only_existing_primitives() {
         let table=driver_service_table();
         assert!(table.compatible());
