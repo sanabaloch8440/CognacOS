@@ -203,15 +203,18 @@ pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
  // Close the loader's reference gate before device rundown. If clients still
  // hold driver references, unload remains pending until they dereference.
- if !crate::ntoskrnl::driver_loader::begin_driver_unload(
+ let references_drained=crate::ntoskrnl::driver_loader::begin_driver_unload(
   driver.cast::<crate::ntoskrnl::driver_loader::DriverObject>()
- ) { return STATUS_PENDING; }
+ );
  {
-  let mut state=WDM.lock();
+  let _state=WDM.lock();
   let flags=unsafe{(*driver).flags};
   if flags&DRIVER_UNLOADED_FLAG!=0{return STATUS_SUCCESS}
+  // Close IoCreateDevice before returning PENDING for outstanding driver
+  // references. The loader reference gate and DRIVER_OBJECT flag must agree.
   unsafe{(*driver).flags=flags|DRIVER_UNLOADING_FLAG;}
  }
+ if !references_drained{return STATUS_PENDING}
  // Walk the driver's intrusive DEVICE_OBJECT chain. Pin each next object
  // while the current object is still protected by WDM, so concurrent removal
  // cannot reclaim the traversal target. This covers every device, including
