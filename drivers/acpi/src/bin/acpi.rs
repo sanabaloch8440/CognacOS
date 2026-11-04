@@ -18,7 +18,7 @@
 use core::{cell::{Cell, UnsafeCell}, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU8, Ordering}};
 use cognacos_acpi as acpi;
 use acpi::aml_tables::AmlExecutionGate;
-use cognacos_hal_contract::{AcpiSciHalServices, PciHostBridgeResourceSet};
+use cognacos_hal_contract::PciHostBridgeResourceSet;
 use cognacos_nt_abi::{bus::{
     ACPI_FIRMWARE_INTERFACE, ACPI_FIRMWARE_INTERFACE_V2, ACPI_FIRMWARE_INTERFACE_V3, ACPI_FIRMWARE_INTERFACE_V4,
     ACPI_FIRMWARE_INTERFACE_VERSION, ACPI_FIRMWARE_INTERFACE_VERSION_2,
@@ -316,22 +316,16 @@ impl Drop for AcpiOperationGuard {
 }
 
 
-// ACPI.sys obtains firmware tables through the HAL's Windows-compatible
-// HalAcpiGetTableEx export. It never dereferences a bootloader-supplied physical
-// address or calls a Rust-private kernel/HAL function.
+// Firmware table discovery uses the real Windows-compatible HAL export
+// HalAcpiGetTableEx. SCI interrupt ownership is established through the normal
+// WDM/PnP interrupt-resource path; ACPI.sys does not import a private HAL SCI
+// service-table getter or allocate/configure SCI vectors behind the PnP manager.
 unsafe extern "win64" {
-    fn HalAcpiGetSciServices(output: *mut AcpiSciHalServices) -> i32;
     fn HalAcpiGetTableEx(signature: u32, instance: u32, table: *mut *mut core::ffi::c_void, table_size: *mut u32) -> i32;
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
 .section .text.import_thunks,"ax",@progbits
-.global HalAcpiGetSciServices
-.type HalAcpiGetSciServices,@function
-HalAcpiGetSciServices:
-    jmp QWORD PTR [rip + __imp_hal_HalAcpiGetSciServices]
-.size HalAcpiGetSciServices, .-HalAcpiGetSciServices
-
 .global HalAcpiGetTableEx
 .type HalAcpiGetTableEx,@function
 HalAcpiGetTableEx:
@@ -340,79 +334,11 @@ HalAcpiGetTableEx:
 
 .section .data.imports.hal,"aw",@progbits
 .p2align 3
-.global __imp_hal_HalAcpiGetSciServices
-.type __imp_hal_HalAcpiGetSciServices,@object
-__imp_hal_HalAcpiGetSciServices: .quad 0
-.size __imp_hal_HalAcpiGetSciServices,8
-
-.p2align 3
 .global __imp_hal_HalAcpiGetTableEx
 .type __imp_hal_HalAcpiGetTableEx,@object
 __imp_hal_HalAcpiGetTableEx: .quad 0
 .size __imp_hal_HalAcpiGetTableEx,8
 "#);
-
-struct SciServicesStorage(core::cell::UnsafeCell<MaybeUninit<AcpiSciHalServices>>);
-unsafe impl Sync for SciServicesStorage {}
-static ACPI_SCI_SERVICES: SciServicesStorage =
-    SciServicesStorage(core::cell::UnsafeCell::new(MaybeUninit::uninit()));
-static ACPI_SCI_SERVICES_STATE: AtomicU8 = AtomicU8::new(0);
-
-/// Obtain the private versioned HAL SCI interface only after the kernel has
-/// published its PASSIVE_LEVEL work queue. Retry is allowed while boot stages
-/// are still installing executive services.
-pub fn acquire_sci_hal_services() -> Result<&'static AcpiSciHalServices, i32> {
-    loop {
-        match ACPI_SCI_SERVICES_STATE.load(Ordering::Acquire) {
-            2 => return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() }),
-            1 => core::hint::spin_loop(),
-            0 => {
-                if ACPI_SCI_SERVICES_STATE.compare_exchange(
-                    0, 1, Ordering::AcqRel, Ordering::Acquire,
-                ).is_err() { continue; }
-                let mut table = core::mem::MaybeUninit::<AcpiSciHalServices>::uninit();
-                let status = unsafe { HalAcpiGetSciServices(table.as_mut_ptr()) };
-                if status != STATUS_SUCCESS {
-                    ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
-                    return Err(status);
-                }
-                let table = unsafe { table.assume_init() };
-                if !table.compatible() {
-                    ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
-                    return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
-                }
-                // Obtain the kernel-owned immutable policy through the
-                // versioned HAL table; the ACPI driver never reads BootInfo
-                // or dereferences firmware physical addresses itself.
-                let mut policy = core::ptr::null::<core::ffi::c_void>();
-                let mut policy_size = 0u32;
-                let mut policy_version = 0u32;
-                let get_policy = match table.get_platform_quirk_policy {
-                    Some(callback) => callback,
-                    None => {
-                        ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
-                        return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
-                    }
-                };
-                let policy_status = unsafe {
-                    get_policy(&mut policy, &mut policy_size, &mut policy_version)
-                };
-                if policy_status != 0 || !unsafe {
-                    acpi::aml_osi::install_platform_quirk_policy(
-                        policy, policy_size, policy_version,
-                    )
-                } {
-                    ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
-                    return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
-                }
-                unsafe { (*ACPI_SCI_SERVICES.0.get()).write(table); }
-                ACPI_SCI_SERVICES_STATE.store(2, Ordering::Release);
-                return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() });
-            }
-            _ => return Err(STATUS_DEVICE_CONFIGURATION_ERROR),
-        }
-    }
-}
 
 const MAX_ACPI_TABLE_LENGTH: u32 = 1024 * 1024;
 unsafe fn query_hal_table(signature: [u8; 4], instance: u32) -> Result<&'static [u8], i32> {
@@ -1287,8 +1213,9 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let mut patched_table_rollback = PatchedTableRollback { committed: false };
     release_patched_aml_tables();
     // Resolve the immutable DMI policy before any AML method or table is
-    // evaluated. This also validates that the versioned HAL contract is live.
-    if let Err(status) = acquire_sci_hal_services() { return status; }
+    // AML _OSI starts with the Windows 11 profile. Optional platform quirks
+    // are installed only through a kernel-owned policy handoff, not a private
+    // HAL export that is absent from the Windows x64 ABI.
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
     // Publish the driver's dispatch contract before creating any device object.
     // PnP may observe the FDO as soon as it is registered with the I/O manager;
