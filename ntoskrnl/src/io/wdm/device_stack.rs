@@ -8,7 +8,7 @@ pub unsafe extern "win64" fn io_attach_device_to_device_stack(
     let Some(target_index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,target)) else { return ptr::null_mut(); };
     if !state.devices[source_index].attached_to.is_null() { return ptr::null_mut(); }
     let mut top=target;
-    for _ in 0..MAX_WDM_DEVICES {
+    for _ in 0..MAX_WDM_STACK_LOCATIONS {
         let next=unsafe{(*top).attached_device};
         if next.is_null() { break; }
         if next==source { return ptr::null_mut(); }
@@ -140,7 +140,7 @@ pub unsafe extern "win64" fn io_get_attached_device(device:*mut DeviceObject)->*
     let state=WDM.lock();
     if !state.devices.iter().any(|s|s.used&&ptr::eq(&s.object,device)){return ptr::null_mut()}
     let mut top=device;
-    for _ in 0..MAX_WDM_DEVICES {
+    for _ in 0..MAX_WDM_STACK_LOCATIONS {
         let next=unsafe{(*top).attached_device};
         if next.is_null(){return top}
         if !state.devices.iter().any(|s|s.used&&ptr::eq(&s.object,next)){return ptr::null_mut()}
@@ -155,7 +155,7 @@ pub unsafe extern "win64" fn io_get_device_attachment_base_ref(device:*mut Devic
     if device.is_null(){return ptr::null_mut()}
     let mut state=WDM.lock();
     let Some(mut index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting) else{return ptr::null_mut()};
-    for _ in 0..MAX_WDM_DEVICES {
+    for _ in 0..MAX_WDM_STACK_LOCATIONS {
         let lower=state.devices[index].attached_to;
         if lower.is_null(){
             let Some(next)=state.devices[index].object.reference_count.checked_add(1) else{return ptr::null_mut()};
@@ -174,7 +174,7 @@ pub unsafe extern "win64" fn io_get_attached_device_reference(device:*mut Device
     if device.is_null(){return ptr::null_mut()}
     let mut state=WDM.lock();
     let Some(mut index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting) else{return ptr::null_mut()};
-    for _ in 0..MAX_WDM_DEVICES {
+    for _ in 0..MAX_WDM_STACK_LOCATIONS {
         let top=ptr::addr_of_mut!(state.devices[index].object);
         let next=unsafe{(*top).attached_device};
         if next.is_null(){
