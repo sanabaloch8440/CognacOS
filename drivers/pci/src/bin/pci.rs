@@ -758,16 +758,12 @@ unsafe fn acquire_acpi_host_bridge_resources() -> i32 {
 
 /// Stable read-only accessor used by PCI's host-window allocator. The caller
 /// receives a complete copy and must still apply protected-RAM clipping.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn CognacPciGetHostBridgeResources(
-    index: u32,
-    output: *mut PciHostBridgeResourceSet,
-) -> i32 {
-    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+fn get_host_bridge_resources(
+    index: usize,
+) -> Result<PciHostBridgeResourceSet, i32> {
     let count = STATE.host_bridge_resource_count.load(Ordering::Acquire);
-    if index as usize >= count { return STATUS_NOT_FOUND; }
-    unsafe { output.write((*STATE.host_bridge_resources.get())[index as usize]); }
-    STATUS_SUCCESS
+    if index >= count { return Err(STATUS_NOT_FOUND); }
+    Ok(unsafe { (*STATE.host_bridge_resources.get())[index] })
 }
 
 fn hal_status_to_ntstatus(status: u32) -> i32 {
@@ -1079,9 +1075,19 @@ unsafe fn start_pci_device(
         break;
     }
     let Some(function) = function else { return STATUS_NOT_FOUND; };
-    let Some(window) = handoff.windows[..handoff.window_count as usize].iter().find(|w|
+    let Some((window_index, window)) = handoff.windows[..handoff.window_count as usize].iter().enumerate().find(|(_, w)|
         w.segment == function.segment && function.bus >= w.bus_start && function.bus <= w.bus_end
     ) else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
+    // The PCI root FDO has already queried the matching ACPI root PDO. Refuse
+    // child START_DEVICE if the root bridge's _CRS identity/range does not
+    // cover this function; the PnP arbiter remains responsible for assignment.
+    let host_resources = match get_host_bridge_resources(window_index) {
+        Ok(value) => value, Err(status) => return status,
+    };
+    if !host_resources.compatible() || host_resources.segment != function.segment
+        || function.bus < host_resources.bus_start || function.bus > host_resources.bus_end {
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
     let mut config = pci::EcamFunctionConfig {
         window, segment: function.segment, bus: function.bus,
         device: function.device, function: function.function,
