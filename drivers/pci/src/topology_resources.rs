@@ -367,18 +367,38 @@ mod atomic_rebalance_integration_tests {
 pub fn plan_hierarchy_rebalance_with_e820(
     firmware_host_apertures: &[Aperture],
     e820_reserved: &[crate::e820::E820Range],
-    ignore_e820: bool,
+    _legacy_ignore_e820: bool,
     requests: &[EndpointRequest],
     existing: &[OccupiedRange],
     output: &mut HierarchyPlan,
 ) -> Result<[Option<u8>; MAX_HIERARCHY_BRIDGES], HierarchyError> {
     let mut host = [Aperture { start: 0, length: 0, kind: BarKind::Io, prefetchable: false }; 64];
     let count = crate::e820::prepare_host_apertures(
-        firmware_host_apertures, e820_reserved, ignore_e820, &mut host,
+        firmware_host_apertures, e820_reserved, false, &mut host,
     ).map_err(|error| match error {
         crate::e820::ClipError::Capacity => HierarchyError::Capacity,
         crate::e820::ClipError::InvalidRange | crate::e820::ClipError::Overflow => HierarchyError::InvalidRequirement,
     })?;
     if count == 0 { return Err(HierarchyError::InvalidRequirement); }
     plan_hierarchy_rebalance(&host[..count], requests, existing, output)
+}
+
+
+/// End-to-end ACPI _CRS handoff: validate the versioned root-bridge payload,
+/// convert its descriptors to PCI apertures, subtract protected RAM, and only
+/// then invoke BAR/bridge planning. This is the preferred host-bridge entry.
+pub fn plan_hierarchy_rebalance_from_acpi_crs(
+    resources: &cognacos_hal_contract::PciHostBridgeResourceSet,
+    protected_ram: &[crate::e820::E820Range],
+    requests: &[EndpointRequest],
+    existing: &[OccupiedRange],
+    output: &mut HierarchyPlan,
+) -> Result<[Option<u8>; MAX_HIERARCHY_BRIDGES], HierarchyError> {
+    let prepared = crate::host_bridge::prepare_host_bridge_apertures(resources, protected_ram)
+        .map_err(|error| match error {
+            crate::host_bridge::HostBridgeHandoffError::Capacity => HierarchyError::Capacity,
+            _ => HierarchyError::InvalidRequirement,
+        })?;
+    if prepared.count == 0 { return Err(HierarchyError::InvalidRequirement); }
+    plan_hierarchy_rebalance(prepared.as_slice(), requests, existing, output)
 }
