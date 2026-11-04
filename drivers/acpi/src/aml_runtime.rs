@@ -241,6 +241,17 @@ impl AmlBindings {
         }
         Ok(())
     }
+    /// Namespace unload compacts numeric node indices. Retire every
+    /// generation-tagged namespace reference and clear index-keyed Name bindings
+    /// before compaction so a saved handle cannot alias a shifted survivor.
+    pub fn invalidate_namespace_compaction(&mut self)->usize {
+        let mut invalidated=0usize;
+        for index in 0..MAX_NAMESPACE_NODES {
+            self.node_generations[index]=self.node_generations[index].wrapping_add(1).max(1);
+            if self.bound[index] { self.bound[index]=false; self.values[index]=0; invalidated+=1; }
+        }
+        invalidated
+    }
     pub fn value_id(&self,node:u16)->Result<u16,RuntimeError>{
         let i=node as usize;if i>=MAX_NAMESPACE_NODES||!self.bound[i]{return Err(RuntimeError::UnboundNode)}
         Ok(self.values[i])
