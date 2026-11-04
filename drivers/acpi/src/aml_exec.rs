@@ -152,7 +152,7 @@ impl<'a,'b> Machine<'a,'b>{
    0x60..=0x67=>self.reference_target(Target::Local((op-0x60)as usize)),
    0x68..=0x6e=>self.reference_target(Target::Arg((op-0x68)as usize)),
    0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{r.pos=start;let(name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
-    if let Ok(node)=resolve_name_string(self.namespace,self.scope,&name){let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;let entry=self.namespace.nodes.get(canonical as usize).filter(|_|canonical as usize<self.namespace.count).ok_or(ExecError::NameNotFound)?;if entry.object_type==AmlObjectType::Name{return self.name_reference(canonical)}}
+    if let Ok(node)=resolve_name_string(self.namespace,self.scope,&name){let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::NameNotFound)?;if entry.object_type==AmlObjectType::Name{return self.name_reference(canonical)}}
     let node=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;self.dynamic.field_reference(self.namespace,node).map_err(|_|ExecError::BadTarget)
    }
    _=>{r.pos=start;let value=self.term_value(r)?;let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;self.track_frame_reference(id)?;Ok(AmlReference::ArenaValue(id))}
@@ -781,9 +781,9 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
    let flow_result=m.execute(&mut r,0);let frame_ids=m.frame_reference_ids;let frame_count=m.frame_reference_count;
   let value_result=flow_result.map(|flow|match flow{ExecFlow::Continue=>Machine::integer_value(0),ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>Machine::uninitialized_value()});
   let value=value_result.as_ref().ok().copied();
-  if let Some(returned)=value{if returned.kind==AmlValueKind::ObjectReference{if let Ok(AmlReference::ArenaValue(id))=reference_from_value(&returned){if frame_ids[..frame_count].contains(&id){return Err(ExecError::UnsupportedReturnType)}}}}
+  let escaped=value.map(|returned|returned.kind==AmlValueKind::ObjectReference&&matches!(reference_from_value(&returned),Ok(AmlReference::ArenaValue(id)) if frame_ids[..frame_count].contains(&id))).unwrap_or(false);
   for id in frame_ids.iter().take(frame_count){if let Some(slot)=m.arena.get_mut(*id){*slot=Machine::uninitialized_value();}}
-  let value=value_result?;if value.kind==AmlValueKind::Uninitialized{return Err(ExecError::LoopControl)}Ok(value)
+  let value=value_result?;if escaped{return Err(ExecError::UnsupportedReturnType)}if value.kind==AmlValueKind::Uninitialized{return Err(ExecError::LoopControl)}Ok(value)
 }
 
 /// Execute a method in a caller-owned AML object context.
@@ -1664,10 +1664,10 @@ mod tests{
   assert_eq!(value.kind,AmlValueKind::Package);let element=arena.get(value.elements[0]).unwrap();assert_eq!(element.kind,AmlValueKind::Integer);assert_eq!(element.integer,42);
  }
  #[test]fn condrefo_returns_false_for_absent_names_and_true_for_live_names(){
-  let absent=[0x14,0x0d,b'T',b'E',b'S',b'T',0,0x5b,0x12,b'M',b'I',b'S',b'S',0x60,0xa4,0x01];
+  let absent=[0x14,0x0f,b'T',b'E',b'S',b'T',0,0x5b,0x12,b'M',b'I',b'S',b'S',0x60,0xa4,0x01];
   let mut ns=AmlNamespace::new();load_definition_block(&absent,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&absent,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
-  let present=[0x08,b'V',b'A',b'L',b'0',0x0a,7,0x14,0x0d,b'T',b'E',b'S',b'T',0,0x5b,0x12,b'V',b'A',b'L',b'0',0x60,0xa4,0x01];
+  let present=[0x08,b'V',b'A',b'L',b'0',0x0a,7,0x14,0x0f,b'T',b'E',b'S',b'T',0,0x5b,0x12,b'V',b'A',b'L',b'0',0x60,0xa4,0x01];
   let mut ns=AmlNamespace::new();load_definition_block(&present,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&present,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
  }
