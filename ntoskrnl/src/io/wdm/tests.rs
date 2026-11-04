@@ -2,6 +2,20 @@
 mod wdm_tests {
  use super::*;
  #[test]
+ fn device_registry_iterates_and_reclaims_stable_overflow_records() {
+  let mut table=DeviceTable::new();
+  let mut overflow=DeviceSlot::empty();
+  let overflow_ptr=&mut overflow as *mut DeviceSlot;
+  table.push_overflow(overflow_ptr);
+  assert_eq!(table.iter().count(),MAX_WDM_DEVICES+1);
+  table.iter_mut().nth(MAX_WDM_DEVICES).unwrap().used=true;
+  assert!(table[MAX_WDM_DEVICES].used);
+  assert!(table.remove_overflow(overflow_ptr));
+  assert_eq!(table.iter().count(),MAX_WDM_DEVICES);
+  assert!(overflow.next.is_null());
+  assert!(!table.remove_overflow(overflow_ptr));
+ }
+ #[test]
  fn x64_io_csq_layout_matches_wdk_storage_abi() {
   assert_eq!(core::mem::size_of::<IoCsq>(),0x40);
   assert_eq!(core::mem::offset_of!(IoCsq,type_),0x00);
