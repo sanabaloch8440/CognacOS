@@ -43,6 +43,9 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 27. [x] Complete arithmetic, logical, bitwise, conversion, and target-store opcode semantics.
 28. [x] Implement If/Else/While/Break/Continue/Return with package-boundary-safe control flow.
 29. [ ] Correct method argument/local lifetime, recursion, and serialization-flag behavior.
+
+Task 29 follow-up (2026-11-04): the ACPI driver now supplies a concrete `AmlMethodSynchronizer` backed by the kernel's `KeInitializeMutex`, `KeWaitForSingleObject`, and `KeReleaseMutex` path. The AML executor validates monotonic SyncLevel across nested serialized and non-serialized calls and releases implicit mutexes on success and execution errors. Commit `878319c64d40228ec261690dfd4a5f1228dbef60` adds a kernel dispatcher self-test for the exact KMUTEX path used by ACPI: recursive ownership/signal-state transitions and a real second-thread blocking wait with ownership transfer. This does not check task 29 yet: the new kernel self-test must be reached by the boot smoke path and pass CI/QEMU, and table-unload/reload plus abandoned-owner behavior must be verified end to end.
+
 30. [ ] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
 32. [x] Evaluate Package/VarPackage elements including dynamic counts.
