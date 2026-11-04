@@ -31,6 +31,67 @@ impl ResourceList {
         self.entries[self.count]=Some(item);self.count+=1;Ok(())
     }
 }
+/// Address-space windows exported from a validated host-bridge _CRS.
+/// `maximum` is the highest permitted base address; `length` is the
+/// aperture size at each permitted base. The inclusive end is therefore
+/// maximum + length - 1, checked before publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostBridgeAddressSpace { Io, Memory }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostBridgeWindow {
+    pub space: HostBridgeAddressSpace,
+    pub minimum: u64,
+    pub maximum: u64,
+    pub length: u64,
+    pub memory_kind: u8,
+    pub writeable: bool,
+    pub cacheable: bool,
+}
+
+pub const MAX_HOST_BRIDGE_WINDOWS: usize = 32;
+
+/// Extract only address windows from an already validated _CRS resource list.
+/// IRQ, DMA, bus-number, and end-tag descriptors are not apertures. The output
+/// is transactional and no window is synthesized from missing descriptors.
+pub fn collect_host_bridge_windows(
+    resources: &ResourceList,
+    output: &mut [HostBridgeWindow],
+) -> Result<usize, ResourceError> {
+    if resources.count > MAX_RESOURCES { return Err(ResourceError::TooManyResources); }
+    let mut staged = [HostBridgeWindow {
+        space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
+        length: 0, memory_kind: 0, writeable: false, cacheable: false,
+    }; MAX_HOST_BRIDGE_WINDOWS];
+    let mut count = 0usize;
+    for resource in resources.entries[..resources.count].iter().flatten() {
+        let window = match *resource {
+            Resource::Io { minimum, maximum, length, .. } => Some(HostBridgeWindow {
+                space: HostBridgeAddressSpace::Io, minimum, maximum, length,
+                memory_kind: 0, writeable: false, cacheable: false,
+            }),
+            Resource::Memory { minimum, maximum, length, writeable, cacheable, kind, .. } =>
+                Some(HostBridgeWindow {
+                    space: HostBridgeAddressSpace::Memory, minimum, maximum, length,
+                    memory_kind: kind, writeable, cacheable,
+                }),
+            _ => None,
+        };
+        if let Some(window) = window {
+            if window.length == 0 || window.minimum > window.maximum
+                || window.maximum.checked_add(window.length - 1).is_none() {
+                return Err(ResourceError::InvalidDescriptor);
+            }
+            if count == staged.len() { return Err(ResourceError::TooManyResources); }
+            staged[count] = window;
+            count += 1;
+        }
+    }
+    if output.len() < count { return Err(ResourceError::TooManyResources); }
+    output[..count].copy_from_slice(&staged[..count]);
+    Ok(count)
+}
+
 fn slice(b:&[u8],o:usize,n:usize)->Result<&[u8],ResourceError>{
     let e=o.checked_add(n).ok_or(ResourceError::IntegerOverflow)?;
     b.get(o..e).ok_or(ResourceError::Truncated)
