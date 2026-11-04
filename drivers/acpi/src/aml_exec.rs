@@ -789,6 +789,29 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  if serialized{sync.release(method_index);}
  result
 }
+/// Execute a method and preserve Integer, String, or Buffer return objects.
+/// Package returns are rejected because their arena-backed element handles
+/// cannot outlive this invocation without an owning result arena.
+pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
+    method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8,
+    sync:&dyn AmlMethodSynchronizer)->Result<AmlRuntimeValue,ExecError>{
+    if args.iter().any(|value|value.kind==AmlValueKind::Package){
+        return Err(ExecError::UnsupportedArgumentValue)
+    }
+    let mut arena = {
+        #[cfg(test)]
+        { test_heap_arena() }
+        #[cfg(not(test))]
+        { AmlObjectArena::new() }
+    };
+    let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
+    let mut dynamic=AmlDynamicNamespace::new();
+    let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
+        &mut arena,&mut bindings,sync,&mut dynamic,0,0)?;
+    if value.kind==AmlValueKind::Package || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
+    Ok(value)
+}
+
 /// Execute a method in a caller-owned AML object context.
 ///
 /// Unlike the convenience wrappers, this API keeps the value arena and
