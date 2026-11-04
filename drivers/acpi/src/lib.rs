@@ -39,6 +39,13 @@ pub struct AcpiTableHeader {
 /// revision/length-aware parsing.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RsdpFormat { V1,V2Plus }
+
+/// FADT-derived compatibility generation. This is deliberately not inferred
+/// from the RSDP revision: ACPI table revisions are independent, and each
+/// table's own revision/length controls which extensions may be consumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcpiSpecGeneration { Legacy, V5, V6Plus }
+
 pub fn rsdp_format(revision:u8)->RsdpFormat { if revision==0{RsdpFormat::V1}else{RsdpFormat::V2Plus} }
 /// Parse and checksum-validate any complete SDT without assuming its payload.
 pub fn parse_sdt_header(bytes:&[u8])->Result<AcpiTableHeader,AcpiError>{
@@ -79,8 +86,23 @@ pub struct FadtInfo {
 impl FadtInfo {
     pub const HARDWARE_REDUCED_ACPI:u32=1<<20;
     pub const LOW_POWER_S0_IDLE_CAPABLE:u32=1<<21;
-    pub fn hardware_reduced(&self)->bool{self.flags&Self::HARDWARE_REDUCED_ACPI!=0}
-    pub fn low_power_s0_idle_capable(&self)->bool{self.flags&Self::LOW_POWER_S0_IDLE_CAPABLE!=0}
+    /// FADT revision 5 is ACPI 5.0/5.1; revision 6 and later are the
+    /// ACPI 6.x family. Future revisions remain forward-compatible.
+    pub fn spec_generation(&self)->AcpiSpecGeneration {
+        match self.revision {
+            0..=4 => AcpiSpecGeneration::Legacy,
+            5 => AcpiSpecGeneration::V5,
+            _ => AcpiSpecGeneration::V6Plus,
+        }
+    }
+    pub fn supports_acpi_5_features(&self)->bool { self.revision >= 5 }
+    pub fn supports_acpi_6_features(&self)->bool { self.revision >= 6 }
+    pub fn hardware_reduced(&self)->bool{
+        self.supports_acpi_5_features() && self.flags&Self::HARDWARE_REDUCED_ACPI!=0
+    }
+    pub fn low_power_s0_idle_capable(&self)->bool{
+        self.supports_acpi_5_features() && self.flags&Self::LOW_POWER_S0_IDLE_CAPABLE!=0
+    }
     pub fn effective_gpe0(&self)->Option<(AcpiGas,u8)>{
         self.x_gpe0_block.filter(|g|g.address!=0).map(|g|(g,self.gpe0_length))
             .or_else(||(self.gpe0_legacy!=0&&self.gpe0_length!=0).then_some((AcpiGas{address_space_id:1,bit_width:self.gpe0_length.saturating_mul(8),bit_offset:0,access_size:1,address:self.gpe0_legacy as u64},self.gpe0_length)))
@@ -119,8 +141,11 @@ pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
     if n>=220{out.x_pm_timer_block=parse_optional_gas(bytes,208)?;}
     if n>=232{out.x_gpe0_block=parse_optional_gas(bytes,220)?;}
     if n>=244{out.x_gpe1_block=parse_optional_gas(bytes,232)?;}
-    if n>=256{out.sleep_control_register=parse_optional_gas(bytes,244)?;}
-    if n>=268{out.sleep_status_register=parse_optional_gas(bytes,256)?;}
+    // SLEEP_CONTROL_REG and SLEEP_STATUS_REG are ACPI 5.0 additions.
+    // Some legacy firmware over-allocates/reserves the tail of FADT; table
+    // length alone must not make those bytes active on a pre-v5 FADT.
+    if h.revision>=5 && n>=256{out.sleep_control_register=parse_optional_gas(bytes,244)?;}
+    if h.revision>=5 && n>=268{out.sleep_status_register=parse_optional_gas(bytes,256)?;}
     if n>=148{
         out.x_firmware_ctrl=u64::from_le_bytes(bytes[132..140].try_into().map_err(|_|AcpiError::Truncated)?);
         out.x_dsdt=u64::from_le_bytes(bytes[140..148].try_into().map_err(|_|AcpiError::Truncated)?);
@@ -162,11 +187,12 @@ pub struct IrqOverride { pub bus: u8, pub source_irq: u8, pub gsi: u32, pub acti
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct LocalApicNmi { pub processor_uid:u8,pub flags:u16,pub lint:u8 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub struct MadtWakeupMailbox { pub address:u64 }
+pub struct MadtWakeupMailbox { pub version:u16, pub address:u64 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct X2ApicNmi { pub processor_uid:u32,pub flags:u16,pub lint:u8 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MadtInfo {
+    pub revision: u8,
     pub local_apic_address: u64,
     pub flags: u32,
     pub cpus: [CpuEntry; 64],
@@ -180,7 +206,7 @@ pub struct MadtInfo {
     pub wakeup_mailbox:Option<MadtWakeupMailbox>,
 }
 impl MadtInfo {
-    pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0,wakeup_mailbox:None };
+    pub const EMPTY: Self = Self { revision: 0, local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0,wakeup_mailbox:None };
 }
 fn u32le(b: &[u8], o: usize) -> Result<u32, AcpiError> {
     let s = b.get(o..o + 4).ok_or(AcpiError::Truncated)?;
@@ -196,6 +222,7 @@ pub fn parse_madt(bytes: &[u8]) -> Result<MadtInfo, AcpiError> {
     if length < 44 || length > bytes.len() { return Err(AcpiError::BadLength); }
     if !checksum_ok(&bytes[..length]) { return Err(AcpiError::BadChecksum); }
     let mut out = MadtInfo::EMPTY;
+    out.revision = bytes[8];
     out.local_apic_address = u32le(bytes, 36)? as u64;
     out.flags = u32le(bytes, 40)?;
     let mut offset = 44;
@@ -243,10 +270,28 @@ pub fn parse_madt(bytes: &[u8]) -> Result<MadtInfo, AcpiError> {
                 out.cpus[out.cpu_count] = CpuEntry { processor_uid: u32le(e, 12)?, apic_id: u32le(e, 4)?, enabled: flags & 3 != 0, x2apic: true };
                 out.cpu_count += 1;
             }
-            16 if size >= 16 => {
-                let address=u64::from_le_bytes(e[4..12].try_into().map_err(|_|AcpiError::Truncated)?);
-                if address==0||address&0x3f!=0{return Err(AcpiError::MalformedEntry)}
-                out.wakeup_mailbox=Some(MadtWakeupMailbox{address});
+            // The Multiprocessor Wakeup MADT entry is a revision-6
+            // extension (ACPI 6.4+). ACPI 5.x firmware may use the same
+            // numeric type for an OEM/reserved purpose, so leave it opaque.
+            16 if out.revision >= 6 => {
+                if size != 16 { return Err(AcpiError::MalformedEntry); }
+                let version = u16::from_le_bytes([e[2], e[3]]);
+                if e[4..8].iter().any(|byte| *byte != 0) {
+                    return Err(AcpiError::MalformedEntry);
+                }
+                // Version zero is the mailbox layout defined by ACPI 6.4.
+                // Unknown future mailbox versions are safely ignored rather
+                // than misinterpreted using the version-zero layout.
+                if version == 0 {
+                    let address = u64::from_le_bytes(
+                        e[8..16].try_into().map_err(|_| AcpiError::Truncated)?
+                    );
+                    // The mailbox is a firmware-reserved 4 KiB ACPI NVS page.
+                    if address == 0 || address & 0xfff != 0 || out.wakeup_mailbox.is_some() {
+                        return Err(AcpiError::MalformedEntry);
+                    }
+                    out.wakeup_mailbox = Some(MadtWakeupMailbox { version, address });
+                }
             }
             10 if size >= 12 => {
                 if out.x2apic_nmi_count==out.x2apic_nmis.len(){return Err(AcpiError::TooManyEntries)}
@@ -1373,11 +1418,75 @@ mod acpi_5_6_revision_tests {
     fn parses_acpi_65_multiprocessor_wakeup_mailbox(){
         let mut table=header(*b"APIC",60,6);
         table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
-        table[44..60].copy_from_slice(&[16,16,0,0,0x00,0x10,0,0,0,0,0,0,0,0,0,0]);
+        table[44..60].copy_from_slice(&[16,16,0,0,0,0,0,0,0,0x10,0,0,0,0,0,0]);
         checksum(&mut table);
         let madt=parse_madt(&table).unwrap();
-        assert_eq!(madt.wakeup_mailbox,Some(MadtWakeupMailbox{address:0x1000}));
+        assert_eq!(madt.wakeup_mailbox,Some(MadtWakeupMailbox{version:0,address:0x1000}));
     }
+    #[test]
+    fn acpi5_fadt_enables_v5_features_and_keeps_legacy_register_model(){
+        let mut table=header(*b"FACP",268,5);
+        table[40..44].copy_from_slice(&0x1234u32.to_le_bytes());
+        table[45]=2;
+        table[64..68].copy_from_slice(&0x404u32.to_le_bytes());
+        table[89]=2;
+        table[112..116].copy_from_slice(&(FadtInfo::HARDWARE_REDUCED_ACPI|FadtInfo::LOW_POWER_S0_IDLE_CAPABLE).to_le_bytes());
+        table[244]=0;table[245]=8;table[247]=1;table[248..256].copy_from_slice(&0x1000u64.to_le_bytes());
+        table[256]=0;table[257]=8;table[259]=1;table[260..268].copy_from_slice(&0x1001u64.to_le_bytes());
+        checksum(&mut table);
+        let fadt=parse_fadt(&table).unwrap();
+        assert_eq!(fadt.spec_generation(),AcpiSpecGeneration::V5);
+        assert!(fadt.supports_acpi_5_features());
+        assert!(!fadt.supports_acpi_6_features());
+        assert!(fadt.hardware_reduced());
+        assert!(fadt.low_power_s0_idle_capable());
+        assert_eq!(fadt.sleep_control_register.unwrap().address,0x1000);
+        assert_eq!(fadt.sleep_status_register.unwrap().address,0x1001);
+    }
+
+    #[test]
+    fn legacy_fadt_does_not_activate_acpi5_tail_or_reserved_flag_bits(){
+        let mut table=header(*b"FACP",268,4);
+        table[40..44].copy_from_slice(&0x1234u32.to_le_bytes());
+        table[64..68].copy_from_slice(&0x404u32.to_le_bytes());
+        table[89]=2;
+        table[112..116].copy_from_slice(&(FadtInfo::HARDWARE_REDUCED_ACPI|FadtInfo::LOW_POWER_S0_IDLE_CAPABLE).to_le_bytes());
+        table[244]=0;table[245]=8;table[247]=1;table[248..256].copy_from_slice(&0x1000u64.to_le_bytes());
+        table[256]=0;table[257]=8;table[259]=1;table[260..268].copy_from_slice(&0x1001u64.to_le_bytes());
+        checksum(&mut table);
+        let fadt=parse_fadt(&table).unwrap();
+        assert_eq!(fadt.spec_generation(),AcpiSpecGeneration::Legacy);
+        assert!(!fadt.hardware_reduced());
+        assert!(!fadt.low_power_s0_idle_capable());
+        assert_eq!(fadt.sleep_control_register,None);
+        assert_eq!(fadt.sleep_status_register,None);
+    }
+
+    #[test]
+    fn acpi5_madt_skips_revision6_multiprocessor_wakeup_extension(){
+        let mut table=header(*b"APIC",60,5);
+        table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
+        table[44..60].copy_from_slice(&[16,16,0,0,0,0,0,0,0x00,0x10,0,0,0,0,0,0]);
+        checksum(&mut table);
+        let madt=parse_madt(&table).unwrap();
+        assert_eq!(madt.revision,5);
+        assert_eq!(madt.wakeup_mailbox,None);
+    }
+
+    #[test]
+    fn acpi6_madt_validates_mailbox_reserved_fields_and_page_alignment(){
+        let mut table=header(*b"APIC",60,6);
+        table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
+        table[44..60].copy_from_slice(&[16,16,0,0,0,0,0,0,0x00,0x10,0,0,0,0,0,0]);
+        checksum(&mut table);
+        assert_eq!(parse_madt(&table).unwrap().wakeup_mailbox,Some(MadtWakeupMailbox{version:0,address:0x1000}));
+
+        table[48]=1;checksum(&mut table);
+        assert_eq!(parse_madt(&table),Err(AcpiError::MalformedEntry));
+        table[48]=0;table[52]=1;checksum(&mut table);
+        assert_eq!(parse_madt(&table),Err(AcpiError::MalformedEntry));
+    }
+
     #[test]
     fn rejects_bad_fadt_checksum_and_reserved_nmi_flags(){
         let mut table=header(*b"FACP",148,6);

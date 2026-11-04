@@ -28,8 +28,10 @@ pub fn platform_registers(fadt:&FadtInfo)->Result<AcpiPlatformRegisters,EventErr
  let model=if fadt.hardware_reduced(){AcpiHardwareModel::HardwareReduced}else{AcpiHardwareModel::FixedHardware};
  let pm1a=fadt.x_pm1a_control_block.filter(|g|g.address!=0).or_else(||(fadt.pm1a_control_legacy!=0).then_some(AcpiGas{address_space_id:1,bit_width:fadt.pm1_control_length.saturating_mul(8),bit_offset:0,access_size:1,address:fadt.pm1a_control_legacy as u64}));
  let pm1b=fadt.x_pm1b_control_block.filter(|g|g.address!=0).or_else(||(fadt.pm1b_control_legacy!=0).then_some(AcpiGas{address_space_id:1,bit_width:fadt.pm1_control_length.saturating_mul(8),bit_offset:0,access_size:1,address:fadt.pm1b_control_legacy as u64}));
- let sleep_control=fadt.sleep_control_register.filter(|g|g.address!=0);
- let sleep_status=fadt.sleep_status_register.filter(|g|g.address!=0);
+ // Do not activate the ACPI 5.0 sleep-register interface merely because
+ // a caller populated the parsed structure: pre-v5 FADTs reserve these bytes.
+ let sleep_control=if fadt.supports_acpi_5_features(){fadt.sleep_control_register.filter(|g|g.address!=0)}else{None};
+ let sleep_status=if fadt.supports_acpi_5_features(){fadt.sleep_status_register.filter(|g|g.address!=0)}else{None};
  if model==AcpiHardwareModel::HardwareReduced{
   if sleep_control.is_none(){return Err(EventError::InvalidFadt)}
   // GPE0/GPE1 blocks are not part of the hardware-reduced programming model.
@@ -281,9 +283,18 @@ mod tests{
  use super::*;
  fn gas(address:u64)->AcpiGas{AcpiGas{address_space_id:1,bit_width:8,bit_offset:0,access_size:1,address}}
  #[test]fn hardware_reduced_ignores_legacy_gpe_and_requires_sleep_control(){
-  let mut f=FadtInfo::default();f.flags=FadtInfo::HARDWARE_REDUCED_ACPI;f.sleep_control_register=Some(gas(0x100));
+  let mut f=FadtInfo::default();f.revision=5;f.flags=FadtInfo::HARDWARE_REDUCED_ACPI;f.sleep_control_register=Some(gas(0x100));
   let r=platform_registers(&f).unwrap();assert_eq!(r.model,AcpiHardwareModel::HardwareReduced);assert!(r.gpe0.is_none());
   let p=build_sleep_register_plan(&r,3,5,0).unwrap();assert_eq!(p.writes[0].unwrap().value,(5<<2)|(1<<5));
+ }
+ #[test]fn pre_v5_reserved_flag_bits_do_not_switch_to_hardware_reduced(){
+  let mut f=FadtInfo::default();f.revision=4;f.flags=FadtInfo::HARDWARE_REDUCED_ACPI;
+  f.pm1a_control_legacy=0x404;f.pm1_control_length=2;
+  f.sleep_control_register=Some(gas(0x100));
+  let r=platform_registers(&f).unwrap();
+  assert_eq!(r.model,AcpiHardwareModel::FixedHardware);
+  assert_eq!(r.pm1a_control,Some(AcpiGas{address_space_id:1,bit_width:16,bit_offset:0,access_size:1,address:0x404}));
+  assert_eq!(r.sleep_control,None);
  }
  #[test]fn fixed_sleep_plan_sets_both_pm1_blocks(){
   let r=AcpiPlatformRegisters{model:AcpiHardwareModel::FixedHardware,pm1a_control:Some(gas(0x404)),pm1b_control:Some(gas(0x408)),sleep_control:None,sleep_status:None,gpe0:None,gpe1:None};
