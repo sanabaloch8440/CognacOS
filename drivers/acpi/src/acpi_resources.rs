@@ -44,6 +44,7 @@ pub struct HostBridgeWindow {
     pub minimum: u64,
     pub maximum: u64,
     pub length: u64,
+    pub alignment: u64,
     pub memory_kind: u8,
     pub writeable: bool,
     pub cacheable: bool,
@@ -61,18 +62,18 @@ pub fn collect_host_bridge_windows(
     if resources.count > MAX_RESOURCES { return Err(ResourceError::TooManyResources); }
     let mut staged = [HostBridgeWindow {
         space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
-        length: 0, memory_kind: 0, writeable: false, cacheable: false,
+        length: 0, alignment: 0, memory_kind: 0, writeable: false, cacheable: false,
     }; MAX_HOST_BRIDGE_WINDOWS];
     let mut count = 0usize;
     for resource in resources.entries[..resources.count].iter().flatten() {
         let window = match *resource {
-            Resource::Io { minimum, maximum, length, .. } => Some(HostBridgeWindow {
-                space: HostBridgeAddressSpace::Io, minimum, maximum, length,
+            Resource::Io { minimum, maximum, alignment, length, .. } => Some(HostBridgeWindow {
+                space: HostBridgeAddressSpace::Io, minimum, maximum, length, alignment,
                 memory_kind: 0, writeable: false, cacheable: false,
             }),
-            Resource::Memory { minimum, maximum, length, writeable, cacheable, kind, .. } =>
+            Resource::Memory { minimum, maximum, alignment, length, writeable, cacheable, kind } =>
                 Some(HostBridgeWindow {
-                    space: HostBridgeAddressSpace::Memory, minimum, maximum, length,
+                    space: HostBridgeAddressSpace::Memory, minimum, maximum, length, alignment,
                     memory_kind: kind, writeable, cacheable,
                 }),
             _ => None,
@@ -90,6 +91,45 @@ pub fn collect_host_bridge_windows(
     if output.len() < count { return Err(ResourceError::TooManyResources); }
     output[..count].copy_from_slice(&staged[..count]);
     Ok(count)
+}
+
+/// Build the single, versioned ACPI-to-PCI host-bridge handoff object from
+/// the validated _CRS resource list. The caller supplies the root-bridge
+/// segment and bus-number identity from the ACPI namespace/PCI root PDO.
+pub fn build_pci_host_bridge_resource_set(
+    resources: &ResourceList,
+    segment: u16,
+    bus_start: u8,
+    bus_end: u8,
+) -> Result<cognacos_hal_contract::PciHostBridgeResourceSet, ResourceError> {
+    if bus_start > bus_end { return Err(ResourceError::InvalidDescriptor); }
+    let mut windows = [HostBridgeWindow {
+        space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
+        length: 0, alignment: 0, memory_kind: 0,
+        writeable: false, cacheable: false,
+    }; MAX_HOST_BRIDGE_WINDOWS];
+    let count = collect_host_bridge_windows(resources, &mut windows)?;
+    let mut set = cognacos_hal_contract::PciHostBridgeResourceSet::empty(
+        segment, bus_start, bus_end,
+    );
+    for (index, window) in windows[..count].iter().enumerate() {
+        let space = match window.space {
+            HostBridgeAddressSpace::Io => cognacos_hal_contract::PCI_HOST_BRIDGE_WINDOW_IO,
+            HostBridgeAddressSpace::Memory => cognacos_hal_contract::PCI_HOST_BRIDGE_WINDOW_MEMORY,
+        };
+        set.windows[index] = cognacos_hal_contract::PciHostBridgeResourceWindow {
+            space,
+            attributes: (window.writeable as u8) | ((window.cacheable as u8) << 1),
+            address_width: window.memory_kind,
+            reserved: 0,
+            minimum: window.minimum,
+            maximum: window.maximum,
+            alignment: window.alignment,
+            length: window.length,
+        };
+    }
+    set.count = count as u32;
+    Ok(set)
 }
 
 fn slice(b:&[u8],o:usize,n:usize)->Result<&[u8],ResourceError>{
@@ -889,7 +929,7 @@ mod host_bridge_crs_window_tests {
         list.count = 3;
         let mut output = [HostBridgeWindow {
             space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
-            length: 0, memory_kind: 0, writeable: false, cacheable: false,
+            length: 0, alignment: 0, memory_kind: 0, writeable: false, cacheable: false,
         }; 4];
         assert_eq!(collect_host_bridge_windows(&list, &mut output), Ok(2));
         assert_eq!(output[0].space, HostBridgeAddressSpace::Memory);
@@ -908,7 +948,7 @@ mod host_bridge_crs_window_tests {
         list.count = 1;
         let sentinel = HostBridgeWindow {
             space: HostBridgeAddressSpace::Io, minimum: 0xdead, maximum: 0xbeef,
-            length: 1, memory_kind: 0, writeable: false, cacheable: false,
+            length: 1, alignment: 0, memory_kind: 0, writeable: false, cacheable: false,
         };
         let mut output = [sentinel; 2];
         assert_eq!(collect_host_bridge_windows(&list, &mut output), Err(ResourceError::InvalidDescriptor));
