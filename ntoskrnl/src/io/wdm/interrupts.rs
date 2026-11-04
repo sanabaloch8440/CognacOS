@@ -134,8 +134,8 @@ unsafe extern "win64" fn io_interrupt_dispatch(
 }
 
 /// @partial implementation
-/// Windows 11 x64 IoConnectInterrupt ABI. Supports exclusive and shared
-/// level-sensitive vectors with matching vector properties. One HAL callback
+/// Windows 11 x64 IoConnectInterrupt ABI. Supports exclusive vectors and
+/// shared line-based or message-signaled vectors when assigned properties match. One HAL callback
 /// fans out to up to eight registered ISRs per vector. Caller-supplied spin
 /// locks, floating-save requests, and passive-level ISRs remain unsupported.
 #[unsafe(export_name = "IoConnectInterrupt")]
@@ -162,7 +162,7 @@ pub unsafe extern "win64" fn io_connect_interrupt(
         || interrupt_mode > 1
         || share_vector > 1
         || processor_enable_mask == 0
-        || (share_vector != 0 && interrupt_mode != 0)
+        
     {
         return STATUS_INVALID_PARAMETER;
     }
