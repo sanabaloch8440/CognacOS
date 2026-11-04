@@ -241,7 +241,7 @@ ExAllocatePoolWithTag:
 .type ExFreePoolWithTag,@function
 ExFreePoolWithTag:
  jmp QWORD PTR [rip + __imp_ex_ExFreePoolWithTag]
-.size ExFreePoolWithTag, .-ExFreePoolWithTag
+ .size ExFreePoolWithTag, .-ExFreePoolWithTag
 .section .data.imports.ke,"aw",@progbits
 .p2align 3
 .global __imp_ke_KeInitializeMutex
@@ -306,7 +306,7 @@ __imp_io_IoPnPEnumerateBus: .quad 0
 .p2align 3
 .global __imp_ex_ExAllocatePoolWithTag
 __imp_ex_ExAllocatePoolWithTag: .quad 0
-.global __imp_ex_ExFreePoolWithTag
+ .global __imp_ex_ExFreePoolWithTag
 __imp_ex_ExFreePoolWithTag: .quad 0
 "#);
 
@@ -668,6 +668,7 @@ unsafe extern "win64" fn power_dispatch(
 const IRP_MN_START_DEVICE: u8 = 0x00;
 const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
+const IRP_MN_SURPRISE_REMOVAL: u8 = 0x17;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
 const IRP_MN_QUERY_INTERFACE: u8 = 0x08;
 const IRP_MN_QUERY_CAPABILITIES: u8 = 0x09;
@@ -999,6 +1000,32 @@ unsafe fn program_and_verify_pdo_resources(
  }
 }
 
+/// Remove a child PDO from the next BusRelations snapshot. The PnP
+/// manager owns its independent relation/devnode references and releases
+/// those through the normal remove path; this only withdraws bus publication.
+unsafe fn withdraw_acpi_pdo_relation(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->bool {
+    if device.is_null(){return false}
+    while PDO_RELATIONS_LOCK.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){
+        core::hint::spin_loop();
+    }
+    let mut found=false;
+    unsafe {
+        let count=ACPI_PDO_COUNT.min(MAX_ACPI_PDOS);
+        if let Some(index)=(0..count).find(|index|ACPI_PDOS[*index]==device){
+            for slot in index..count-1 { ACPI_PDOS[slot]=ACPI_PDOS[slot+1]; }
+            ACPI_PDO_COUNT=count-1;
+            ACPI_PDOS[ACPI_PDO_COUNT]=core::ptr::null_mut();
+            ACPI_BUS_RELATIONS.count=ACPI_PDO_COUNT as u32;
+            for slot in 0..MAX_ACPI_PDOS {
+                ACPI_BUS_RELATIONS.objects[slot]=ACPI_PDOS[slot];
+            }
+            found=true;
+        }
+    }
+    PDO_RELATIONS_LOCK.store(false,Ordering::Release);
+    found
+}
+
 unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     let Some(_operation)=AcpiOperationGuard::enter() else{return STATUS_DEVICE_NOT_READY;};
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -1017,7 +1044,35 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
         // allocation, execute _SRS when present, then verify the live _CRS.
         IRP_MN_START_DEVICE if device!=unsafe{ACPI_BUS_DEVICE} =>
             unsafe{program_and_verify_pdo_resources(device,stack)},
-        IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
+        IRP_MN_STOP_DEVICE => STATUS_SUCCESS,
+        // Surprise removal must be acknowledged without touching firmware:
+        // the device may no longer respond. The kernel PnP manager follows a
+        // successful acknowledgement with the terminal REMOVE_DEVICE IRP.
+        IRP_MN_SURPRISE_REMOVAL => STATUS_SUCCESS,
+        IRP_MN_REMOVE_DEVICE if device!=unsafe{ACPI_BUS_DEVICE} => {
+            let withdrawn=unsafe{withdraw_acpi_pdo_relation(device)};
+            if withdrawn {
+                let bus=unsafe{ACPI_BUS_DEVICE};
+                if !bus.is_null() {
+                    // Reconcile the parent's relation set now so the PnP
+                    // manager drops its relation reference to this PDO.
+                    let _=unsafe{IoPnPEnumerateBus(bus)};
+                }
+            }
+            STATUS_SUCCESS
+        },
+        IRP_MN_REMOVE_DEVICE => {
+            STATE.ready.store(false,Ordering::Release);
+            let bus=unsafe{ACPI_BUS_DEVICE};
+            if !bus.is_null() {
+                let _=unsafe{IoPnPUnregisterBusFdo(
+                    cognacos_nt_abi::bus::ACPI_BUS_ENUMERATOR_ID,
+                    cognacos_nt_abi::bus::ACPI_BUS_IDENTITY_HASH,
+                    bus,
+                )};
+            }
+            STATUS_SUCCESS
+        },
         IRP_MN_QUERY_DEVICE_RELATIONS => {
             let relation_type=unsafe{core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<u32>())};
             if relation_type!=DEVICE_RELATIONS_BUS || device!=unsafe{ACPI_BUS_DEVICE} {
