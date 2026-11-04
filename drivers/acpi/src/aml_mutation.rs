@@ -161,7 +161,7 @@ impl AmlDynamicNamespace {
                 }
                 return Ok((parent, name.segments[name.count as usize - 1]));
             }
-            if explicit || candidate == 0 { return Ok((candidate, name.segments[name.count as usize - 1])); }
+            if explicit || candidate == 0 { return Err(RuntimeError::InvalidNode); }
             candidate = namespace.nodes.get(candidate as usize).ok_or(RuntimeError::InvalidNode)?.parent;
         }
     }
