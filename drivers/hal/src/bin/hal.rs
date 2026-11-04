@@ -1,10 +1,8 @@
 #![no_std]
 #![no_main]
 
-use cognacos_hal_contract::{
-    hal, kernel_services, HalBootstrapInfo, HalKernelServices,
-    HAL_BOOTSTRAP_INFO_VERSION,
-};
+use cognacos_hal::{hal, kernel_services};
+use cognacos_hal_contract::{HalBootstrapInfo, HalKernelServices, HAL_BOOTSTRAP_INFO_VERSION};
 
 #[used]
 #[unsafe(link_section = ".rodata")]
