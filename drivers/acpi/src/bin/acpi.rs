@@ -68,12 +68,55 @@ unsafe impl Sync for KernelAmlMutex {}
 struct KernelAmlMethodSynchronizer;
 static KERNEL_AML_METHOD_MUTEXES:[KernelAmlMutex;MAX_ACPI_METHOD_MUTEXES]=
  [const{KernelAmlMutex::new()};MAX_ACPI_METHOD_MUTEXES];
+
+/// AML Event is a synchronization event. Keep a real x64 KEVENT header for
+/// each namespace slot; owner_table prevents a stale table's signal state from
+/// being inherited when a different table occupies that slot.
+#[repr(C,align(8))]
+struct KernelAmlEvent {
+ initialized:core::sync::atomic::AtomicU8,
+ owner_table:core::sync::atomic::AtomicU32,
+ header:core::cell::UnsafeCell<[u64;3]>,
+}
+const _:()=assert!(core::mem::offset_of!(KernelAmlEvent,header)==8);
+const _:()=assert!(core::mem::size_of::<KernelAmlEvent>()==32);
+impl KernelAmlEvent {
+ const fn new()->Self{Self{initialized:core::sync::atomic::AtomicU8::new(0),
+  owner_table:core::sync::atomic::AtomicU32::new(u32::MAX),header:core::cell::UnsafeCell::new([0;3])}}
+ fn object(&self)->*mut core::ffi::c_void{self.header.get().cast()}
+}
+unsafe impl Sync for KernelAmlEvent {}
+static KERNEL_AML_EVENTS:[KernelAmlEvent;MAX_ACPI_METHOD_MUTEXES]=
+ [const{KernelAmlEvent::new()};MAX_ACPI_METHOD_MUTEXES];
 static KERNEL_AML_METHOD_SYNCHRONIZER:KernelAmlMethodSynchronizer=KernelAmlMethodSynchronizer;
 static POWER_RESOURCE_MUTEX:KernelAmlMutex=KernelAmlMutex::new();
 unsafe extern "win64" {
  fn KeInitializeMutex(mutex:*mut core::ffi::c_void,level:u32);
+ fn KeInitializeEvent(event:*mut core::ffi::c_void,event_type:i32,state:u8);
+ fn KeSetEvent(event:*mut core::ffi::c_void,increment:i32,wait:u8)->i32;
+ fn KeResetEvent(event:*mut core::ffi::c_void)->i32;
  fn KeWaitForSingleObject(object:*mut core::ffi::c_void,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
  fn KeReleaseMutex(mutex:*mut core::ffi::c_void,wait:u8)->i32;
+}
+impl KernelAmlMethodSynchronizer {
+ fn event(&self,event_index:u16,owner_table:u32)->Result<&'static KernelAmlEvent,acpi::aml_exec::ExecError>{
+  let event=KERNEL_AML_EVENTS.get(event_index as usize)
+   .ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
+  loop{
+   let state=event.initialized.load(Ordering::Acquire);
+   if state==2&&event.owner_table.load(Ordering::Acquire)==owner_table{return Ok(event)}
+   if state==0||state==2{
+    if event.initialized.compare_exchange(state,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+     // No method can still wait on an event from a replaced table: table
+     // replacement is performed only after the AML execution gate drains.
+     unsafe{KeInitializeEvent(event.object(),1,0);}
+     event.owner_table.store(owner_table,Ordering::Release);
+     event.initialized.store(2,Ordering::Release);
+     return Ok(event)
+    }
+   }else{core::hint::spin_loop();}
+  }
+ }
 }
 impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
  fn acquire(&self,method_index:u16,_sync_level:u8)->Result<(),acpi::aml_exec::ExecError>{
@@ -141,6 +184,28 @@ impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
   unsafe{let _=KeReleaseMutex(mutex.object(),0);}
   Ok(())
  }
+ fn signal_event(&self,event_index:u16,owner_table:u32)->Result<(),acpi::aml_exec::ExecError>{
+  let event=self.event(event_index,owner_table)?;
+  unsafe{let _=KeSetEvent(event.object(),0,0);}
+  Ok(())
+ }
+ fn reset_event(&self,event_index:u16,owner_table:u32)->Result<(),acpi::aml_exec::ExecError>{
+  let event=self.event(event_index,owner_table)?;
+  unsafe{let _=KeResetEvent(event.object());}
+  Ok(())
+ }
+ fn wait_event(&self,event_index:u16,owner_table:u32,timeout_ms:u16)->Result<bool,acpi::aml_exec::ExecError>{
+  let event=self.event(event_index,owner_table)?;
+  // AML 0xffff is infinite; all other values are milliseconds represented
+  // as a negative relative 100-ns interval for KeWaitForSingleObject.
+  let relative_timeout=-(timeout_ms as i64)*10_000;
+  let timeout=if timeout_ms==u16::MAX{core::ptr::null()}else{&relative_timeout as *const i64};
+  match unsafe{KeWaitForSingleObject(event.object(),0,0,0,timeout)}{
+   STATUS_SUCCESS=>Ok(true),
+   0x0000_0102=>Ok(false),
+   _=>Err(acpi::aml_exec::ExecError::ExecutionBusy),
+  }
+ }
 }
 
 unsafe extern "win64" {
@@ -200,6 +265,12 @@ ExFreePoolWithTag:
 .p2align 3
 .global __imp_ke_KeInitializeMutex
 __imp_ke_KeInitializeMutex: .quad 0
+.global __imp_ke_KeInitializeEvent
+__imp_ke_KeInitializeEvent: .quad 0
+.global __imp_ke_KeSetEvent
+__imp_ke_KeSetEvent: .quad 0
+.global __imp_ke_KeResetEvent
+__imp_ke_KeResetEvent: .quad 0
 .global __imp_ke_KeWaitForSingleObject
 __imp_ke_KeWaitForSingleObject: .quad 0
 .global __imp_ke_KeReleaseMutex
@@ -210,6 +281,21 @@ __imp_ke_KeReleaseMutex: .quad 0
 KeInitializeMutex:
  jmp QWORD PTR [rip + __imp_ke_KeInitializeMutex]
 .size KeInitializeMutex, .-KeInitializeMutex
+.global KeInitializeEvent
+.type KeInitializeEvent,@function
+KeInitializeEvent:
+ jmp QWORD PTR [rip + __imp_ke_KeInitializeEvent]
+.size KeInitializeEvent, .-KeInitializeEvent
+.global KeSetEvent
+.type KeSetEvent,@function
+KeSetEvent:
+ jmp QWORD PTR [rip + __imp_ke_KeSetEvent]
+.size KeSetEvent, .-KeSetEvent
+.global KeResetEvent
+.type KeResetEvent,@function
+KeResetEvent:
+ jmp QWORD PTR [rip + __imp_ke_KeResetEvent]
+.size KeResetEvent, .-KeResetEvent
 .global KeWaitForSingleObject
 .type KeWaitForSingleObject,@function
 KeWaitForSingleObject:
