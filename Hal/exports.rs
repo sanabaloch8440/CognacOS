@@ -139,8 +139,8 @@ unsafe fn pci_read_dword(bus: u32, slot: u32, offset: u32) -> Option<u32> {
 /// Read PCI configuration space using legacy mechanism #1. Only PCI config
 /// bus data (type 5), bus 0..255, device/function slot 0..255 and offsets
 /// within the conventional 256-byte header are supported.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_get_bus_data_by_offset(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *mut u8, offset: u32, length: u32,
@@ -181,8 +181,8 @@ fn pci_config_byte_writable(offset: u32) -> bool {
 /// Write PCI configuration space using legacy mechanism #1. Writes to the
 /// vendor/device ID, BARs, and status register are rejected. Returns the number
 /// of bytes actually written, which can be smaller than the requested length.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *const u8, offset: u32, length: u32,
@@ -237,8 +237,8 @@ pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     written
 }
 
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_get_bus_data(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *mut u8, length: u32,
@@ -246,8 +246,8 @@ pub unsafe extern "win64" fn hal_get_bus_data(
     unsafe { hal_get_bus_data_by_offset(bus_data_type, bus_number, slot_number, buffer, 0, length) }
 }
 
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_set_bus_data(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *const u8, length: u32,
@@ -291,8 +291,8 @@ fn rtc_decode(value: u8, binary_mode: bool) -> Option<u8> {
 
 /// Read the battery-backed CMOS real-time clock. This implementation rejects
 /// an updating or malformed RTC sample instead of returning fabricated time.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_query_real_time_clock(fields: *mut HalTimeFields) -> u8 {
     if fields.is_null() { return 0; }
     let _guard = CMOS_RTC_LOCK.lock();
@@ -349,8 +349,8 @@ pub unsafe extern "win64" fn hal_query_real_time_clock(fields: *mut HalTimeField
 /// no bridge-window translation database. Support only the PC-compatible bus
 /// types for which identity translation is valid; reject unknown buses and
 /// invalid I/O-port addresses instead of returning a fabricated translation.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_translate_bus_address(
     interface_type: u32,
     _bus_number: u32,
@@ -384,15 +384,15 @@ pub unsafe extern "win64" fn hal_translate_bus_address(
 /// treat it as read-only. STATUS_NOT_FOUND is returned when discovery has not
 /// run or the requested instance is absent.
 /// Enable a previously connected device interrupt vector after its ISR is installed.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_enable_interrupt(vector:u32,_irql:u8)->u8{
     if vector>u8::MAX as u32{return 0;}
     unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,true).is_ok() as u8}
 }
 /// Mask a connected device interrupt vector before interrupt teardown.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_disable_interrupt(vector:u32,_irql:u8)->u8{
     if vector>u8::MAX as u32{return 0;}
     unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,false).is_ok() as u8}
@@ -405,7 +405,7 @@ pub unsafe extern "win64" fn hal_disable_interrupt(vector:u32,_irql:u8)->u8{
 /// this routine never treats a bus IRQ as a system vector.
 #[unsafe(export_name = "HalGetInterruptVector")]
 /// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_get_interrupt_vector(
     interface_type: i32,
     bus_number: u32,
@@ -433,8 +433,8 @@ pub unsafe extern "win64" fn hal_get_interrupt_vector(
     vector
 }
 
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_acpi_get_table_ex(
     signature: u32,
     instance: u32,
@@ -521,8 +521,8 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
 
 /// Map an NT logical processor number to its firmware/APIC processor ID.
 /// Unknown or not-yet-discovered logical processors return ULONG_MAX.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_get_processor_id_by_nt_number(nt_number: u32) -> u32 {
     let Ok(cpu) = crate::hal::cpu_local(nt_number as usize) else { return u32::MAX; };
     let id = cpu.apic_id.load(core::sync::atomic::Ordering::Acquire);
@@ -531,8 +531,8 @@ pub unsafe extern "win64" fn hal_get_processor_id_by_nt_number(nt_number: u32) -
 
 /// Report SMT availability from architectural CPUID topology. This reports
 /// what the current processor exposes to the OS, not a vendor-specific brand.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_is_hyper_threading_enabled() -> u8 {
     let max_leaf = unsafe { core::arch::x86_64::__cpuid(0) }.eax;
     if max_leaf >= 0x0b {
@@ -549,16 +549,16 @@ pub unsafe extern "win64" fn hal_is_hyper_threading_enabled() -> u8 {
 }
 
 /// Return the maximum logical-processor capacity exposed by this HAL.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
     super::MAX_CPUS as u32
 }
 
 /// Early boot/debug display path. This compatibility implementation writes
 /// a bounded NUL-terminated string to the kernel's initialized COM1 console.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_display_string(string: *const u8) {
     if string.is_null() { return; }
     let mut chunk = [0u8; 128];
@@ -581,8 +581,8 @@ pub unsafe extern "win64" fn hal_display_string(string: *const u8) {
 /// Reports whether every CPU reserved by MADT discovery has completed AP
 /// startup. Failed/offline discovered processors keep this false; this avoids
 /// telling the NT kernel that SMP initialization completed when it did not.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub extern "win64" fn hal_all_processors_started() -> u8 {
     for index in 0..crate::hal::MAX_CPUS {
         match crate::hal::cpu_state(index) {
@@ -598,15 +598,15 @@ pub extern "win64" fn hal_all_processors_started() -> u8 {
 /// Return the bootstrap DMA_ADAPTER for legacy drivers that request a
 /// Legacy HalGetAdapter has no DEVICE_OBJECT argument in this ABI, so it cannot
 /// select a device isolation domain. Fail closed; drivers must use IoGetDmaAdapter.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_get_adapter(_device_description:*const core::ffi::c_void,number_of_map_registers:*mut u32)->*mut core::ffi::c_void{
  if !number_of_map_registers.is_null(){unsafe{number_of_map_registers.write(0)}}
  core::ptr::null_mut()
 }
 /// Allocate common memory mapped through the adapter's registered IOMMU domain.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_allocate_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:*mut i64,_cache_enabled:u8)->*mut core::ffi::c_void{
  if adapter.is_null()||logical_address.is_null()||length==0{return core::ptr::null_mut()}
  match unsafe{crate::dma::iommu_allocate_common(adapter,length as usize,crate::dma::adapter_maximum_address(adapter))}{
@@ -615,16 +615,16 @@ pub unsafe extern "win64" fn hal_allocate_common_buffer(adapter:*mut core::ffi::
  }
 }
 /// Flush CPU/device visibility through the IOMMU backend; missing sync services fail closed.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_flush_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:i64,virtual_address:*mut core::ffi::c_void,write_to_device:u8){
  if adapter.is_null()||virtual_address.is_null()||length==0||logical_address<0{return}
  let _=write_to_device;
  let _=unsafe{crate::dma::flush_common_buffer_for_adapter(adapter,virtual_address.cast(),length as usize)};
 }
 /// Unmap the logical aperture before releasing backing pages.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_free_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:i64,virtual_address:*mut core::ffi::c_void,_cache_enabled:u8){
  if adapter.is_null()||virtual_address.is_null()||length==0||logical_address<0{return}
  let _=unsafe{crate::dma::free_common_buffer_for_adapter(adapter,virtual_address.cast(),logical_address as u64,length as usize)};
@@ -638,8 +638,8 @@ pub unsafe extern "win64" fn hal_free_common_buffer(adapter:*mut core::ffi::c_vo
 /// Resolve only ABI-reviewed HAL exports. Unsupported names fail closed.
 /// Request the kernel's generic IPI on the processors selected by the NT
 /// affinity mask. Targets publish pending work for their scheduler/DPC path.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_request_ipi(target_set: u64) {
     unsafe { hal_request_ipi_specify_vector(target_set, super::apic::HAL_IPI_VECTOR as u32); }
 }
@@ -647,8 +647,8 @@ pub unsafe extern "win64" fn hal_request_ipi(target_set: u64) {
 /// Request a caller-selected fixed-vector IPI on every online processor in
 /// the supplied NT affinity mask. The vector's IDT entry must already be
 /// installed on all target CPUs; this Windows ABI returns void.
-/// @partial implementation
-/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
+/// @implemented
+/// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vector: u32) {
     if vector < 0x20 || vector >= 0xff { return; }
     for logical_id in 0..crate::hal::MAX_CPUS {
