@@ -1032,6 +1032,45 @@ mod tests{
   }
   fn release(&self,_method_index:u16){self.releases.fetch_add(1,Ordering::SeqCst);}
  }
+ struct RecordingEventSync{
+  signalled:core::sync::atomic::AtomicBool,
+  signals:AtomicUsize,resets:AtomicUsize,waits:AtomicUsize,last_timeout:AtomicUsize,
+ }
+ impl RecordingEventSync{fn new()->Self{Self{signalled:core::sync::atomic::AtomicBool::new(false),
+  signals:AtomicUsize::new(0),resets:AtomicUsize::new(0),waits:AtomicUsize::new(0),last_timeout:AtomicUsize::new(usize::MAX)}}}
+ impl AmlMethodSynchronizer for RecordingEventSync{
+  fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
+  fn release(&self,_:u16){}
+  fn signal_event(&self,_:u16,_:u32)->Result<(),ExecError>{self.signals.fetch_add(1,Ordering::SeqCst);self.signalled.store(true,Ordering::Release);Ok(())}
+  fn reset_event(&self,_:u16,_:u32)->Result<(),ExecError>{self.resets.fetch_add(1,Ordering::SeqCst);self.signalled.store(false,Ordering::Release);Ok(())}
+  fn wait_event(&self,_:u16,_:u32,timeout:u16)->Result<bool,ExecError>{
+   self.waits.fetch_add(1,Ordering::SeqCst);self.last_timeout.store(timeout as usize,Ordering::SeqCst);
+   Ok(self.signalled.swap(false,Ordering::AcqRel))
+  }
+ }
+ #[test]fn aml_event_signal_wait_reset_and_infinite_timeout_use_dispatcher_provider(){
+  let aml=[
+   0x5b,0x02,b'E',b'V',b'T',b'0',
+   0x14,0x15,b'G',b'O',b'O',b'D',0,
+   0x5b,0x24,b'E',b'V',b'T',b'0',
+   0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0a,0,
+   0x14,0x1b,b'B',b'A',b'D',b'0',0,
+   0x5b,0x24,b'E',b'V',b'T',b'0',
+   0x5b,0x26,b'E',b'V',b'T',b'0',
+   0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0a,0xff,
+  ];
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let good=namespace.find_child(0,*b"GOOD").unwrap();
+  let bad=namespace.find_child(0,*b"BAD0").unwrap();
+  let sync=RecordingEventSync::new();
+  assert_eq!(execute_method_typed_with_sync(&aml,&namespace,good,&[],64,&sync).unwrap().integer,0);
+  assert_eq!(execute_method_typed_with_sync(&aml,&namespace,bad,&[],64,&sync).unwrap().integer,u64::MAX);
+  assert_eq!(sync.signals.load(Ordering::SeqCst),2);
+  assert_eq!(sync.resets.load(Ordering::SeqCst),1);
+  assert_eq!(sync.waits.load(Ordering::SeqCst),2);
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),u16::MAX as usize);
+ }
+
  #[test]fn executes_explicit_aml_conversion_opcodes_and_stores_typed_targets(){
   let decimal=[0x08,b'S',b'T',b'R',b'0',0x0d,b'4',b'2',0,
    0x14,0x0d,b'T',b'E',b'S',b'T',0,0xa4,0x99,b'S',b'T',b'R',b'0',0x00];
