@@ -39,14 +39,6 @@ impl PreparedHostBridgeApertures {
         segment: 0, bus_start: 0, bus_end: 0,
         apertures: [None; MAX_PCI_HOST_APERTURES], count: 0,
     };
-    pub fn as_slice(&self) -> &[Aperture] {
-        // The staged prefix is populated contiguously by the constructor.
-        unsafe {
-            core::slice::from_raw_parts(
-                self.apertures.as_ptr() as *const Aperture, self.count,
-            )
-        }
-    }
 }
 
 /// Convert the ACPI resource set and apply mandatory protected-RAM clipping.
