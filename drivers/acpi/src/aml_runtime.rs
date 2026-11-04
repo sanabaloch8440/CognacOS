@@ -180,6 +180,20 @@ impl AmlBindings {
             integer_width_bits:if revision<2{32}else{64}}
     }
     pub const fn integer_width_bits(&self)->u8{self.integer_width_bits}
+
+    /// Invalidate every cached Name binding owned by a DefinitionBlock before
+    /// its namespace nodes are removed. Call only after AML execution quiesces.
+    pub fn invalidate_table(&mut self, namespace:&AmlNamespace, owner_table:u32)->usize {
+        let mut invalidated=0;
+        for index in 0..namespace.count {
+            if namespace.nodes[index].source_table==owner_table && self.bound[index] {
+                self.bound[index]=false;
+                self.values[index]=0;
+                invalidated+=1;
+            }
+        }
+        invalidated
+    }
     /// Bind only a live, structurally valid runtime value to a Name object.
     pub fn bind_checked(&mut self,namespace:&AmlNamespace,node:u16,value:u16,arena:&AmlObjectArena)->Result<(),RuntimeError>{
         let object=arena.get(value).ok_or(RuntimeError::InvalidReference)?;
