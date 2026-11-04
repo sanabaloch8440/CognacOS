@@ -1266,6 +1266,104 @@ unsafe extern "C" fn acpi_get_platform_quirk_policy(
     cognacos_hal_contract::HalStatus::SUCCESS.code
 }
 
+
+unsafe extern "C" fn pci_irq_allocate_vector(out: *mut u8) -> u32 {
+    if out.is_null() { return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code; }
+    match allocate_device_interrupt_vector() {
+        Ok(vector) => { unsafe { out.write(vector); } cognacos_hal_contract::HalStatus::SUCCESS.code }
+        Err(_) => cognacos_hal_contract::HalStatus::NOT_SUPPORTED.code,
+    }
+}
+unsafe extern "C" fn pci_irq_configure_masked(
+    vector: u8, io_base: u64, gsi_base: u32, gsi: u32,
+    active_low: bool, level_triggered: bool,
+) -> u32 {
+    if !apic::interrupt_vector_allocated(vector) || io_base == 0 || io_base & 0xfff != 0
+        || gsi < gsi_base || gsi - gsi_base >= 120 {
+        return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code;
+    }
+    let destination = current_cpu_local()
+        .map(|cpu| cpu.apic_id.load(Ordering::Acquire))
+        .unwrap_or_else(|| (unsafe { core::arch::x86_64::__cpuid(1) }.ebx >> 24) & 0xff);
+    if destination > u8::MAX as u32 {
+        return cognacos_hal_contract::HalStatus::NOT_SUPPORTED.code;
+    }
+    match unsafe { configure_device_interrupt_route_masked(
+        io_base, gsi_base, gsi, vector, destination as u8, active_low, level_triggered,
+    ) } {
+        Ok(()) => match bind_device_interrupt_route(vector, io_base, gsi_base, gsi) {
+            Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
+            Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+        },
+        Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+    }
+}
+unsafe extern "C" fn pci_irq_register(
+    vector: u8, context: u64,
+    isr: Option<cognacos_hal_contract::PciInterruptIsr>,
+    dpc: Option<cognacos_hal_contract::PciInterruptDpc>,
+) -> u32 {
+    if context == 0 { return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code; }
+    unsafe { service_register_interrupt(vector as u32, context, isr, dpc) }.code
+}
+unsafe extern "C" fn pci_irq_enable(vector: u8, _enabled: bool) -> u32 {
+    match unsafe { set_device_interrupt_vector_enabled(vector, true) } {
+        Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
+        Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+    }
+}
+unsafe extern "C" fn pci_irq_disable(vector: u8, _enabled: bool) -> u32 {
+    match unsafe { set_device_interrupt_vector_enabled(vector, false) } {
+        Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
+        Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+    }
+}
+unsafe extern "C" fn pci_irq_unregister(vector: u8, context: u64) -> u32 {
+    unsafe { service_unregister_interrupt_impl(vector as u32, context, false) }.code
+}
+unsafe extern "C" fn pci_irq_release_vector(vector: u8) -> u32 {
+    if !apic::interrupt_vector_allocated(vector) {
+        return cognacos_hal_contract::HalStatus::SUCCESS.code;
+    }
+    match release_device_interrupt_vector(vector) {
+        Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
+        Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+    }
+}
+
+/// Dedicated PCI INTx HAL lifecycle. A vector and masked route are prepared
+/// separately from ISR registration; enable is rejected until registration
+/// has installed the dispatcher callback. Unregister masks and drains before
+/// vector release, which is a distinct operation.
+pub fn pci_interrupt_service_table() -> cognacos_hal_contract::PciInterruptHalServices {
+    cognacos_hal_contract::PciInterruptHalServices {
+        size: core::mem::size_of::<cognacos_hal_contract::PciInterruptHalServices>() as u32,
+        version: cognacos_hal_contract::PCI_INTERRUPT_SERVICES_VERSION,
+        allocate_vector: Some(pci_irq_allocate_vector),
+        configure_masked: Some(pci_irq_configure_masked),
+        register_isr: Some(pci_irq_register),
+        enable: Some(pci_irq_enable),
+        disable: Some(pci_irq_disable),
+        unregister: Some(pci_irq_unregister),
+        release_vector: Some(pci_irq_release_vector),
+    }
+}
+
+pub unsafe extern "win64" fn hal_pci_get_interrupt_services(
+    output: *mut cognacos_hal_contract::PciInterruptHalServices,
+) -> i32 {
+    if output.is_null() { return 0xC000_000D_u32 as i32; }
+    if DEVICE_DPC_QUEUE_HOOK.load(Ordering::Acquire) == 0
+        || DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire) == 0
+        || DEVICE_DPC_INIT_HOOK.load(Ordering::Acquire) == 0 {
+        return 0xC000_00A3_u32 as i32;
+    }
+    let table = pci_interrupt_service_table();
+    if !table.compatible() { return 0xC000_00A3_u32 as i32; }
+    unsafe { output.write(table); }
+    0
+}
+
 /// Private kernel/HAL interface entry used by ACPI.sys to obtain the versioned
 /// SCI service table. It is deliberately not assigned a Windows HAL ordinal.
 pub unsafe extern "win64" fn hal_acpi_get_sci_services(
