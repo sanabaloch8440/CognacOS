@@ -214,7 +214,7 @@ impl<'a,'b> Machine<'a,'b>{
   let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
   let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
   if entry.object_type!=AmlObjectType::Event{return Err(ExecError::BadTarget)}
-  Ok((canonical,entry.source_table))
+  Ok((canonical,entry.source_table_generation))
  }
  fn wait_event(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
   let (event,owner)=self.event_object(r)?;
@@ -612,7 +612,7 @@ impl<'a,'b> Machine<'a,'b>{
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
       execute_method_inner(self.aml,self.namespace,canonical,
-          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table)
+          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table_generation)
      }
      // Device objects used as _PRT Source values are namespace references,
      // not scalar Names. Preserve the reference so the PRT decoder can resolve
@@ -740,7 +740,7 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table)?;self.operand_integer(&value)}
+      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table_generation)?;self.operand_integer(&value)}
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
@@ -871,7 +871,7 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
   let empty=Machine::uninitialized_value();
   let mut m=Machine{locals:[empty;8],args:[empty;7],frame_cells:[u16::MAX;128],frame_cell_count:0,
    arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,sync_state,dynamic,
-   owner_table:node.source_table};
+   owner_table:node.source_table_generation};
   for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
   let mut r=Reader{bytes:aml,pos:start,end};
   let execution=(||{
