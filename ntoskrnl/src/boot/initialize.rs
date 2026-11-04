@@ -725,10 +725,6 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                                             ntoskrnl::ke::runtime::hal_remove_device_dpc,
                                             ntoskrnl::ke::runtime::hal_initialize_device_dpc,
                                         );
-                                        hal::install_acpi_passive_work_hooks(
-                                            ntoskrnl::ke::work_item::queue_from_dpc,
-                                            ntoskrnl::ke::work_item::rundown_context,
-                                        );
     hal::install_device_bus_master_hook(xhci_set_bus_master);
                                         let _xhci_pnp_resources_ready=platform_devices::probe_xhci_pci_function(&firmware_madt,bsp_apic_id);
                                         match unsafe { hal::calibrate_local_clock_event() } {
@@ -781,6 +777,10 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: PASSIVE_LEVEL work-item worker initialization failed.\\r\\n");
             halt();
         }
+        hal::install_acpi_passive_work_hooks(
+            ntoskrnl::ke::work_item::queue_from_dpc,
+            ntoskrnl::ke::work_item::rundown_context,
+        );
         let low = match scheduler::create_task(1, 1, 0x7000, 0x1000) {
             Ok(id) => id, Err(_) => { serial_write(b"FATAL: scheduler task creation failed.\r\n"); halt(); }
         };
