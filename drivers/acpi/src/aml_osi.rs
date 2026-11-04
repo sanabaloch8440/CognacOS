@@ -63,7 +63,8 @@ pub const fn windows_11_x64_osi(argument: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::windows_11_x64_osi;
+    use super::{windows_11_x64_osi, windows_11_x64_osi_with_quirks};
+    use crate::quirks::{OsiAction, OsiOverride, QuirkPolicy};
 
     #[test]
     fn advertises_windows_11_and_22h2_interface_levels() {
@@ -83,6 +84,18 @@ mod tests {
         assert_eq!(windows_11_x64_osi(b"Windows 2023"), 0);
         assert_eq!(windows_11_x64_osi(b"Linux"), 0);
         assert_eq!(windows_11_x64_osi(b"Extended Address Space Descriptor"), 0);
+    }
+
+    #[test]
+    fn platform_quirk_can_suppress_only_the_selected_osi_level() {
+        let mut policy = QuirkPolicy::EMPTY;
+        policy.osi[0] = Some(OsiOverride {
+            name: "Windows 2006", action: OsiAction::Suppress,
+        });
+        policy.osi_count = 1;
+        assert_eq!(windows_11_x64_osi_with_quirks(b"Windows 2006", &policy), 0);
+        assert_eq!(windows_11_x64_osi_with_quirks(b"Windows 2022", &policy), 0xffff_ffff);
+        assert_eq!(windows_11_x64_osi_with_quirks(b"Linux", &policy), 0);
     }
 }
 
