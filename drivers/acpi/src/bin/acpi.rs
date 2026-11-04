@@ -1274,10 +1274,26 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         Ok(bytes) => bytes,
         Err(status) => return status,
     };
-    let madt = match acpi::parse_madt(madt_bytes) {
+    let mut madt = match acpi::parse_madt(madt_bytes) {
         Ok(info) => info,
         Err(error) => return acpi::error_to_ntstatus(error),
     };
+    // HP nx6115/nx6125/nx6325 firmware routes ISA IRQ0 through a false
+    // MADT override. Drop only that source entry; preserve every other ISO.
+    if acpi::aml_osi::platform_quirk_policy().is_some_and(|policy|
+        policy.flags.contains(acpi::quirks::QuirkFlags::IGNORE_IRQ0_OVERRIDE)) {
+        let mut kept = 0usize;
+        for index in 0..madt.irq_override_count {
+            let entry = madt.irq_overrides[index];
+            if entry.bus == 0 && entry.source_irq == 0 { continue; }
+            madt.irq_overrides[kept] = entry;
+            kept += 1;
+        }
+        for index in kept..madt.irq_override_count {
+            madt.irq_overrides[index] = acpi::IrqOverride::default();
+        }
+        madt.irq_override_count = kept;
+    }
     unsafe { (*STATE.madt.get()).write(madt); }
 
     // MCFG and DMAR are optional capabilities. A malformed optional table
