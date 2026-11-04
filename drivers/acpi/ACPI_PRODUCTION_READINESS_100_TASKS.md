@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `main`  
-**Status (2026-11-04):** tasks 1–28, 32, and 67 have implementation evidence recorded below; task 29 remains partial and unchecked; all other unchecked tasks remain open. ACPI firmware interface v4 now carries a full 255-hop PCI bridge path; dynamic pool-backed `_PRT` storage remains open. This is a readiness work log, not a production-readiness certification.
+**Status (2026-11-04):** tasks 1–28, 30, 32, and 67 have implementation evidence recorded below; tasks 29 and 31 remain partial and unchecked; all other unchecked tasks remain open. ACPI firmware interface v4 now carries a full 255-hop PCI bridge path; dynamic pool-backed `_PRT` storage remains open. This is a readiness work log, not a production-readiness certification.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -57,6 +57,15 @@ Task 30 remains unchecked: the method executor does not yet own this service or
 dispatch Create*Field opcodes; dynamic namespace synchronization and table
 unload integration remain open. No runtime or QEMU pass is claimed.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
+
+Task 31 implementation progress (2026-11-04, PR branch `acpi-task-31-reference-semantics`; not yet checked):
+- Added explicit RefOf(Local/Arg) support by promoting the referenced frame slot into bounded arena storage. The method executor invalidates those frame-owned cells on every normal or error exit; runtime validation and dereference reject the retired cells rather than resolving stale handles.
+- DerefOf now reads a raw Local/Arg reference before dereferencing, rather than prematurely resolving it as an ordinary TermArg.
+- Added zero-based Index execution for Package elements and Buffer bytes. The target receives a typed reference and subsequent Store/DerefOf operations use the existing reference-store path.
+- Added CondRefOf handling for existing Name/Device objects and dynamic BufferFields, returning false for an absent namespace path.
+- Extended parser term validation for RefOf and CondRefOf and added executor regressions for Local references, expired-frame rejection, Package Index, and present/missing CondRefOf.
+- Remaining before task 31 can be checked: owner-tagged namespace-reference invalidation across DefinitionBlock unload/reload; complete SuperName/namespace-object coverage (including operation-region Fields and method references); buffer Index and cross-method reference aliasing regressions; run the focused AML, driver type-check, kernel dispatcher, and QEMU gates. Frame-temporary reference roots are bounded to 128 per invocation and fail closed when exhausted.
+
 32. [x] Evaluate Package/VarPackage elements including dynamic counts.
 33. [ ] Implement mutex acquire/release timeout and synchronization-level rules.
 34. [ ] Implement Event signal/wait semantics and safe kernel wakeup integration.
