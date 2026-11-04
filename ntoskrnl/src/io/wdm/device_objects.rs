@@ -113,7 +113,7 @@ pub unsafe extern "win64" fn io_create_device(
   state.devices.push_overflow(extra);
  }
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.mount_in_progress=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.mount_in_progress=false;slot.attached_to=ptr::null_mut();slot.start_io=StartIoQueue::EMPTY;
  slot.vpb=Vpb::empty();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.extension.fill(0);
@@ -261,7 +261,7 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return};
  state.devices[index].deleting=true;
  // Defer reclamation while external references, remove-lock owners, or power transitions remain.
- if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].active_dispatches != 0 || state.devices[index].outstanding_irps != 0 || state.devices[index].power_transition { return; }
+ if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].active_dispatches != 0 || state.devices[index].outstanding_irps != 0 || state.devices[index].power_transition || !state.devices[index].object.current_irp.is_null() || state.devices[index].start_io.count != 0 { return; }
  // Ob references and handles may outlive Io callers; only reclaim the backing slot after Ob has removed its header record.
  if !crate::ntoskrnl::ob::runtime::object_rundown_complete(device.cast()) { return; }
  let lower=state.devices[index].attached_to;
@@ -290,7 +290,7 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  slot.object.next_device=ptr::null_mut();
  slot.object.attached_device=ptr::null_mut();
  slot.attached_to=ptr::null_mut();
- slot.name_len=0;slot.name.fill(0);
+ slot.name_len=0;slot.name.fill(0);slot.start_io=StartIoQueue::EMPTY;
  slot.used=false;slot.deleting=false;
  // Drop stale bus/child links before making the backing device slot reusable.
  {
