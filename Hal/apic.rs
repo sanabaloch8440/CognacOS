@@ -575,6 +575,12 @@ pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context
     Ok(())
 }
 
+/// True when a vector is reserved, whether or not a handler is attached.
+pub fn interrupt_vector_allocated(vector: u8) -> bool {
+    (VECTOR_FIRST..=VECTOR_LAST).contains(&vector)
+        && VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire)
+}
+
 /// True only when a device vector is allocated and has a registered callback.
 /// This does not imply that an IDT gate or I/O-APIC route has been enabled.
 pub fn interrupt_handler_registered(vector: u8) -> bool {
