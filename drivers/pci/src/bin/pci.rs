@@ -814,7 +814,38 @@ fn acquire_acpi_host_bridge_resources() -> i32 {
         let status = unsafe { query_acpi_host_bridge_for_window(&handoff.windows[index], &mut staged[index]) };
         if status != STATUS_SUCCESS { return status; }
     }
-    unsafe { (*STATE.host_bridge_resources.get()) = staged; }
+
+    let mut protected = MM_PROTECTED_MEMORY_SNAPSHOT::empty();
+    let status = unsafe { acquire_protected_memory_snapshot(&mut protected) };
+    if status != STATUS_SUCCESS { return status; }
+    let mut protected_ranges = [pci::e820::E820Range { start: 0, length: 0 }; MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES];
+    for (index, range) in protected.ranges.iter().take(protected.count as usize).enumerate() {
+        protected_ranges[index] = pci::e820::E820Range {
+            start: range.base_address as u64,
+            length: range.number_of_bytes,
+        };
+    }
+
+    let mut clipped = [pci::host_bridge::PreparedHostBridgeApertures::EMPTY; MAX_WINDOWS];
+    for index in 0..handoff.window_count as usize {
+        clipped[index] = match pci::host_bridge::prepare_host_bridge_apertures(
+            &staged[index], &protected_ranges[..protected.count as usize],
+        ) {
+            Ok(value) => value,
+            Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+        };
+        if clipped[index].segment != handoff.windows[index].segment
+            || clipped[index].bus_start > handoff.windows[index].bus_start
+            || clipped[index].bus_end < handoff.windows[index].bus_end {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+    }
+
+    unsafe {
+        (*STATE.host_bridge_resources.get()) = staged;
+        (*STATE.protected_memory.get()) = protected;
+        (*STATE.clipped_host_apertures.get()) = clipped;
+    }
     STATE.host_bridge_resource_count.store(handoff.window_count as usize, Ordering::Release);
     STATUS_SUCCESS
 }
