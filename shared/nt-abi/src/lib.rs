@@ -428,6 +428,7 @@ pub mod bus {
 
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3>() == 2048);
     const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V4>() == 0x40);
+    const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V4, query_pci_interrupt_route_v3) == 0x38);
 
 
     /// PCI configuration-space access provided by pci.sys. Device and
