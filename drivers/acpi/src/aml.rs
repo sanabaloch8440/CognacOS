@@ -252,6 +252,7 @@ fn resolve_path(ns:&mut AmlNamespace,current:u16,n:&AmlName,create_intermediate:
                     ns.nodes[found as usize].body_start=u32::try_from(body_start).map_err(|_|AmlError::BadDefinitionBlock)?;
                     ns.nodes[found as usize].body_length=u32::try_from(body_len).map_err(|_|AmlError::BadDefinitionBlock)?;
                     ns.nodes[found as usize].source_table=ns.loading_table;
+                    ns.nodes[found as usize].source_table_generation=ns.loading_table_generation;
                 } else {return Err(AmlError::DuplicateName)}
             }
             p=found;continue
