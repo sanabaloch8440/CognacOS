@@ -4,7 +4,16 @@
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_pci::EcamWindowExt;
-use cognacos_nt_abi::{bus::{BUS_INTERFACE_STANDARD, BUS_INTERFACE_STANDARD_VERSION, GUID_BUS_INTERFACE_STANDARD, PCI_WHICHSPACE_CONFIG, PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
+use cognacos_hal_contract::PciInterruptHalServices;
+use cognacos_nt_abi::{bus::{
+    BUS_INTERFACE_STANDARD, BUS_INTERFACE_STANDARD_VERSION, GUID_BUS_INTERFACE_STANDARD,
+    PCI_WHICHSPACE_CONFIG, PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION,
+    PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION,
+    PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION,
+    ACPI_FIRMWARE_INTERFACE_V2, ACPI_PCI_INTERRUPT_ROUTE, ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
+    PCI_INTERRUPT_INTERFACE, PCI_INTERRUPT_INTERFACE_VERSION, PCI_INTERRUPT_ISR,
+    PCI_INTERRUPT_DPC,
+}, io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION}, ntstatus::*, types::PVOID};
 use cognacos_nt_abi::object::UNICODE_STRING;
 
 unsafe extern "win64" {
@@ -18,6 +27,12 @@ unsafe extern "win64" {
     fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
     fn ObfReferenceObject(object: PVOID);
     fn ObDereferenceObject(object: PVOID);
+    fn IoAllocateIrp(stack_size: u8, charge_quota: u8) -> *mut IRP;
+    fn IoCallDriver(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32;
+    fn IoFreeIrp(irp: *mut IRP);
+    fn IoPnPReferenceBusFdo(enumerator_id: u32, identity_hash: u64, output: *mut *mut DEVICE_OBJECT) -> i32;
+    fn IoPnPDereferenceBusFdo(device: *mut DEVICE_OBJECT);
+    fn HalPciGetInterruptServices(output: *mut PciInterruptHalServices) -> i32;
 }
 
 // These are ordinary PE import thunks. The PE conversion step turns the
@@ -82,6 +97,68 @@ __imp_ntoskrnl_ObfReferenceObject: .quad 0
 .type __imp_ntoskrnl_ObDereferenceObject,@object
 __imp_ntoskrnl_ObDereferenceObject: .quad 0
 .size __imp_ntoskrnl_ObDereferenceObject,8
+
+.global IoAllocateIrp
+.type IoAllocateIrp,@function
+IoAllocateIrp:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoAllocateIrp]
+.size IoAllocateIrp, .-IoAllocateIrp
+.global IoCallDriver
+.type IoCallDriver,@function
+IoCallDriver:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoCallDriver]
+.size IoCallDriver, .-IoCallDriver
+.global IoFreeIrp
+.type IoFreeIrp,@function
+IoFreeIrp:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoFreeIrp]
+.size IoFreeIrp, .-IoFreeIrp
+.global IoPnPReferenceBusFdo
+.type IoPnPReferenceBusFdo,@function
+IoPnPReferenceBusFdo:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoPnPReferenceBusFdo]
+.size IoPnPReferenceBusFdo, .-IoPnPReferenceBusFdo
+.global IoPnPDereferenceBusFdo
+.type IoPnPDereferenceBusFdo,@function
+IoPnPDereferenceBusFdo:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoPnPDereferenceBusFdo]
+.size IoPnPDereferenceBusFdo, .-IoPnPDereferenceBusFdo
+
+.global HalPciGetInterruptServices
+.type HalPciGetInterruptServices,@function
+HalPciGetInterruptServices:
+    jmp QWORD PTR [rip + __imp_hal_HalPciGetInterruptServices]
+.size HalPciGetInterruptServices, .-HalPciGetInterruptServices
+
+.section .data.imports.ntoskrnl,"aw",@progbits
+.p2align 3
+.global __imp_ntoskrnl_IoAllocateIrp
+.type __imp_ntoskrnl_IoAllocateIrp,@object
+__imp_ntoskrnl_IoAllocateIrp: .quad 0
+.size __imp_ntoskrnl_IoAllocateIrp,8
+.global __imp_ntoskrnl_IoCallDriver
+.type __imp_ntoskrnl_IoCallDriver,@object
+__imp_ntoskrnl_IoCallDriver: .quad 0
+.size __imp_ntoskrnl_IoCallDriver,8
+.global __imp_ntoskrnl_IoFreeIrp
+.type __imp_ntoskrnl_IoFreeIrp,@object
+__imp_ntoskrnl_IoFreeIrp: .quad 0
+.size __imp_ntoskrnl_IoFreeIrp,8
+.global __imp_ntoskrnl_IoPnPReferenceBusFdo
+.type __imp_ntoskrnl_IoPnPReferenceBusFdo,@object
+__imp_ntoskrnl_IoPnPReferenceBusFdo: .quad 0
+.size __imp_ntoskrnl_IoPnPReferenceBusFdo,8
+.global __imp_ntoskrnl_IoPnPDereferenceBusFdo
+.type __imp_ntoskrnl_IoPnPDereferenceBusFdo,@object
+__imp_ntoskrnl_IoPnPDereferenceBusFdo: .quad 0
+.size __imp_ntoskrnl_IoPnPDereferenceBusFdo,8
+
+.section .data.imports.hal,"aw",@progbits
+.p2align 3
+.global __imp_hal_HalPciGetInterruptServices
+.type __imp_hal_HalPciGetInterruptServices,@object
+__imp_hal_HalPciGetInterruptServices: .quad 0
+.size __imp_hal_HalPciGetInterruptServices,8
 "#);
 
 const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
@@ -98,6 +175,12 @@ struct PciPdoExtension {
     information: PCI_DEVICE_INFORMATION,
     ide_ports: pci::ide::IdeControllerPorts,
     ide_ports_valid: u8,
+    interrupt_vector: u8,
+    interrupt_allocated: u8,
+    interrupt_registered: u8,
+    interrupt_reserved: u8,
+    interrupt_context: u64,
+    interrupt_hal: PciInterruptHalServices,
 }
 
 unsafe fn delete_pdo(pdo: *mut DEVICE_OBJECT) {
