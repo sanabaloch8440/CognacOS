@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 cognacos-nt-abi = { path = "../../shared/nt-abi" }
-cognacos-hal-contract = { path = "../hal" }
+cognacos-hal-contract = { path = "../../shared/hal-contract" }
 
 [lib]
 path = "src/lib.rs"
