@@ -323,8 +323,8 @@ pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
         let fields = *body.get(field).ok_or(PrtDecodeError::Truncated)?;
         field += 1;
         if fields != 4 { return Err(PrtDecodeError::BadPackage); }
-        let address = read_prt_integer(body, &mut field, sub_end)?;
-        let pin = read_prt_integer(body, &mut field, sub_end)?;
+        let address = read_prt_integer(body, &mut field, sub_end).map_err(|_| PrtDecodeError::BadPackage)?;
+        let pin = read_prt_integer(body, &mut field, sub_end).map_err(|_| PrtDecodeError::BadPackage)?;
         let source_path = match body.get(field).copied() {
             Some(0x00) => { field += 1; None }
             Some(_) => {
@@ -342,7 +342,7 @@ pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
             }
             None => return Err(PrtDecodeError::Truncated),
         };
-        let source_index = read_prt_integer(body, &mut field, sub_end)?;
+        let source_index = read_prt_integer(body, &mut field, sub_end).map_err(|_| PrtDecodeError::BadPackage)?;
         if field != sub_end { return Err(PrtDecodeError::BadPackage); }
         elements[index] = EvaluatedPrtElement { address, pin, source_path, source_index };
         cursor = sub_end;
@@ -391,7 +391,7 @@ mod firmware_prt_package_tests {
     fn evaluates_static_prt_package_with_direct_gsi_entry() {
         // Package(1) { Package(4) { 0x0005ffff, 0, Zero, 19 } }
         let aml = [
-            0x12, 15, 1, 0x12, 12, 4,
+            0x12, 14, 1, 0x12, 11, 4,
             0x0c, 0xff, 0xff, 0x05, 0x00,
             0x00,
             0x00,
