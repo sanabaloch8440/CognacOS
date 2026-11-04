@@ -291,7 +291,7 @@ impl AmlTableManager {
         // namespace into manager-owned storage: AML External resolution may
         // mutate an existing placeholder as well as append new nodes.
         self.rollback_nodes.copy_from_slice(&self.namespace.nodes);
-        if let Err(error)=load_definition_block_owned(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,generation){
+        if let Err(error)=load_definition_block_owned_with_generation(&bytes[SDT_HEADER_SIZE..length],&mut self.namespace,self.count as u32,generation){
             self.namespace.nodes.copy_from_slice(&self.rollback_nodes);
             self.namespace.count=before;
             return Err(TableError::Parse(error));
@@ -504,7 +504,7 @@ impl AmlTableManager {
             if record.info.signature==*b"DSDT" && manager.count!=1 {
                 return Err(TableError::UnloadOrder);
             }
-            bindings.invalidate_table(&manager.namespace,record.generation);
+            bindings.invalidate_table(&manager.namespace,handle.slot as u32);
             bindings.invalidate_namespace_compaction();
             manager.unload_quiesced(handle)
         })
@@ -515,7 +515,7 @@ impl AmlTableManager {
         if !record.active||record.generation!=handle.generation{return Err(TableError::InvalidHandle)}
         if self.namespace.count!=record.info.namespace_end as usize{return Err(TableError::NamespaceChanged)}
         if record.info.signature==*b"DSDT"&&self.count!=1{return Err(TableError::UnloadOrder)}
-        crate::aml::unload_definition_block(&mut self.namespace,record.generation);
+        crate::aml::unload_definition_block(&mut self.namespace,handle.slot as u32);
         if self.namespace.count!=record.info.namespace_start as usize{return Err(TableError::NamespaceChanged)}
         // No method can still hold a dynamic field reference here: unload_quiesced
         // is called only after the execution gate has drained all active methods.
@@ -641,7 +641,8 @@ mod tests {
         let restored=&manager.namespace().nodes[dev as usize];
         assert_eq!(restored.object_type,crate::aml::AmlObjectType::External);
         assert!(restored.external_placeholder);
-        assert_eq!(restored.source_table,manager.records[0].generation);
+        assert_eq!(restored.source_table,0);
+        assert_eq!(restored.source_table_generation,manager.records[0].generation);
         assert_eq!(manager.namespace().find_child(dev,*b"TEST"),None);
     }
 
@@ -681,8 +682,10 @@ mod tests {
         let loaded=manager.load_firmware_tables(&dsdt,&[&ssdt],&gate).unwrap();
         let device=manager.namespace().find_child(0,*b"DEV0").unwrap();
         let sta=manager.namespace().find_child(device,*b"_STA").unwrap();
-        assert_eq!(manager.namespace().nodes[device as usize].source_table,loaded.dsdt.generation);
-        assert_eq!(manager.namespace().nodes[sta as usize].source_table,loaded.ssdts[0].unwrap().generation);
+        assert_eq!(manager.namespace().nodes[device as usize].source_table,loaded.dsdt.slot as u32);
+        assert_eq!(manager.namespace().nodes[device as usize].source_table_generation,loaded.dsdt.generation);
+        assert_eq!(manager.namespace().nodes[sta as usize].source_table,loaded.ssdts[0].unwrap().slot as u32);
+        assert_eq!(manager.namespace().nodes[sta as usize].source_table_generation,loaded.ssdts[0].unwrap().generation);
         let tables:[&[u8];2]=[&dsdt,&ssdt];
         let mut methods=crate::acpi_device::IntegerMethodInvoker;
         let identity=manager.evaluate_device_identity(loaded.dsdt,&tables,device,&gate,&mut methods).unwrap();
@@ -699,14 +702,16 @@ mod tests {
         let _dsdt_handle=manager.load_dsdt(&dsdt,&gate).unwrap();
         let first=manager.load_ssdt(&first_ssdt,&gate).unwrap();
         let first_node=manager.namespace().find_child(0,*b"FIRS").unwrap();
-        assert_eq!(manager.namespace().nodes[first_node as usize].source_table,first.generation);
+        assert_eq!(manager.namespace().nodes[first_node as usize].source_table,first.slot as u32);
+        assert_eq!(manager.namespace().nodes[first_node as usize].source_table_generation,first.generation);
         let mut bindings=crate::aml_runtime::AmlBindings::new();
         manager.unload_with_runtime(first,&gate,&mut bindings).unwrap();
         let second=manager.load_ssdt(&second_ssdt,&gate).unwrap();
         let second_node=manager.namespace().find_child(0,*b"SECD").unwrap();
         assert_eq!(second.slot,first.slot);
         assert_ne!(second.generation,first.generation);
-        assert_eq!(manager.namespace().nodes[second_node as usize].source_table,second.generation);
+        assert_eq!(manager.namespace().nodes[second_node as usize].source_table,second.slot as u32);
+        assert_eq!(manager.namespace().nodes[second_node as usize].source_table_generation,second.generation);
     }
 
     #[test]
