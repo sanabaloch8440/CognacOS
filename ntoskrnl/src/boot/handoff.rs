@@ -12,6 +12,11 @@ pub(crate) fn publish_acpi_quirk_policy(policy: acpi::quirks::QuirkPolicy) {
     BOOT_ACPI_QUIRK_POLICY_READY.store(true, core::sync::atomic::Ordering::Release);
 }
 /// Return a snapshot of the immutable boot-selected ACPI policy.
+/// Stable read-only pointer for the versioned HAL-to-ACPI policy interface.
+/// The object has static lifetime and is immutable after early boot publication.
+pub(crate) fn acpi_quirk_policy_ptr() -> (*const core::ffi::c_void, u32) {
+    (core::ptr::addr_of!(BOOT_ACPI_QUIRK_POLICY).cast(), core::mem::size_of::<acpi::quirks::QuirkPolicy>() as u32)
+}
 pub(crate) fn acpi_quirk_policy() -> Option<acpi::quirks::QuirkPolicy> {
     if !BOOT_ACPI_QUIRK_POLICY_READY.load(core::sync::atomic::Ordering::Acquire) {
         return None;
