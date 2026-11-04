@@ -694,10 +694,31 @@ mod tests {
     }
 
     #[test]
+    fn promoted_external_restores_its_original_table_generation_on_unload(){
+        let dsdt=definition_table(*b"DSDT",&[0x15,b'D',b'E',b'V',b'0',6]);
+        let ssdt=definition_table(*b"SSDT",&[0x5b,0x82,0x0b,b'D',b'E',b'V',b'0',0x08,b'_',b'S',b'T',b'A',0x01]);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        let dsdt_handle=manager.load_dsdt(&dsdt,&gate).unwrap();
+        let device=manager.namespace().find_child(0,*b"DEV0").unwrap();
+        assert_eq!(manager.namespace().nodes[device as usize].object_type,crate::aml::AmlObjectType::External);
+        let ssdt_handle=manager.load_ssdt(&ssdt,&gate).unwrap();
+        let promoted=manager.namespace().nodes[device as usize];
+        assert_eq!(promoted.object_type,crate::aml::AmlObjectType::Device);
+        assert_eq!(promoted.source_table,ssdt_handle.slot as u32);
+        assert_eq!(promoted.source_table_generation,ssdt_handle.generation);
+        let mut bindings=crate::aml_runtime::AmlBindings::new();
+        manager.unload_with_runtime(ssdt_handle,&gate,&mut bindings).unwrap();
+        let restored=manager.namespace().nodes[device as usize];
+        assert_eq!(restored.object_type,crate::aml::AmlObjectType::External);
+        assert_eq!(restored.source_table,dsdt_handle.slot as u32);
+        assert_eq!(restored.source_table_generation,dsdt_handle.generation);
+    }
+
+    #[test]
     fn table_owner_generation_is_not_reused_after_ssdt_unload_and_reload(){
         let dsdt=definition_table(*b"DSDT",&[]);
         let first_ssdt=definition_table(*b"SSDT",&[0x08,b'F',b'I',b'R',b'S',0x01]);
-        let second_ssdt=definition_table(*b"SSDT",&[0x08,b'S',b'E',b'C',b'D',0x02]);
+        let second_ssdt=definition_table(*b"SSDT",&[0x08,b'S',b'E',b'C',b'D',0x0a,2]);
         let mut manager=AmlTableManager::new();let gate=gate();
         let _dsdt_handle=manager.load_dsdt(&dsdt,&gate).unwrap();
         let first=manager.load_ssdt(&first_ssdt,&gate).unwrap();
