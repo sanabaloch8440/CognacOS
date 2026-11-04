@@ -103,3 +103,41 @@ pub fn windows_11_x64_osi_with_quirks(
     }
     windows_11_x64_osi(argument)
 }
+
+
+/// Read-only platform policy published by the kernel through the versioned
+/// HAL ACPI service contract. The pointer remains valid for the kernel lifetime.
+static PLATFORM_QUIRK_POLICY: core::sync::atomic::AtomicPtr<crate::quirks::QuirkPolicy> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Install a kernel-owned immutable policy after validating its ABI version
+/// and extent. Passing a null pointer clears the optional policy.
+pub unsafe fn install_platform_quirk_policy(
+    policy: *const core::ffi::c_void,
+    size: u32,
+    version: u32,
+) -> bool {
+    if policy.is_null() {
+        PLATFORM_QUIRK_POLICY.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+        return true;
+    }
+    if version != cognacos_hal_contract::ACPI_PLATFORM_QUIRK_POLICY_VERSION
+        || size as usize < core::mem::size_of::<crate::quirks::QuirkPolicy>()
+        || (policy as usize) % core::mem::align_of::<crate::quirks::QuirkPolicy>() != 0
+    {
+        return false;
+    }
+    PLATFORM_QUIRK_POLICY.store(policy.cast_mut().cast(), core::sync::atomic::Ordering::Release);
+    true
+}
+
+/// The interpreter's predefined _OSI object consults the immutable platform
+/// policy when installed; otherwise it preserves the normal Windows 11 profile.
+pub fn platform_osi(argument: &[u8]) -> u64 {
+    let policy = PLATFORM_QUIRK_POLICY.load(core::sync::atomic::Ordering::Acquire);
+    if policy.is_null() {
+        windows_11_x64_osi(argument)
+    } else {
+        windows_11_x64_osi_with_quirks(argument, unsafe { &*policy })
+    }
+}
