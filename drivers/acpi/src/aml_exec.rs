@@ -176,7 +176,17 @@ impl<'a,'b> Machine<'a,'b>{
   let op=r.byte()?;
   match op{
    0x00=>Ok(Target::Null),
-   0x83=>{let value=self.term_value(r)?;let reference=reference_from_value(&value).map_err(|_|ExecError::BadTarget)?;Ok(Target::Reference(reference))},
+   0x83=>{
+    let source_start=r.pos;
+    let source_opcode=*r.bytes.get(source_start).ok_or(ExecError::Truncated)?;
+    let source=match source_opcode{
+     0x60..=0x67=>{r.pos+=1;self.locals[(source_opcode-0x60)as usize]},
+     0x68..=0x6e=>{r.pos+=1;self.args[(source_opcode-0x68)as usize]},
+     _=>self.term_value(r)?,
+    };
+    let reference=reference_from_value(&source).map_err(|_|ExecError::BadTarget)?;
+    Ok(Target::Reference(reference))
+   },
    0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),
    0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),
    _=>{
