@@ -108,6 +108,7 @@ extern "C" fn worker_entry(_argument: *mut c_void) {
 /// Start the single PASSIVE_LEVEL worker after scheduler/thread initialization.
 /// The static stack and worker record remain resident until kernel shutdown.
 pub fn initialize() -> bool {
+    if crate::ntoskrnl::ke::runtime::current_irql_level() != 0 { return false; }
     if WORKER_ID.load(Ordering::Acquire) != 0 {
         return true;
     }
@@ -144,6 +145,7 @@ pub fn queue(routine: WorkRoutine, context: u64) -> bool {
 /// and wait until the active callback and worker thread have exited. Must run
 /// at PASSIVE_LEVEL and must not be called by the worker itself.
 pub fn rundown() -> bool {
+    if crate::ntoskrnl::ke::runtime::current_irql_level() != 0 { return false; }
     let id = WORKER_ID.load(Ordering::Acquire);
     if id == 0 { return true; }
     if crate::thread::current_thread_id() == Some(id) { return false; }
@@ -180,6 +182,7 @@ extern "C" fn self_test_callback(_context: u64) {
 /// Exercise the real thread-backed queue and assert that the callback executes
 /// at PASSIVE_LEVEL, not in the caller's interrupt/DPC context.
 pub fn self_test() -> bool {
+    if crate::ntoskrnl::ke::runtime::current_irql_level() != 0 { return false; }
     SELF_TEST_DONE.store(false, Ordering::Release);
     SELF_TEST_PASSIVE.store(false, Ordering::Release);
     if !queue(self_test_callback, 0x5343_4957) { return false; }
@@ -202,6 +205,7 @@ pub extern "C" fn queue_from_dpc(context: u64, routine: WorkRoutine) -> bool {
 /// and wait until its currently executing callback returns. The callback context
 /// may be reclaimed only after this function succeeds.
 pub extern "C" fn rundown_context(context: u64) -> bool {
+    if crate::ntoskrnl::ke::runtime::current_irql_level() != 0 { return false; }
     if context == 0 { return false; }
     let Some(waiter) = crate::thread::current_thread_id() else { return false; };
     {
