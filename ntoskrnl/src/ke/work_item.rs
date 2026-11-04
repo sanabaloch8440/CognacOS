@@ -31,8 +31,20 @@ impl QueueState {
             count: 0, active: 0, active_context: 0, closed_contexts: [0; 16], accepting: false }
     }
     fn push(&mut self, item: WorkRecord) -> bool {
-        if !self.accepting || self.count == MAX_WORK_ITEMS
+        if !self.accepting
             || (item.context != 0 && self.closed_contexts.contains(&item.context)) { return false; }
+        // Multiple SCI DPCs can represent the same pending GPE drain. Coalesce
+        // identical owner/routine pairs while one copy is queued.
+        for offset in 0..self.count {
+            let index = (self.head + offset) % MAX_WORK_ITEMS;
+            let queued = self.entries[index];
+            if queued.context == item.context
+                && queued.routine.map(|routine| routine as usize)
+                    == item.routine.map(|routine| routine as usize) {
+                return true;
+            }
+        }
+        if self.count == MAX_WORK_ITEMS { return false; }
         self.entries[self.tail] = item;
         self.tail = (self.tail + 1) % MAX_WORK_ITEMS;
         self.count += 1;
@@ -51,7 +63,7 @@ impl QueueState {
 }
 static QUEUE: IrqSpinLock<QueueState> = IrqSpinLock::new(QueueState::new());
 static WORKER_ID: AtomicU64 = AtomicU64::new(0);
-static mut WORKER_STACK: [u8; 16 * 1024] = [0; 16 * 1024];
+static mut WORKER_STACK: [u8; 32 * 1024] = [0; 32 * 1024];
 
 extern "C" fn worker_entry(_argument: *mut c_void) {
     loop {
@@ -88,7 +100,7 @@ pub fn initialize() -> bool {
         state.accepting = true;
     }
     let stack = unsafe {
-        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(WORKER_STACK).cast::<u8>(), 16 * 1024)
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(WORKER_STACK).cast::<u8>(), 32 * 1024)
     };
     match crate::thread::spawn(stack, 1, worker_entry, core::ptr::null_mut()) {
         Ok(id) => {
