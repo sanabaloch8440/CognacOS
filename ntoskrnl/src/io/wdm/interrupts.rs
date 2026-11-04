@@ -15,6 +15,9 @@ const STATUS_SUCCESS: i32 = 0;
 const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
 const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
 const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009A_u32 as i32;
+/// @unimplemented
+/// CONNECT_MESSAGE_BASED MSI vector-table allocation, per-message ISR routing,
+/// and IO_INTERRUPT_MESSAGE_INFO teardown are not yet implemented.
 const MAX_SHARED_ISR_PER_VECTOR: usize = 8;
 
 pub type InterruptServiceRoutine =
@@ -153,6 +156,8 @@ pub unsafe extern "win64" fn io_connect_interrupt(
         || service_routine.is_none()
         || !(0x20..=0xdf).contains(&vector)
         || synchronize_irql < irql
+        // @unimplemented: PASSIVE_LEVEL ISR scheduling requires the kernel's
+        // passive interrupt worker/event path, which is not wired yet.
         || irql == 0
         || interrupt_mode > 1
         || share_vector > 1
@@ -162,6 +167,8 @@ pub unsafe extern "win64" fn io_connect_interrupt(
         return STATUS_INVALID_PARAMETER;
     }
     unsafe { interrupt_object_out.write(core::ptr::null_mut()) };
+    // @unimplemented: caller-owned KSPIN_LOCK integration and FloatingSave
+    // state preservation remain unsupported on this x64 dispatcher.
     if !spin_lock.is_null() || floating_save != 0 {
         return STATUS_NOT_SUPPORTED;
     }
