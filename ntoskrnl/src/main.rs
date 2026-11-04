@@ -3,6 +3,7 @@
 
 // Canonical Windows NT-style ABI types are shared with NTDLL and driver crates.
 pub(crate) use cognacos_nt_abi as nt_abi;
+pub(crate) use cognacos_hal_contract::hal as hal;
 
 pub(crate) use ntoskrnl::mm::{kernel_space as kernel_vm, pagefile, physical as memory};
 pub(crate) use ntoskrnl::se::runtime as security;
@@ -24,8 +25,8 @@ mod pe_dependencies;
 mod usermode;
 use cognacos_acpi as acpi;
 use cognacos_pci as pci;
-#[path = "../../Hal/mod.rs"]
-mod hal;
+// Consume HAL through its independent crate and stable kernel/HAL boundary.
+// Do not compile HAL implementation sources into the NTOSKRNL image.
 #[path = "ke/smp.rs"]
 mod smp;
 #[path = "../../drivers/platform/platform_drivers.rs"]
