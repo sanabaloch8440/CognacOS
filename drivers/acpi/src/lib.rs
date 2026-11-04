@@ -63,7 +63,7 @@ pub fn validate_sdt(bytes:&[u8],expected_signature:Option<[u8;4]>)->Result<AcpiT
 /// Optional extended pointers are zero when the firmware table predates them.
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct FadtInfo {
-    pub revision:u8,pub preferred_pm_profile:u8,pub firmware_ctrl:u32,pub dsdt:u32,
+    pub revision:u8,pub preferred_pm_profile:u8,pub sci_interrupt:u16,pub firmware_ctrl:u32,pub dsdt:u32,
     pub boot_arch_flags:u16,pub flags:u32,pub minor_version:u8,
     pub x_firmware_ctrl:u64,pub x_dsdt:u64,pub pm1a_control_legacy:u32,
     pub pm1a_event_legacy:u32,pub pm1b_event_legacy:u32,pub pm1b_control_legacy:u32,
