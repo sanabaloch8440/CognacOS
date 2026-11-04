@@ -72,7 +72,6 @@ pub fn resolve_sci_route(fadt: &FadtInfo, madt: &MadtInfo) -> Result<SciRoute, S
 /// Callback signatures and the size/version-tagged HAL service table live in
 /// the shared HAL contract crate so both sides compile against one ABI definition.
 pub use cognacos_hal_contract::{AcpiSciHalServices, AcpiSciIsr as SciIsr, AcpiSciDpc as SciDpc, AcpiQueuePassiveWorker, AcpiRundownPassiveWorker};
-pub type SciPassiveWorker = extern "C" fn(context: u64);
 
 /// Lifecycle state makes partial startup and teardown retryable. A route is
 /// never enabled until vector allocation, masked route setup, IDT/ISR/DPC
