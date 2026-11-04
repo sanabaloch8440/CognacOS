@@ -973,6 +973,43 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
  }
 
+ #[test]fn refof_local_derefof_and_frame_lifetime_are_enforced(){
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+   0x70,0x0a,42,0x60,0xa4,0x83,0x71,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+
+  let escaping=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x71,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&escaping,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();let mut bindings=AmlBindings::with_aml_revision(2);
+  let result=execute_method_in_context(&escaping,&ns,id,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(result.kind,AmlValueKind::ObjectReference);
+  assert_eq!(validate_runtime_value(&result,&arena),Err(RuntimeError::InvalidReference));
+ }
+
+ #[test]fn index_returns_live_package_element_reference(){
+  let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x06,0x02,0x0a,0x11,0x0a,0x22,
+   0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x83,0x88,b'P',b'K',b'G',b'0',0x01,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x22));
+ }
+
+ #[test]fn condrefof_reports_present_and_missing_namespace_objects(){
+  let present=[0x08,b'N',b'A',b'M',b'0',0x01,
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x5b,0x12,b'N',b'A',b'M',b'0',0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&present,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&present,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
+
+  let missing=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x5b,0x12,b'M',b'I',b'S',b'S',0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&missing,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&missing,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
+ }
+
  #[test]fn uninitialized_locals_and_unused_arguments_are_not_integer_zero(){
   let local=[0x14,0x08,b'T',b'E',b'S',b'T',0,0xa4,0x60];
   let mut ns=AmlNamespace::new();load_definition_block(&local,&mut ns).unwrap();
