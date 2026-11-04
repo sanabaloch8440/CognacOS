@@ -541,6 +541,26 @@ pub fn allocate_interrupt_vector() -> Result<u8, ApicError> {
     Err(ApicError::InvalidVector)
 }
 
+/// Claim a system vector already assigned by the PnP resource translator.
+/// Returns true when this call acquired ownership and false when an earlier
+/// HAL allocation already owns the vector. A registered handler is never
+/// replaced by this operation.
+pub fn claim_interrupt_vector(vector: u8) -> Result<bool, ApicError> {
+    if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) {
+        return Err(ApicError::InvalidVector);
+    }
+    if VECTOR_ALLOCATED[vector as usize]
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        Ok(true)
+    } else if VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire) == 0 {
+        Ok(false)
+    } else {
+        Err(ApicError::InvalidVector)
+    }
+}
+
 /// Release an unused vector. Call only after the source is masked and its IDT
 /// gate is detached; the caller owns synchronization with in-flight interrupts.
 pub fn release_interrupt_vector(vector: u8) -> Result<(), ApicError> {
