@@ -971,11 +971,11 @@ mod host_bridge_crs_window_tests {
         let mut list = ResourceList::EMPTY;
         list.entries[0] = Some(Resource::Memory {
             minimum: 0x8000_0000, maximum: 0x8fff_ffff, alignment: 0x0fff,
-            length: 0x1000, writeable: true, cacheable: false, kind: 1,
+            translation_offset: 0, length: 0x1000, writeable: true, cacheable: false, kind: 1,
         });
         list.entries[1] = Some(Resource::Io {
             minimum: 0xc000, maximum: 0xcfff, alignment: 0xff,
-            length: 0x100, decode_16_bit: true,
+            translation_offset: 0, length: 0x100, decode_16_bit: true,
         });
         list.count = 2;
         let set = build_pci_host_bridge_resource_set(&list, 3, 0, 0xff).unwrap();
@@ -995,11 +995,11 @@ mod host_bridge_crs_window_tests {
         let mut list = ResourceList::EMPTY;
         list.entries[0] = Some(Resource::Memory {
             minimum: 0x8000_0000, maximum: 0x8fff_ffff, alignment: 0x1000,
-            length: 0x1000, writeable: true, cacheable: false, kind: 1,
+            translation_offset: 0, length: 0x1000, writeable: true, cacheable: false, kind: 1,
         });
         list.entries[1] = Some(Resource::Io {
             minimum: 0xc000, maximum: 0xcfff, alignment: 0x100,
-            length: 0x100, decode_16_bit: true,
+            translation_offset: 0, length: 0x100, decode_16_bit: true,
         });
         list.entries[2] = Some(Resource::Irq {
             mask: 1 << 5, level_triggered: true, active_low: true,
@@ -1022,7 +1022,7 @@ mod host_bridge_crs_window_tests {
         let mut list = ResourceList::EMPTY;
         list.entries[0] = Some(Resource::Memory {
             minimum: u64::MAX - 1, maximum: u64::MAX - 1, alignment: 1,
-            length: 4, writeable: true, cacheable: false, kind: 2,
+            translation_offset: 0, length: 4, writeable: true, cacheable: false, kind: 2,
         });
         list.count = 1;
         let sentinel = HostBridgeWindow {
