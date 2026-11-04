@@ -291,7 +291,7 @@ static ACPI_SCI_SERVICES_STATE: AtomicU8 = AtomicU8::new(0);
 /// Obtain the private versioned HAL SCI interface only after the kernel has
 /// published its PASSIVE_LEVEL work queue. Retry is allowed while boot stages
 /// are still installing executive services.
-fn acquire_sci_hal_services() -> Result<&'static AcpiSciHalServices, i32> {
+pub fn acquire_sci_hal_services() -> Result<&'static AcpiSciHalServices, i32> {
     loop {
         match ACPI_SCI_SERVICES_STATE.load(Ordering::Acquire) {
             2 => return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() }),
