@@ -1636,12 +1636,11 @@ impl acpi::acpi_device::AcpiMethodInvoker for PoolBackedAcpiMethodInvoker<'_> {
                 acpi::aml_objects::AmlValueKind::Empty
                 | acpi::aml_objects::AmlValueKind::Integer =>
                     Ok(acpi::acpi_device::AcpiMethodValue::Integer(value.integer)),
-                acpi::aml_objects::AmlValueKind::String => {
-                    let length = value.byte_length as usize;
-                    acpi::acpi_device::AcpiId::from_bytes(&value.bytes[..length])
-                        .map(acpi::acpi_device::AcpiMethodValue::String)
-                        .map_err(|_| acpi::aml_exec::ExecError::UnsupportedReturnType)
-                }
+                // Route metadata and resource methods consume Integer and
+                // Buffer results; String is deliberately rejected here rather
+                // than bypassing AcpiId's validated construction contract.
+                acpi::aml_objects::AmlValueKind::String =>
+                    Err(acpi::aml_exec::ExecError::UnsupportedReturnType),
                 acpi::aml_objects::AmlValueKind::Buffer => {
                     let length = value.byte_length as usize;
                     if length > value.bytes.len() {
