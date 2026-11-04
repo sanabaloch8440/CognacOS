@@ -121,7 +121,7 @@ pub unsafe fn enter(entry: u64, stack_top: u64) -> ! {
     if entry < USER_START || entry >= USER_END || stack_top <= USER_START || stack_top >= USER_END
         || entry & 0x8000_0000_0000_0000 != 0 || stack_top & 0xf != 0
     {
-        crate::halt();
+        unsafe { crate::halt(); }
     }
     unsafe {
         asm!(
