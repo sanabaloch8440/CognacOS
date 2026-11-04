@@ -467,7 +467,7 @@ pub fn swizzle_intx_pin(pin: u8, downstream_device: u8) -> Result<u8, PrtError> 
 /// invalidate cached results when namespace or device topology changes.
 pub trait PrtBusTableProvider {
     fn table_for_bus(&self, bus_namespace_node: u16) -> Result<PrtTable, PrtError>;
-    fn bridge_slot_for_downstream_bus(&self, downstream_bus: u16, upstream_bus: u16) -> Result<u8, PrtError>;
+    fn bridge_slot_for_downstream_bus(&self, downstream_bus: u16, upstream_bus: u16) -> Result<(u8, u8), PrtError>;
 }
 
 /// Resolve INTx from the endpoint bus toward the root bridge. bus_nodes[0]
@@ -483,9 +483,10 @@ pub fn resolve_hierarchical_prt_route<P: PrtBusTableProvider, R: LinkDeviceResol
         || endpoint_function >= 8 || interrupt_pin > 3 { return Err(PrtError::InvalidPin); }
     let mut pin = interrupt_pin;
     let mut device = endpoint_device;
+    let mut function = endpoint_function;
     for index in 0..bus_nodes.len() {
         let table = provider.table_for_bus(bus_nodes[index])?;
-        let address = ((device as u32) << 16) | endpoint_function as u32;
+        let address = ((device as u32) << 16) | function as u32;
         if let Some(route) = table.find(address, pin) {
             return match route.source {
                 InterruptSource::DirectGsi { gsi } => Ok(gsi),
@@ -495,10 +496,12 @@ pub fn resolve_hierarchical_prt_route<P: PrtBusTableProvider, R: LinkDeviceResol
             };
         }
         if index + 1 == bus_nodes.len() { break; }
-        let bridge_slot = provider.bridge_slot_for_downstream_bus(bus_nodes[index], bus_nodes[index + 1])?;
-        if bridge_slot >= 32 { return Err(PrtError::InvalidPin); }
+        let (bridge_slot, bridge_function) =
+            provider.bridge_slot_for_downstream_bus(bus_nodes[index], bus_nodes[index + 1])?;
+        if bridge_slot >= 32 || bridge_function >= 8 { return Err(PrtError::InvalidPin); }
         pin = swizzle_intx_pin(pin, bridge_slot)?;
         device = bridge_slot;
+        function = bridge_function;
     }
     Err(PrtError::MissingRoute)
 }
@@ -524,8 +527,8 @@ mod hierarchical_prt_tests {
         fn table_for_bus(&self, node: u16) -> Result<PrtTable, PrtError> {
             match node { 10 => Ok(self.endpoint), 20 => Ok(self.root), _ => Err(PrtError::MissingRoute) }
         }
-        fn bridge_slot_for_downstream_bus(&self, downstream: u16, upstream: u16) -> Result<u8, PrtError> {
-            if downstream == 10 && upstream == 20 { Ok(3) } else { Err(PrtError::MissingRoute) }
+        fn bridge_slot_for_downstream_bus(&self, downstream: u16, upstream: u16) -> Result<(u8, u8), PrtError> {
+            if downstream == 10 && upstream == 20 { Ok((3, 0)) } else { Err(PrtError::MissingRoute) }
         }
     }
     struct NoLinks;
