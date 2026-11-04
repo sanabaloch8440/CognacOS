@@ -108,6 +108,8 @@ run_checks() {
   cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-ntdll-def
   cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-csrsrv-def
   cargo check --manifest-path shared/nt-abi/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
+  cargo check --manifest-path shared/hal-contract/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
+  cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-none --all-targets
   cargo check --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none
   cargo check --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi
   cargo check --manifest-path ntdll/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
