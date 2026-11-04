@@ -346,7 +346,10 @@ impl AmlTableManager {
             aml_tables[slot]=&bytes[SDT_HEADER_SIZE..header.length as usize];
         }
         let mut invoker=GatedDeviceInvoker{inner:method_runtime,gate};
-        acpi_device::evaluate_device_identity(&self.namespace,&aml_tables[..self.count],device,&mut invoker)
+        acpi_device::evaluate_device_identity_with_policy(
+            &self.namespace, &aml_tables[..self.count], device, &mut invoker,
+            crate::aml_osi::platform_quirk_policy(),
+        )
             .map_err(|error|match error{
                 IdentityError::Method(method)=>TableError::MethodExecution(method),
                 other=>TableError::DeviceIdentity(other),
