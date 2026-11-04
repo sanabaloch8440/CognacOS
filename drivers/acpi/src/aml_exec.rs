@@ -38,9 +38,9 @@ pub trait AmlMethodSynchronizer:Sync{
  fn release(&self,method_index:u16);
  fn acquire_mutex(&self,_mutex_index:u16,_sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
  fn release_mutex(&self,_mutex_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
- fn signal_event(&self,_event_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
- fn wait_event(&self,_event_index:u16,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
- fn reset_event(&self,_event_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn signal_event(&self,_event_index:u16,_owner_table:u32)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn wait_event(&self,_event_index:u16,_owner_table:u32,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn reset_event(&self,_event_index:u16,_owner_table:u32)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
 }
 
 #[derive(Clone,Copy)]
@@ -208,20 +208,24 @@ impl<'a,'b> Machine<'a,'b>{
   if entry.object_type!=AmlObjectType::Mutex{return Err(ExecError::BadTarget)}
   Ok((canonical,entry.method_flags&0x0f))
  }
- fn event_object(&self,r:&mut Reader<'_>)->Result<u16,ExecError>{
+ fn event_object(&self,r:&mut Reader<'_>)->Result<(u16,u32),ExecError>{
   let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
   let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
   let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
   let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
   if entry.object_type!=AmlObjectType::Event{return Err(ExecError::BadTarget)}
-  Ok(canonical)
+  Ok((canonical,entry.source_table))
  }
  fn wait_event(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
-  let event=self.event_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
-  Ok(if self.sync.wait_event(event,timeout)?{0}else{1})
+  let (event,owner)=self.event_object(r)?;
+  // Wait's timeout is a full TermArg, not a fixed two-byte literal. This
+  // permits Local/Arg values and computed expressions as required by AML.
+  let timeout_value=self.term_value(r)?;
+  let timeout=u16::try_from(self.operand_integer(&timeout_value)?).map_err(|_|ExecError::TargetTypeMismatch)?;
+  Ok(if self.sync.wait_event(event,owner,timeout)?{0}else{self.integer_mask()})
  }
- fn signal_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let event=self.event_object(r)?;self.sync.signal_event(event)}
- fn reset_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let event=self.event_object(r)?;self.sync.reset_event(event)}
+ fn signal_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let (event,owner)=self.event_object(r)?;self.sync.signal_event(event,owner)}
+ fn reset_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let (event,owner)=self.event_object(r)?;self.sync.reset_event(event,owner)}
  fn acquire_mutex(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
   let (node,level)=self.mutex_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
   if self.sync_state.current_sync_level>level{return Err(ExecError::SyncLevelViolation)}
@@ -646,7 +650,7 @@ impl<'a,'b> Machine<'a,'b>{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
    0x5b=>{
     let extended=r.byte()?;
-    if extended==0x12||extended==0x13 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
+    if extended==0x12||extended==0x13||extended==0x25 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
     let operand=self.term_depth(r,depth+1)?;
     let result=match extended{
      0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
@@ -1872,9 +1876,9 @@ mod explicit_mutex_tests {
  impl AmlMethodSynchronizer for TestEventSync{
   fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
   fn release(&self,_:u16){}
-  fn signal_event(&self,_:u16)->Result<(),ExecError>{self.signals.fetch_add(1,Ordering::SeqCst);self.signaled.store(true,Ordering::SeqCst);Ok(())}
-  fn wait_event(&self,_:u16,timeout:u16)->Result<bool,ExecError>{self.waits.fetch_add(1,Ordering::SeqCst);self.last_timeout.store(timeout as usize,Ordering::SeqCst);Ok(self.signaled.swap(false,Ordering::SeqCst))}
-  fn reset_event(&self,_:u16)->Result<(),ExecError>{self.resets.fetch_add(1,Ordering::SeqCst);self.signaled.store(false,Ordering::SeqCst);Ok(())}
+  fn signal_event(&self,_:u16,_:u32)->Result<(),ExecError>{self.signals.fetch_add(1,Ordering::SeqCst);self.signaled.store(true,Ordering::SeqCst);Ok(())}
+  fn wait_event(&self,_:u16,_:u32,timeout:u16)->Result<bool,ExecError>{self.waits.fetch_add(1,Ordering::SeqCst);self.last_timeout.store(timeout as usize,Ordering::SeqCst);Ok(self.signaled.swap(false,Ordering::SeqCst))}
+  fn reset_event(&self,_:u16,_:u32)->Result<(),ExecError>{self.resets.fetch_add(1,Ordering::SeqCst);self.signaled.store(false,Ordering::SeqCst);Ok(())}
  }
  fn load_event_method(body:&[u8])->(std::vec::Vec<u8>,AmlNamespace,u16){
   let mut aml=std::vec![0x5b,0x02,b'E',b'V',b'T',b'0'];
