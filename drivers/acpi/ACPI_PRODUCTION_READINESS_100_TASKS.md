@@ -298,3 +298,12 @@ Therefore the PCI driver's generic InterruptLine fallback remains disabled. The 
 - The AML object arena still has fixed `MAX_AML_VALUES` and `MAX_PACKAGE_ELEMENTS` capacities. Increasing constants alone is not considered completion; the arena and nested package element storage need explicit pool-backed ownership and rundown.
 - Add ACPI-side 255-hop namespace-path tests, end-to-end v4 interface tests, allocation-failure tests, and QEMU validation. A PCI unit test now covers the maximum-depth requester path, but that alone does not prove the complete firmware route path.
 - No Windows 11, Linux, or FreeBSD hardware interoperability claim is made from source comparison alone.
+### Additional topology hardening (2026-11-04)
+
+- `db9910d4159ac80a1240d9de42f6cfa329d7d60a` and `257cef07f8f93e5345aef47e160daa6d1983163a`: validate bridge inventory before requester-path traversal and reject duplicate secondary-bus ownership.
+- `199e2d7d3b85dca7a4b5f46f3af2e2424b365ca1`: ACPI validates nested subordinate-bus windows while resolving the firmware namespace path and rejects an old v3 request whose bridge count exceeds its eight-entry payload.
+- `2ac8799dcc58f9e8f85a655ed44ac8941695480f`: add a duplicate secondary-bus ownership regression test.
+- `65b2403db9424b38a95b00eb815aeec389a0ae6f`: add a route-walker regression test covering 256 bus nodes and 255 bridge crossings.
+- `375abafe38d11e787186197dca47d4b15d25df6c`: assert the v4 callback offset as well as the interface/request sizes.
+
+These are source-level changes and added tests. They are not marked CI-passed until the repository's relevant GitHub Actions jobs execute successfully. The dynamic pool-backed `_PRT` representation remains outstanding as described above.
