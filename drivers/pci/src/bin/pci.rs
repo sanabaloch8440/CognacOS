@@ -558,7 +558,7 @@ unsafe fn query_acpi_pci_interrupt_route(
 
         let interface = unsafe { interface.assume_init_ref() };
         if interface.header.version as u32 != cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_2
-            || interface.header.size as usize < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>()
+            || (interface.header.size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>()
             || interface.query_pci_interrupt_route.is_none()
             || interface.header.interface_dereference.is_none() {
             if let Some(deref) = interface.header.interface_dereference {
