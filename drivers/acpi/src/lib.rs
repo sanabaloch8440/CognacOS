@@ -24,6 +24,7 @@ pub mod acpi_power;
 pub mod acpi_hotplug;
 pub mod acpi_prt;
 pub mod acpi_events;
+pub mod acpi_sci;
 
 
 /// Common 36-byte ACPI System Description Table header.
@@ -101,6 +102,7 @@ pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
     let n=h.length as usize;
     let mut out=FadtInfo{revision:h.revision,..FadtInfo::default()};
     if n>=46{out.preferred_pm_profile=bytes[45];}
+    if n>=48{out.sci_interrupt=u16::from_le_bytes([bytes[46],bytes[47]]);}
     if n>=44{out.firmware_ctrl=u32le(bytes,36)?;out.dsdt=u32le(bytes,40)?;}
     if n>=111{out.boot_arch_flags=u16::from_le_bytes([bytes[109],bytes[110]]);}
     if n>=116{out.flags=u32le(bytes,112)?;}
