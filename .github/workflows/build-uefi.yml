@@ -3,8 +3,8 @@ name: Build and boot-test CognacOS Rust UEFI kernel
 # Run the full UEFI build and QEMU smoke test on main updates, while retaining
 # an explicit manual entry point for targeted validation.
 # TEMPORARILY PAUSED: expensive build/QEMU runs are manual-only while ACPI
-# implementation work proceeds. Restore push/pull_request triggers after the
-# final implementation batch and before the QEMU verification campaign.
+# implementation work proceeds. Restore push/pull_request triggers before the
+# final UEFI/QEMU verification campaign.
 on:
   workflow_dispatch:
 
