@@ -137,7 +137,7 @@ impl<'a,'b> Machine<'a,'b>{
   let value=make_object_reference(reference);
   match target{Target::Local(i)=>self.store_value(Target::Local(i),value,StoreMode::CopyObject),
    Target::Arg(i)=>self.store_value(Target::Arg(i),value,StoreMode::CopyObject),
-   Target::Reference(r)=>self.store_reference_value(r,value,StoreMode::CopyObject),Target::Null=>Err(ExecError::BadTarget)}
+   Target::Reference(r)=>self.store_reference_value(r,value,StoreMode::CopyObject),Target::Null=>Ok(())}
  }
  fn optional_source_reference(&mut self,r:&mut Reader<'_>)->Result<Option<AmlReference>,ExecError>{
   let start=r.pos;let op=*r.bytes.get(start).ok_or(ExecError::Truncated)?;
@@ -1003,9 +1003,8 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&escaping,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   let mut arena=test_heap_arena();let mut bindings=AmlBindings::with_aml_revision(2);
-  let result=execute_method_in_context(&escaping,&ns,id,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
-  assert_eq!(result.kind,AmlValueKind::ObjectReference);
-  assert_eq!(validate_runtime_value(&result,&arena),Err(RuntimeError::InvalidReference));
+  assert_eq!(execute_method_in_context(&escaping,&ns,id,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER),
+      Err(ExecError::UnsupportedReturnType));
  }
 
  #[test]fn index_returns_live_package_element_reference(){
