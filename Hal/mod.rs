@@ -690,6 +690,13 @@ pub fn register_device_interrupt_handler(
         .map_err(|_| HalError::InvalidTransition)
 }
 
+/// @partial implementation
+/// Detach a callback while retaining the vector reservation. Dispatch rundown
+/// completes before this returns; the resource owner decides when to release.
+pub fn unregister_device_interrupt_handler(vector: u8) -> Result<(), HalError> {
+    apic::unregister_interrupt_handler(vector).map_err(|_| HalError::InvalidTransition)
+}
+
 /// Release an unused device vector after its source is masked and its IDT gate
 /// is detached. The caller must synchronize with any in-flight interrupts.
 pub fn release_device_interrupt_vector(vector: u8) -> Result<(), HalError> {
