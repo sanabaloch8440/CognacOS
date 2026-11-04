@@ -816,6 +816,18 @@ mod varpackage_prt_tests {
     }
 }
 
+#[cfg(test)]
+fn test_prt_arena() -> std::boxed::Box<crate::aml_objects::AmlObjectArena> {
+    let mut storage = std::boxed::Box::<crate::aml_objects::AmlObjectArena>::new_uninit();
+    unsafe {
+        core::ptr::write_bytes(
+            storage.as_mut_ptr().cast::<u8>(), 0,
+            core::mem::size_of::<crate::aml_objects::AmlObjectArena>(),
+        );
+        storage.assume_init()
+    }
+}
+
 /// Convenience/test wrapper. Kernel callers should use the context-taking
 /// variant with a pool-backed arena rather than placing the large fixed arena
 /// on a kernel thread stack.
@@ -827,7 +839,12 @@ pub fn evaluate_prt_method_object<R: LinkDeviceResolver>(
     sync: &dyn crate::aml_exec::AmlMethodSynchronizer,
     resolver: &R,
 ) -> Result<PrtTable, PrtDecodeError> {
-    let mut arena = crate::aml_objects::AmlObjectArena::new();
+    let mut arena = {
+        #[cfg(test)]
+        { test_prt_arena() }
+        #[cfg(not(test))]
+        { crate::aml_objects::AmlObjectArena::new() }
+    };
     let mut bindings = crate::aml_runtime::AmlBindings::with_aml_revision(
         if integer_width_bits == 32 { 1 } else { 2 }
     );
