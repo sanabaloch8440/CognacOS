@@ -13,7 +13,7 @@ pub const MAX_BYTE_PATCHES: usize = 16;
 pub const MAX_IRQ_OVERRIDES: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DmiField { SystemVendor, ProductName, BoardVendor, BoardName, BiosVersion, BiosDate }
+pub enum DmiField { SystemVendor, ProductName, BoardVendor, BoardName, ProductSku, BiosVersion, BiosDate }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DmiValue {
@@ -38,6 +38,7 @@ pub struct PlatformIdentity {
     pub product_name: DmiValue,
     pub board_vendor: DmiValue,
     pub board_name: DmiValue,
+    pub product_sku: DmiValue,
     pub bios_version: DmiValue,
     pub bios_date: DmiValue,
     pub smbios_major: u8,
@@ -46,7 +47,7 @@ pub struct PlatformIdentity {
 impl PlatformIdentity {
     pub const EMPTY: Self = Self {
         system_vendor: DmiValue::EMPTY, product_name: DmiValue::EMPTY,
-        board_vendor: DmiValue::EMPTY, board_name: DmiValue::EMPTY,
+        board_vendor: DmiValue::EMPTY, board_name: DmiValue::EMPTY, product_sku: DmiValue::EMPTY,
         bios_version: DmiValue::EMPTY, bios_date: DmiValue::EMPTY,
         smbios_major: 0, smbios_minor: 0,
     };
@@ -56,6 +57,7 @@ impl PlatformIdentity {
             DmiField::ProductName => self.product_name.as_bytes(),
             DmiField::BoardVendor => self.board_vendor.as_bytes(),
             DmiField::BoardName => self.board_name.as_bytes(),
+            DmiField::ProductSku => self.product_sku.as_bytes(),
             DmiField::BiosVersion => self.bios_version.as_bytes(),
             DmiField::BiosDate => self.bios_date.as_bytes(),
         }
@@ -118,6 +120,7 @@ pub fn parse_smbios_table(table: &[u8], major: u8, minor: u8)
             1 if formatted_len >= 6 => {
                 id.system_vendor.set(smbios_string(strings, formatted[4])?);
                 id.product_name.set(smbios_string(strings, formatted[5])?);
+                if formatted_len >= 0x1b { id.product_sku.set(smbios_string(strings, formatted[0x19])?); }
             }
             2 if formatted_len >= 6 => {
                 id.board_vendor.set(smbios_string(strings, formatted[4])?);
@@ -193,6 +196,9 @@ pub struct FadtOverride {
     pub boot_arch_writable_mask: u16,
 }
 #[derive(Clone, Copy, Debug)]
+pub struct AdrOverride { pub parent_path: &'static str, pub from: u64, pub to: u64 }
+
+#[derive(Clone, Copy, Debug)]
 pub struct PrtOverride {
     pub segment: u16, pub bus: u8, pub device: u8, pub function: u8,
     pub pin: u8, pub gsi: u32, pub active_low: bool, pub level_triggered: bool,
@@ -219,6 +225,7 @@ pub struct QuirkDefinition {
     pub table_patches: &'static [BytePatch],
     pub fadt: Option<FadtOverride>,
     pub prt: &'static [PrtOverride],
+    pub adr: &'static [AdrOverride],
     pub hook: Option<QuirkHook>,
 }
 
@@ -237,6 +244,8 @@ pub struct QuirkPolicy {
     pub fadt: Option<FadtOverride>,
     pub prt: [Option<PrtOverride>; MAX_IRQ_OVERRIDES],
     pub prt_count: usize,
+    pub adr: [Option<AdrOverride>; MAX_IRQ_OVERRIDES],
+    pub adr_count: usize,
 }
 impl QuirkPolicy {
     pub const EMPTY: Self = Self {
@@ -244,6 +253,7 @@ impl QuirkPolicy {
         osi: [None; MAX_OSI_STRINGS], osi_count: 0,
         patches: [None; MAX_BYTE_PATCHES], patch_count: 0,
         fadt: None, prt: [None; MAX_IRQ_OVERRIDES], prt_count: 0,
+        adr: [None; MAX_IRQ_OVERRIDES], adr_count: 0,
     };
     fn add(&mut self, q: &QuirkDefinition) -> Result<(), QuirkError> {
         if self.matched_count == MAX_QUIRKS { return Err(QuirkError::Capacity); }
@@ -268,6 +278,11 @@ impl QuirkPolicy {
             if self.prt_count == MAX_IRQ_OVERRIDES { return Err(QuirkError::Capacity); }
             self.prt[self.prt_count] = Some(*route);
             self.prt_count += 1;
+        }
+        for remap in q.adr {
+            if self.adr_count == MAX_IRQ_OVERRIDES { return Err(QuirkError::Capacity); }
+            self.adr[self.adr_count] = Some(*remap);
+            self.adr_count += 1;
         }
         if let Some(fadt) = q.fadt {
             if self.fadt.is_some() { return Err(QuirkError::InvalidFadtMask); }
@@ -348,6 +363,46 @@ pub const EXAMPLE_LENOVO_MATCH: &[DmiMatch] = &[
     DmiMatch::exact(DmiField::SystemVendor, b"LENOVO"),
     DmiMatch::prefix(DmiField::ProductName, b"ThinkPad"),
 ];
+
+// Two source-backed quirk definitions, kept opt-in until the corresponding
+// hardware paths have been validated on CognacOS. The DMI identifiers and
+// replacement values are documented upstream compatibility cases; this file
+// contains original Rust data and matching/dispatch code, not imported code.
+//
+// Fujitsu Siemens firmware historically used Windows-version _OSI probes.
+// Suppress only the legacy Vista strings; do not disable all Windows strings.
+pub const FUJITSU_SIEMENS_OSI: &[OsiOverride] = &[
+    OsiOverride { name: "Windows 2006", action: OsiAction::Suppress },
+    OsiOverride { name: "Windows 2006 SP1", action: OsiAction::Suppress },
+    OsiOverride { name: "Windows 2006 SP2", action: OsiAction::Suppress },
+];
+pub const FUJITSU_SIEMENS_MATCH: &[DmiMatch] = &[
+    DmiMatch::prefix(DmiField::SystemVendor, b"FUJITSU SIEMENS"),
+];
+
+// Dell SKU 0A3E has a documented SoundWire ACPI _ADR topology mismatch.
+// These remaps are scoped to the SoundWire parent namespace and must be
+// consumed only by the ACPI namespace _ADR resolution hook.
+pub const DELL_0A3E_ADR: &[AdrOverride] = &[
+    AdrOverride { parent_path: "\\\\_SB.SDWT", from: 0x00020025d071100, to: 0x000210025d071500 },
+    AdrOverride { parent_path: "\\\\_SB.SDWT", from: 0x000120025d130800, to: 0x000120025d071100 },
+    AdrOverride { parent_path: "\\\\_SB.SDWT", from: 0x000220025d071500, to: 0x000220025d130800 },
+];
+pub const DELL_0A3E_MATCH: &[DmiMatch] = &[
+    DmiMatch::exact(DmiField::SystemVendor, b"Dell Inc"),
+    DmiMatch::exact(DmiField::ProductSku, b"0A3E"),
+];
+
+pub const FUJITSU_SIEMENS_QUIRK: QuirkDefinition = QuirkDefinition {
+    id: "fujitsu-siemens-legacy-osi",
+    matches: FUJITSU_SIEMENS_MATCH, flags: QuirkFlags::NONE,
+    osi: FUJITSU_SIEMENS_OSI, table_patches: &[], fadt: None, prt: &[], adr: &[], hook: None,
+};
+pub const DELL_0A3E_QUIRK: QuirkDefinition = QuirkDefinition {
+    id: "dell-sku-0a3e-soundwire-adr",
+    matches: DELL_0A3E_MATCH, flags: QuirkFlags::NONE,
+    osi: &[], table_patches: &[], fadt: None, prt: &[], adr: DELL_0A3E_ADR, hook: None,
+};
 
 #[cfg(test)]
 mod tests {
