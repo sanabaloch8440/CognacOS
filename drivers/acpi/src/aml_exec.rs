@@ -97,7 +97,14 @@ impl<'a,'b> Machine<'a,'b>{
     r.pos-=1;
     let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::BadTarget)?;
     r.pos=next;
-    let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::BadTarget)?;
+    let node=match resolve_name_string(self.namespace,self.scope,&name) {
+     Ok(node)=>node,
+     Err(_)=>{
+      let dynamic_node=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name).map_err(|_|ExecError::BadTarget)?;
+      let reference=self.dynamic.field_reference(self.namespace,dynamic_node).map_err(|_|ExecError::BadTarget)?;
+      return Ok(Target::Reference(reference));
+     }
+    };
     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
     let entry=self.namespace.nodes.get(canonical as usize)
         .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
@@ -316,7 +323,7 @@ impl<'a,'b> Machine<'a,'b>{
   match op{
    0x00=>Ok(Self::integer_value(0)),0x01=>Ok(Self::integer_value(1)),
    0x8a|0x8b|0x8c|0x8d|0x8f=>self.create_field_term(r,op),
-   0x5b=>{let extended=r.byte()?;if extended==0x13{self.create_field_term(r,0x5b)}else{Err(ExecError::UnsupportedOpcode)}},
+   0x5b=>{let extended=r.byte()?;if extended==0x13{self.create_field_term(r,0x5b)}else{r.pos=start;self.term(r).map(Self::integer_value)}},
    0xff=>Ok(Self::integer_value(self.integer_mask())),
    0x0a=>Ok(Self::integer_value(r.byte()? as u64)),
    0x0b=>{let b=r.take(2)?;Ok(Self::integer_value(u16::from_le_bytes([b[0],b[1]]) as u64))},
