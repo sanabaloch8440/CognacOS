@@ -480,6 +480,18 @@ pub unsafe extern "win64" fn io_connect_interrupt_ex(
             if params.version == CONNECT_FULLY_SPECIFIED_GROUP && full.group != 0 {
                 return STATUS_NOT_SUPPORTED;
             }
+            let group = if params.version == CONNECT_FULLY_SPECIFIED_GROUP { full.group } else { 0 };
+            if !crate::io::wdm::io_validate_pnp_interrupt_resource(
+                full.physical_device_object,
+                full.vector,
+                full.irql,
+                full.interrupt_mode,
+                full.share_vector,
+                full.processor_enable_mask,
+                group,
+            ) {
+                return STATUS_INVALID_PARAMETER;
+            }
             unsafe { full.interrupt_object.write(core::ptr::null_mut()) };
             unsafe {
                 io_connect_interrupt(
