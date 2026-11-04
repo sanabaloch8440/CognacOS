@@ -3,7 +3,7 @@
 
 // Canonical Windows NT-style ABI types are shared with NTDLL and driver crates.
 pub(crate) use cognacos_nt_abi as nt_abi;
-pub(crate) use cognacos_hal_contract::hal as hal;
+pub(crate) use cognacos_hal_impl::hal as hal;
 #[path = "hal_services.rs"]
 mod hal_services;
 
