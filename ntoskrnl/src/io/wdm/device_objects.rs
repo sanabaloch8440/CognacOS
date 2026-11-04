@@ -214,25 +214,24 @@ pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
   }
  };
  while !cursor.is_null(){
-  let next={
+  let (next,found_current)={
    let mut state=WDM.lock();
-   let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,cursor)) else{
-    unsafe{io_dereference_device_object(cursor);}
-    break
-   };
-   let next=slot.object.next_device;
-   let pinned_next=if next.is_null(){ptr::null_mut()}else{
-    match state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,next)){
-     Some(next_slot)=>match next_slot.object.reference_count.checked_add(1){
-      Some(count)=>{next_slot.object.reference_count=count;next},
+   if let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,cursor)){
+    let next=state.devices[index].object.next_device;
+    state.devices[index].deleting=true;
+    let pinned_next=if next.is_null(){ptr::null_mut()}else{
+     match state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,next)){
+      Some(next_slot)=>match next_slot.object.reference_count.checked_add(1){
+       Some(count)=>{next_slot.object.reference_count=count;next},
+       None=>ptr::null_mut()
+      },
       None=>ptr::null_mut()
-     },
-     None=>ptr::null_mut()
-    }
-   };
-   slot.deleting=true;
-   pinned_next
+     }
+    };
+    (pinned_next,true)
+   }else{(ptr::null_mut(),false)}
   };
+  if !found_current{unsafe{io_dereference_device_object(cursor);}break}
   unsafe{io_delete_device(cursor);}
   unsafe{io_dereference_device_object(cursor);}
   cursor=next;
