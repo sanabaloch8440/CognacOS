@@ -507,6 +507,40 @@ pub fn resolve_hierarchical_prt_route<P: PrtBusTableProvider, R: LinkDeviceResol
 }
 
 #[cfg(test)]
+mod full_depth_route_tests {
+    use super::*;
+    struct EmptyTables { crossings: core::cell::Cell<usize> }
+    impl PrtBusTableProvider for EmptyTables {
+        fn table_for_bus(&self, _node: u16) -> Result<PrtTable, PrtError> {
+            Ok(PrtTable::EMPTY)
+        }
+        fn bridge_slot_for_downstream_bus(
+            &self, _downstream: u16, _upstream: u16,
+        ) -> Result<(u8, u8), PrtError> {
+            self.crossings.set(self.crossings.get() + 1);
+            Ok((1, 0))
+        }
+    }
+    struct NoLinks;
+    impl LinkDeviceResolver for NoLinks {
+        fn resolve_gsi(&self, _path: &[u8], _index: u32) -> Result<u32, PrtError> {
+            Err(PrtError::LinkResolutionFailed)
+        }
+    }
+
+    #[test]
+    fn traverses_all_256_bus_nodes_without_an_eight_or_32_hop_cap() {
+        let provider = EmptyTables { crossings: core::cell::Cell::new(0) };
+        let nodes = [0u16; 256];
+        assert_eq!(
+            resolve_hierarchical_prt_route(&provider, &NoLinks, &nodes, 1, 0, 0),
+            Err(PrtError::MissingRoute),
+        );
+        assert_eq!(provider.crossings.get(), 255);
+    }
+}
+
+#[cfg(test)]
 mod bridge_swizzle_tests {
     use super::*;
     #[test] fn swizzle_rotates_by_slot_and_wraps() {
