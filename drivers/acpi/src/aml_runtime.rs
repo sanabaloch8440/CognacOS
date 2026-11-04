@@ -756,6 +756,17 @@ pub fn integer_to_string(value:u64)->AmlRuntimeValue{
 
 #[cfg(test)]
 mod tests{
+    fn test_arena() -> std::boxed::Box<AmlObjectArena> {
+        let mut storage = std::boxed::Box::<AmlObjectArena>::new_uninit();
+        unsafe {
+            core::ptr::write_bytes(
+                storage.as_mut_ptr().cast::<u8>(), 0,
+                core::mem::size_of::<AmlObjectArena>(),
+            );
+            storage.assume_init()
+        }
+    }
+
     use super::*;
     use crate::aml::load_definition_block;
     #[test]fn implicit_integer_source_conversion_uses_hex_and_definition_width(){
@@ -790,7 +801,7 @@ mod tests{
         let aml=[0x08,b'P',b'K',b'G',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"PKG0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut one=AmlRuntimeValue::EMPTY;one.kind=AmlValueKind::Integer;one.integer=1;
         let source_child=arena.allocate(one).unwrap();
         let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Package;source.element_count=1;
@@ -813,7 +824,7 @@ mod tests{
     }
 
     #[test]fn package_element_store_owns_non_package_source_values(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut original=AmlRuntimeValue::EMPTY;original.kind=AmlValueKind::Buffer;
         original.byte_length=1;original.bytes[0]=0x11;
         let original_id=arena.allocate(original).unwrap();
@@ -835,7 +846,7 @@ mod tests{
         let aml=[0x08,b'P',b'K',b'G',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"PKG0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut one=AmlRuntimeValue::EMPTY;one.kind=AmlValueKind::Integer;one.integer=1;
         let source_child=arena.allocate(one).unwrap();
         let mut inner=AmlRuntimeValue::EMPTY;inner.kind=AmlValueKind::Package;inner.element_count=1;
@@ -865,7 +876,7 @@ mod tests{
     }
 
     #[test]fn cyclic_package_copy_rolls_back_arena_allocations(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
         let package_id=arena.allocate(package).unwrap();
         arena.get_mut(package_id).unwrap().elements[0]=package_id;
@@ -875,7 +886,7 @@ mod tests{
     }
 
     #[test]fn implicit_source_operand_conversions_follow_expected_type(){
-        let arena=AmlObjectArena::new();
+        let arena = test_arena();
         let mut text=AmlRuntimeValue::EMPTY;text.kind=AmlValueKind::String;
         text.byte_length=3;text.bytes[..3].copy_from_slice(b"12Z");
         let integer=convert_source_operand(&text,AmlValueKind::Integer,64,&arena).unwrap();
@@ -899,7 +910,7 @@ mod tests{
         let int_node=ns.find_child(0,*b"INT0").unwrap();
         let buf_node=ns.find_child(0,*b"BUF0").unwrap();
         let str_node=ns.find_child(0,*b"STR0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut initial=AmlRuntimeValue::EMPTY;initial.kind=AmlValueKind::Integer;initial.integer=1;
         let int_id=arena.allocate(initial).unwrap();
         let mut initial_buf=AmlRuntimeValue::EMPTY;initial_buf.kind=AmlValueKind::Buffer;initial_buf.byte_length=1;
@@ -929,7 +940,7 @@ mod tests{
         let int_node=ns.find_child(0,*b"INT0").unwrap();
         let buf_node=ns.find_child(0,*b"BUF0").unwrap();
         let str_node=ns.find_child(0,*b"STR0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;
         let int_id=arena.allocate(integer).unwrap();
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;buffer.byte_length=8;
@@ -962,7 +973,7 @@ mod tests{
         let aml=[0x08,b'I',b'N',b'T',b'0',0x01];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let node=ns.find_child(0,*b"INT0").unwrap();
-        let mut arena=AmlObjectArena::new();let mut initial=AmlRuntimeValue::EMPTY;
+        let mut arena = test_arena();let mut initial=AmlRuntimeValue::EMPTY;
         initial.kind=AmlValueKind::Integer;initial.integer=1;let old=arena.allocate(initial).unwrap();
         let mut bindings=AmlBindings::new();bindings.bind(&ns,node,old).unwrap();
         let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;string.byte_length=2;
@@ -976,7 +987,7 @@ mod tests{
         let aml=[0x08,b'V',b'A',b'L',b'0',0x01,0x06,b'V',b'A',b'L',b'0',b'A',b'L',b'I',b'0'];
         let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
         let val=ns.find_child(0,*b"VAL0").unwrap();let alias=ns.find_child(0,*b"ALI0").unwrap();
-        let mut arena=AmlObjectArena::new();let mut one=AmlRuntimeValue::EMPTY;one.kind=AmlValueKind::Integer;one.integer=1;
+        let mut arena = test_arena();let mut one=AmlRuntimeValue::EMPTY;one.kind=AmlValueKind::Integer;one.integer=1;
         let one_id=arena.allocate(one).unwrap();let mut bindings=AmlBindings::new();bindings.bind(&ns,val,one_id).unwrap();
         let r=bindings.reference_node(&ns,alias).unwrap();
         assert_eq!(dereference(r,&bindings,&arena).unwrap().integer,1);
@@ -985,7 +996,7 @@ mod tests{
         assert_eq!(dereference(r,&bindings,&arena).unwrap().integer,2);
     }
     #[test]fn package_and_buffer_index_references_support_store(){
-        let mut arena=AmlObjectArena::new();let mut p=AmlRuntimeValue::EMPTY;p.kind=AmlValueKind::Package;p.element_count=1;
+        let mut arena = test_arena();let mut p=AmlRuntimeValue::EMPTY;p.kind=AmlValueKind::Package;p.element_count=1;
         let mut initial=AmlRuntimeValue::EMPTY;initial.kind=AmlValueKind::Integer;initial.integer=3;
         let initial_id=arena.allocate(initial).unwrap();p.elements[0]=initial_id;let package=arena.allocate(p).unwrap();
         let r=index_reference(&arena,package,0).unwrap();
@@ -1012,7 +1023,7 @@ mod tests{
         let aml=[0x08,b'N',b'A',b'M',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"NAM0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut original=AmlRuntimeValue::EMPTY;original.kind=AmlValueKind::Integer;original.integer=7;
         let original_id=arena.allocate(original).unwrap();
         let mut bindings=AmlBindings::new();bindings.bind(&namespace,node,original_id).unwrap();
@@ -1036,7 +1047,7 @@ mod tests{
     }
 
     #[test]fn method_frame_constructor_rolls_back_when_argument_copy_fails(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
         let package_id=arena.allocate(package).unwrap();
         arena.get_mut(package_id).unwrap().elements[0]=u16::MAX;
@@ -1049,7 +1060,7 @@ mod tests{
         let aml=[0x08,b'N',b'A',b'M',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"NAM0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=7;
         let integer_id=arena.allocate(integer).unwrap();
         let mut frame=AmlMethodFrame::new(&[integer_id],&mut arena).unwrap();
@@ -1069,7 +1080,7 @@ mod tests{
     }
 
     #[test]fn method_frame_package_store_copies_nested_package_values(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut integer=AmlRuntimeValue::EMPTY;integer.kind=AmlValueKind::Integer;integer.integer=1;
         let child=arena.allocate(integer).unwrap();
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
@@ -1085,7 +1096,7 @@ mod tests{
     }
 
     #[test]fn narrow_buffer_field_uses_integer_typing_and_preserves_neighbor_bits(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut backing=AmlRuntimeValue::EMPTY;backing.kind=AmlValueKind::Buffer;
         backing.byte_length=2;backing.bytes[..2].copy_from_slice(&[0b1010_0000,0x5a]);
         let buffer=arena.allocate(backing).unwrap();
@@ -1102,7 +1113,7 @@ mod tests{
     }
 
     #[test]fn wide_buffer_field_uses_buffer_typing_and_zero_extends(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut backing=AmlRuntimeValue::EMPTY;backing.kind=AmlValueKind::Buffer;
         backing.byte_length=10;backing.bytes[0]=0xaa;
         let buffer=arena.allocate(backing).unwrap();
@@ -1120,7 +1131,7 @@ mod tests{
     }
 
     #[test]fn copy_object_field_accepts_integer_or_buffer_but_rejects_string_atomically(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut backing=AmlRuntimeValue::EMPTY;backing.kind=AmlValueKind::Buffer;
         backing.byte_length=2;backing.bytes[..2].copy_from_slice(&[0xaa,0x55]);
         let buffer=arena.allocate(backing).unwrap();
@@ -1140,7 +1151,7 @@ mod tests{
     }
 
     #[test]fn zero_length_existing_buffer_targets_remain_zero_length(){
-        let arena=AmlObjectArena::new();
+        let arena = test_arena();
         let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Buffer;
         let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Buffer;
         source.byte_length=2;source.bytes[..2].copy_from_slice(&[0x12,0x34]);
@@ -1157,7 +1168,7 @@ mod tests{
     }
 
     #[test]fn named_buffer_to_buffer_store_preserves_extent_and_zero_extends(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Buffer;
         target.byte_length=3;target.bytes[..3].copy_from_slice(&[0xaa,0xbb,0xcc]);
         let target_id=arena.allocate(target).unwrap();
@@ -1188,7 +1199,7 @@ mod tests{
         let aml=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,2,0,0];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"BUF0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Buffer;
         target.byte_length=2;target.bytes[..2].copy_from_slice(&[0xaa,0xbb]);
         let target_id=arena.allocate(target).unwrap();
@@ -1213,7 +1224,7 @@ mod tests{
         let aml=[0x08,b'T',b'A',b'R',b'G',0x11,0x04,0x0a,1,0xaa];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"TARG").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut target=AmlRuntimeValue::EMPTY;target.kind=AmlValueKind::Buffer;target.byte_length=1;
         let target_id=arena.allocate(target).unwrap();
         let mut source=AmlRuntimeValue::EMPTY;source.kind=AmlValueKind::Buffer;
@@ -1233,7 +1244,7 @@ mod tests{
     }
 
     #[test]fn copy_object_to_buffer_byte_rejects_string_without_mutation(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
         buffer.byte_length=1;buffer.bytes[0]=0xaa;
         let buffer_id=arena.allocate(buffer).unwrap();
@@ -1251,7 +1262,7 @@ mod tests{
     }
 
     #[test]fn buffer_byte_store_rejects_wrong_types_without_mutating_target(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;buffer.byte_length=1;buffer.bytes[0]=0xaa;
         let buffer_id=arena.allocate(buffer).unwrap();
         let mut string=AmlRuntimeValue::EMPTY;string.kind=AmlValueKind::String;string.byte_length=1;string.bytes[0]=b'1';
@@ -1293,7 +1304,7 @@ mod tests{
         malformed.byte_length=(MAX_AML_BYTES+1) as u16;
         assert_eq!(to_integer(&malformed),Err(RuntimeError::InvalidObjectLength));
         assert_eq!(to_buffer(&malformed,4),Err(RuntimeError::InvalidObjectLength));
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let id=arena.allocate(malformed).unwrap();
         assert_eq!(index_reference(&arena,id,0),Err(RuntimeError::InvalidObjectLength));
     }
@@ -1316,7 +1327,7 @@ mod tests{
     #[test]fn malformed_package_element_counts_are_rejected_without_indexing(){
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
         package.element_count=(crate::aml_objects::MAX_PACKAGE_ELEMENTS+1) as u8;
-        let mut arena=AmlObjectArena::new();let id=arena.allocate(package).unwrap();
+        let mut arena = test_arena();let id=arena.allocate(package).unwrap();
         assert_eq!(index_reference(&arena,id,0),Err(RuntimeError::InvalidObjectLength));
         let reference=AmlReference::PackageElement{package:id,index:0};
         let bindings=AmlBindings::new();
@@ -1324,7 +1335,7 @@ mod tests{
     }
 
     #[test]fn buffer_byte_store_rejects_corrupt_target_extent_atomically(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut buffer=AmlRuntimeValue::EMPTY;buffer.kind=AmlValueKind::Buffer;
         buffer.byte_length=(MAX_AML_BYTES+1) as u16;buffer.bytes[0]=0xaa;
         let buffer_id=arena.allocate(buffer).unwrap();
@@ -1337,7 +1348,7 @@ mod tests{
     }
 
     #[test]fn package_store_rejects_corrupt_element_count_atomically(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
         package.element_count=(crate::aml_objects::MAX_PACKAGE_ELEMENTS+1) as u8;
         package.elements[0]=0;
@@ -1354,7 +1365,7 @@ mod tests{
         let aml=[0x08,b'V',b'A',b'L',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"VAL0").unwrap();
-        let mut bindings=AmlBindings::new();let arena=AmlObjectArena::new();
+        let mut bindings=AmlBindings::new();let arena = test_arena();
         assert_eq!(bindings.bind_checked(&namespace,node,0,&arena),Err(RuntimeError::InvalidReference));
         assert_eq!(bindings.value_id(node),Err(RuntimeError::UnboundNode));
     }
@@ -1363,7 +1374,7 @@ mod tests{
         let aml=[0x08,b'V',b'A',b'L',b'0',0x01];
         let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
         let node=namespace.find_child(0,*b"VAL0").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
         package.element_count=1;package.elements[0]=u16::MAX;
         let id=arena.allocate(package).unwrap();
@@ -1373,7 +1384,7 @@ mod tests{
     }
 
     #[test]fn reference_store_rejects_malformed_source_without_mutating_target(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;package.element_count=1;
         let mut child=AmlRuntimeValue::EMPTY;child.kind=AmlValueKind::Integer;child.integer=1;
         let child_id=arena.allocate(child).unwrap();package.elements[0]=child_id;
