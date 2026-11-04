@@ -222,20 +222,23 @@ pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  if !crate::ntoskrnl::driver_loader::begin_driver_unload(
   driver.cast::<crate::ntoskrnl::driver_loader::DriverObject>()
  ) { return STATUS_PENDING; }
- let mut devices=[ptr::null_mut::<DeviceObject>();MAX_WDM_DEVICES];
- let count={
+ {
   let mut state=WDM.lock();
   let flags=unsafe{(*driver).flags};
   if flags&DRIVER_UNLOADED_FLAG!=0{return STATUS_SUCCESS}
   unsafe{(*driver).flags=flags|DRIVER_UNLOADING_FLAG;}
-  let mut n=0usize;
-  for slot in state.devices.iter_mut().filter(|s|s.used&&s.object.driver_object==driver){
-   slot.deleting=true;
-   if n<devices.len(){devices[n]=ptr::addr_of_mut!(slot.object);n+=1;}
-  }
-  n
- };
- for device in devices[..count].iter().copied(){unsafe{io_delete_device(device);}}
+ }
+ // Do not truncate unload to the bootstrap registry size. Claim one owned
+ // device at a time, then run Object Manager and PnP teardown without WDM held.
+ loop {
+  let device={
+   let mut state=WDM.lock();
+   state.devices.iter_mut().find(|s|s.used&&s.object.driver_object==driver&&!s.deleting)
+    .map(|slot|{slot.deleting=true;ptr::addr_of_mut!(slot.object)})
+  };
+  let Some(device)=device else{break};
+  unsafe{io_delete_device(device);}
+ }
  let callback={
   let state=WDM.lock();
   if state.devices.iter().any(|s|s.used&&s.object.driver_object==driver){return STATUS_PENDING}
