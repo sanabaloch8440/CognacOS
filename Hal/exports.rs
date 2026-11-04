@@ -6,7 +6,7 @@
 //! generic function pointers would risk corrupting driver calls.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StubState { NotImplemented, Implemented }
+pub enum StubState { NotImplemented, Partial, Implemented }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HalExport { pub ordinal: u16, pub name: &'static str, pub state: StubState }
@@ -42,7 +42,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 27, name: "HalGetEnvironmentVariable", state: StubState::NotImplemented },
     HalExport { ordinal: 28, name: "HalGetEnvironmentVariableEx", state: StubState::NotImplemented },
     HalExport { ordinal: 29, name: "HalGetInterruptTargetInformation", state: StubState::NotImplemented },
-    HalExport { ordinal: 30, name: "HalGetInterruptVector", state: StubState::NotImplemented },
+    HalExport { ordinal: 30, name: "HalGetInterruptVector", state: StubState::Partial },
     HalExport { ordinal: 31, name: "HalGetMemoryCachingRequirements", state: StubState::NotImplemented },
     HalExport { ordinal: 32, name: "HalGetMessageRoutingInfo", state: StubState::NotImplemented },
     HalExport { ordinal: 33, name: "HalGetProcessorIdByNtNumber", state: StubState::Implemented },
@@ -377,6 +377,39 @@ pub unsafe extern "win64" fn hal_disable_interrupt(vector:u32,_irql:u8)->u8{
     unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,false).is_ok() as u8}
 }
 
+/// @partial implementation
+/// Windows 11 x64 HAL DDI ABI: ULONG HalGetInterruptVector(
+/// INTERFACE_TYPE, ULONG, ULONG, ULONG, PKIRQL, PKAFFINITY).
+/// Returns only a PnP-published translation. Missing mappings fail closed;
+/// this routine never treats a bus IRQ as a system vector.
+#[unsafe(export_name = "HalGetInterruptVector")]
+pub unsafe extern "win64" fn hal_get_interrupt_vector(
+    interface_type: i32,
+    bus_number: u32,
+    bus_interrupt_level: u32,
+    bus_interrupt_vector: u32,
+    irql_out: *mut u8,
+    affinity_out: *mut u64,
+) -> u32 {
+    if irql_out.is_null() || affinity_out.is_null() {
+        return 0;
+    }
+    unsafe {
+        irql_out.write(0);
+        affinity_out.write(0);
+    }
+    let Some((vector, irql, affinity)) = crate::hal::query_bus_interrupt_translation(
+        interface_type as u32, bus_number, bus_interrupt_level, bus_interrupt_vector,
+    ) else {
+        return 0;
+    };
+    unsafe {
+        irql_out.write(irql);
+        affinity_out.write(affinity);
+    }
+    vector
+}
+
 pub unsafe extern "win64" fn hal_acpi_get_table_ex(
     signature: u32,
     instance: u32,
@@ -588,6 +621,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         Some(super::hal_acpi_get_sci_services as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalQueryRealTimeClock") {
         Some(hal_query_real_time_clock as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalGetInterruptVector") {
+        Some(hal_get_interrupt_vector as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalEnableInterrupt") {
         Some(hal_enable_interrupt as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalDisableInterrupt") {
@@ -639,6 +674,7 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
         14 => Some(hal_disable_interrupt as usize as u64),
         18 => Some(hal_enable_interrupt as usize as u64),
+        30 => Some(hal_get_interrupt_vector as usize as u64),
         48 => Some(hal_query_real_time_clock as usize as u64),
         1 => Some(hal_acpi_get_table_ex as usize as u64),
         4 => Some(hal_all_processors_started as usize as u64),
