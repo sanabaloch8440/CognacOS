@@ -86,11 +86,23 @@ Task 33 implementation progress (PR branch `acpi-task33-explicit-mutex`; not che
 - The native ACPI driver now implements the explicit-mutex provider using the existing per-namespace-node KMUTEX table and kernel dispatcher waits. Finite AML milliseconds are converted to negative 100-ns relative intervals; `0xFFFF` is passed as an infinite wait; `STATUS_TIMEOUT` maps to Acquire Ones, and successful/abandoned acquisition maps to Zero. The existing per-method serialized mutex path remains separate but shares the same provider/table.
 - Verification completed: ACPI workflow run `41861209016` passed the complete ACPI library test target (including the explicit-mutex regressions), native ACPI WDM driver type-check, firmware/AML regression suites, and kernel dispatcher type-check. Task 33 is checked only for the timeout and SyncLevel contract stated in the checklist; real scheduler contention, abandoned-owner recovery, and boot-time teardown remain deferred to the final QEMU campaign.
 34. [ ] Implement Event signal/wait semantics and safe kernel wakeup integration.
+
+Task 34 implementation progress (unchecked; runtime wakeup verification deferred):
+- Added AML `Signal` (ExtOp 0x5B24), `Wait` (ExtOp 0x5B25), and `Reset` (ExtOp 0x5B26) execution for namespace Event objects.
+- Backed Event objects with kernel synchronization events (auto-reset semantics), using `KeInitializeEvent`, `KeSetEvent`, `KeResetEvent`, and `KeWaitForSingleObject`; finite timeout conversion and `0xFFFF` infinite waits follow the same 100-ns relative-time contract as Mutex waits.
+- Added interpreter tests for signal-then-wait consumption, timeout return, reset behavior, and timeout propagation.
+- Still requires clean ACPI CI, native driver/kernel type-check, and final QEMU scheduler wakeup/contention plus table-unload/rundown verification.
 35. [ ] Implement FACS-backed AML Global Lock acquisition/release.
 36. [ ] Implement guarded OperationRegion handlers for SystemMemory, SystemIO, PCI_Config, EC, SMBus, CMOS, and supported serial buses.
 37. [ ] Implement Field width/alignment, LockRule, UpdateRule, bank selection, and access attributes.
 38. [ ] Implement BufferField/CreateField with bounds-checked bit-accurate behavior.
 39. [ ] Implement Notify queue overflow policy and deferred callbacks outside interpreter locks.
+
+Task 39 implementation progress (unchecked):
+- GPE deferred delivery now has a secondary bounded overflow FIFO. Overflowing sources are masked and W1C-acknowledged, retained for later promotion, and counted in the pending-work total instead of being silently discarded.
+- Failed AML callbacks remain queued and masked for retry. If AML succeeds but hardware re-enable fails, an executed marker prevents the callback from being invoked twice on retry.
+- Added regressions for callback failure/retry, re-enable I/O failure without duplicate callback, and promotion of overflowed work after the primary queue drains.
+- Still requires the full ACPI test workflow and native driver/kernel type-check before Task 39 can be checked.
 40. [x] Define and security-review a documented Windows 11 x64 _OSI compatibility profile. Security review and exact-string/return-value regressions are documented in `AML_WINDOWS_11_X64_OSI_PROFILE.md`; `_OSI` tests passed in ACPI workflow run [41861209016](https://github.com/sanabaloch8440/CognacOS/actions/runs/41861209016). The profile advertises only documented Windows interface levels, rejects unknown and unimplemented feature-group strings, and constrains immutable platform overrides.
 41. [ ] Enforce instruction budgets, deadlines, recursion limits, and object-size limits.
 42. [ ] Guarantee lock release and temporary-object cleanup on every error path.
