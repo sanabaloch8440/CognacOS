@@ -4,8 +4,8 @@
 //! for PCI BAR placement (RAM and firmware-owned RAM), not every non-RAM E820
 //! entry. Apply clipping once to decoded host-bridge windows before publishing
 //! them to the PCI resource arbiter. I/O apertures are never clipped.
-//! A platform quirk may disable clipping when firmware reserves an entire
-//! _CRS window despite that window being required for hot-plug capacity.
+//! Platform quirks cannot disable clipping; windows overlapping protected RAM
+//! remain unavailable until firmware/resource evidence is corrected safely.
 #![no_std]
 use crate::resource_manager::Aperture;
 use crate::resources::BarKind;
