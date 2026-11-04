@@ -47,6 +47,15 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 Task 29 follow-up (2026-11-04): the ACPI driver now supplies a concrete `AmlMethodSynchronizer` backed by the kernel's `KeInitializeMutex`, `KeWaitForSingleObject`, and `KeReleaseMutex` path. The AML executor validates monotonic SyncLevel across nested serialized and non-serialized calls and releases implicit mutexes on success and execution errors. Commit `878319c64d40228ec261690dfd4a5f1228dbef60` adds a kernel dispatcher self-test for the exact KMUTEX path used by ACPI: recursive ownership/signal-state transitions and a real second-thread blocking wait with ownership transfer. This does not check task 29 yet: the self-test is invoked once by the kernel lock-stress worker (dispatcher_extended_self_test) and must pass the boot smoke path; table-unload/reload and abandoned-owner behavior still need end-to-end verification. On commit d1c276b757811c8fb4651748fd9e7e344d2346c9, ACPI library tests and native ACPI WDM driver type-check both passed; kernel dispatcher type-check then exposed a Rust parsing error in drivers/pci/src/host_bridge.rs (cast followed by <), corrected in fd680ed1176e75d39de50f6bb4bbd54f12d58024. The next ACPI workflow run must confirm the complete kernel dispatcher stage.
 
 30. [ ] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
+
+Task 30 implementation slice (2026-11-04): added `aml_mutation.rs` and
+`AML_DYNAMIC_NAMESPACE_MUTATION.md`. The bounded service currently provides
+transactional dynamic Name insertion/binding, canonical-target Alias insertion,
+validated BufferField descriptor creation for the Create*Field family, and
+Store/CopyObject forwarding to the typed runtime. The crate exports the module.
+Task 30 remains unchecked: the method executor does not yet own this service or
+dispatch Create*Field opcodes; dynamic namespace synchronization and table
+unload integration remain open. No runtime or QEMU pass is claimed.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
 32. [x] Evaluate Package/VarPackage elements including dynamic counts.
 33. [ ] Implement mutex acquire/release timeout and synchronization-level rules.
