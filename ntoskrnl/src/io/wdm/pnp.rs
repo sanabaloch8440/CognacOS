@@ -104,8 +104,8 @@ fn resources_overlap(a:&ParsedResource,b:&ParsedResource)->bool{
   // Shared PCI INTx resources may overlap only when both assignments are
   // explicitly shareable and level-sensitive. Edge-triggered/MSI resources
   // never participate in line sharing.
-  let a_shared=a.share==3&&a.flags&0x0003==0;
-  let b_shared=b.share==3&&b.flags&0x0003==0;
+  let a_shared=a.share==3&&(a.flags&0x0002!=0||a.flags&0x0001==0);
+  let b_shared=b.share==3&&(b.flags&0x0002!=0||b.flags&0x0001==0);
   return !(a_shared&&b_shared)
  }
  let a_end=a.start.saturating_add(a.length);
@@ -292,7 +292,7 @@ pub(crate) fn io_validate_pnp_interrupt_resource(
   let has_pending=arbiter.claims.iter().any(|claim|claim.used&&!claim.committed&&claim.owner==owner);
   arbiter.claims.iter().any(|claim|
    claim.used&&claim.committed!=has_pending&&claim.owner==owner&&claim.kind==CM_RESOURCE_INTERRUPT
-    &&claim.flags&0x0002==0&&claim.system_vector==vector
+    &&claim.system_vector==vector
     &&claim.irql==irql as u32&&claim.group==group
     &&claim.affinity==affinity
     &&(if claim.flags&0x0001!=0{1}else{0})==interrupt_mode
