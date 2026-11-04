@@ -1712,7 +1712,7 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
     }
 
     fn bridge_slot_for_downstream_bus(&self, downstream_bus: u16, upstream_bus: u16)
-        -> Result<u8, acpi::acpi_prt::PrtError> {
+        -> Result<(u8, u8), acpi::acpi_prt::PrtError> {
         let node = self.namespace.nodes.get(downstream_bus as usize)
             .filter(|_| (downstream_bus as usize) < self.namespace.count)
             .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
@@ -1727,7 +1727,7 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
         if device >= 32 || function >= 8 || value >> 32 != 0 {
             return Err(acpi::acpi_prt::PrtError::InvalidPin);
         }
-        Ok(device as u8)
+        Ok((device as u8, function as u8))
     }
 }
 
