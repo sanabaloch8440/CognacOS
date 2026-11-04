@@ -1131,6 +1131,9 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     STATE.unloading.store(false,Ordering::Release);
     STATE.active_operations.store(0,Ordering::Release);
     STATE.interface_references.store(0,Ordering::Release);
+    // Resolve the immutable DMI policy before any AML method or table is
+    // evaluated. This also validates that the versioned HAL contract is live.
+    if let Err(status) = acquire_sci_hal_services() { return status; }
     let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
     // Publish the driver's dispatch contract before creating any device object.
     // PnP may observe the FDO as soon as it is registered with the I/O manager;
@@ -1144,7 +1147,12 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let fadt_bytes=match unsafe{query_hal_table(*b"FACP",0)}{
         Ok(bytes)=>bytes,Err(status)=>return status,
     };
-    let fadt=match acpi::parse_fadt(fadt_bytes){Ok(value)=>value,Err(error)=>return acpi::error_to_ntstatus(error)};
+    let mut fadt=match acpi::parse_fadt(fadt_bytes){Ok(value)=>value,Err(error)=>return acpi::error_to_ntstatus(error)};
+    if let Some(policy) = acpi::aml_osi::platform_quirk_policy() {
+        if acpi::quirks::apply_policy_to_fadt(&mut fadt, policy).is_err() {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+    }
     let platform=match acpi::acpi_events::platform_registers(&fadt){
         Ok(value)=>value,Err(_)=>return STATUS_DEVICE_CONFIGURATION_ERROR,
     };
