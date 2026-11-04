@@ -76,6 +76,7 @@ IMPORT IoCallDriver
 IMPORT IoAllocateIrp
 IMPORT IoFreeIrp
 IMPORT IoCompleteRequest
+IMPORT IoVerifyVolume
 .section .data.imports.ntoskrnl,"aw",@progbits
 .p2align 3
 .macro IAT name
@@ -92,6 +93,7 @@ IAT IoCallDriver
 IAT IoAllocateIrp
 IAT IoFreeIrp
 IAT IoCompleteRequest
+IAT IoVerifyVolume
 "#);
 
 fn fdo_extension(device:*mut DEVICE_OBJECT)->Option<*mut PartMgrFdoExtension>{
