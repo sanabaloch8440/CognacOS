@@ -272,6 +272,26 @@ fn canonical_namespace_path(
     Ok(used)
 }
 
+/// Resolve a canonical absolute ACPI namespace path such as `\\_SB.PCI0.LNKA`.
+/// The path is compared against independently reconstructed namespace paths;
+/// no AML NameString is reparsed or executed during this lookup.
+pub fn find_namespace_path(
+    namespace: &crate::aml::AmlNamespace,
+    path: &[u8],
+) -> Option<u16> {
+    if path.is_empty() || path.len() > MAX_SOURCE_PATH || path[0] != b'\\' {
+        return None;
+    }
+    let mut candidate = [0u8; MAX_SOURCE_PATH];
+    for node in 1..namespace.count {
+        let length = canonical_namespace_path(namespace, node as u16, &mut candidate).ok()?;
+        if &candidate[..length] == path {
+            return Some(node as u16);
+        }
+    }
+    None
+}
+
 fn read_prt_integer(bytes: &[u8], cursor: &mut usize, end: usize) -> Result<u64, PrtDecodeError> {
     let (value, next) = crate::aml::decode_integer_constant(bytes, *cursor, end, 2)
         .map_err(|_| PrtDecodeError::BadInteger)?;
