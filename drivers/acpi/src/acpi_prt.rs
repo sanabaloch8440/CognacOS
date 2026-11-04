@@ -284,9 +284,10 @@ pub fn find_namespace_path(
     }
     let mut candidate = [0u8; MAX_SOURCE_PATH];
     for node in 1..namespace.count {
-        let length = canonical_namespace_path(namespace, node as u16, &mut candidate).ok()?;
-        if &candidate[..length] == path {
-            return Some(node as u16);
+        if let Ok(length) = canonical_namespace_path(namespace, node as u16, &mut candidate) {
+            if &candidate[..length] == path {
+                return Some(node as u16);
+            }
         }
     }
     None
