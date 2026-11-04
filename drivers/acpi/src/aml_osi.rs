@@ -133,6 +133,13 @@ pub unsafe fn install_platform_quirk_policy(
 
 /// The interpreter's predefined _OSI object consults the immutable platform
 /// policy when installed; otherwise it preserves the normal Windows 11 profile.
+/// Borrow the currently installed immutable platform policy, if the
+/// HAL has published one for this boot.
+pub fn platform_quirk_policy() -> Option<&'static crate::quirks::QuirkPolicy> {
+    let policy = PLATFORM_QUIRK_POLICY.load(core::sync::atomic::Ordering::Acquire);
+    if policy.is_null() { None } else { Some(unsafe { &*policy }) }
+}
+
 pub fn platform_osi(argument: &[u8]) -> u64 {
     let policy = PLATFORM_QUIRK_POLICY.load(core::sync::atomic::Ordering::Acquire);
     if policy.is_null() {
