@@ -679,6 +679,8 @@ pub fn self_test() -> bool {
         && resolve(b"HalQueryRealTimeClock").is_some()
         && resolve_ordinal(48).is_some()
         && resolve(b"HalAcpiGetTableEx").is_some()
+        && resolve(b"HalAcpiGetSciServices").is_some()
+        && find_by_name(b"HalAcpiGetSciServices").is_none()
         && resolve(b"HalEnableInterrupt").is_some()
         && resolve(b"HalDisableInterrupt").is_some()
         && resolve_ordinal(1).is_some()
