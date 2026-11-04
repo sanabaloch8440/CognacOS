@@ -1140,7 +1140,7 @@ impl Drop for PatchedTableRollback {
 unsafe fn make_private_aml_table(bytes: &'static [u8]) -> Result<&'static [u8], i32> {
     let header = acpi::validate_sdt(bytes, None).map_err(acpi::error_to_ntstatus)?;
     let length = header.length as usize;
-    if length < 36 || length > MAX_ACPI_TABLE_LENGTH { return Err(STATUS_INVALID_PARAMETER); }
+    if length < 36 || length > MAX_ACPI_TABLE_LENGTH as usize { return Err(STATUS_INVALID_PARAMETER); }
     let slot = unsafe { PATCHED_AML_TABLE_COUNT };
     if slot >= acpi::aml_tables::MAX_AML_TABLES { return Err(STATUS_INSUFFICIENT_RESOURCES); }
     let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, length, ACPI_POOL_TAG) };
