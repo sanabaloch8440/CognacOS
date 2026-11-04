@@ -75,7 +75,7 @@ Task 32 follow-up hardening (PR #52): added a VarPackage regression where the ru
 Kernel pool integration follow-up (2026-11-04, branch `kernel-pool-aml-storage`): the native ACPI driver now consumes a size/version-checked callback contract backed by `ExAllocatePoolWithTag`/`ExFreePoolWithTag` for its method and `_PRT` evaluation arenas. This proves a usable kernel pool path exists; it does not yet make the arena itself growable or remove any AML object ceilings. Kernel allocator constraints and the remaining migration sequence are recorded in `ntoskrnl/POOL_RUNTIME_MILESTONE.md`.
 
 The current representation is still deliberately bounded: each package stores at most 128 element IDs inline, each AML value stores at most 256 payload bytes, and one execution arena holds at most 768 values. These are fail-closed implementation budgets, not ACPI or Windows limits. Removing these ceilings requires pool-backed package-element/payload ownership plus a per-table/per-execution budget and rundown; that capacity redesign remains an explicit production follow-up and is not implied by the task-32 semantic checkbox.
-33. [ ] Implement mutex acquire/release timeout and synchronization-level rules.
+33. [x] Implement mutex acquire/release timeout and synchronization-level rules. Verified on commit `ca1ecefe32506518c5d872d3d47570f523c48e9f` by ACPI workflow run [41861209016](https://github.com/sanabaloch8440/CognacOS/actions/runs/41861209016): all ACPI library tests, native ACPI WDM driver type-check, firmware/AML regression suites, and kernel dispatcher type-check passed. Five explicit-mutex regressions cover acquire/release, finite/infinite timeout, timeout result, SyncLevel rejection, nested ownership, and error cleanup. Scheduler contention and boot-time ownership checks remain deferred with Task 29.
 
 Task 33 implementation progress (PR branch `acpi-task33-explicit-mutex`; not checked):
 - Added AML `AcquireOp` (ExtOp 0x5B23) evaluation and `ReleaseOp` (ExtOp 0x5B27) statement execution for namespace Mutex objects.
@@ -84,14 +84,14 @@ Task 33 implementation progress (PR branch `acpi-task33-explicit-mutex`; not che
 - Shares mutex ownership state across nested method calls, requires LIFO release, and unwinds locks acquired by a top-level invocation on normal/error return.
 - Added executor regressions for successful acquire/release, infinite and finite timeout propagation, timeout return value, SyncLevel rejection, and failure cleanup.
 - The native ACPI driver now implements the explicit-mutex provider using the existing per-namespace-node KMUTEX table and kernel dispatcher waits. Finite AML milliseconds are converted to negative 100-ns relative intervals; `0xFFFF` is passed as an infinite wait; `STATUS_TIMEOUT` maps to Acquire Ones, and successful/abandoned acquisition maps to Zero. The existing per-method serialized mutex path remains separate but shares the same provider/table.
-- Remaining before completion: verify this driver integration with the actual ACPI library tests and native driver/kernel type-checks; add/confirm failure-path ownership and recursive acquisition behavior against the kernel mutant implementation. Cross-thread contention, scheduler wakeup, and teardown remain final QEMU verification gates.
+- Verification completed: ACPI workflow run `41861209016` passed the complete ACPI library test target (including the explicit-mutex regressions), native ACPI WDM driver type-check, firmware/AML regression suites, and kernel dispatcher type-check. Task 33 is checked only for the timeout and SyncLevel contract stated in the checklist; real scheduler contention, abandoned-owner recovery, and boot-time teardown remain deferred to the final QEMU campaign.
 34. [ ] Implement Event signal/wait semantics and safe kernel wakeup integration.
 35. [ ] Implement FACS-backed AML Global Lock acquisition/release.
 36. [ ] Implement guarded OperationRegion handlers for SystemMemory, SystemIO, PCI_Config, EC, SMBus, CMOS, and supported serial buses.
 37. [ ] Implement Field width/alignment, LockRule, UpdateRule, bank selection, and access attributes.
 38. [ ] Implement BufferField/CreateField with bounds-checked bit-accurate behavior.
 39. [ ] Implement Notify queue overflow policy and deferred callbacks outside interpreter locks.
-40. [ ] Define and security-review a documented Windows 11 x64 _OSI compatibility profile.
+40. [x] Define and security-review a documented Windows 11 x64 _OSI compatibility profile. Security review and exact-string/return-value regressions are documented in `AML_WINDOWS_11_X64_OSI_PROFILE.md`; `_OSI` tests passed in ACPI workflow run [41861209016](https://github.com/sanabaloch8440/CognacOS/actions/runs/41861209016). The profile advertises only documented Windows interface levels, rejects unknown and unimplemented feature-group strings, and constrains immutable platform overrides.
 41. [ ] Enforce instruction budgets, deadlines, recursion limits, and object-size limits.
 42. [ ] Guarantee lock release and temporary-object cleanup on every error path.
 43. [ ] Implement module-level AML execution and table dependency ordering.
