@@ -1,4 +1,4 @@
-ENTRY(DriverEntry)
+ENTRY(CognacHalInitialize)
 PHDRS { text PT_LOAD FLAGS(5); rodata PT_LOAD FLAGS(4); data PT_LOAD FLAGS(6); }
 SECTIONS {
  . = 0xffff8000c0000000 + 0x1000;
