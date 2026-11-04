@@ -114,6 +114,7 @@ pub mod bus {
     /// remain binary compatible and are never enlarged in place.
     pub const ACPI_FIRMWARE_INTERFACE_VERSION_2: u32 = 2;
     pub const ACPI_FIRMWARE_INTERFACE_VERSION_3: u32 = 3;
+    pub const ACPI_FIRMWARE_INTERFACE_VERSION_4: u32 = 4;
     /// Kernel-private PnP bus directory identity. These keys are not
     /// Windows PE exports or part of the public WDM export table.
     pub const ACPI_BUS_ENUMERATOR_ID: u32 = u32::from_le_bytes(*b"ACPI");
@@ -141,6 +142,10 @@ pub mod bus {
     };
     pub const GUID_ACPI_FIRMWARE_INTERFACE_V3: GUID = GUID {
         data1: 0x7b7a_2a06, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+    pub const GUID_ACPI_FIRMWARE_INTERFACE_V4: GUID = GUID {
+        data1: 0x7b7a_2a08, data2: 0x5d31, data3: 0x4f18,
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
     };
     pub const GUID_PCI_BUS_INTERFACE: GUID = GUID {
@@ -317,6 +322,29 @@ pub mod bus {
         }
     }
 
+    /// Version-4 route request supports the complete 8-bit PCI bus-number
+    /// hierarchy: at most 255 bridges between a root bus and an endpoint.
+    /// The v1/v2/v3 request layouts remain unchanged.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3 {
+        pub segment: u16,
+        pub bus: u8,
+        pub device: u8,
+        pub function: u8,
+        pub pin: u8,
+        pub bridge_count: u8,
+        pub root_bus: u8,
+        pub bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY; 255],
+    }
+    impl Default for ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3 {
+        fn default() -> Self {
+            Self { segment: 0, bus: 0, device: 0, function: 0, pin: 0,
+                bridge_count: 0, root_bus: 0,
+                bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY::default(); 255] }
+        }
+    }
+
     /// Resolved electrical route. Boolean values are UCHAR-sized for a stable
     /// C ABI; reserved bytes must be zero on output.
     #[repr(C)]
@@ -379,6 +407,28 @@ pub mod bus {
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2>() == 72);
     const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V3>() == 0x38);
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>() == 24);
+    pub type PACPI_QUERY_PCI_INTERRUPT_ROUTE_V3 = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            request: *const ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3,
+            route: *mut ACPI_PCI_INTERRUPT_ROUTE,
+        ) -> NTSTATUS,
+    >;
+
+    /// Version 4 adds the full-depth bridge path callback under a new GUID.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct ACPI_FIRMWARE_INTERFACE_V4 {
+        pub header: INTERFACE_HEADER,
+        pub query_table: PACPI_QUERY_TABLE,
+        pub query_pci_interrupt_route: PACPI_QUERY_PCI_INTERRUPT_ROUTE,
+        pub query_pci_interrupt_route_v2: PACPI_QUERY_PCI_INTERRUPT_ROUTE_V2,
+        pub query_pci_interrupt_route_v3: PACPI_QUERY_PCI_INTERRUPT_ROUTE_V3,
+    }
+
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3>() == 2048);
+    const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V4>() == 0x40);
+
 
     /// PCI configuration-space access provided by pci.sys. Device and
     /// function are conventional PCI coordinates; segment and bus are
