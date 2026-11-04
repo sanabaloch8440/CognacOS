@@ -127,6 +127,26 @@ impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
   if status==STATUS_SUCCESS||status==0x0000_0080{Ok(())}
   else{Err(acpi::aml_exec::ExecError::ExecutionBusy)}
  }
+ fn acquire_with_timeout(&self,method_index:u16,_sync_level:u8,timeout_ms:u16)->Result<bool,acpi::aml_exec::ExecError>{
+  let mutex=KERNEL_AML_METHOD_MUTEXES.get(method_index as usize)
+   .ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
+  loop{match mutex.initialized.load(Ordering::Acquire){
+   2=>break,
+   0=>if mutex.initialized.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+    unsafe{KeInitializeMutex(mutex.object(),0);}
+    mutex.initialized.store(2,Ordering::Release);break;
+   },
+   _=>core::hint::spin_loop(),
+  }}
+  let relative_timeout=-(timeout_ms as i64)*10_000;
+  let timeout=if timeout_ms==u16::MAX{core::ptr::null()}else{&relative_timeout as *const i64};
+  let status=unsafe{KeWaitForSingleObject(mutex.object(),0,0,0,timeout)};
+  match status{
+   STATUS_SUCCESS|0x0000_0080=>Ok(true),
+   0x0000_0102=>Ok(false),
+   _=>Err(acpi::aml_exec::ExecError::ExecutionBusy),
+  }
+ }
  fn release(&self,method_index:u16){
   if let Some(mutex)=KERNEL_AML_METHOD_MUTEXES.get(method_index as usize){
    if mutex.initialized.load(Ordering::Acquire)==2{
