@@ -156,20 +156,14 @@ struct IoDisconnectInterruptParameters {
 #[unsafe(export_name = "IoDisconnectInterruptEx")]
 pub unsafe extern "win64" fn io_disconnect_interrupt_ex(
     parameters: *mut IoDisconnectInterruptParameters,
-) -> i32 {
-    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
-    const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
+) {
     if parameters.is_null() {
-        return STATUS_INVALID_PARAMETER;
+        return;
     }
     let params = unsafe { &mut *parameters };
-    if params.version != CONNECT_FULLY_SPECIFIED {
-        return STATUS_NOT_SUPPORTED;
-    }
-    if params.connection_context.is_null() {
-        return STATUS_INVALID_PARAMETER;
+    if params.version != CONNECT_FULLY_SPECIFIED || params.connection_context.is_null() {
+        return;
     }
     unsafe { io_disconnect_interrupt(params.connection_context); }
     params.connection_context = core::ptr::null_mut();
-    0
 }
