@@ -479,7 +479,7 @@ pub fn resolve_hierarchical_prt_route<P: PrtBusTableProvider, R: LinkDeviceResol
     provider: &P, resolver: &R, bus_nodes: &[u16], endpoint_device: u8,
     endpoint_function: u8, interrupt_pin: u8,
 ) -> Result<u32, PrtError> {
-    if bus_nodes.is_empty() || bus_nodes.len() > 32 || endpoint_device >= 32
+    if bus_nodes.is_empty() || bus_nodes.len() > 256 || endpoint_device >= 32
         || endpoint_function >= 8 || interrupt_pin > 3 { return Err(PrtError::InvalidPin); }
     let mut pin = interrupt_pin;
     let mut device = endpoint_device;
