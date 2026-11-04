@@ -5,14 +5,14 @@
 | File | Responsibility |
 |---|---|
 | `core.rs` | ABI types, constants, stable demand-grown nonpaged device registry, and IRP tracking primitives |
-| `device_lifecycle.rs` | Device references, remove rundown, power and PnP state transitions |
+| `device_lifecycle.rs` | Device references, remove rundown, per-device power capabilities, and PnP state transitions |
 | `pnp.rs` | Resource arbitration, device relations, bus enumeration and PnP manager |
 | `device_objects.rs` | Per-device StartIo queues, nonpaged device creation/deletion, and complete driver-device unload draining |
 | `irp_management.rs` | IRP allocation, dispatch, IOCTL builders and completion |
 | `device_stack.rs` | Device attachment, stack-location helpers and IRP reuse |
 | `filesystem.rs` | Filesystem registration, VPB mount/verify/dismount |
 | `namespace.rs` | Object-manager symbolic-link namespace |
-| `cancel.rs` | Cancel-safe queues and IRP cancellation |
+| `cancel.rs` | Cancel-safe queues, cancel-spin-lock synchronization, and IRP cancellation |
 | `mdl.rs` | MDL allocation and release |
 | `self_test.rs` | Runtime WDM rundown self-test |
 | `tests.rs` | WDM ABI and behavior unit tests |
@@ -20,7 +20,7 @@
 
 These are `include!` fragments, not independent Rust modules. Moving to true submodules would require a separate visibility/API refactor and is deliberately not mixed into this source-organization change.
 
-Device records keep the first 32 slots embedded for early boot, then allocate one page-backed nonpaged record at a time at PASSIVE_LEVEL. Overflow records are linked without moving existing DEVICE_OBJECT addresses, participate in the same reference/remove-lock/IRP/power/Ob rundown checks, and are reclaimed only after final deletion. StartIo queue state lives in the device record, so it does not impose a separate 32-device ceiling. Driver unload walks all owned records instead of truncating at the bootstrap capacity.
+Device records keep the first 32 slots embedded for early boot, then allocate one page-backed nonpaged record at a time at PASSIVE_LEVEL. Overflow records are linked without moving existing DEVICE_OBJECT addresses, participate in the same reference/remove-lock/IRP/power/Ob rundown checks, and are reclaimed only after final deletion. StartIo queue state and power-capability metadata live in the device record, so neither imposes a separate 32/64-device ceiling. Driver unload walks the complete intrusive DRIVER_OBJECT device chain instead of truncating at bootstrap capacity. The driver-facing `IoSetCancelRoutine` follows the WDK caller-held cancel-spin-lock contract; kernel-owned paths use a synchronized helper, and cancel callbacks release the lock using `Irp->CancelIrql`.
 
 The file-service layer is not modified here. Its migration to FILE_OBJECT and IRP-based Windows-style create/read/cleanup/close flows is the next step.
 
