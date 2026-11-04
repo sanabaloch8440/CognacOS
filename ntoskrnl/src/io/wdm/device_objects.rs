@@ -121,6 +121,29 @@ pub unsafe extern "win64" fn io_create_device(
  let mut state=WDM.lock();
  if unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0{return STATUS_DELETE_PENDING}
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
+ // Keep the first slots embedded for boot-time allocations, then grow the
+ // nonpaged registry one stable page at a time at PASSIVE_LEVEL. Allocation is
+ // deliberately outside WDM's spin lock; published overflow records are never
+ // moved and remain reusable after IoDeleteDevice completes rundown.
+ if !state.devices.iter().any(|s|!s.used) {
+  drop(state);
+  if unsafe{crate::ntoskrnl::ke::runtime::ke_get_current_irql()}>1{return STATUS_INSUFFICIENT_RESOURCES}
+  let memory=match crate::ntoskrnl::mm::kernel_space::allocate_pages(1){Ok(p)=>p,Err(_)=>return STATUS_INSUFFICIENT_RESOURCES};
+  if core::mem::size_of::<DeviceSlot>()>4096 {
+   let _=crate::ntoskrnl::mm::kernel_space::free_pages(memory,1);
+   return STATUS_INSUFFICIENT_RESOURCES
+  }
+  let extra=memory.cast::<DeviceSlot>();
+  unsafe{ptr::write(extra,DeviceSlot::empty());}
+  state=WDM.lock();
+  if unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0 {
+   drop(state);let _=crate::ntoskrnl::mm::kernel_space::free_pages(memory,1);return STATUS_DELETE_PENDING
+  }
+  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {
+   drop(state);let _=crate::ntoskrnl::mm::kernel_space::free_pages(memory,1);return STATUS_OBJECT_NAME_COLLISION
+  }
+  state.devices.push_overflow(extra);
+ }
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
  slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.mount_in_progress=false;slot.attached_to=ptr::null_mut();
  slot.vpb=Vpb::empty();
