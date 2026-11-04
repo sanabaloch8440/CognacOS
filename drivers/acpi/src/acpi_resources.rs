@@ -258,9 +258,14 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                     let mut ints=[0u32;8];for i in 0..count{ints[i]=u32le(p,2+i*4)?;}
                     Resource::ExtendedIrq{flags,interrupts:ints,count:count as u8}},
                 0x0a=>address_space(p,8)?,
-                0x0b if len==53=>{ // Extended address-space descriptor; fields follow QWord layout plus type-specific attributes.
-                    let space=p[0];let flags=p[1];let type_flags=p[2];let min=u64le(p,11)?;let max=u64le(p,19)?;
-                    let align=u64le(p,3)?;let translation_offset=u64le(p,27)?;let size=u64le(p,35)?;validate_range(min,max,size)?;
+                0x0b if len==53=>{
+                    // Extended Address Space adds revision/reserved bytes before
+                    // the 64-bit granularity/min/max/translation/length fields.
+                    let space=p[0];let flags=p[1];let type_flags=p[2];
+                    if p[3]!=1||p[4]!=0{return Err(ResourceError::InvalidDescriptor)}
+                    let align=u64le(p,5)?;let min=u64le(p,13)?;let max=u64le(p,21)?;
+                    let translation_offset=u64le(p,29)?;let size=u64le(p,37)?;
+                    validate_range(min,max,size)?;
                     match space{0=>Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset,length:size,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:2},
                     1=>Resource::Io{minimum:min,maximum:max,alignment:align,translation_offset,length:size,decode_16_bit:flags&1!=0},
                     2=>Resource::BusNumber{minimum:min,maximum:max,length:size},_=>return Err(ResourceError::UnsupportedDescriptor)}},
@@ -875,11 +880,12 @@ mod dependent_requirement_tests {
  fn extended_address_descriptor_preserves_qword_translation_fields() {
   let mut bytes = [0u8; 58];
   bytes[0] = 0x8b; bytes[1] = 53; bytes[3] = 0;
-  bytes[6..14].copy_from_slice(&0x0fffu64.to_le_bytes());
-  bytes[14..22].copy_from_slice(&0x9000_0000u64.to_le_bytes());
-  bytes[22..30].copy_from_slice(&0x9fff_ffffu64.to_le_bytes());
-  bytes[30..38].copy_from_slice(&0x2000u64.to_le_bytes());
-  bytes[38..46].copy_from_slice(&0x1000u64.to_le_bytes());
+  bytes[8] = 1; bytes[9] = 0;
+  bytes[11..19].copy_from_slice(&0x0fffu64.to_le_bytes());
+  bytes[19..27].copy_from_slice(&0x9000_0000u64.to_le_bytes());
+  bytes[27..35].copy_from_slice(&0x9fff_ffffu64.to_le_bytes());
+  bytes[35..43].copy_from_slice(&0x2000u64.to_le_bytes());
+  bytes[43..51].copy_from_slice(&0x1000u64.to_le_bytes());
   bytes[56] = 0x79; bytes[57] = 0;
   let resources = parse_resource_template(&bytes).unwrap();
   let mut windows = [HostBridgeWindow {
