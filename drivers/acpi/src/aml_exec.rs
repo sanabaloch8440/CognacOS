@@ -102,7 +102,8 @@ impl<'a,'b> Machine<'a,'b>{
  }
  fn store_reference_target(&mut self,target:Target,reference:AmlReference)->Result<(),ExecError>{
   let value=make_object_reference(reference);
-  match target{Target::Local(i)=>{self.locals[i]=value;Ok(())},Target::Arg(i)=>{self.args[i]=value;Ok(())},
+  match target{Target::Local(i)=>self.store_value(Target::Local(i),value,StoreMode::CopyObject),
+   Target::Arg(i)=>self.store_value(Target::Arg(i),value,StoreMode::CopyObject),
    Target::Reference(r)=>self.store_reference_value(r,value,StoreMode::CopyObject),Target::Null=>Err(ExecError::BadTarget)}
  }
  fn optional_source_reference(&mut self,r:&mut Reader<'_>)->Result<Option<AmlReference>,ExecError>{
