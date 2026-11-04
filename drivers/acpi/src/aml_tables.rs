@@ -505,6 +505,10 @@ impl AmlTableManager {
                 return Err(TableError::UnloadOrder);
             }
             bindings.invalidate_table(&manager.namespace,handle.slot as u32);
+            // unload_definition_block compacts namespace indices. Retire all
+            // outstanding node references and clear index-keyed Name bindings,
+            // including references to surviving nodes that will move.
+            bindings.invalidate_namespace_compaction();
             manager.unload_quiesced(handle)
         })
     }
