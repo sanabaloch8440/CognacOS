@@ -27,9 +27,10 @@ unsafe extern "win64" {
     fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
     fn ObfReferenceObject(object: PVOID);
     fn ObDereferenceObject(object: PVOID);
-    fn IoAllocateIrp(stack_size: u8, charge_quota: u8) -> *mut IRP;
+    fn IoAllocateIrp(stack_size: i8, charge_quota: u8) -> *mut IRP;
     fn IoCallDriver(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32;
     fn IoFreeIrp(irp: *mut IRP);
+    fn IoCompleteRequest(irp: *mut IRP, priority_boost: i8);
     fn IoPnPReferenceBusFdo(enumerator_id: u32, identity_hash: u64, output: *mut *mut DEVICE_OBJECT) -> i32;
     fn IoPnPDereferenceBusFdo(device: *mut DEVICE_OBJECT);
     fn HalPciGetInterruptServices(output: *mut PciInterruptHalServices) -> i32;
@@ -113,6 +114,11 @@ IoCallDriver:
 IoFreeIrp:
     jmp QWORD PTR [rip + __imp_ntoskrnl_IoFreeIrp]
 .size IoFreeIrp, .-IoFreeIrp
+.global IoCompleteRequest
+.type IoCompleteRequest,@function
+IoCompleteRequest:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoCompleteRequest]
+.size IoCompleteRequest, .-IoCompleteRequest
 .global IoPnPReferenceBusFdo
 .type IoPnPReferenceBusFdo,@function
 IoPnPReferenceBusFdo:
@@ -144,6 +150,10 @@ __imp_ntoskrnl_IoCallDriver: .quad 0
 .type __imp_ntoskrnl_IoFreeIrp,@object
 __imp_ntoskrnl_IoFreeIrp: .quad 0
 .size __imp_ntoskrnl_IoFreeIrp,8
+.global __imp_ntoskrnl_IoCompleteRequest
+.type __imp_ntoskrnl_IoCompleteRequest,@object
+__imp_ntoskrnl_IoCompleteRequest: .quad 0
+.size __imp_ntoskrnl_IoCompleteRequest,8
 .global __imp_ntoskrnl_IoPnPReferenceBusFdo
 .type __imp_ntoskrnl_IoPnPReferenceBusFdo,@object
 __imp_ntoskrnl_IoPnPReferenceBusFdo: .quad 0
@@ -519,7 +529,7 @@ unsafe fn query_acpi_pci_interrupt_route(
     if acpi_bus.is_null() { return STATUS_NOT_FOUND; }
 
     let mut interface = core::mem::MaybeUninit::<ACPI_FIRMWARE_INTERFACE_V2>::zeroed();
-    let irp = unsafe { IoAllocateIrp((*acpi_bus).stack_size as u8, 0) };
+    let irp = unsafe { IoAllocateIrp((*acpi_bus).stack_size as i8, 0) };
     if irp.is_null() {
         unsafe { IoPnPDereferenceBusFdo(acpi_bus); }
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -552,8 +562,18 @@ unsafe fn query_acpi_pci_interrupt_route(
             (*irp).io_status.information = 0;
         }
         let call_status = unsafe { IoCallDriver(acpi_bus, irp) };
+        // The ACPI query-interface dispatch is synchronous. The current
+        // executive's IoCallDriver returns the dispatch status but leaves
+        // completion to the PnP request owner, so this stack-owned helper
+        // completes its own IRP before freeing it.
+        if call_status == STATUS_PENDING {
+            unsafe { (*irp).io_status.status.status = STATUS_INVALID_DEVICE_STATE; }
+        }
         let io_status = unsafe { (*irp).io_status.status.status };
-        let status = if call_status == STATUS_SUCCESS { io_status } else { call_status };
+        let status = if call_status == STATUS_SUCCESS { io_status }
+            else if call_status == STATUS_PENDING { STATUS_INVALID_DEVICE_STATE }
+            else { call_status };
+        unsafe { IoCompleteRequest(irp, 0); }
         if status != STATUS_SUCCESS { return status; }
 
         let interface = unsafe { interface.assume_init_ref() };
