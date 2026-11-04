@@ -261,7 +261,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                 0x0b if len==53=>{ // Extended address-space descriptor; fields follow QWord layout plus type-specific attributes.
                     let space=p[0];let flags=p[1];let type_flags=p[2];let min=u64le(p,11)?;let max=u64le(p,19)?;
                     let align=u64le(p,3)?;let translation_offset=u64le(p,27)?;let size=u64le(p,35)?;validate_range(min,max,size)?;
-                    match space{0=>Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset,length:size,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:8},
+                    match space{0=>Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset,length:size,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:2},
                     1=>Resource::Io{minimum:min,maximum:max,alignment:align,translation_offset,length:size,decode_16_bit:flags&1!=0},
                     2=>Resource::BusNumber{minimum:min,maximum:max,length:size},_=>return Err(ResourceError::UnsupportedDescriptor)}},
                 0x0c if len==3=>{let base=u16le(p,0)? as u64;let size=p[2] as u64;
@@ -866,6 +866,30 @@ mod dependent_requirement_tests {
   }; MAX_HOST_BRIDGE_WINDOWS];
   assert_eq!(collect_host_bridge_windows(&resources, &mut windows), Ok(1));
   assert_eq!(windows[0].translation_offset, 0x1000);
+ }
+}
+
+#[cfg(test)] mod extended_address_host_bridge_translation_tests {
+ use super::*;
+ #[test]
+ fn extended_address_descriptor_preserves_qword_translation_fields() {
+  let mut bytes = [0u8; 58];
+  bytes[0] = 0x8b; bytes[1] = 53; bytes[3] = 0;
+  bytes[6..14].copy_from_slice(&0x0fffu64.to_le_bytes());
+  bytes[14..22].copy_from_slice(&0x9000_0000u64.to_le_bytes());
+  bytes[22..30].copy_from_slice(&0x9fff_ffffu64.to_le_bytes());
+  bytes[30..38].copy_from_slice(&0x2000u64.to_le_bytes());
+  bytes[38..46].copy_from_slice(&0x1000u64.to_le_bytes());
+  bytes[56] = 0x79; bytes[57] = 0;
+  let resources = parse_resource_template(&bytes).unwrap();
+  let mut windows = [HostBridgeWindow {
+   space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
+   length: 0, alignment: 0, translation_offset: 0, memory_kind: 0,
+   writeable: false, cacheable: false,
+  }; MAX_HOST_BRIDGE_WINDOWS];
+  assert_eq!(collect_host_bridge_windows(&resources, &mut windows), Ok(1));
+  assert_eq!(windows[0].translation_offset, 0x2000);
+  assert_eq!(windows[0].memory_kind, 2);
  }
 }
 
