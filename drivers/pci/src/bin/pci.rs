@@ -272,6 +272,7 @@ static STATE: PciState = PciState {
 };
 static DRIVER_OBJECT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static PDO_BUSY: AtomicBool = AtomicBool::new(false);
+static HOST_BRIDGE_BUSY: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct PciDeviceRelations { count: u32, objects: [*mut DEVICE_OBJECT; MAX_PCI_PDOS] }
@@ -1462,7 +1463,13 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
 unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
     if !STATE.ready.load(Ordering::Acquire) { return Err(STATUS_DEVICE_NOT_READY); }
     if STATE.host_bridge_resource_count.load(Ordering::Acquire) == 0 {
-        let status = unsafe { acquire_acpi_host_bridge_resources() };
+        if HOST_BRIDGE_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            return Err(STATUS_DEVICE_BUSY);
+        }
+        let status = if STATE.host_bridge_resource_count.load(Ordering::Acquire) == 0 {
+            unsafe { acquire_acpi_host_bridge_resources() }
+        } else { STATUS_SUCCESS };
+        HOST_BRIDGE_BUSY.store(false, Ordering::Release);
         if status != STATUS_SUCCESS { return Err(status); }
     }
     if unsafe { CognacPciEnumerateInventory() } != STATUS_SUCCESS {
