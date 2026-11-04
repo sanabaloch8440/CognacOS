@@ -118,15 +118,16 @@ fn smbios_string(strings: &[u8], index: u8) -> Result<&[u8], SmbiosError> {
     let mut current = 1u8;
     let mut start = 0usize;
     let mut i = 0usize;
-    while i + 1 < strings.len() {
-        if strings[i] == 0 && strings[i + 1] == 0 { break; }
+    while i < strings.len() {
         if strings[i] == 0 {
+            if i + 1 < strings.len() && strings[i + 1] == 0 { break; }
+            if current == index { return Ok(&strings[start..i]); }
             current = current.saturating_add(1);
             start = i + 1;
         }
         i += 1;
     }
-    if current == index {
+    if current == index && start < strings.len() {
         let end = strings[start..].iter().position(|b| *b == 0)
             .map(|n| start + n).unwrap_or(strings.len());
         return Ok(&strings[start..end]);
@@ -136,6 +137,32 @@ fn smbios_string(strings: &[u8], index: u8) -> Result<&[u8], SmbiosError> {
 
 /// Parse SMBIOS Type 0/1/2 strings from a bounded, already-mapped structure
 /// table. Every formatted length and string-set terminator is checked.
+/// UEFI EFI_CONFIGURATION_TABLE GUID and vendor table pointer (x64 ABI).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EfiGuid { pub data1: u32, pub data2: u16, pub data3: u16, pub data4: [u8; 8] }
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EfiConfigurationTable { pub vendor_guid: EfiGuid, pub vendor_table: u64 }
+
+pub const SMBIOS_TABLE_GUID: EfiGuid = EfiGuid {
+    data1: 0xeb9d2d31, data2: 0x2d88, data3: 0x11d3,
+    data4: [0x9a,0x16,0x00,0x90,0x27,0x3f,0xc1,0x4d],
+};
+pub const SMBIOS3_TABLE_GUID: EfiGuid = EfiGuid {
+    data1: 0xf2fd1544, data2: 0x9794, data3: 0x4a2c,
+    data4: [0x99,0x2e,0xe5,0xbb,0xcf,0x20,0xe3,0x94],
+};
+
+/// Prefer the SMBIOS 3.x entry point, falling back to SMBIOS 2.x. Returns
+/// only the physical entry-point address; mapping and memory-range validation
+/// remain the boot memory manager's responsibility.
+pub fn find_smbios_entry_point(entries: &[EfiConfigurationTable]) -> Option<u64> {
+    entries.iter().find(|e| e.vendor_guid == SMBIOS3_TABLE_GUID && e.vendor_table != 0)
+        .or_else(|| entries.iter().find(|e| e.vendor_guid == SMBIOS_TABLE_GUID && e.vendor_table != 0))
+        .map(|e| e.vendor_table)
+}
+
 pub fn parse_smbios_table(table: &[u8], major: u8, minor: u8)
     -> Result<PlatformIdentity, SmbiosError>
 {
@@ -385,7 +412,9 @@ pub fn apply_table_patches(
         if patch.table_signature != signature { continue; }
         let start = patch.offset as usize;
         let end = start.checked_add(patch.expected.len()).ok_or(QuirkError::InvalidPatch)?;
-        if patch.expected.is_empty() || patch.expected.len() != patch.replacement.len() || end > declared {
+        // Table header identity, declared length and checksum are never patchable.
+        if start < 36 || patch.expected.is_empty()
+            || patch.expected.len() != patch.replacement.len() || end > declared {
             return Err(QuirkError::InvalidPatch);
         }
         if &table[start..end] != patch.expected { return Err(QuirkError::PatchMismatch); }
@@ -396,6 +425,21 @@ pub fn apply_table_patches(
         applied += 1;
     }
     Ok(applied)
+}
+
+/// Apply the selected FADT policy to an already validated FADT model.
+pub fn apply_policy_to_fadt(
+    info: &mut crate::FadtInfo,
+    policy: &QuirkPolicy,
+) -> Result<(), QuirkError> {
+    if let Some(override_) = policy.fadt {
+        let (flags, boot_arch) = apply_fadt_override(
+            info.flags, info.boot_arch_flags, override_,
+        )?;
+        info.flags = flags;
+        info.boot_arch_flags = boot_arch;
+    }
+    Ok(())
 }
 
 pub fn apply_fadt_override(
@@ -467,6 +511,21 @@ pub const DELL_0A3E_QUIRK: QuirkDefinition = QuirkDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn smbios_string_indices_select_the_correct_string() {
+        let strings = b"Vendor\\0Product\\0SKU\\0\\0";
+        assert_eq!(smbios_string(strings, 1), Ok(&b"Vendor"[..]));
+        assert_eq!(smbios_string(strings, 2), Ok(&b"Product"[..]));
+        assert_eq!(smbios_string(strings, 3), Ok(&b"SKU"[..]));
+    }
+    #[test]
+    fn smbios_guid_lookup_prefers_3x() {
+        let entries = [
+            EfiConfigurationTable { vendor_guid: SMBIOS_TABLE_GUID, vendor_table: 0x1000 },
+            EfiConfigurationTable { vendor_guid: SMBIOS3_TABLE_GUID, vendor_table: 0x2000 },
+        ];
+        assert_eq!(find_smbios_entry_point(&entries), Some(0x2000));
+    }
     #[test]
     fn dmi_match_is_case_insensitive_and_requires_all_fields() {
         let mut p = PlatformIdentity::EMPTY;
