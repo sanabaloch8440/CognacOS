@@ -469,3 +469,209 @@ impl AcpiSciHalServices {
             && self.get_platform_quirk_policy.is_some()
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// Kernel-owned platform services consumed by the independently linked HAL.
+//
+// This is a private CognacOS boot/runtime ABI, not a Windows HAL export. The
+// table is installed by the kernel before HAL services that require MM, DMA,
+// or boot-policy state are enabled. HAL must not link against NTOSKRNL to
+// obtain these services.
+pub const HAL_KERNEL_SERVICES_VERSION: u32 = 1;
+
+pub type HalKernelMapIoSpace = unsafe extern "C" fn(
+    context: *mut core::ffi::c_void,
+    physical_address: u64,
+    length: u64,
+    virtual_address: *mut u64,
+) -> HalStatus;
+pub type HalKernelUnmapIoSpace = unsafe extern "C" fn(
+    context: *mut core::ffi::c_void,
+    virtual_address: u64,
+    length: u64,
+) -> HalStatus;
+pub type HalKernelMemoryManagerReady =
+    extern "C" fn(context: *mut core::ffi::c_void) -> bool;
+pub type HalKernelPollTlb =
+    extern "C" fn(context: *mut core::ffi::c_void, logical_processor: usize);
+pub type HalKernelDmaAvailable = extern "C" fn(context: *mut core::ffi::c_void) -> bool;
+pub type HalKernelCreateDmaAdapter = unsafe extern "C" fn(
+    context: *mut core::ffi::c_void,
+    device_object: *mut core::ffi::c_void,
+    flags: u32,
+    maximum_address: u64,
+) -> *mut core::ffi::c_void;
+pub type HalKernelAllocateCommonBuffer = unsafe extern "C" fn(
+    context: *mut core::ffi::c_void,
+    adapter: *mut core::ffi::c_void,
+    size: usize,
+    maximum_address: u64,
+    cpu_address: *mut u64,
+    device_address: *mut u64,
+) -> i32;
+pub type HalKernelFreeCommonBuffer = unsafe extern "C" fn(
+    context: *mut core::ffi::c_void,
+    adapter: *mut core::ffi::c_void,
+    cpu_address: u64,
+    device_address: u64,
+    size: usize,
+) -> i32;
+pub type HalKernelValidateCommonBuffer = extern "C" fn(
+    context: *mut core::ffi::c_void,
+    device_object: usize,
+    cpu_address: u64,
+    device_address: u64,
+    size: u64,
+) -> bool;
+pub type HalKernelRegisterIommuBackend = unsafe extern "C" fn(
+    context: *mut core::ffi::c_void,
+    backend: *mut IommuBackend,
+) -> i32;
+pub type HalKernelRequesterIdentity = extern "C" fn(
+    context: *mut core::ffi::c_void,
+    device_object: usize,
+    segment: *mut u16,
+    bus: *mut u8,
+    device_function: *mut u8,
+) -> bool;
+
+/// Canonical kernel/HAL DMA mapper registration ABI. The kernel owns backend
+/// registration and DMA mapping lifetime; the HAL supplies hardware mapping
+/// callbacks without importing the kernel's I/O-manager implementation.
+pub type IommuMap = unsafe extern "system" fn(
+    context: *mut core::ffi::c_void,
+    device: usize,
+    physical: u64,
+    length: u32,
+    direction: u8,
+    logical_out: *mut u64,
+    cookie_out: *mut u64,
+) -> i32;
+pub type IommuUnmap = unsafe extern "system" fn(
+    context: *mut core::ffi::c_void,
+    device: usize,
+    logical: u64,
+    cookie: u64,
+) -> i32;
+pub type IommuSync = unsafe extern "system" fn(
+    context: *mut core::ffi::c_void,
+    device: usize,
+    logical: u64,
+    length: u32,
+    direction: u8,
+) -> i32;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IommuBackend {
+    pub size: u32,
+    pub context: *mut core::ffi::c_void,
+    pub map: Option<IommuMap>,
+    pub unmap: Option<IommuUnmap>,
+    pub sync: Option<IommuSync>,
+}
+unsafe impl Send for IommuBackend {}
+unsafe impl Sync for IommuBackend {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HalKernelServices {
+    pub size: u32,
+    pub version: u32,
+    pub context: *mut core::ffi::c_void,
+    pub map_io_space: Option<HalKernelMapIoSpace>,
+    pub unmap_io_space: Option<HalKernelUnmapIoSpace>,
+    pub memory_manager_ready: Option<HalKernelMemoryManagerReady>,
+    pub poll_tlb: Option<HalKernelPollTlb>,
+    pub dma_available: Option<HalKernelDmaAvailable>,
+    pub create_dma_adapter: Option<HalKernelCreateDmaAdapter>,
+    pub allocate_common_buffer: Option<HalKernelAllocateCommonBuffer>,
+    pub free_common_buffer: Option<HalKernelFreeCommonBuffer>,
+    pub validate_common_buffer: Option<HalKernelValidateCommonBuffer>,
+    pub register_iommu_backend: Option<HalKernelRegisterIommuBackend>,
+    pub requester_identity: Option<HalKernelRequesterIdentity>,
+    pub get_platform_quirk_policy: Option<AcpiGetPlatformQuirkPolicy>,
+}
+impl HalKernelServices {
+    pub const fn compatible(&self) -> bool {
+        self.size as usize >= core::mem::size_of::<Self>()
+            && self.version == HAL_KERNEL_SERVICES_VERSION
+            && self.map_io_space.is_some()
+            && self.unmap_io_space.is_some()
+            && self.memory_manager_ready.is_some()
+            && self.poll_tlb.is_some()
+    }
+    pub const fn has_common_dma_services(&self) -> bool {
+        self.dma_available.is_some()
+            && self.create_dma_adapter.is_some()
+            && self.allocate_common_buffer.is_some()
+            && self.free_common_buffer.is_some()
+            && self.validate_common_buffer.is_some()
+    }
+    pub const fn has_iommu_registration_services(&self) -> bool {
+        self.register_iommu_backend.is_some() && self.requester_identity.is_some()
+    }
+}
+
+#[cfg(test)]
+mod kernel_hal_boundary_tests {
+    use super::*;
+
+    unsafe extern "C" fn map(_: *mut core::ffi::c_void, _: u64, _: u64, _: *mut u64) -> HalStatus {
+        HalStatus::SUCCESS
+    }
+    unsafe extern "C" fn unmap(_: *mut core::ffi::c_void, _: u64, _: u64) -> HalStatus {
+        HalStatus::SUCCESS
+    }
+    extern "C" fn ready(_: *mut core::ffi::c_void) -> bool { true }
+    extern "C" fn poll(_: *mut core::ffi::c_void, _: usize) {}
+
+    fn base_services() -> HalKernelServices {
+        HalKernelServices {
+            size: core::mem::size_of::<HalKernelServices>() as u32,
+            version: HAL_KERNEL_SERVICES_VERSION,
+            context: core::ptr::null_mut(),
+            map_io_space: Some(map),
+            unmap_io_space: Some(unmap),
+            memory_manager_ready: Some(ready),
+            poll_tlb: Some(poll),
+            dma_available: None,
+            create_dma_adapter: None,
+            allocate_common_buffer: None,
+            free_common_buffer: None,
+            validate_common_buffer: None,
+            register_iommu_backend: None,
+            requester_identity: None,
+            get_platform_quirk_policy: None,
+        }
+    }
+
+    #[test]
+    fn kernel_hal_services_require_version_size_and_memory_boundary() {
+        let mut table = base_services();
+        assert!(table.compatible());
+        table.version = 0;
+        assert!(!table.compatible());
+        table.version = HAL_KERNEL_SERVICES_VERSION;
+        table.size = 0;
+        assert!(!table.compatible());
+        table.size = core::mem::size_of::<HalKernelServices>() as u32;
+        table.map_io_space = None;
+        assert!(!table.compatible());
+    }
+
+    #[test]
+    fn dma_services_are_advertised_only_as_a_complete_set() {
+        let table = base_services();
+        assert!(!table.has_common_dma_services());
+        assert!(!table.has_iommu_registration_services());
+    }
+
+    #[test]
+    fn iommu_backend_layout_is_shared_and_version_independent() {
+        assert_eq!(core::mem::offset_of!(IommuBackend, size), 0);
+        assert_eq!(core::mem::offset_of!(IommuBackend, context), 8);
+        assert_eq!(core::mem::size_of::<IommuBackend>(), 40);
+    }
+}
