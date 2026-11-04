@@ -1961,6 +1961,10 @@ mod explicit_mutex_tests {
   assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x4321);
   assert_eq!(execute_method_with_sync(&aml,&ns,method,&[0x1234],32,&sync),Ok(AmlValue::Integer(u32::MAX as u64)));
   assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x1234);
+  let computed_body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x72,0x0a,2,0x0a,3,0x00];
+  let (computed_aml,computed_ns,computed_method)=load_event_method(&computed_body);
+  assert_eq!(execute_method_with_sync(&computed_aml,&computed_ns,computed_method,&[],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),5);
  }
 
  #[test]
