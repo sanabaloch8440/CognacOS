@@ -691,6 +691,25 @@ mod tests {
     }
 
     #[test]
+    fn table_owner_generation_is_not_reused_after_ssdt_unload_and_reload(){
+        let dsdt=definition_table(*b"DSDT",&[]);
+        let first_ssdt=definition_table(*b"SSDT",&[0x08,b'F',b'I',b'R',b'S',0x01]);
+        let second_ssdt=definition_table(*b"SSDT",&[0x08,b'S',b'E',b'C',b'D',0x02]);
+        let mut manager=AmlTableManager::new();let gate=gate();
+        let _dsdt_handle=manager.load_dsdt(&dsdt,&gate).unwrap();
+        let first=manager.load_ssdt(&first_ssdt,&gate).unwrap();
+        let first_node=manager.namespace().find_child(0,*b"FIRS").unwrap();
+        assert_eq!(manager.namespace().nodes[first_node as usize].source_table,first.generation);
+        let mut bindings=crate::aml_runtime::AmlBindings::new();
+        manager.unload_with_runtime(first,&gate,&mut bindings).unwrap();
+        let second=manager.load_ssdt(&second_ssdt,&gate).unwrap();
+        let second_node=manager.namespace().find_child(0,*b"SECD").unwrap();
+        assert_eq!(second.slot,first.slot);
+        assert_ne!(second.generation,first.generation);
+        assert_eq!(manager.namespace().nodes[second_node as usize].source_table,second.generation);
+    }
+
+    #[test]
     fn firmware_table_set_load_is_transactional(){
         let dsdt=table(*b"DSDT",*b"BASE",1);
         let mut bad_ssdt=table(*b"SSDT",*b"FAIL",2);
