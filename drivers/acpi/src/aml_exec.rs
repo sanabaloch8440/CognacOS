@@ -41,8 +41,8 @@ pub trait AmlMethodSynchronizer:Sync{
 }
 
 #[derive(Clone,Copy)]
-struct HeldAmlMutex{node:u16,previous_sync_level:u8}
-impl HeldAmlMutex{const EMPTY:Self=Self{node:u16::MAX,previous_sync_level:0};}
+struct HeldAmlMutex{node:u16,sync_level:u8,previous_sync_level:u8}
+impl HeldAmlMutex{const EMPTY:Self=Self{node:u16::MAX,sync_level:0,previous_sync_level:0};}
 pub struct AmlSyncState{current_sync_level:u8,held:[HeldAmlMutex;128],held_count:usize}
 impl AmlSyncState{
  pub const fn new()->Self{Self{current_sync_level:0,held:[HeldAmlMutex::EMPTY;128],held_count:0}}
@@ -210,7 +210,7 @@ impl<'a,'b> Machine<'a,'b>{
   if self.sync_state.current_sync_level>level{return Err(ExecError::SyncLevelViolation)}
   if self.sync_state.held_count==self.sync_state.held.len(){return Err(ExecError::MutexStackFull)}
   if !self.sync.acquire_mutex(node,level,timeout)?{return Ok(1)}
-  let i=self.sync_state.held_count;self.sync_state.held[i]=HeldAmlMutex{node,previous_sync_level:self.sync_state.current_sync_level};
+  let i=self.sync_state.held_count;self.sync_state.held[i]=HeldAmlMutex{node,sync_level:level,previous_sync_level:self.sync_state.current_sync_level};
   self.sync_state.held_count+=1;self.sync_state.current_sync_level=level;Ok(0)
  }
  fn release_mutex(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{
@@ -844,8 +844,14 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
   m.retire_frame_cells();
   execution
  })();
- let cleanup=sync_state.release_since(mutex_checkpoint,sync);
- if serialized{sync_state.current_sync_level=previous_sync_level;sync.release(method_index);}
+ let cleanup=if call_depth==0{sync_state.release_since(mutex_checkpoint,sync)}else{Ok(())};
+ if serialized{
+  if sync_state.held_count>mutex_checkpoint{
+   sync_state.held[mutex_checkpoint].previous_sync_level=previous_sync_level;
+   sync_state.current_sync_level=sync_state.held[sync_state.held_count-1].sync_level;
+  }else{sync_state.current_sync_level=previous_sync_level;}
+  sync.release(method_index);
+ }
  cleanup?;
  result
 }
