@@ -71,6 +71,7 @@ pub(crate) struct BootInfo {
     pub(crate) kernel_stack_pages: u64,
     pub(crate) kernel_stack_virtual_guard: u64,
     pub(crate) rsdp_address: u64,
+    pub(crate) smbios_entry_point: u64,
     pub(crate) ap_trampoline_physical: u64,
     pub(crate) kernel_physical_sections: [(u64, u64); 4],
     pub(crate) kernel_physical_section_count: usize,
