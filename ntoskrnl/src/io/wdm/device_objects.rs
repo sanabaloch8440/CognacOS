@@ -3,36 +3,9 @@ unsafe fn write_ptr(base:*mut u8, offset:usize, value:*mut c_void) { unsafe { pt
 unsafe fn write_usize(base:*mut u8, offset:usize, value:usize) { unsafe { ptr::write_unaligned(base.add(offset).cast::<usize>(),value); } }
 unsafe fn write_isize(base:*mut u8, offset:usize, value:isize) { unsafe { ptr::write_unaligned(base.add(offset).cast::<isize>(),value); } }
 
-// ---- StartIo queue ABI -----------------------------------------------------
-// The public DEVICE_OBJECT embeds KDEVICE_QUEUE storage. Until that layout is
-// corrected to the exact SDK size, queue linkage is tracked in a bounded
-// kernel-owned table keyed by DEVICE_OBJECT; IRP and device ABI objects remain
-// the caller-visible objects. StartIo is always called after dropping the lock.
-const START_IO_DEPTH: usize = 64;
-#[derive(Clone, Copy)]
-struct StartIoQueue {
-    device: *mut DeviceObject,
-    entries: [*mut Irp; START_IO_DEPTH],
-    keys: [u32; START_IO_DEPTH],
-    count: usize,
-    keyed: bool,
-    boosted: bool,
-}
-unsafe impl Send for StartIoQueue {}
-impl StartIoQueue {
-    const EMPTY: Self = Self { device: ptr::null_mut(), entries: [ptr::null_mut(); START_IO_DEPTH], keys: [0; START_IO_DEPTH], count: 0, keyed: false, boosted: false };
-}
-struct StartIoState { queues: [StartIoQueue; MAX_WDM_DEVICES] }
-unsafe impl Send for StartIoState {}
-impl StartIoState { const fn new() -> Self { Self { queues: [StartIoQueue::EMPTY; MAX_WDM_DEVICES] } } }
-static START_IO: IrqSpinLock<StartIoState> = IrqSpinLock::new(StartIoState::new());
-
-fn start_io_slot(state: &mut StartIoState, device: *mut DeviceObject) -> Option<usize> {
-    if let Some(i) = state.queues.iter().position(|q| q.device == device) { return Some(i); }
-    let i = state.queues.iter().position(|q| q.device.is_null())?;
-    state.queues[i].device = device;
-    Some(i)
-}
+// StartIo queue state is stored in each stable DeviceSlot, so queue capacity
+// grows with the nonpaged device registry rather than imposing a second global
+// device-count ceiling. StartIo callbacks always run after dropping WDM.
 unsafe fn invoke_start_io(device: *mut DeviceObject, irp: *mut Irp) {
     if device.is_null() || irp.is_null() { return; }
     let driver = unsafe { (*device).driver_object };
@@ -46,10 +19,10 @@ unsafe fn invoke_start_io(device: *mut DeviceObject, irp: *mut Irp) {
 /// VOID IoSetStartIoAttributes(PDEVICE_OBJECT, BOOLEAN KeyedDevice, BOOLEAN BoostedIo).
 pub unsafe extern "win64" fn io_set_start_io_attributes(device: *mut DeviceObject, keyed_device: u8, boosted_io: u8) {
     if device.is_null() { return; }
-    let mut state = START_IO.lock();
-    if let Some(i) = start_io_slot(&mut state, device) {
-        state.queues[i].keyed = keyed_device != 0;
-        state.queues[i].boosted = boosted_io != 0;
+    let mut state=WDM.lock();
+    if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)){
+        slot.start_io.keyed=keyed_device!=0;
+        slot.start_io.boosted=boosted_io!=0;
     }
 }
 
@@ -61,19 +34,17 @@ pub unsafe extern "win64" fn io_start_packet(device: *mut DeviceObject, irp: *mu
     }
     let key_value = if key.is_null() { 0 } else { unsafe { key.read_unaligned() } };
     let start_now = {
-        let mut state = START_IO.lock();
-        let Some(index) = start_io_slot(&mut state, device) else { return; };
-        if unsafe { (*device).current_irp.is_null() } {
-            unsafe { (*device).current_irp = irp; }
+        let mut state=WDM.lock();
+        let Some(slot)=state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return};
+        if unsafe{(*device).current_irp.is_null()} {
+            unsafe{(*device).current_irp=irp;}
             true
-        } else {
-            let q = &mut state.queues[index];
-            if q.count >= START_IO_DEPTH { return; }
-            let at = if q.keyed {
-                q.keys[..q.count].iter().position(|k| *k > key_value).unwrap_or(q.count)
-            } else { q.count };
-            for n in (at..q.count).rev() { q.entries[n + 1] = q.entries[n]; q.keys[n + 1] = q.keys[n]; }
-            q.entries[at] = irp; q.keys[at] = key_value; q.count += 1;
+        }else{
+            let q=&mut slot.start_io;
+            if q.count>=START_IO_DEPTH{return}
+            let at=if q.keyed{q.keys[..q.count].iter().position(|k|*k>key_value).unwrap_or(q.count)}else{q.count};
+            for n in (at..q.count).rev(){q.entries[n+1]=q.entries[n];q.keys[n+1]=q.keys[n];}
+            q.entries[at]=irp;q.keys[at]=key_value;q.count+=1;
             false
         }
     };
@@ -84,18 +55,15 @@ pub unsafe extern "win64" fn io_start_packet(device: *mut DeviceObject, irp: *mu
 pub unsafe extern "win64" fn io_start_next_packet(device: *mut DeviceObject, _cancelable: u8) {
     if device.is_null() { return; }
     let next = {
-        let mut state = START_IO.lock();
-        let Some(index) = state.queues.iter().position(|q| q.device == device) else {
-            unsafe { (*device).current_irp = ptr::null_mut(); }
-            return;
-        };
-        unsafe { (*device).current_irp = ptr::null_mut(); }
-        let q = &mut state.queues[index];
-        if q.count == 0 { ptr::null_mut() } else {
-            let irp = q.entries[0];
-            for n in 1..q.count { q.entries[n - 1] = q.entries[n]; q.keys[n - 1] = q.keys[n]; }
-            q.count -= 1; q.entries[q.count] = ptr::null_mut(); q.keys[q.count] = 0;
-            unsafe { (*device).current_irp = irp; }
+        let mut state=WDM.lock();
+        let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
+        unsafe{(*device).current_irp=ptr::null_mut();}
+        let q=&mut slot.start_io;
+        if q.count==0{ptr::null_mut()}else{
+            let irp=q.entries[0];
+            for n in 1..q.count{q.entries[n-1]=q.entries[n];q.keys[n-1]=q.keys[n];}
+            q.count-=1;q.entries[q.count]=ptr::null_mut();q.keys[q.count]=0;
+            unsafe{(*device).current_irp=irp;}
             irp
         }
     };
