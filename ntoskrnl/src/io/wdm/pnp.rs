@@ -10,15 +10,27 @@ const CM_RESOURCE_PORT:u8=1;
 const CM_RESOURCE_INTERRUPT:u8=2;
 const CM_RESOURCE_MEMORY:u8=3;
 #[derive(Clone,Copy)]
-struct ResourceClaim { used:bool, owner:*mut DeviceObject, irp:*mut Irp, kind:u8, start:u64, length:u64, committed:bool }
+struct ResourceClaim {
+ used:bool, owner:*mut DeviceObject, irp:*mut Irp, kind:u8, start:u64, length:u64, committed:bool,
+ interface_type:u32, bus_number:u32, bus_level:u32, bus_vector:u32,
+ system_vector:u32, irql:u32, affinity:u64, flags:u16, share:u8,
+}
 unsafe impl Send for ResourceClaim {}
-impl ResourceClaim { const EMPTY:Self=Self{used:false,owner:ptr::null_mut(),irp:ptr::null_mut(),kind:0,start:0,length:0,committed:false}; }
+impl ResourceClaim { const EMPTY:Self=Self{
+ used:false,owner:ptr::null_mut(),irp:ptr::null_mut(),kind:0,start:0,length:0,committed:false,
+ interface_type:0,bus_number:0,bus_level:0,bus_vector:0,system_vector:0,irql:0,affinity:0,flags:0,share:0,
+}; }
 struct ResourceArbiter { claims:[ResourceClaim;MAX_PNP_RESOURCE_CLAIMS] }
 impl ResourceArbiter { const fn new()->Self{Self{claims:[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS]}} }
 static RESOURCE_ARBITER:IrqSpinLock<ResourceArbiter>=IrqSpinLock::new(ResourceArbiter::new());
 #[derive(Clone,Copy)]
-struct ParsedResource { kind:u8, start:u64, length:u64 }
-impl ParsedResource { const EMPTY:Self=Self{kind:0,start:0,length:0}; }
+struct ParsedResource {
+ kind:u8, start:u64, length:u64, interface_type:u32, bus_number:u32,
+ level:u32, vector:u32, affinity:u64, flags:u16, share:u8,
+}
+impl ParsedResource { const EMPTY:Self=Self{
+ kind:0,start:0,length:0,interface_type:0,bus_number:0,level:0,vector:0,affinity:0,flags:0,share:0,
+}; }
 
 fn read_u16_at(base:*const u8,off:usize)->u16 { unsafe{ptr::read_unaligned(base.add(off).cast::<u16>())} }
 fn read_u32_at(base:*const u8,off:usize)->u32 { unsafe{ptr::read_unaligned(base.add(off).cast::<u32>())} }
@@ -35,33 +47,42 @@ unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_
  if full_count>MAX_PNP_FULL_DESCRIPTORS{return Err(STATUS_INVALID_PARAMETER)}
  let mut cursor=4usize;let mut count=0usize;
  for _ in 0..full_count {
+  let interface_type=unsafe{read_u32_at(base,cursor)};
+  let bus_number=unsafe{read_u32_at(base,cursor+4)};
   let partial_count=unsafe{read_u32_at(base,cursor+12)} as usize;
   if partial_count>MAX_PNP_PARTIAL_DESCRIPTORS{return Err(STATUS_INVALID_PARAMETER)}
+  // WDK CM_PARTIAL_RESOURCE_DESCRIPTOR is 20 bytes on x64 (pack(4)):
+  // four-byte header plus a 16-byte union, including 64-bit interrupt affinity.
+  const CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE:usize=20;
   let descriptor_start=cursor.checked_add(16).ok_or(STATUS_INVALID_PARAMETER)?;
-  let bytes=partial_count.checked_mul(16).ok_or(STATUS_INVALID_PARAMETER)?;
+  let bytes=partial_count.checked_mul(CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).ok_or(STATUS_INVALID_PARAMETER)?;
   let end=descriptor_start.checked_add(bytes).ok_or(STATUS_INVALID_PARAMETER)?;
   for i in 0..partial_count {
-   let off=descriptor_start+i*16;
+   let off=descriptor_start+i*CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE;
    let kind=unsafe{*base.add(off)};
+   let share=unsafe{*base.add(off+1)};
+   let flags=unsafe{read_u16_at(base,off+2)};
    match kind {
     0|5|6=>{}, // Null, device-specific, and bus-number resources are not global ranges.
     4=>{
      let channel=unsafe{read_u32_at(base,off+4)} as u64;
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
-     out[count]=ParsedResource{kind:4,start:channel,length:1};count+=1;
+     out[count]=ParsedResource{kind:4,start:channel,length:1,interface_type,bus_number,level:0,vector:0,affinity:0,flags,share};count+=1;
     }
     CM_RESOURCE_PORT|CM_RESOURCE_MEMORY=>{
      let start=unsafe{read_u64_at(base,off+4)};
      let length=unsafe{read_u32_at(base,off+12)} as u64;
      if length==0||start.checked_add(length).is_none(){return Err(STATUS_INVALID_PARAMETER)}
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
-     out[count]=ParsedResource{kind,start,length};count+=1;
+     out[count]=ParsedResource{kind,start,length,interface_type,bus_number,level:0,vector:0,affinity:0,flags,share};count+=1;
     }
     CM_RESOURCE_INTERRUPT=>{
-     let vector=unsafe{read_u32_at(base,off+8)} as u64;
-     if vector==0{return Err(STATUS_INVALID_PARAMETER)}
+     let level=unsafe{read_u32_at(base,off+4)};
+     let vector=unsafe{read_u32_at(base,off+8)};
+     let affinity=unsafe{read_u64_at(base,off+12)};
+     if vector==0||affinity==0{return Err(STATUS_INVALID_PARAMETER)}
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
-     out[count]=ParsedResource{kind,start:vector,length:1};count+=1;
+     out[count]=ParsedResource{kind,start:vector as u64,length:1,interface_type,bus_number,level,vector,affinity,flags,share};count+=1;
     }
     7=>return Err(STATUS_INVALID_DEVICE_REQUEST), // Large-memory encoding needs architecture-specific decoding.
     _=>return Err(STATUS_INVALID_PARAMETER),
@@ -138,7 +159,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
   }else{
    for r in resources[..count].iter(){
     for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=resource_owner){
-     let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length};
+     let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length,..ParsedResource::EMPTY};
      if resources_overlap(r,&existing){result=STATUS_DEVICE_BUSY;break}
     }
     if result!=STATUS_SUCCESS{break}
@@ -150,7 +171,12 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
      for i in 0..count{
       let slot=arbiter.claims.iter_mut().find(|c|!c.used).unwrap();
       let r=resources[i];
-      *slot=ResourceClaim{used:true,owner:owner_refs[i],irp,kind:r.kind,start:r.start,length:r.length,committed:false};
+      *slot=ResourceClaim{
+       used:true,owner:owner_refs[i],irp,kind:r.kind,start:r.start,length:r.length,committed:false,
+       interface_type:raw[i].interface_type,bus_number:raw[i].bus_number,
+       bus_level:raw[i].level,bus_vector:raw[i].vector,
+       system_vector:r.vector,irql:r.level,affinity:r.affinity,flags:r.flags,share:r.share,
+      };
      }
      transferred=true;
     }
