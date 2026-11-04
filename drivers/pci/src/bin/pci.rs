@@ -515,7 +515,8 @@ unsafe fn query_acpi_pci_interrupt_route(
             &mut acpi_bus,
         )
     };
-    if lookup != STATUS_SUCCESS || acpi_bus.is_null() { return lookup; }
+    if lookup != STATUS_SUCCESS { return lookup; }
+    if acpi_bus.is_null() { return STATUS_NOT_FOUND; }
 
     let mut interface = core::mem::MaybeUninit::<ACPI_FIRMWARE_INTERFACE_V2>::zeroed();
     let irp = unsafe { IoAllocateIrp((*acpi_bus).stack_size as u8, 0) };
@@ -558,17 +559,17 @@ unsafe fn query_acpi_pci_interrupt_route(
         let interface = unsafe { interface.assume_init_ref() };
         if interface.header.version as u32 != cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_2
             || interface.header.size as usize < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>()
-            || interface.query_pci_interrupt_route.is_none() {
+            || interface.query_pci_interrupt_route.is_none()
+            || interface.header.interface_dereference.is_none() {
             if let Some(deref) = interface.header.interface_dereference {
                 unsafe { deref(interface.header.context); }
             }
             return STATUS_NOT_SUPPORTED;
         }
         let query = interface.query_pci_interrupt_route.unwrap();
+        let dereference = interface.header.interface_dereference.unwrap();
         let route_status = unsafe { query(interface.header.context, request, route) };
-        if let Some(deref) = interface.header.interface_dereference {
-            unsafe { deref(interface.header.context); }
-        }
+        unsafe { dereference(interface.header.context); }
         route_status
     })();
 
@@ -705,7 +706,9 @@ unsafe extern "win64" fn pci_pdo_interrupt_disable(context: PVOID) -> i32 {
     let extension = match unsafe { pdo_interrupt_extension(context) } {
         Ok(extension) => extension, Err(status) => return status,
     };
-    if unsafe { (*extension).interrupt_allocated == 0 } { return STATUS_SUCCESS; }
+    if unsafe { (*extension).interrupt_allocated == 0 || (*extension).interrupt_registered == 0 } {
+        return STATUS_SUCCESS;
+    }
     let Some(disable) = (unsafe { (*extension).interrupt_hal.disable }) else {
         return STATUS_NOT_SUPPORTED;
     };
