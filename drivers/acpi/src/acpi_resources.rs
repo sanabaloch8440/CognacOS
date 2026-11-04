@@ -846,6 +846,29 @@ mod dependent_requirement_tests {
 }
 
 
+#[cfg(test)] mod host_bridge_translation_offset_tests {
+ use super::*;
+ #[test]
+ fn qword_crs_preserves_address_translation_offset() {
+  let mut bytes = [0u8; 48];
+  bytes[0] = 0x8a; bytes[1] = 43; bytes[3] = 0;
+  bytes[6..14].copy_from_slice(&0x0fffu64.to_le_bytes());
+  bytes[14..22].copy_from_slice(&0x8000_0000u64.to_le_bytes());
+  bytes[22..30].copy_from_slice(&0x8fff_ffffu64.to_le_bytes());
+  bytes[30..38].copy_from_slice(&0x1000u64.to_le_bytes());
+  bytes[38..46].copy_from_slice(&0x1000u64.to_le_bytes());
+  bytes[46] = 0x79; bytes[47] = 0;
+  let resources = parse_resource_template(&bytes).unwrap();
+  let mut windows = [HostBridgeWindow {
+   space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
+   length: 0, alignment: 0, translation_offset: 0, memory_kind: 0,
+   writeable: false, cacheable: false,
+  }; MAX_HOST_BRIDGE_WINDOWS];
+  assert_eq!(collect_host_bridge_windows(&resources, &mut windows), Ok(1));
+  assert_eq!(windows[0].translation_offset, 0x1000);
+ }
+}
+
 #[cfg(test)] mod stability_28_qword_overflow {
  use super::*;
  #[test] fn rejects_qword_range_whose_end_wraps() {
