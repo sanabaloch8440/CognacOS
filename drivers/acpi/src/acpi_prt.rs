@@ -719,6 +719,18 @@ pub fn evaluate_prt_method_object_in_context<R: LinkDeviceResolver>(
                         link_nodes[index] = canonical;
                         None
                     }
+                    AmlReference::NamespaceNodeGeneration{node:link,generation} => {
+                        bindings.validate_node_generation(link,generation)
+                            .map_err(|_| PrtDecodeError::UnresolvedLink)?;
+                        let canonical = namespace.resolve_alias(link)
+                            .map_err(|_| PrtDecodeError::UnresolvedLink)?;
+                        if canonical as usize >= namespace.count
+                            || namespace.nodes[canonical as usize].object_type != AmlObjectType::Device {
+                            return Err(PrtDecodeError::UnresolvedLink);
+                        }
+                        link_nodes[index] = canonical;
+                        None
+                    }
                     _ => return Err(PrtDecodeError::BadSource),
                 }
             }
