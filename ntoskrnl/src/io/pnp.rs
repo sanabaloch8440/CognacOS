@@ -7,6 +7,133 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 pub const XHCI_PNP_MAGIC: u64 = 0x434f_474e_4143_504e;
+
+/// Stable kernel-private identity for the ACPI bus FDO. This is deliberately
+/// separate from the ACPI child PDO enumerator/namespace-node identities.
+pub const ACPI_BUS_ENUMERATOR_ID: u32 = u32::from_le_bytes(*b"ACPI");
+pub const ACPI_BUS_IDENTITY_HASH: u64 = 0x4143_5049_4255_5301;
+
+const MAX_REGISTERED_PNP_BUSES: usize = 16;
+const BUS_REGISTRY_STATUS_SUCCESS: i32 = crate::nt_abi::ntstatus::STATUS_SUCCESS;
+const BUS_REGISTRY_STATUS_INVALID_PARAMETER: i32 = crate::nt_abi::ntstatus::STATUS_INVALID_PARAMETER;
+const BUS_REGISTRY_STATUS_DEVICE_BUSY: i32 = crate::nt_abi::ntstatus::STATUS_DEVICE_BUSY;
+const BUS_REGISTRY_STATUS_NOT_FOUND: i32 = crate::nt_abi::ntstatus::STATUS_NOT_FOUND;
+const BUS_REGISTRY_STATUS_INSUFFICIENT_RESOURCES: i32 = crate::nt_abi::ntstatus::STATUS_INSUFFICIENT_RESOURCES;
+
+#[derive(Clone, Copy)]
+struct RegisteredBusObject {
+    enumerator_id: u32,
+    identity_hash: u64,
+    device: usize,
+}
+impl RegisteredBusObject {
+    const EMPTY: Self = Self { enumerator_id: 0, identity_hash: 0, device: 0 };
+}
+static PNP_BUS_OBJECTS: crate::hal::IrqSpinLock<[RegisteredBusObject; MAX_REGISTERED_PNP_BUSES]> =
+    crate::hal::IrqSpinLock::new([RegisteredBusObject::EMPTY; MAX_REGISTERED_PNP_BUSES]);
+
+/// Register a bus FDO in the kernel's private bus-object directory. The
+/// directory owns one I/O-manager object reference until unregister succeeds.
+/// This helper is intentionally not a Windows ntoskrnl PE export.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "win64" fn IoPnPRegisterBusFdo(
+    enumerator_id: u32,
+    identity_hash: u64,
+    device: *mut crate::io::DeviceObject,
+) -> i32 {
+    if enumerator_id == 0 || identity_hash == 0 || device.is_null() {
+        return BUS_REGISTRY_STATUS_INVALID_PARAMETER;
+    }
+    // Acquire the object reference before entering the registry spin lock.
+    let referenced = unsafe { crate::io::io_reference_device_object(device) };
+    if referenced.is_null() { return BUS_REGISTRY_STATUS_DEVICE_BUSY; }
+    let result = {
+        let mut buses = PNP_BUS_OBJECTS.lock();
+        if let Some(existing) = buses.iter().find(|entry|
+            entry.device != 0 && entry.enumerator_id == enumerator_id
+                && entry.identity_hash == identity_hash)
+        {
+            if existing.device == device as usize { BUS_REGISTRY_STATUS_SUCCESS }
+            else { BUS_REGISTRY_STATUS_DEVICE_BUSY }
+        } else if let Some(slot) = buses.iter_mut().find(|entry| entry.device == 0) {
+            *slot = RegisteredBusObject { enumerator_id, identity_hash, device: device as usize };
+            BUS_REGISTRY_STATUS_SUCCESS
+        } else {
+            BUS_REGISTRY_STATUS_INSUFFICIENT_RESOURCES
+        }
+    };
+    // Duplicate idempotent registration already has its own retained
+    // reference; all other failed registrations must release this candidate.
+    if result != BUS_REGISTRY_STATUS_SUCCESS
+        || bus_registration_is_duplicate(enumerator_id, identity_hash, device)
+    {
+        unsafe { crate::io::io_dereference_device_object(referenced); }
+    }
+    result
+}
+
+fn bus_registration_is_duplicate(enumerator_id: u32, identity_hash: u64, device: *mut crate::io::DeviceObject) -> bool {
+    let buses = PNP_BUS_OBJECTS.lock();
+    buses.iter().any(|entry| entry.enumerator_id == enumerator_id
+        && entry.identity_hash == identity_hash && entry.device == device as usize)
+}
+
+/// Return a separately referenced bus FDO. The caller must release the
+/// returned reference with IoPnPDereferenceBusFdo.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "win64" fn IoPnPReferenceBusFdo(
+    enumerator_id: u32,
+    identity_hash: u64,
+    output: *mut *mut crate::io::DeviceObject,
+) -> i32 {
+    if enumerator_id == 0 || identity_hash == 0 || output.is_null() {
+        return BUS_REGISTRY_STATUS_INVALID_PARAMETER;
+    }
+    unsafe { output.write(core::ptr::null_mut()); }
+    let buses = PNP_BUS_OBJECTS.lock();
+    let Some(entry) = buses.iter().find(|entry| entry.device != 0
+        && entry.enumerator_id == enumerator_id && entry.identity_hash == identity_hash) else {
+        return BUS_REGISTRY_STATUS_NOT_FOUND;
+    };
+    let device = entry.device as *mut crate::io::DeviceObject;
+    // Object reference acquisition is serialized against unregister by the
+    // registry lock, so the directory's retained reference cannot disappear.
+    let referenced = unsafe { crate::io::io_reference_device_object(device) };
+    if referenced.is_null() { return BUS_REGISTRY_STATUS_DEVICE_BUSY; }
+    unsafe { output.write(referenced); }
+    BUS_REGISTRY_STATUS_SUCCESS
+}
+
+/// Release the lookup reference returned by IoPnPReferenceBusFdo.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "win64" fn IoPnPDereferenceBusFdo(device: *mut crate::io::DeviceObject) {
+    if !device.is_null() { unsafe { crate::io::io_dereference_device_object(device); } }
+}
+
+/// Remove the bus directory entry. Outstanding lookup references keep the
+/// object alive independently; no new lookups can succeed after this returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "win64" fn IoPnPUnregisterBusFdo(
+    enumerator_id: u32,
+    identity_hash: u64,
+    device: *mut crate::io::DeviceObject,
+) -> i32 {
+    if enumerator_id == 0 || identity_hash == 0 || device.is_null() {
+        return BUS_REGISTRY_STATUS_INVALID_PARAMETER;
+    }
+    let removed = {
+        let mut buses = PNP_BUS_OBJECTS.lock();
+        let Some(slot) = buses.iter_mut().find(|entry| entry.device != 0
+            && entry.enumerator_id == enumerator_id && entry.identity_hash == identity_hash) else {
+            return BUS_REGISTRY_STATUS_NOT_FOUND;
+        };
+        if slot.device != device as usize { return BUS_REGISTRY_STATUS_DEVICE_BUSY; }
+        *slot = RegisteredBusObject::EMPTY;
+        true
+    };
+    if removed { unsafe { crate::io::io_dereference_device_object(device); } }
+    BUS_REGISTRY_STATUS_SUCCESS
+}
 pub const XHCI_PNP_VERSION: u32 = 1;
 
 #[repr(C, align(64))]
