@@ -30,7 +30,7 @@ pub unsafe extern "win64" fn io_set_start_io_attributes(device: *mut DeviceObjec
 pub unsafe extern "win64" fn io_start_packet(device: *mut DeviceObject, irp: *mut Irp, key: *const u32, cancel_function: Option<DriverCancelRoutine>) {
     if device.is_null() || irp.is_null() { return; }
     if let Some(cancel) = cancel_function {
-        let _ = unsafe { io_set_cancel_routine(irp, Some(cancel)); };
+        let _ = unsafe { io_set_cancel_routine_synchronized(irp, Some(cancel)); };
     }
     let key_value = if key.is_null() { 0 } else { unsafe { key.read_unaligned() } };
     let start_now = {
