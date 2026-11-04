@@ -85,6 +85,21 @@ build_images() {
     --export-manifest ntoskrnl/src/kernel/manifest_26100.json
   cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports \
     build/cognacos-kernel.exe ntoskrnl/src/kernel/manifest_26100.json
+
+  # The HAL is a separate native PE32+ image, not a DriverEntry-loaded WDM
+  # module and not an implementation source compiled into NTOSKRNL.
+  mkdir -p build/hal
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link \
+  RUSTFLAGS="-C panic=abort -C link-arg=/DLL -C link-arg=/ENTRY:CognacHalInitialize -C link-arg=/NODEFAULTLIB -C link-arg=/SUBSYSTEM:NATIVE -C link-arg=/EXPORT:CognacHalInitialize -C link-arg=/BASE:0xFFFF8000C0000000" \
+    cargo build --manifest-path drivers/hal/Cargo.toml --target x86_64-pc-windows-msvc --release --bin hal
+  cp target/x86_64-pc-windows-msvc/release/hal.exe build/hal/hal.dll
+  llvm-readobj --file-headers --coff-exports build/hal/hal.dll > build/hal/exports.txt
+  grep -Fq "CognacHalInitialize" build/hal/exports.txt
+  grep -Eq "Magic: 0x20B" build/hal/exports.txt
+  if grep -Fq "DriverEntry" build/hal/exports.txt; then
+    die "HAL image must not expose ordinary WDM DriverEntry"
+  fi
+
   cargo check --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi
 }
 
