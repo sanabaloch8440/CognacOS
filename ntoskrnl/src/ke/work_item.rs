@@ -134,7 +134,7 @@ pub fn rundown() -> bool {
             WORKER_ID.store(0, Ordering::Release);
             return true;
         }
-        core::hint::spin_loop();
+        let _ = crate::thread::yield_current();
         spins += 1;
     }
     false
@@ -178,7 +178,7 @@ pub extern "C" fn rundown_context(context: u64) -> bool {
     if id != 0 { let _ = crate::thread::wake(id); }
     let mut spins = 0usize;
     while QUEUE.lock().active_context == context && spins < 10_000_000 {
-        core::hint::spin_loop();
+        let _ = crate::thread::yield_current();
         spins += 1;
     }
     QUEUE.lock().active_context != context
