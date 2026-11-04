@@ -218,7 +218,17 @@ pub extern "C" fn rundown_context(context: u64) -> bool {
         let _ = crate::thread::yield_current();
         spins += 1;
     }
-    QUEUE.lock().active_context != context
+    let drained = QUEUE.lock().active_context != context;
+    if drained {
+        // HAL has already unregistered and drained this owner's ISR/DPC
+        // producers. Reclaim the closed-context slot so a later driver restart
+        // may safely reuse the same nonpaged callback-context address.
+        let mut state = QUEUE.lock();
+        if let Some(slot) = state.closed_contexts.iter_mut().find(|slot| **slot == context) {
+            *slot = 0;
+        }
+    }
+    drained
 }
 
 /// Reopen a context slot before registering a newly initialized ACPI instance.
