@@ -101,9 +101,9 @@ fn resources_overlap(a:&ParsedResource,b:&ParsedResource)->bool{
  if a.kind!=b.kind{return false}
  if a.kind==CM_RESOURCE_INTERRUPT {
   if a.start!=b.start{return false}
-  // Shared PCI INTx resources may overlap only when both assignments are
-  // explicitly shareable and level-sensitive. Edge-triggered/MSI resources
-  // never participate in line sharing.
+  // Shared line-based resources may overlap only when both assignments are
+  // explicitly shareable and level-sensitive. Message-signaled resources may
+  // overlap only when both assignments explicitly permit message sharing.
   let a_shared=a.share==3&&(a.flags&0x0002!=0||a.flags&0x0001==0);
   let b_shared=b.share==3&&(b.flags&0x0002!=0||b.flags&0x0001==0);
   return !(a_shared&&b_shared)
