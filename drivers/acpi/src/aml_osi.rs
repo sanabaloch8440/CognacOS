@@ -140,7 +140,7 @@ pub unsafe fn install_platform_quirk_policy(
     {
         return false;
     }
-    PLATFORM_QUIRK_POLICY.store(policy.cast_mut().cast(), core::sync::atomic::Ordering::Release);
+    PLATFORM_QUIRK_POLICY.store(policy as *mut crate::quirks::QuirkPolicy, core::sync::atomic::Ordering::Release);
     true
 }
 
