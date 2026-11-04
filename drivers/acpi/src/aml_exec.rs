@@ -1958,4 +1958,50 @@ mod explicit_mutex_tests {
  }
 }
 
+ struct DeadlineClockSync{reads:AtomicUsize,constant:bool}
+ impl DeadlineClockSync{fn new(constant:bool)->Self{Self{reads:AtomicUsize::new(0),constant}}}
+ impl AmlMethodSynchronizer for DeadlineClockSync{
+  fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
+  fn release(&self,_:u16){}
+  fn monotonic_time_100ns(&self)->Option<u64>{
+   let read=self.reads.fetch_add(1,Ordering::SeqCst);
+   Some(if self.constant||read==0{100}else{100+MAX_AML_EXECUTION_TIME_100NS+1})
+  }
+  fn acquire_mutex(&self,_:u16,_:u8,timeout:u16)->Result<bool,ExecError>{
+   LAST_BOUNDED_TIMEOUT.store(timeout as usize,Ordering::SeqCst);Ok(false)
+  }
+ }
+ static LAST_BOUNDED_TIMEOUT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ #[test]fn execution_deadline_is_checked_against_monotonic_provider_clock(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(false);
+  assert_eq!(execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::DeadlineExceeded));
+ }
+ #[test]fn nested_methods_consume_one_shared_instruction_budget(){
+  let aml=[0x14,0x08,b'C',b'H',b'L',b'D',0,0xa4,0x01,
+           0x14,0x0b,b'P',b'A',b'R',b'N',0,0xa4,b'C',b'H',b'L',b'D'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let parent=ns.find_child(0,*b"PARN").unwrap();
+  let mut storage=std::boxed::Box::<AmlObjectArena>::new_uninit();
+  unsafe{AmlObjectArena::initialize_in_place(storage.as_mut_ptr());}
+  let mut arena=unsafe{storage.assume_init()};
+  let mut bindings=AmlBindings::with_aml_revision(2);let mut dynamic=AmlDynamicNamespace::new();
+  let mut sync_state=AmlSyncState::new();let mut budget=AmlExecutionBudget::with_limits(1,None);
+  assert_eq!(execute_method_inner(&aml,&ns,parent,&[],0,64,&mut arena,&mut bindings,
+      &NO_METHOD_SYNCHRONIZER,&mut dynamic,&mut sync_state,&mut budget,0),Err(ExecError::StepLimit));
+ }
+ #[test]fn infinite_aml_mutex_wait_is_bounded_by_execution_deadline(){
+  let mut aml=std::vec![0x5b,0x01,b'M',b'T',b'X',b'0',0];
+  let body=[0xa4,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff];
+  let package_length=1+4+1+body.len();
+  aml.extend_from_slice(&[0x14,package_length as u8,b'T',b'E',b'S',b'T',0]);
+  aml.extend_from_slice(&body);
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(true);
+  LAST_BOUNDED_TIMEOUT.store(0,Ordering::SeqCst);
+  assert_eq!(execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlRuntimeValue{kind:AmlValueKind::Integer,integer:1,bytes:[0;MAX_AML_BYTES],byte_length:0,elements:[0;MAX_PACKAGE_ELEMENTS],element_count:0,reference_kind:0,reference_id:0,reference_index:0,reference_bit_width:0}));
+  assert_eq!(LAST_BOUNDED_TIMEOUT.load(Ordering::SeqCst),30_000);
+ }
+
 }
