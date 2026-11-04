@@ -99,6 +99,9 @@ __imp_ntoskrnl_ObfReferenceObject: .quad 0
 __imp_ntoskrnl_ObDereferenceObject: .quad 0
 .size __imp_ntoskrnl_ObDereferenceObject,8
 
+// Keep executable import thunks in .text; the IAT slots below must remain
+// one contiguous, ordered block for the native PE import-table converter.
+.section .text.import_thunks,"ax",@progbits
 .global IoAllocateIrp
 .type IoAllocateIrp,@function
 IoAllocateIrp:
