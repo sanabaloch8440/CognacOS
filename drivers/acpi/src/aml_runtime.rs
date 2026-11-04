@@ -41,6 +41,7 @@ pub fn validate_runtime_value(value:&AmlRuntimeValue,arena:&AmlObjectArena)->Res
         }
         AmlValueKind::ObjectReference=>{
             match reference_from_value(value)?{
+                AmlReference::ArenaValue(value)=>{ if arena.get(value).is_none(){return Err(RuntimeError::InvalidReference)} }
                 AmlReference::NamespaceNode(node)=>{
                     if node as usize>=MAX_NAMESPACE_NODES{return Err(RuntimeError::InvalidReference)}
                 }
@@ -123,7 +124,15 @@ pub fn make_object_reference(reference:AmlReference)->AmlRuntimeValue{
     let mut value=AmlRuntimeValue::EMPTY;
     value.kind=AmlValueKind::ObjectReference;
     match reference{
+        AmlReference::ArenaValue(id)=>{
+            let target=*arena.get(id).ok_or(RuntimeError::InvalidReference)?;
+            let stored=if mode==StoreMode::CopyObject{source}else{convert_to_target_type(&source,&target,arena,bindings.integer_width_bits,true)?};
+            let stored_id=if stored.kind==AmlValueKind::Package{clone_value_tree(value,arena)?}else{arena.allocate(stored)?};
+            let replacement=*arena.get(stored_id).ok_or(RuntimeError::InvalidReference)?;
+            *arena.get_mut(id).ok_or(RuntimeError::InvalidReference)?=replacement;Ok(())
+        }
         AmlReference::NamespaceNode(node)=>{value.reference_kind=0;value.reference_id=node;}
+        AmlReference::ArenaValue(id)=>{value.reference_kind=4;value.reference_id=id;}
         AmlReference::PackageElement{package,index}=>{value.reference_kind=1;value.reference_id=package;value.reference_index=index as u16;}
         AmlReference::BufferByte{buffer,index}=>{value.reference_kind=2;value.reference_id=buffer;value.reference_index=index;}
         AmlReference::BufferField{buffer,bit_offset,bit_width}=>{
@@ -139,6 +148,7 @@ pub fn reference_from_value(value:&AmlRuntimeValue)->Result<AmlReference,Runtime
     if value.kind!=AmlValueKind::ObjectReference{return Err(RuntimeError::TypeMismatch)}
     match value.reference_kind{
         0=>Ok(AmlReference::NamespaceNode(value.reference_id)),
+        4=>Ok(AmlReference::ArenaValue(value.reference_id)),
         1=>{
             if value.reference_index>u8::MAX as u16{return Err(RuntimeError::InvalidReference)}
             Ok(AmlReference::PackageElement{package:value.reference_id,index:value.reference_index as u8})
@@ -153,6 +163,8 @@ pub fn reference_from_value(value:&AmlRuntimeValue)->Result<AmlReference,Runtime
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlReference {
     NamespaceNode(u16),
+    /// Stable reference to a caller-owned arena object promoted from Local/Arg.
+    ArenaValue(u16),
     PackageElement { package:u16,index:u8 },
     BufferByte { buffer:u16,index:u16 },
     /// A little-endian bit field backed by a runtime Buffer.
@@ -285,6 +297,7 @@ pub fn dereference(reference:AmlReference,bindings:&AmlBindings,arena:&AmlObject
     ->Result<AmlRuntimeValue,RuntimeError>{
     match reference{
         AmlReference::NamespaceNode(node)=>Ok(*arena.get(bindings.value_id(node)?).ok_or(RuntimeError::InvalidReference)?),
+        AmlReference::ArenaValue(id)=>Ok(*arena.get(id).ok_or(RuntimeError::InvalidReference)?),
         AmlReference::PackageElement{package,index}=>{
             let p=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
             if p.kind!=AmlValueKind::Package||index as usize>=checked_element_count(p)?{return Err(RuntimeError::InvalidReference)}
