@@ -117,7 +117,7 @@ impl<'a,'b> Machine<'a,'b>{
      let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
      let object=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
      return match object.object_type{AmlObjectType::Name=>Ok(Some(self.name_reference(canonical)?)),
-      AmlObjectType::Device=>Ok(Some(AmlReference::NamespaceNode(canonical))),_=>Ok(None)};
+      _=>Ok(Some(AmlReference::NamespaceNode(canonical)))};
     }
     if let Ok(node)=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name){return Ok(Some(self.dynamic.field_reference(self.namespace,node).map_err(|_|ExecError::BadTarget)?));}
     Ok(None)
@@ -211,6 +211,7 @@ impl<'a,'b> Machine<'a,'b>{
     let entry=self.namespace.nodes.get(canonical as usize)
         .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
     if entry.object_type==AmlObjectType::Name { return Ok(Target::Reference(self.name_reference(canonical)?)); }
+    if entry.object_type==AmlObjectType::Device { return Ok(Target::Reference(AmlReference::NamespaceNode(canonical))); }
     r.pos = r.pos; // preserve the parsed target boundary
     Err(ExecError::BadTarget)
    }
@@ -1020,6 +1021,20 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x22));
+ }
+
+ #[test]fn index_reads_buffer_bytes_and_preserves_nested_caller_frame_aliases(){
+  let buffer=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,0x02,0x34,0x12,
+   0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x83,0x88,b'B',b'U',b'F',b'0',0x01,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&buffer,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&buffer,&ns,id,&[]).unwrap(),AmlValue::Integer(0x12));
+
+  let nested=[0x14,0x09,b'I',b'N',b'N',b'R',1,0xa4,0x83,0x68,
+   0x14,0x11,b'O',b'U',b'T',b'R',0,0x70,0x0a,42,0x60,0xa4,b'I',b'N',b'N',b'R',0x71,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&nested,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"OUTR").unwrap();
+  assert_eq!(execute_method(&nested,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
  }
 
  #[test]fn condrefof_reports_present_and_missing_namespace_objects(){
