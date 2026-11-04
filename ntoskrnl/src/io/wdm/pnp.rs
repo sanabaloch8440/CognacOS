@@ -37,7 +37,7 @@ fn read_u32_at(base:*const u8,off:usize)->u32 { unsafe{ptr::read_unaligned(base.
 fn read_u64_at(base:*const u8,off:usize)->u64 { unsafe{ptr::read_unaligned(base.add(off).cast::<u64>())} }
 
 /// Validate a WDK CM_RESOURCE_LIST and extract resources that participate in
-/// exclusive range arbitration. Structure bounds/counts are capped to avoid
+/// resource arbitration, including legal shared line interrupts. Structure bounds/counts are capped to avoid
 /// unbounded traversal. As with the WDK ABI, the pointer must reference a
 /// readable kernel allocation for the duration of this call.
 unsafe fn parse_cm_resource_list(list:*const c_void,is_translated:bool,out:&mut[ParsedResource;MAX_RESOURCES_PER_DEVICE])->Result<usize,i32>{
@@ -246,7 +246,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
   }else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL){
    for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner){
     released[released_count]=claim.owner;released_count+=1;
-    if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+    if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
      removed_translations[removed_count]=*claim;removed_count+=1;
     }
     *claim=ResourceClaim::EMPTY;
@@ -267,7 +267,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
 }
 
 /// Translated line-based interrupt resource retained by the PnP arbiter.
-/// Only a single, non-shared, group-zero line interrupt is currently connectable.
+/// A single group-zero line interrupt is currently connectable; shared level-sensitive lines are supported.
 pub(crate) struct PnpLineInterruptResource {
  pub vector:u32,
  pub irql:u8,
@@ -278,7 +278,7 @@ pub(crate) struct PnpLineInterruptResource {
 
 /// @partial implementation
 /// Query the committed translated interrupt resource for CONNECT_LINE_BASED.
-/// Shared and message-signaled resources are rejected by the current dispatcher.
+/// Shared level-sensitive lines are accepted; message-signaled resources are rejected.
 pub(crate) fn io_query_pnp_line_interrupt_resource(
  device:*mut DeviceObject,
 )->Option<PnpLineInterruptResource>{
