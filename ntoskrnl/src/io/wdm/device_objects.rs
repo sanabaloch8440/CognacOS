@@ -284,7 +284,8 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
    }
   }
  }
- let slot=&mut state.devices[index];
+ let slot_ptr=&mut state.devices[index] as *mut DeviceSlot;
+ let slot=unsafe{&mut *slot_ptr};
  slot.object.device_extension=ptr::null_mut();
  slot.object.driver_object=ptr::null_mut();
  slot.object.next_device=ptr::null_mut();
@@ -297,10 +298,14 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
   let mut manager=PNP_MANAGER.lock();
   for relation in manager.relations.iter_mut().filter(|r|r.used&&(r.bus==device||r.child==device)){*relation=PnpRelation::EMPTY;}
  }
+ // Overflow slots are individually page-backed. Remove the registry link while
+ // holding WDM, but free the page only after all subsystem rundown is complete.
+ let release_overflow_page=state.devices.remove_overflow(slot_ptr);
  drop(state);
  // Drop the upper device's pin on its immediate lower attachment after unlinking.
  if !lower.is_null(){unsafe{io_dereference_device_object(lower);}}
  crate::ntoskrnl::po::device_power::unregister(device);
  io_release_pnp_resources(device);
+ if release_overflow_page{let _=crate::ntoskrnl::mm::kernel_space::free_pages(slot_ptr.cast(),1);}
 
 }
