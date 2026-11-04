@@ -1193,6 +1193,22 @@ mod tests{
       Err(ExecError::UnsupportedReturnType));
  }
 
+ #[test]fn refof_frame_promotion_fails_transactionally_when_arena_is_exhausted(){
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+   0x70,0x0a,42,0x60,0xa4,0x83,0x71,0x60];
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();
+  for _ in 0..crate::aml_objects::MAX_AML_VALUES {
+   arena.allocate(Machine::integer_value(7)).unwrap();
+  }
+  let before=arena.count;
+  let mut bindings=AmlBindings::with_aml_revision(2);
+  assert_eq!(execute_method_in_context(&aml,&namespace,method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER),
+   Err(ExecError::TargetTypeMismatch));
+  assert_eq!(arena.count,before);
+ }
+
  #[test]fn refof_preserves_operation_region_field_and_method_namespace_references(){
   let aml=[
    0x5b,0x80,b'R',b'E',b'G',b'0',0x00,0x0a,0,0x0a,4,
