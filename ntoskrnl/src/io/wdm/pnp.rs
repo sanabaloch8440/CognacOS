@@ -906,4 +906,45 @@ mod cm_resource_abi_tests {
   assert!(resources_overlap(&shared_msi_a,&invalid_msi));
  }
 
+ #[test]
+ fn parses_raw_and_translated_msi_union_members_at_x64_offsets(){
+  let mut raw=[0u8;4+16+24];
+  put_u32(&mut raw,0,1);
+  put_u32(&mut raw,4,5); // PCI bus
+  put_u32(&mut raw,8,2); // bus number
+  put_u32(&mut raw,16,1);
+  let raw_irq=20usize;
+  raw[raw_irq]=CM_RESOURCE_INTERRUPT;
+  raw[raw_irq+1]=3; // shared
+  put_u16(&mut raw,raw_irq+2,0x0003); // latched + message
+  put_u16(&mut raw,raw_irq+4,0); // raw group
+  put_u16(&mut raw,raw_irq+8,1); // MessageCount
+  put_u32(&mut raw,raw_irq+12,0x21); // raw message vector
+  put_u64(&mut raw,raw_irq+16,0);
+
+  let mut translated=[0u8;4+16+24];
+  put_u32(&mut translated,0,1);
+  put_u32(&mut translated,4,5);
+  put_u32(&mut translated,8,2);
+  put_u32(&mut translated,16,1);
+  let translated_irq=20usize;
+  translated[translated_irq]=CM_RESOURCE_INTERRUPT;
+  translated[translated_irq+1]=3;
+  put_u16(&mut translated,translated_irq+2,0x0003);
+  put_u16(&mut translated,translated_irq+4,6); // translated IRQL
+  put_u16(&mut translated,translated_irq+6,0); // processor group
+  put_u32(&mut translated,translated_irq+8,0x55);
+  put_u64(&mut translated,translated_irq+12,1);
+
+  let mut raw_parsed=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
+  let mut translated_parsed=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
+  assert_eq!(unsafe{parse_cm_resource_list(raw.as_ptr().cast(),false,&mut raw_parsed)}.unwrap(),1);
+  assert_eq!(unsafe{parse_cm_resource_list(translated.as_ptr().cast(),true,&mut translated_parsed)}.unwrap(),1);
+  assert_eq!(raw_parsed[0].vector,0x21);
+  assert_eq!(raw_parsed[0].group,0);
+  assert_eq!(translated_parsed[0].vector,0x55);
+  assert_eq!(translated_parsed[0].level,6);
+  assert_eq!(translated_parsed[0].affinity,1);
+ }
+
 }
