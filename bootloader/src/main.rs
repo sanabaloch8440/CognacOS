@@ -417,7 +417,6 @@ fn main() -> Status {
         boot_info_storage.as_ptr() as u64,
         kernel_stack_guard_page,
         if rsdp_address < 0x1_0000_0000 { rsdp_address } else { 0 },
-        smbios_entry_point,
         ap_trampoline_physical,
     ];
     let kernel_aliases_ok = loaded_kernel.segments[..loaded_kernel.segment_count].iter().all(|segment| {
