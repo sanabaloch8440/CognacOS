@@ -8,7 +8,8 @@
 
 #![no_std]
 use crate::aml::{decode_package_length,AmlError,AmlNamespace,AmlObjectType};
-use crate::aml_exec::evaluate_term_argument;
+use crate::aml_exec::evaluate_term_argument_in_context;
+use crate::aml_runtime::AmlBindings;
 
 /// A 128-entry _PRT may require one outer Package, 128 route Packages,
 /// and four or more leaf values per route. Keep headroom for method temporaries.
@@ -98,13 +99,14 @@ pub const MAX_DATA_OBJECT_DEPTH:u8=32;
 /// malformed, arena allocations made by this decode are rolled back.
 pub fn decode_data_object(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObjectArena)->Result<(u16,usize),ObjectError>{
     let checkpoint=arena.count;
-    match decode_data_object_depth(bytes,offset,limit,arena,0){
+    let mut bindings = AmlBindings::with_aml_revision(2);
+    match decode_data_object_depth(bytes,offset,limit,arena,&mut bindings,0){
         Ok(result)=>Ok(result),
         Err(error)=>{arena.count=checkpoint;Err(error)}
     }
 }
 
-fn decode_data_object_depth(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObjectArena,depth:u8)->Result<(u16,usize),ObjectError>{
+fn decode_data_object_depth(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,depth:u8)->Result<(u16,usize),ObjectError>{
     if depth>MAX_DATA_OBJECT_DEPTH{return Err(ObjectError::MalformedObject)}
     if offset>limit||limit>bytes.len(){return Err(ObjectError::Truncated)}
     let mut pos=offset;
@@ -125,7 +127,7 @@ fn decode_data_object_depth(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlO
         }
         0x11=>{
             let (body,end)=package_end(bytes,pos,limit)?;pos=body;
-            let (declared,consumed)=evaluate_term_argument(&bytes[pos..end]).map_err(|_|ObjectError::InvalidTermArgument)?;
+            let (declared,consumed)=evaluate_term_argument_in_context(&bytes[pos..end],arena,bindings).map_err(|_|ObjectError::InvalidTermArgument)?;
             pos=pos.checked_add(consumed).ok_or(ObjectError::Truncated)?;
             let declared=usize::try_from(declared).map_err(|_|ObjectError::ValueTooLarge)?;
             if declared>MAX_AML_BYTES{return Err(ObjectError::ValueTooLarge)}
@@ -138,7 +140,7 @@ fn decode_data_object_depth(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlO
         0x12|0x13=>{
             let (body,end)=package_end(bytes,pos,limit)?;pos=body;
             let count=if opcode==0x12{byte(bytes,&mut pos,end)? as usize}else{
-                let (count,consumed)=evaluate_term_argument(&bytes[pos..end]).map_err(|_|ObjectError::InvalidTermArgument)?;
+                let (count,consumed)=evaluate_term_argument_in_context(&bytes[pos..end],arena,bindings).map_err(|_|ObjectError::InvalidTermArgument)?;
                 pos=pos.checked_add(consumed).ok_or(ObjectError::Truncated)?;
                 usize::try_from(count).map_err(|_|ObjectError::TooManyElements)?
             };
@@ -149,7 +151,7 @@ fn decode_data_object_depth(bytes:&[u8],offset:usize,limit:usize,arena:&mut AmlO
                     let missing=arena.push({let mut z=AmlRuntimeValue::EMPTY;z.kind=AmlValueKind::Uninitialized;z})?;
                     value.elements[value.element_count as usize]=missing;value.element_count+=1;continue
                 }
-                let (child,next)=decode_data_object_depth(bytes,pos,end,arena,depth+1)?;
+                let (child,next)=decode_data_object_depth(bytes,pos,end,arena,bindings,depth+1)?;
                 value.elements[value.element_count as usize]=child;value.element_count+=1;pos=next;
             }
             if pos!=end{return Err(ObjectError::MalformedObject)}
