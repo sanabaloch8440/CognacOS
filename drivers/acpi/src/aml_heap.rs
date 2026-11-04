@@ -115,3 +115,46 @@ impl<T: Copy> Drop for AmlPoolVec<T> {
         }
     }
 }
+
+
+/// Explicit resource accounting for one AML execution or loaded definition
+/// block. Budgets are caller policy, not AML language/package-size ceilings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AmlPoolBudget {
+    pub byte_limit: usize,
+    pub allocation_limit: usize,
+    pub bytes_live: usize,
+    pub allocations_live: usize,
+    pub peak_bytes: usize,
+    pub peak_allocations: usize,
+}
+impl AmlPoolBudget {
+    pub const fn new(byte_limit: usize, allocation_limit: usize) -> Self {
+        Self { byte_limit, allocation_limit, bytes_live: 0, allocations_live: 0, peak_bytes: 0, peak_allocations: 0 }
+    }
+    pub fn charge(&mut self, bytes: usize) -> Result<(), AmlHeapError> {
+        if bytes == 0 { return Err(AmlHeapError::CapacityOverflow); }
+        let next_bytes = self.bytes_live.checked_add(bytes).ok_or(AmlHeapError::CapacityOverflow)?;
+        let next_allocations = self.allocations_live.checked_add(1).ok_or(AmlHeapError::CapacityOverflow)?;
+        if next_bytes > self.byte_limit || next_allocations > self.allocation_limit {
+            return Err(AmlHeapError::Pool(AmlPoolError::InsufficientResources));
+        }
+        self.bytes_live = next_bytes;
+        self.allocations_live = next_allocations;
+        self.peak_bytes = self.peak_bytes.max(next_bytes);
+        self.peak_allocations = self.peak_allocations.max(next_allocations);
+        Ok(())
+    }
+    pub fn release(&mut self, bytes: usize) -> Result<(), AmlHeapError> {
+        if bytes == 0 || bytes > self.bytes_live || self.allocations_live == 0 {
+            return Err(AmlHeapError::CapacityOverflow);
+        }
+        self.bytes_live -= bytes;
+        self.allocations_live -= 1;
+        Ok(())
+    }
+    pub fn reset(&mut self) {
+        self.bytes_live = 0;
+        self.allocations_live = 0;
+    }
+}
