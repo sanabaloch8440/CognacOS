@@ -1015,6 +1015,14 @@ mod tests{
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x22));
  }
 
+ #[test]fn refof_arg_is_writable_and_scoped_to_the_callee_frame(){
+  let aml=[0x14,0x10,b'T',b'E',b'S',b'T',1,
+   0x70,0x71,0x68,0x60,0x70,0x0a,42,0x60,0xa4,0x68];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[7]).unwrap(),AmlValue::Integer(42));
+ }
+
  #[test]fn index_reads_buffer_bytes_and_preserves_nested_caller_frame_aliases(){
   let buffer=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,0x02,0x34,0x12,
    0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x83,0x88,b'B',b'U',b'F',b'0',0x01,0x60];
