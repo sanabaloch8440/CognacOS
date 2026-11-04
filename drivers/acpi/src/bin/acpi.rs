@@ -311,6 +311,25 @@ pub fn acquire_sci_hal_services() -> Result<&'static AcpiSciHalServices, i32> {
                     ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
                     return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
                 }
+                // Obtain the kernel-owned immutable policy through the
+                // versioned HAL table; the ACPI driver never reads BootInfo
+                // or dereferences firmware physical addresses itself.
+                let mut policy = core::ptr::null::<core::ffi::c_void>();
+                let mut policy_size = 0u32;
+                let mut policy_version = 0u32;
+                let get_policy = table.get_platform_quirk_policy
+                    .ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+                let policy_status = unsafe {
+                    get_policy(&mut policy, &mut policy_size, &mut policy_version)
+                };
+                if policy_status != 0 || !unsafe {
+                    acpi::aml_osi::install_platform_quirk_policy(
+                        policy, policy_size, policy_version,
+                    )
+                } {
+                    ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
+                    return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
+                }
                 unsafe { (*ACPI_SCI_SERVICES.0.get()).write(table); }
                 ACPI_SCI_SERVICES_STATE.store(2, Ordering::Release);
                 return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() });
