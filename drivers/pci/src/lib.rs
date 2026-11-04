@@ -468,6 +468,17 @@ pub fn resolve_requester_path(segment:u16,root_bus:u8,endpoint_bus:u8,
     endpoint_device:u8,endpoint_function:u8,bridges:&[PciBridgeRange])
     ->Result<PciRequesterPath,PciTopologyError> {
     if endpoint_device>=32||endpoint_function>=8{return Err(PciTopologyError::InvalidBdf)}
+    for (bridge_index, bridge) in bridges.iter().enumerate().filter(|(_, b)|b.segment==segment) {
+        if bridge.device>=32||bridge.function>=8||bridge.secondary_bus<=bridge.primary_bus
+            ||bridge.subordinate_bus<bridge.secondary_bus {
+            return Err(PciTopologyError::InvalidBridgeRange)
+        }
+        if bridges.iter().skip(bridge_index + 1).any(|other|
+            other.segment == segment && other.secondary_bus == bridge.secondary_bus
+        ) {
+            return Err(PciTopologyError::AmbiguousParentBridge)
+        }
+    }
     let mut reverse=[PciPathElement::default();255];
     let mut count=0usize;
     let mut bus=endpoint_bus;
@@ -476,16 +487,7 @@ pub fn resolve_requester_path(segment:u16,root_bus:u8,endpoint_bus:u8,
         if visited[bus as usize]{return Err(PciTopologyError::Cycle)}
         visited[bus as usize]=true;
         let mut best:Option<PciBridgeRange>=None;
-        for (bridge_index, b) in bridges.iter().enumerate().filter(|(_, b)|b.segment==segment) {
-            if b.device>=32||b.function>=8||b.secondary_bus<=b.primary_bus
-                ||b.subordinate_bus<b.secondary_bus {
-                return Err(PciTopologyError::InvalidBridgeRange)
-            }
-            if bridges.iter().skip(bridge_index + 1).any(|other|
-                other.segment == segment && other.secondary_bus == b.secondary_bus
-            ) {
-                return Err(PciTopologyError::AmbiguousParentBridge)
-            }
+        for b in bridges.iter().filter(|b|b.segment==segment) {
             if b.secondary_bus<=bus&&bus<=b.subordinate_bus {
                 match best {
                     None=>best=Some(*b),
