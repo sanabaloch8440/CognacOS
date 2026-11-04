@@ -87,6 +87,7 @@ unsafe extern "win64" {
  fn KeInitializeEvent(event:*mut core::ffi::c_void,event_type:i32,state:u8);
  fn KeSetEvent(event:*mut core::ffi::c_void,increment:i32,wait:u8)->i32;
  fn KeResetEvent(event:*mut core::ffi::c_void)->i32;
+ fn KeQueryInterruptTimePrecise(qpc_timestamp:*mut u64)->u64;
 }
 impl KernelAmlMethodSynchronizer{
  fn event(&self,event_index:u16)->Result<&'static KernelAmlEvent,acpi::aml_exec::ExecError>{
@@ -125,6 +126,26 @@ impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
   let status=unsafe{KeWaitForSingleObject(mutex.object(),0,0,0,core::ptr::null())};
   if status==STATUS_SUCCESS||status==0x0000_0080{Ok(())}
   else{Err(acpi::aml_exec::ExecError::ExecutionBusy)}
+ }
+ fn acquire_with_timeout(&self,method_index:u16,_sync_level:u8,timeout_ms:u16)->Result<bool,acpi::aml_exec::ExecError>{
+  let mutex=KERNEL_AML_METHOD_MUTEXES.get(method_index as usize)
+   .ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
+  loop{match mutex.initialized.load(Ordering::Acquire){
+   2=>break,
+   0=>if mutex.initialized.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+    unsafe{KeInitializeMutex(mutex.object(),0);}
+    mutex.initialized.store(2,Ordering::Release);break;
+   },
+   _=>core::hint::spin_loop(),
+  }}
+  let relative_timeout=-(timeout_ms as i64)*10_000;
+  let timeout=if timeout_ms==u16::MAX{core::ptr::null()}else{&relative_timeout as *const i64};
+  let status=unsafe{KeWaitForSingleObject(mutex.object(),0,0,0,timeout)};
+  match status{
+   STATUS_SUCCESS|0x0000_0080=>Ok(true),
+   0x0000_0102=>Ok(false),
+   _=>Err(acpi::aml_exec::ExecError::ExecutionBusy),
+  }
  }
  fn release(&self,method_index:u16){
   if let Some(mutex)=KERNEL_AML_METHOD_MUTEXES.get(method_index as usize){
@@ -177,6 +198,7 @@ impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
  fn reset_event(&self,event_index:u16)->Result<(),acpi::aml_exec::ExecError>{
   let event=self.event(event_index)?;unsafe{let _=KeResetEvent(event.object());}Ok(())
  }
+ fn monotonic_time_100ns(&self)->Option<u64>{Some(unsafe{KeQueryInterruptTimePrecise(core::ptr::null_mut())})}
 }
 
 unsafe extern "win64" {
@@ -244,8 +266,10 @@ __imp_ke_KeReleaseMutex: .quad 0
 __imp_ke_KeInitializeEvent: .quad 0
 .global __imp_ke_KeSetEvent
 __imp_ke_KeSetEvent: .quad 0
-.global __imp_ke_KeResetEvent
+ .global __imp_ke_KeResetEvent
 __imp_ke_KeResetEvent: .quad 0
+.global __imp_ke_KeQueryInterruptTimePrecise
+__imp_ke_KeQueryInterruptTimePrecise: .quad 0
 .section .text.import_thunks,"ax",@progbits
 .global KeInitializeMutex
 .type KeInitializeMutex,@function
@@ -277,6 +301,11 @@ KeSetEvent:
 KeResetEvent:
  jmp QWORD PTR [rip + __imp_ke_KeResetEvent]
 .size KeResetEvent, .-KeResetEvent
+.global KeQueryInterruptTimePrecise
+.type KeQueryInterruptTimePrecise,@function
+KeQueryInterruptTimePrecise:
+ jmp QWORD PTR [rip + __imp_ke_KeQueryInterruptTimePrecise]
+.size KeQueryInterruptTimePrecise, .-KeQueryInterruptTimePrecise
 
 .section .data.imports.io,"aw",@progbits
 .p2align 3
