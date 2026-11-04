@@ -623,6 +623,9 @@ unsafe fn configure_pci_intx_masked(
     // comes from the matching ACPI bridge _PRT hierarchy, never the legacy byte.
     if pin == 0 { return STATUS_SUCCESS; }
     if pin > 4 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) {
+        return STATUS_DEVICE_NOT_READY;
+    }
 
     let mut request = ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2 {
         segment: function.segment,
