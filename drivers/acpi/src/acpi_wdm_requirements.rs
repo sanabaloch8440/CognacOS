@@ -107,7 +107,7 @@ pub unsafe fn serialize_alternatives(
   let p=unsafe{alt.add(ALTERNATIVE_HEADER_SIZE)};
   let mut i=0usize;
   for item in list.entries[..list.count].iter().flatten(){match *item{
-   Resource::Io{minimum,maximum,length,alignment,decode_16_bit}=>unsafe{address(p,i,TYPE_PORT,PORT_IO|if decode_16_bit{PORT_16_BIT_DECODE}else{PORT_10_BIT_DECODE},length,alignment,minimum,maximum);i+=1;},
+   Resource::Io{minimum,maximum,length,alignment,decode_16_bit,..}=>unsafe{address(p,i,TYPE_PORT,PORT_IO|if decode_16_bit{PORT_16_BIT_DECODE}else{PORT_10_BIT_DECODE},length,alignment,minimum,maximum);i+=1;},
    Resource::Memory{minimum,maximum,length,alignment,writeable,cacheable,..}=>unsafe{address(p,i,TYPE_MEMORY,(if writeable{0}else{MEMORY_READ_ONLY})|(if cacheable{MEMORY_CACHEABLE}else{0}),length,alignment,minimum,maximum);i+=1;},
    Resource::BusNumber{minimum,maximum,length}=>{let d=unsafe{p.add(i*IO_RESOURCE_DESCRIPTOR_SIZE)};unsafe{header(p,i,TYPE_BUS_NUMBER,SHARE_EXCLUSIVE,0,0);w32(d,8,length as u32);w32(d,12,minimum as u32);w32(d,16,maximum as u32);}i+=1;},
    Resource::Irq{mask,level_triggered,shared,..}=>{let mut choice=0usize;for vector in 0..16u32{if mask&(1u16<<vector)!=0{unsafe{pair(p,i,TYPE_INTERRUPT,if shared{SHARE_SHARED}else{SHARE_EXCLUSIVE},if level_triggered{INTERRUPT_LEVEL_SENSITIVE}else{0},vector,vector,choice!=0);}i+=1;choice+=1;}}},
