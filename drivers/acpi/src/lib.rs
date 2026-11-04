@@ -380,7 +380,9 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
     if rsdp_end > LOW_IDENTITY_LIMIT { return Err(AcpiError::AddressOutOfRange); }
     let rsdp = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, rsdp_len) };
     let roots = parse_rsdp(rsdp)?;
-    let (root_address, is_xsdt) = if roots.revision >= 2 && roots.xsdt_address != 0
+    let prefer_rsdt = crate::aml_osi::platform_quirk_policy().is_some_and(|policy|
+        policy.flags.contains(crate::quirks::QuirkFlags::PREFER_RSDT));
+    let (root_address, is_xsdt) = if !prefer_rsdt && roots.revision >= 2 && roots.xsdt_address != 0
         && roots.xsdt_address < LOW_IDENTITY_LIMIT {
         (roots.xsdt_address, true)
     } else if roots.rsdt_address != 0 {
@@ -458,7 +460,9 @@ pub fn find_table_with_mapper<'a,M:AcpiPhysicalMapper>(mapper:&'a M,rsdp_address
     }else{20};
     let rsdp=mapped_range(mapper,rsdp_address,rsdp_len)?;
     let roots=parse_rsdp(rsdp)?;
-    let (root_address,root_signature,width)=if revision>=2&&roots.xsdt_address!=0{
+    let prefer_rsdt=crate::aml_osi::platform_quirk_policy().is_some_and(|policy|
+        policy.flags.contains(crate::quirks::QuirkFlags::PREFER_RSDT));
+    let (root_address,root_signature,width)=if !prefer_rsdt&&revision>=2&&roots.xsdt_address!=0{
         (roots.xsdt_address,*b"XSDT",8usize)
     }else if roots.rsdt_address!=0{
         (roots.rsdt_address as u64,*b"RSDT",4usize)
@@ -609,7 +613,9 @@ pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize)
     }
     let rsdp = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, rsdp_len) };
     let roots = parse_rsdp(rsdp)?;
-    let (root_address, is_xsdt) = if revision >= 2 && roots.xsdt_address != 0
+    let prefer_rsdt = crate::aml_osi::platform_quirk_policy().is_some_and(|policy|
+        policy.flags.contains(crate::quirks::QuirkFlags::PREFER_RSDT));
+    let (root_address, is_xsdt) = if !prefer_rsdt && revision >= 2 && roots.xsdt_address != 0
         && roots.xsdt_address < LOW_IDENTITY_LIMIT {
         (roots.xsdt_address, true)
     } else if roots.rsdt_address != 0 {
