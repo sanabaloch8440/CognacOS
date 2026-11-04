@@ -317,8 +317,13 @@ pub fn acquire_sci_hal_services() -> Result<&'static AcpiSciHalServices, i32> {
                 let mut policy = core::ptr::null::<core::ffi::c_void>();
                 let mut policy_size = 0u32;
                 let mut policy_version = 0u32;
-                let get_policy = table.get_platform_quirk_policy
-                    .ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+                let get_policy = match table.get_platform_quirk_policy {
+                    Some(callback) => callback,
+                    None => {
+                        ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
+                        return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
+                    }
+                };
                 let policy_status = unsafe {
                     get_policy(&mut policy, &mut policy_size, &mut policy_version)
                 };
