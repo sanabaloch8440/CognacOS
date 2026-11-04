@@ -5,7 +5,7 @@
 //! queued callbacks, and waits for an active callback to return before the
 //! caller may release its context.
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::hal::IrqSpinLock;
 
 pub const MAX_WORK_ITEMS: usize = 64;
@@ -63,6 +63,8 @@ impl QueueState {
 }
 static QUEUE: IrqSpinLock<QueueState> = IrqSpinLock::new(QueueState::new());
 static WORKER_ID: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_DONE: AtomicBool = AtomicBool::new(false);
+static SELF_TEST_PASSIVE: AtomicBool = AtomicBool::new(false);
 static mut WORKER_STACK: [u8; 32 * 1024] = [0; 32 * 1024];
 
 extern "C" fn worker_entry(_argument: *mut c_void) {
@@ -148,6 +150,29 @@ pub fn rundown() -> bool {
         }
         let _ = crate::thread::yield_current();
         spins += 1;
+    }
+    false
+}
+
+extern "C" fn self_test_callback(_context: u64) {
+    SELF_TEST_PASSIVE.store(
+        crate::ntoskrnl::ke::runtime::current_irql_level() == 0,
+        Ordering::Release,
+    );
+    SELF_TEST_DONE.store(true, Ordering::Release);
+}
+
+/// Exercise the real thread-backed queue and assert that the callback executes
+/// at PASSIVE_LEVEL, not in the caller's interrupt/DPC context.
+pub fn self_test() -> bool {
+    SELF_TEST_DONE.store(false, Ordering::Release);
+    SELF_TEST_PASSIVE.store(false, Ordering::Release);
+    if !queue(self_test_callback, 0x5343_4957) { return false; }
+    for _ in 0..100_000 {
+        if SELF_TEST_DONE.load(Ordering::Acquire) {
+            return SELF_TEST_PASSIVE.load(Ordering::Acquire);
+        }
+        let _ = crate::thread::yield_current();
     }
     false
 }
