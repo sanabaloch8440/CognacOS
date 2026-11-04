@@ -1,6 +1,9 @@
 //! Versioned platform-neutral service contract between the NT executive and HAL.
 #![no_std]
 
+/// HAL implementation consumes executive callbacks through this module.
+pub mod kernel_services;
+
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)]
@@ -576,6 +579,11 @@ unsafe impl Sync for IommuBackend {}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+// The raw context is an opaque, kernel-lifetime callback context. Its
+// synchronization and immutability are guaranteed by the one-shot installer.
+unsafe impl Send for HalKernelServices {}
+unsafe impl Sync for HalKernelServices {}
+
 pub struct HalKernelServices {
     pub size: u32,
     pub version: u32,
