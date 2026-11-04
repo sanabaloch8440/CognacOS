@@ -627,95 +627,129 @@ unsafe fn configure_pci_intx_masked(
         return STATUS_DEVICE_NOT_READY;
     }
 
-    let mut request = ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3 {
-        segment: function.segment,
-        bus: function.bus,
-        device: function.device,
-        function: function.function,
-        pin,
-        ..Default::default()
+    let request_bytes = core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3>();
+    let bridge_bytes = core::mem::size_of::<pci::PciBridgeRange>()
+        .checked_mul(pci::MAX_PCI_BRIDGES).ok_or(STATUS_INSUFFICIENT_RESOURCES);
+    let bridge_bytes = match bridge_bytes { Ok(bytes) => bytes, Err(status) => return status };
+    // The expanded v4 request and full-segment bridge inventory are pool-backed:
+    // neither multi-kilobyte buffer is placed on the kernel stack.
+    let request_allocation = unsafe {
+        ExAllocatePoolWithTag(1, request_bytes, PCI_REQUIREMENTS_POOL_TAG)
     };
-    let mut bridge_ranges = [pci::PciBridgeRange::default(); pci::MAX_PCI_BRIDGES];
-    let mut bridge_range_count = 0usize;
-    for window_index in 0..MAX_WINDOWS {
-        let count = unsafe { (*STATE.bridge_counts.get())[window_index] };
-        let entries = unsafe { &(*STATE.bridges.get())[window_index] };
-        for bridge in entries.iter().take(count).flatten() {
-            if bridge.segment == function.segment {
-                if bridge_range_count == bridge_ranges.len() {
-                    return STATUS_INSUFFICIENT_RESOURCES;
-                }
-                bridge_ranges[bridge_range_count] = *bridge;
-                bridge_range_count += 1;
-            }
-        }
-    }
-    let requester = match pci::resolve_requester_path(
-        function.segment, window.bus_start, function.bus,
-        function.device, function.function, &bridge_ranges[..bridge_range_count],
-    ) {
-        Ok(path) => path,
-        Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+    if request_allocation.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+    let bridge_allocation = unsafe {
+        ExAllocatePoolWithTag(1, bridge_bytes, PCI_REQUIREMENTS_POOL_TAG)
     };
-    request.root_bus = requester.root_bus;
-    request.bridge_count = requester.path_count.saturating_sub(1) as u8;
-    let mut current_bus = requester.root_bus;
-    for path_index in 0..request.bridge_count as usize {
-        let path_element = requester.path[path_index];
-        let Some(bridge) = bridge_ranges[..bridge_range_count].iter().find(|bridge|
-            bridge.primary_bus == current_bus
-                && bridge.device == path_element.device
-                && bridge.function == path_element.function
-        ) else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
-        request.bridges[path_index] = cognacos_nt_abi::bus::ACPI_PCI_BRIDGE_PATH_ENTRY {
-            segment: bridge.segment,
-            primary_bus: bridge.primary_bus,
-            secondary_bus: bridge.secondary_bus,
-            subordinate_bus: bridge.subordinate_bus,
-            device: bridge.device,
-            function: bridge.function,
-            reserved: 0,
-        };
-        current_bus = bridge.secondary_bus;
-    }
-    if current_bus != function.bus { return STATUS_DEVICE_CONFIGURATION_ERROR; }
-    let mut route = ACPI_PCI_INTERRUPT_ROUTE::default();
-    let status = unsafe { query_acpi_pci_interrupt_route(&request, &mut route) };
-    if status != STATUS_SUCCESS { return status; }
-    if route.reserved != [0; 2] || route.reserved2 != 0
-        || route.active_low > 1 || route.level_triggered > 1
-        || route.io_apic_base == 0 || route.io_apic_base & 0xfff != 0
-        || route.gsi < route.gsi_base || route.gsi - route.gsi_base >= 120 {
-        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    if bridge_allocation.is_null() {
+        unsafe { ExFreePoolWithTag(request_allocation, PCI_REQUIREMENTS_POOL_TAG); }
+        return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    let mut hal = unsafe { core::mem::zeroed::<PciInterruptHalServices>() };
-    let status = unsafe { HalPciGetInterruptServices(&mut hal) };
-    if status != STATUS_SUCCESS || !hal.compatible() { return STATUS_NOT_SUPPORTED; }
-    let Some(allocate) = hal.allocate_vector else { return STATUS_NOT_SUPPORTED; };
-    let Some(configure) = hal.configure_masked else { return STATUS_NOT_SUPPORTED; };
-    let Some(release) = hal.release_vector else { return STATUS_NOT_SUPPORTED; };
-    let mut vector = 0u8;
-    let hal_status = unsafe { allocate(&mut vector) };
-    if hal_status != 0 { return hal_status_to_ntstatus(hal_status); }
-    let hal_status = unsafe {
-        configure(
-            vector, route.io_apic_base, route.gsi_base, route.gsi,
-            route.active_low != 0, route.level_triggered != 0,
-        )
-    };
-    if hal_status != 0 {
-        let _ = unsafe { release(vector) };
-        return hal_status_to_ntstatus(hal_status);
-    }
+    let result = (|| {
+        unsafe {
+            core::ptr::write_bytes(request_allocation.cast::<u8>(), 0, request_bytes);
+            core::ptr::write_bytes(bridge_allocation.cast::<u8>(), 0, bridge_bytes);
+        }
+        let request = unsafe { &mut *request_allocation.cast::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3>() };
+        request.segment = function.segment;
+        request.bus = function.bus;
+        request.device = function.device;
+        request.function = function.function;
+        request.pin = pin;
+
+        let bridge_ranges = unsafe {
+            core::slice::from_raw_parts_mut(
+                bridge_allocation.cast::<pci::PciBridgeRange>(),
+                pci::MAX_PCI_BRIDGES,
+            )
+        };
+        let mut bridge_range_count = 0usize;
+        for window_index in 0..MAX_WINDOWS {
+            let count = unsafe { (*STATE.bridge_counts.get())[window_index] };
+            let entries = unsafe { &(*STATE.bridges.get())[window_index] };
+            for bridge in entries.iter().take(count).flatten() {
+                if bridge.segment == function.segment {
+                    if bridge_range_count == bridge_ranges.len() {
+                        return STATUS_INSUFFICIENT_RESOURCES;
+                    }
+                    bridge_ranges[bridge_range_count] = *bridge;
+                    bridge_range_count += 1;
+                }
+            }
+        }
+        let requester = match pci::resolve_requester_path(
+            function.segment, window.bus_start, function.bus,
+            function.device, function.function, &bridge_ranges[..bridge_range_count],
+        ) {
+            Ok(path) => path,
+            Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+        };
+        request.root_bus = requester.root_bus;
+        request.bridge_count = requester.path_count.saturating_sub(1) as u8;
+        let mut current_bus = requester.root_bus;
+        for path_index in 0..request.bridge_count as usize {
+            let path_element = requester.path[path_index];
+            let Some(bridge) = bridge_ranges[..bridge_range_count].iter().find(|bridge|
+                bridge.primary_bus == current_bus
+                    && bridge.device == path_element.device
+                    && bridge.function == path_element.function
+            ) else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
+            request.bridges[path_index] = cognacos_nt_abi::bus::ACPI_PCI_BRIDGE_PATH_ENTRY {
+                segment: bridge.segment,
+                primary_bus: bridge.primary_bus,
+                secondary_bus: bridge.secondary_bus,
+                subordinate_bus: bridge.subordinate_bus,
+                device: bridge.device,
+                function: bridge.function,
+                reserved: 0,
+            };
+            current_bus = bridge.secondary_bus;
+        }
+        if current_bus != function.bus { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+        let mut route = ACPI_PCI_INTERRUPT_ROUTE::default();
+        let status = unsafe { query_acpi_pci_interrupt_route(request, &mut route) };
+        if status != STATUS_SUCCESS { return status; }
+        if route.reserved != [0; 2] || route.reserved2 != 0
+            || route.active_low > 1 || route.level_triggered > 1
+            || route.io_apic_base == 0 || route.io_apic_base & 0xfff != 0
+            || route.gsi < route.gsi_base || route.gsi - route.gsi_base >= 120 {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+
+        let mut hal = unsafe { core::mem::zeroed::<PciInterruptHalServices>() };
+        let status = unsafe { HalPciGetInterruptServices(&mut hal) };
+        if status != STATUS_SUCCESS || !hal.compatible() { return STATUS_NOT_SUPPORTED; }
+        let Some(allocate) = hal.allocate_vector else { return STATUS_NOT_SUPPORTED; };
+        let Some(configure) = hal.configure_masked else { return STATUS_NOT_SUPPORTED; };
+        let Some(release) = hal.release_vector else { return STATUS_NOT_SUPPORTED; };
+        let mut vector = 0u8;
+        let hal_status = unsafe { allocate(&mut vector) };
+        if hal_status != 0 { return hal_status_to_ntstatus(hal_status); }
+        let hal_status = unsafe {
+            configure(
+                vector, route.io_apic_base, route.gsi_base, route.gsi,
+                route.active_low != 0, route.level_triggered != 0,
+            )
+        };
+        if hal_status != 0 {
+            let _ = unsafe { release(vector) };
+            return hal_status_to_ntstatus(hal_status);
+        }
+        unsafe {
+            (*extension).interrupt_vector = vector;
+            (*extension).interrupt_allocated = 1;
+            (*extension).interrupt_registered = 0;
+            (*extension).interrupt_context = 0;
+            (*extension).interrupt_hal = hal;
+        }
+        STATUS_SUCCESS
+    })();
+
     unsafe {
-        (*extension).interrupt_vector = vector;
-        (*extension).interrupt_allocated = 1;
-        (*extension).interrupt_registered = 0;
-        (*extension).interrupt_context = 0;
-        (*extension).interrupt_hal = hal;
+        ExFreePoolWithTag(bridge_allocation, PCI_REQUIREMENTS_POOL_TAG);
+        ExFreePoolWithTag(request_allocation, PCI_REQUIREMENTS_POOL_TAG);
     }
-    STATUS_SUCCESS
+    result
 }
 
 unsafe fn pdo_interrupt_extension(context: PVOID) -> Result<*mut PciPdoExtension, i32> {
