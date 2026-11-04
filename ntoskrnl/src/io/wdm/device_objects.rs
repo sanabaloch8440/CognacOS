@@ -196,16 +196,46 @@ pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
   if flags&DRIVER_UNLOADED_FLAG!=0{return STATUS_SUCCESS}
   unsafe{(*driver).flags=flags|DRIVER_UNLOADING_FLAG;}
  }
- // Do not truncate unload to the bootstrap registry size. Claim one owned
- // device at a time, then run Object Manager and PnP teardown without WDM held.
- loop {
-  let device={
+ // Walk the driver's intrusive DEVICE_OBJECT chain. Pin each next object
+ // while the current object is still protected by WDM, so concurrent removal
+ // cannot reclaim the traversal target. This covers every device, including
+ // page-backed overflow records, without a fixed-size snapshot or retry loop.
+ let mut cursor={
+  let mut state=WDM.lock();
+  let head=unsafe{(*driver).device_object};
+  if head.is_null(){ptr::null_mut()}else{
+   match state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,head)){
+    Some(slot)=>match slot.object.reference_count.checked_add(1){
+     Some(count)=>{slot.object.reference_count=count;head},
+     None=>ptr::null_mut()
+    },
+    None=>ptr::null_mut()
+   }
+  }
+ };
+ while !cursor.is_null(){
+  let next={
    let mut state=WDM.lock();
-   state.devices.iter_mut().find(|s|s.used&&s.object.driver_object==driver&&!s.deleting)
-    .map(|slot|{slot.deleting=true;ptr::addr_of_mut!(slot.object)})
+   let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,cursor)) else{
+    unsafe{io_dereference_device_object(cursor);}
+    break
+   };
+   let next=slot.object.next_device;
+   let pinned_next=if next.is_null(){ptr::null_mut()}else{
+    match state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,next)){
+     Some(next_slot)=>match next_slot.object.reference_count.checked_add(1){
+      Some(count)=>{next_slot.object.reference_count=count;next},
+      None=>ptr::null_mut()
+     },
+     None=>ptr::null_mut()
+    }
+   };
+   slot.deleting=true;
+   pinned_next
   };
-  let Some(device)=device else{break};
-  unsafe{io_delete_device(device);}
+  unsafe{io_delete_device(cursor);}
+  unsafe{io_dereference_device_object(cursor);}
+  cursor=next;
  }
  let callback={
   let state=WDM.lock();
