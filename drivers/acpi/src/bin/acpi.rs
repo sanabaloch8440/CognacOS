@@ -217,7 +217,7 @@ unsafe extern "win64" fn aml_pool_allocate(
     zeroed: u8,
 ) -> *mut core::ffi::c_void {
     if size == 0 { return core::ptr::null_mut(); }
-    let allocation = unsafe { ExAllocatePoolWithTag(0, size, tag) };
+    let allocation = unsafe { ExAllocatePoolWithTag(512, size, tag) };
     if !allocation.is_null() && zeroed != 0 {
         unsafe { core::ptr::write_bytes(allocation, 0, size); }
     }
