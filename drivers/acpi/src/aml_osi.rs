@@ -135,7 +135,7 @@ pub unsafe fn install_platform_quirk_policy(
         return true;
     }
     if version != cognacos_hal_contract::ACPI_PLATFORM_QUIRK_POLICY_VERSION
-        || size as usize < core::mem::size_of::<crate::quirks::QuirkPolicy>()
+        || (size as usize) < core::mem::size_of::<crate::quirks::QuirkPolicy>()
         || (policy as usize) % core::mem::align_of::<crate::quirks::QuirkPolicy>() != 0
     {
         return false;
