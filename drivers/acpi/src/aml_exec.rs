@@ -1950,7 +1950,7 @@ mod explicit_mutex_tests {
  fn event_wait_returns_one_when_timeout_expires(){
   let body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0b,0x34,0x12];
   let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
-  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
   assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x1234);
  }
  #[test]
@@ -1967,7 +1967,7 @@ mod explicit_mutex_tests {
  fn reset_event_clears_a_previously_signaled_event(){
   let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0x5b,0x26,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0b,0xff,0xff];
   let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
-  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
   assert_eq!(sync.signals.load(Ordering::SeqCst),1);assert_eq!(sync.resets.load(Ordering::SeqCst),1);
   assert!(!sync.signaled.load(Ordering::SeqCst));
  }
