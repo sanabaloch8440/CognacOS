@@ -513,7 +513,7 @@ mod tests {
     use super::*;
     #[test]
     fn smbios_string_indices_select_the_correct_string() {
-        let strings = b"Vendor\\0Product\\0SKU\\0\\0";
+        let strings = b"Vendor\0Product\0SKU\0\0";
         assert_eq!(smbios_string(strings, 1), Ok(&b"Vendor"[..]));
         assert_eq!(smbios_string(strings, 2), Ok(&b"Product"[..]));
         assert_eq!(smbios_string(strings, 3), Ok(&b"SKU"[..]));
