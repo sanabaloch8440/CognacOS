@@ -759,11 +759,10 @@ fn parse_gas(bytes:&[u8],offset:usize)->Result<AcpiGas,AcpiError>{
     Ok(gas)
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub struct HpetInfo { pub event_timer_block_id:u32,pub oem_attributes:u16,pub base:AcpiGas,pub sequence_number:u8,pub minimum_tick:u16,pub page_protection:u8 }
+pub struct HpetInfo { pub event_timer_block_id:u32,pub oem_attributes:u8,pub base:AcpiGas,pub sequence_number:u8,pub minimum_tick:u16,pub page_protection:u8 }
 pub fn parse_hpet(bytes:&[u8])->Result<HpetInfo,AcpiError>{
-    let h=validate_sdt(bytes,Some(*b"HPET"))?;if h.length<56{return Err(AcpiError::BadLength)} let base=parse_gas(bytes,40)?;let page_protection=bytes[55];if page_protection>2{return Err(AcpiError::MalformedEntry)}
-    let block_id=u32le(bytes,36)?;
-    Ok(HpetInfo{event_timer_block_id:block_id&0x0000_ffff,oem_attributes:(block_id>>16) as u16,base,sequence_number:bytes[52],minimum_tick:u16::from_le_bytes([bytes[53],bytes[54]]),page_protection})
+    let h=validate_sdt(bytes,Some(*b"HPET"))?;if h.length<56{return Err(AcpiError::BadLength)} let base=parse_gas(bytes,40)?;let attributes=bytes[55];let page_protection=attributes&0x0f;let oem_attributes=attributes>>4;if page_protection>2{return Err(AcpiError::MalformedEntry)}
+    Ok(HpetInfo{event_timer_block_id:u32le(bytes,36)?,oem_attributes,base,sequence_number:bytes[52],minimum_tick:u16::from_le_bytes([bytes[53],bytes[54]]),page_protection})
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct BgrtInfo { pub version:u16,pub status:u8,pub image_type:u8,pub image_address:u64,pub offset_x:u32,pub offset_y:u32 }
@@ -1893,7 +1892,7 @@ mod remaining_firmware_table_tests {
  fn finish(b:&mut [u8]){b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));}
  fn sdt(sig:[u8;4],n:usize)->std::vec::Vec<u8>{let mut b=std::vec![0u8;n];b[..4].copy_from_slice(&sig);b[4..8].copy_from_slice(&(n as u32).to_le_bytes());b[8]=1;b}
  #[test] fn validates_facs_without_applying_sdt_checksum(){let mut b=[0u8;64];b[..4].copy_from_slice(b"FACS");b[4..8].copy_from_slice(&64u32.to_le_bytes());b[32]=2;let f=parse_facs(&b).unwrap();assert_eq!(f.length,64);assert_eq!(f.version,2);assert_eq!(parse_facs(&b[..40]),Err(AcpiError::BadLength));}
- #[test] fn validates_hpet_gas_and_page_protection(){let mut b=sdt(*b"HPET",56);b[36..40].copy_from_slice(&0xabcd_1234u32.to_le_bytes());b[41]=64;b[44..52].copy_from_slice(&0xfed0_0000u64.to_le_bytes());finish(&mut b);let h=parse_hpet(&b).unwrap();assert_eq!(h.base.address,0xfed0_0000);assert_eq!(h.event_timer_block_id,0x1234);assert_eq!(h.oem_attributes,0xabcd);b[55]=3;finish(&mut b);assert_eq!(parse_hpet(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_hpet_gas_and_page_protection(){let mut b=sdt(*b"HPET",56);b[36..40].copy_from_slice(&0x8086_a201u32.to_le_bytes());b[41]=64;b[44..52].copy_from_slice(&0xfed0_0000u64.to_le_bytes());b[55]=0xa1;finish(&mut b);let h=parse_hpet(&b).unwrap();assert_eq!(h.base.address,0xfed0_0000);assert_eq!(h.event_timer_block_id,0x8086_a201);assert_eq!(h.page_protection,1);assert_eq!(h.oem_attributes,0x0a);b[55]=0xa3;finish(&mut b);assert_eq!(parse_hpet(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_bgrt_version_status_and_image_address(){let mut b=sdt(*b"BGRT",56);b[36..38].copy_from_slice(&1u16.to_le_bytes());b[38]=1;b[40..48].copy_from_slice(&0x1000u64.to_le_bytes());finish(&mut b);assert_eq!(parse_bgrt(&b).unwrap().image_address,0x1000);b[40..48].fill(0);finish(&mut b);assert_eq!(parse_bgrt(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_gtdt_fixed_fields_and_timer_offset(){let mut b=sdt(*b"GTDT",100);b[88..92].copy_from_slice(&1u32.to_le_bytes());b[92..96].copy_from_slice(&96u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b).unwrap().platform_timer_count,1);b[92..96].copy_from_slice(&95u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_pptt_variable_node_bounds(){let mut b=sdt(*b"PPTT",40);b[36]=0;b[37]=4;finish(&mut b);assert!(validate_pptt(&b).is_ok());b[37]=8;finish(&mut b);assert_eq!(validate_pptt(&b),Err(AcpiError::MalformedEntry));}
