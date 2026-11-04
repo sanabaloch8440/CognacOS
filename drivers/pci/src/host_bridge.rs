@@ -31,13 +31,14 @@ pub struct PreparedHostBridgeApertures {
     pub segment: u16,
     pub bus_start: u8,
     pub bus_end: u8,
-    pub apertures: [Option<Aperture>; MAX_PCI_HOST_APERTURES],
+    pub apertures: [Aperture; MAX_PCI_HOST_APERTURES],
     pub count: usize,
 }
 impl PreparedHostBridgeApertures {
+    pub fn as_slice(&self) -> &[Aperture] { &self.apertures[..self.count] }
     pub const EMPTY: Self = Self {
         segment: 0, bus_start: 0, bus_end: 0,
-        apertures: [None; MAX_PCI_HOST_APERTURES], count: 0,
+        apertures: [Aperture { start: 0, length: 0, kind: BarKind::Io, prefetchable: false }; MAX_PCI_HOST_APERTURES], count: 0,
     };
 }
 
@@ -127,7 +128,7 @@ pub fn prepare_host_bridge_apertures(
     result.bus_start = resources.bus_start;
     result.bus_end = resources.bus_end;
     for (index, aperture) in clipped[..clipped_count].iter().copied().enumerate() {
-        result.apertures[index] = Some(aperture);
+        result.apertures[index] = aperture;
     }
     result.count = clipped_count;
     Ok(result)
@@ -157,11 +158,11 @@ mod tests {
         assert_eq!(prepared.segment, 0);
         assert_eq!(prepared.bus_start, 0);
         assert_eq!(prepared.count, 2);
-        let first = prepared.apertures[0].unwrap();
+        let first = prepared.apertures[0];
         assert_eq!(first.start, 0x8000_0000);
         assert_eq!(first.length, 0x0800_0000);
         assert!(!first.prefetchable);
-        assert!(prepared.apertures[1].unwrap().prefetchable);
+        assert!(prepared.apertures[1].prefetchable);
     }
 
     #[test]
