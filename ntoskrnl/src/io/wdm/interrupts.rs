@@ -1,20 +1,15 @@
-//! WDM interrupt connection and teardown exports.
+// WDM interrupt connection and teardown exports.
 //!
-//! @partial implementation
-//! Windows x64 entry-point ABIs and parameter layouts are implemented. The
-//! dispatcher supports bounded shared-vector ISR fanout (eight registrations
-//! per vector) and line-based PnP resources. Full MSI message-table delivery,
-//! caller-supplied spin-lock semantics, and passive-level ISRs remain
-//! unsupported and fail closed.
+// @partial implementation
+// Windows x64 entry-point ABIs and parameter layouts are implemented. The
+// dispatcher supports bounded shared-vector ISR fanout (eight registrations
+// per vector) and line-based PnP resources. Full MSI message-table delivery,
+// caller-supplied spin-lock semantics, and passive-level ISRs remain
+// unsupported and fail closed.
 
 use core::cell::UnsafeCell;
-use core::ffi::c_void;
 
 const INTERRUPT_SIGNATURE: u64 = 0x434f_474e_494e_5431;
-const STATUS_SUCCESS: i32 = 0;
-const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
-const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
-const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009A_u32 as i32;
 /// @unimplemented
 /// CONNECT_MESSAGE_BASED MSI vector-table allocation, per-message ISR routing,
 /// and IO_INTERRUPT_MESSAGE_INFO teardown are not yet implemented.
@@ -441,7 +436,7 @@ unsafe fn connect_line_based(
         return STATUS_NOT_SUPPORTED;
     }
     let Some(resource) =
-        crate::io::wdm::io_query_pnp_line_interrupt_resource(physical_device_object)
+        crate::io::wdm::io_query_pnp_line_interrupt_resource(physical_device_object.cast::<crate::io::wdm::DeviceObject>())
     else {
         return STATUS_NOT_SUPPORTED;
     };
@@ -489,7 +484,7 @@ pub unsafe extern "win64" fn io_connect_interrupt_ex(
             }
             let group = if params.version == CONNECT_FULLY_SPECIFIED_GROUP { full.group } else { 0 };
             if !crate::io::wdm::io_validate_pnp_interrupt_resource(
-                full.physical_device_object,
+                full.physical_device_object.cast::<crate::io::wdm::DeviceObject>(),
                 full.vector,
                 full.irql,
                 full.interrupt_mode,
