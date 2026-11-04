@@ -52,6 +52,11 @@ pub(crate) fn ke_set_wait_handoff_guard()->KeSetWaitHandoffGuard { KeSetWaitHand
 
 
 #[inline]
+/// Current processor IRQL, used by executive worker assertions and wait-path policy.
+pub(crate) fn current_irql_level() -> u8 {
+    CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire)
+}
+
 fn cpu_slot() -> usize {
     crate::hal::current_cpu_local()
         .map(|cpu| cpu.logical_id.load(Ordering::Relaxed) as usize)
