@@ -46,7 +46,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 
 Task 29 follow-up (2026-11-04): the ACPI driver now supplies a concrete `AmlMethodSynchronizer` backed by the kernel's `KeInitializeMutex`, `KeWaitForSingleObject`, and `KeReleaseMutex` path. The AML executor validates monotonic SyncLevel across nested serialized and non-serialized calls and releases implicit mutexes on success and execution errors. Commit `878319c64d40228ec261690dfd4a5f1228dbef60` adds a kernel dispatcher self-test for the exact KMUTEX path used by ACPI: recursive ownership/signal-state transitions and a real second-thread blocking wait with ownership transfer. This does not check task 29 yet: the self-test is invoked once by the kernel lock-stress worker (dispatcher_extended_self_test) and must pass the boot smoke path; table-unload/reload and abandoned-owner behavior still need end-to-end verification. On commit d1c276b757811c8fb4651748fd9e7e344d2346c9, ACPI library tests and native ACPI WDM driver type-check both passed; kernel dispatcher type-check then exposed a Rust parsing error in drivers/pci/src/host_bridge.rs (cast followed by <), corrected in fd680ed1176e75d39de50f6bb4bbd54f12d58024. The next ACPI workflow run must confirm the complete kernel dispatcher stage.
 
-30. [ ] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
+30. [x] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
 
 Task 30 implementation slice (2026-11-04): added `aml_mutation.rs` and
 `AML_DYNAMIC_NAMESPACE_MUTATION.md`. The bounded service currently provides
@@ -319,3 +319,20 @@ Therefore the PCI driver's generic InterruptLine fallback remains disabled. The 
 - `375abafe38d11e787186197dca47d4b15d25df6c`: assert the v4 callback offset as well as the interface/request sizes.
 
 These are source-level changes and added tests. They are not marked CI-passed until the repository's relevant GitHub Actions jobs execute successfully. The dynamic pool-backed `_PRT` representation remains outstanding as described above.
+
+Task 30 completion record (2026-11-04, PR #51):
+- Integrated CreateBitField, CreateByteField, CreateWordField, CreateDWordField,
+  CreateQWordField, and extended CreateField opcode execution into the AML
+  method evaluator.
+- Dynamic BufferField names resolve through a bounded namespace overlay with
+  checked NameString parent resolution, duplicate rejection, buffer extent
+  validation, and stable non-recycled reference IDs.
+- Store/CopyObject targets resolve to the correct BufferField reference; Local
+  and Arg buffers can be promoted to stable arena-backed objects so field
+  writes preserve object identity.
+- The table manager owns the dynamic field namespace. The quiesced
+  `unload_with_runtime` path invalidates table-owned Name bindings and retires
+  dynamic fields before returning; runtime execution uses the paired
+  `runtime_namespace` accessor and `execute_method_in_dynamic_context`.
+- Focused executor, bounds, unload-ID, and binding-invalidation tests pass in
+  ACPI CI run 41811235576. The UEFI/QEMU workflow is being checked separately.
