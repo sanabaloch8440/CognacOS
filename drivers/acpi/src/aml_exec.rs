@@ -1054,10 +1054,10 @@ mod tests{
    0x14,0x15,b'G',b'O',b'O',b'D',0,
    0x5b,0x24,b'E',b'V',b'T',b'0',
    0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0a,0,
-   0x14,0x1b,b'B',b'A',b'D',b'0',0,
+   0x14,0x1c,b'B',b'A',b'D',b'0',0,
    0x5b,0x24,b'E',b'V',b'T',b'0',
    0x5b,0x26,b'E',b'V',b'T',b'0',
-   0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0a,0xff,
+   0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0b,0xff,0xff,
   ];
   let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
   let good=namespace.find_child(0,*b"GOOD").unwrap();
