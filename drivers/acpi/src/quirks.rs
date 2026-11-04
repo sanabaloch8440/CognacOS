@@ -442,10 +442,18 @@ pub fn apply_policy_to_fadt(
     Ok(())
 }
 
+pub const QUIRK_FADT_FLAGS_WRITABLE_MASK: u32 = 1 << 8; // TMR_VAL_EXT only.
+pub const QUIRK_FADT_BOOT_ARCH_WRITABLE_MASK: u16 = 0x001f;
+
+/// Apply only explicitly safe FADT quirk bits. In particular, policy cannot
+/// flip HARDWARE_REDUCED_ACPI or LOW_POWER_S0_IDLE_CAPABLE: those select a
+/// different platform programming model and are not repairable guesses.
 pub fn apply_fadt_override(
     flags: u32, boot_arch: u16, override_: FadtOverride,
 ) -> Result<(u32,u16), QuirkError> {
-    if (override_.flags_set | override_.flags_clear) & !override_.flags_writable_mask != 0
+    if override_.flags_writable_mask & !QUIRK_FADT_FLAGS_WRITABLE_MASK != 0
+        || override_.boot_arch_writable_mask & !QUIRK_FADT_BOOT_ARCH_WRITABLE_MASK != 0
+        || (override_.flags_set | override_.flags_clear) & !override_.flags_writable_mask != 0
         || override_.flags_set & override_.flags_clear != 0
         || (override_.boot_arch_set | override_.boot_arch_clear) & !override_.boot_arch_writable_mask != 0
         || override_.boot_arch_set & override_.boot_arch_clear != 0
@@ -545,6 +553,15 @@ mod tests {
         assert_eq!(apply_table_patches(&mut table, &[Some(patch)]), Ok(1));
         assert_eq!(&table[36..40], b"SAFE");
         assert_eq!(table.iter().fold(0u8, |a,b| a.wrapping_add(*b)), 0);
+    }
+    #[test]
+    fn fadt_override_cannot_change_hardware_reduced_mode() {
+        let bad = FadtOverride {
+            flags_set: 1 << 20, flags_clear: 0,
+            flags_writable_mask: 1 << 20,
+            boot_arch_set: 0, boot_arch_clear: 0, boot_arch_writable_mask: 0,
+        };
+        assert_eq!(apply_fadt_override(0, 0, bad), Err(QuirkError::InvalidFadtMask));
     }
     #[test]
     fn fadt_override_cannot_change_unapproved_bits() {
