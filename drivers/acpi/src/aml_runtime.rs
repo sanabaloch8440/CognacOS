@@ -1497,7 +1497,7 @@ mod tests{
 
     #[test]
     fn namespace_compaction_retires_references_and_name_bindings_for_all_nodes() {
-        let aml=[0x08,b'A',b'A',b'A',b'A',0x01,0x08,b'B',b'B',b'B',b'B',0x02];
+        let aml=[0x08,b'A',b'A',b'A',b'A',0x01,0x08,b'B',b'B',b'B',b'B',0x0a,2];
         let mut namespace=AmlNamespace::new();
         crate::aml::load_definition_block(&aml,&mut namespace).unwrap();
         let first=namespace.find_child(0,*b"AAAA").unwrap();
