@@ -1077,7 +1077,9 @@ unsafe fn service_unregister_interrupt_impl(
     let remove = DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire);
     if remove == 0 { return driver_hal_unsupported(); }
     let remove_fn: DeviceDpcRemoveHook = unsafe { core::mem::transmute(remove) };
-    if !remove_fn(dpc) { return driver_hal_unsupported(); }
+    // FALSE means no queued instance was removed; DEVICE_ACTIVE is already
+    // closed, and DEVICE_IN_FLIGHT below drains any ISR/DPC already executing.
+    let _ = remove_fn(dpc);
     let mut spins = 0usize;
     while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire) != 0 && spins < 1_000_000 {
         core::hint::spin_loop();
