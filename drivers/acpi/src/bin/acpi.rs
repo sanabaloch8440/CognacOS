@@ -1513,7 +1513,7 @@ fn object_table<'a>(
     sources: &'a AcpiRouteTableSources,
     handles: &'a AcpiRouteTableHandles,
 ) -> Result<(usize, &'a [u8], acpi::aml_tables::TableHandle), i32> {
-    let node = namespace.nodes.get(object as usize).filter(|_| object as usize < namespace.count)
+    let node = namespace.nodes.get(object as usize).filter(|_| (object as usize) < namespace.count)
         .ok_or(STATUS_NOT_FOUND)?;
     let slot = node.source_table as usize;
     let bytes = *sources.get(slot).ok_or(STATUS_NOT_FOUND)?;
