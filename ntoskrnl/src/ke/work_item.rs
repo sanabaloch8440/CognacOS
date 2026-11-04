@@ -231,16 +231,6 @@ pub extern "C" fn rundown_context(context: u64) -> bool {
     drained
 }
 
-/// Reopen a context slot before registering a newly initialized ACPI instance.
-pub extern "C" fn allow_context(context: u64) -> bool {
-    if context == 0 { return false; }
-    let mut state = QUEUE.lock();
-    if let Some(slot) = state.closed_contexts.iter_mut().find(|slot| **slot == context) {
-        *slot = 0;
-    }
-    state.accepting
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
