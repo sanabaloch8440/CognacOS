@@ -220,6 +220,8 @@ struct AcpiState {
     mcfg: UnsafeCell<MaybeUninit<acpi::McfgInfo>>,
     mcfg_count: core::sync::atomic::AtomicUsize,
     dmar_present: AtomicBool,
+    mcfg_rejected_count: core::sync::atomic::AtomicUsize,
+    dmar_rejected_count: core::sync::atomic::AtomicUsize,
     aml_manager: UnsafeCell<MaybeUninit<acpi::aml_tables::AmlTableManager>>,
     aml_barrier: UnsafeCell<acpi::aml_tables::AmlExecutionBarrier>,
     device_records: UnsafeCell<MaybeUninit<[AcpiDeviceRecord;MAX_ACPI_DEVICES]>>,
@@ -242,6 +244,8 @@ static STATE: AcpiState = AcpiState {
     mcfg: UnsafeCell::new(MaybeUninit::uninit()),
     mcfg_count: core::sync::atomic::AtomicUsize::new(0),
     dmar_present: AtomicBool::new(false),
+    mcfg_rejected_count: core::sync::atomic::AtomicUsize::new(0),
+    dmar_rejected_count: core::sync::atomic::AtomicUsize::new(0),
     aml_manager: UnsafeCell::new(MaybeUninit::new(acpi::aml_tables::AmlTableManager::new())),
     aml_barrier: UnsafeCell::new(acpi::aml_tables::AmlExecutionBarrier::new(100_000)),
     device_records: UnsafeCell::new(MaybeUninit::new([AcpiDeviceRecord::EMPTY;MAX_ACPI_DEVICES])),
@@ -1257,15 +1261,16 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     };
     unsafe { (*STATE.madt.get()).write(madt); }
 
-    // MCFG and DMAR are optional. HAL reports a missing table distinctly from
-    // malformed firmware data; malformed tables fail driver initialization.
+    // MCFG and DMAR are optional capabilities. A malformed optional table
+    // disables only the feature it describes; it must not prevent ACPI/AML
+    // initialization or unrelated PCI/platform enumeration.
     match unsafe { query_hal_table(*b"MCFG", 0) } {
         Ok(bytes) => match acpi::parse_mcfg(bytes) {
             Ok(info) => {
                 STATE.mcfg_count.store(info.count, Ordering::Release);
                 unsafe { (*STATE.mcfg.get()).write(info); }
             }
-            Err(error) => return acpi::error_to_ntstatus(error),
+            Err(_) => { STATE.mcfg_rejected_count.fetch_add(1, Ordering::AcqRel); }
         },
         Err(STATUS_NOT_FOUND) => {}
         Err(status) => return status,
@@ -1273,7 +1278,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     match unsafe { query_hal_table(*b"DMAR", 0) } {
         Ok(bytes) => match acpi::parse_dmar(bytes) {
             Ok(_) => STATE.dmar_present.store(true, Ordering::Release),
-            Err(error) => return acpi::error_to_ntstatus(error),
+            Err(_) => { STATE.dmar_rejected_count.fetch_add(1, Ordering::AcqRel); }
         },
         Err(STATUS_NOT_FOUND) => {}
         Err(status) => return status,
