@@ -171,6 +171,7 @@ __imp_hal_HalPciGetInterruptServices: .quad 0
 .size __imp_hal_HalPciGetInterruptServices,8
 "#);
 
+const STATUS_INVALID_DEVICE_STATE: i32 = 0xC000_0184_u32 as i32;
 const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
 #[repr(C)]
 struct PciPdoExtension {
@@ -462,7 +463,7 @@ unsafe fn query_standard_bus_interface(device:*mut DEVICE_OBJECT,version:u16,siz
     // The bus driver owns one interface reference for every successful
     // IRP_MN_QUERY_INTERFACE response; the consumer releases it through
     // InterfaceDereference when it has finished using the returned table.
-    pci_bus_interface_reference(device.cast());
+    unsafe { pci_bus_interface_reference(device.cast()); }
     unsafe{core::ptr::write_unaligned(output.cast::<BUS_INTERFACE_STANDARD>(),interface);}
     STATUS_SUCCESS
 }
