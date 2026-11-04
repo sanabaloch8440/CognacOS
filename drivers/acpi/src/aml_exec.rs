@@ -1811,6 +1811,38 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
  }
+ #[test]fn refof_preserves_operation_region_field_and_method_namespace_references(){
+  let aml=[
+   0x5b,0x80,b'R',b'E',b'G',b'0',0x00,0x0a,0,0x0a,4,
+   0x5b,0x81,0x0b,b'R',b'E',b'G',b'0',0x00,b'F',b'L',b'D',b'0',0x08,
+   0x14,0x0c,b'F',b'R',b'E',b'F',0,0xa4,0x71,b'F',b'L',b'D',b'0',
+   0x14,0x06,b'M',b'E',b'T',b'0',0,
+   0x14,0x0c,b'M',b'R',b'E',b'F',0,0xa4,0x71,b'M',b'E',b'T',b'0',
+  ];
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let field=namespace.find_child(0,*b"FLD0").unwrap();
+  let method=namespace.find_child(0,*b"MET0").unwrap();
+  let field_ref_method=namespace.find_child(0,*b"FREF").unwrap();
+  let method_ref_method=namespace.find_child(0,*b"MREF").unwrap();
+  let mut arena=test_heap_arena();let mut bindings=AmlBindings::with_aml_revision(2);
+  let field_value=execute_method_in_context(&aml,&namespace,field_ref_method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(reference_from_value(&field_value).unwrap(),AmlReference::NamespaceNodeGeneration{node:field,generation:0});
+  let method_value=execute_method_in_context(&aml,&namespace,method_ref_method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(reference_from_value(&method_value).unwrap(),AmlReference::NamespaceNodeGeneration{node:method,generation:0});
+ }
+
+ #[test]fn refof_frame_promotion_fails_transactionally_when_arena_is_exhausted(){
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+   0x70,0x0a,42,0x60,0xa4,0x83,0x71,0x60];
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();
+  for _ in 0..crate::aml_objects::MAX_AML_VALUES {arena.allocate(Machine::integer_value(7)).unwrap();}
+  let before=arena.count;let mut bindings=AmlBindings::with_aml_revision(2);
+  assert_eq!(execute_method_in_context(&aml,&namespace,method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER),Err(ExecError::TargetTypeMismatch));
+  assert_eq!(arena.count,before);
+ }
+
  #[test]fn index_package_element_returns_a_write_through_reference(){
   let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x03,1,1,0x14,0x16,b'T',b'E',b'S',b'T',0,0x88,b'P',b'K',b'G',b'0',0x00,0x60,0x70,0x0a,42,0x60,0xa4,b'P',b'K',b'G',b'0'];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
@@ -1921,6 +1953,16 @@ mod explicit_mutex_tests {
   assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
   assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x1234);
  }
+ #[test]
+ fn wait_timeout_is_evaluated_as_a_termarg_and_returns_width_correct_ones(){
+  let body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x68];
+  let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[0x4321],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x4321);
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[0x1234],32,&sync),Ok(AmlValue::Integer(u32::MAX as u64)));
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x1234);
+ }
+
  #[test]
  fn reset_event_clears_a_previously_signaled_event(){
   let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0x5b,0x26,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0xff,0xff];
