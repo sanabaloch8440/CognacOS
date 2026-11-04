@@ -359,3 +359,26 @@ mod atomic_rebalance_integration_tests {
   assert_eq!(configs[0].regs[bridge_resources::BRIDGE_MEMORY_BASE_LIMIT as usize/4],before[bridge_resources::BRIDGE_MEMORY_BASE_LIMIT as usize/4]);
  }
 }
+
+
+/// Prepare ACPI host-bridge apertures with the platform E820 policy, then
+/// perform the complete hierarchy rebalance. This is the root-window setup
+/// entry point: clipping occurs once before any BAR planning or bridge writes.
+pub fn plan_hierarchy_rebalance_with_e820(
+    firmware_host_apertures: &[Aperture],
+    e820_reserved: &[crate::e820::E820Range],
+    ignore_e820: bool,
+    requests: &[EndpointRequest],
+    existing: &[OccupiedRange],
+    output: &mut HierarchyPlan,
+) -> Result<[Option<u8>; MAX_HIERARCHY_BRIDGES], HierarchyError> {
+    let mut host = [Aperture { start: 0, length: 0, kind: BarKind::Io, prefetchable: false }; 64];
+    let count = crate::e820::prepare_host_apertures(
+        firmware_host_apertures, e820_reserved, ignore_e820, &mut host,
+    ).map_err(|error| match error {
+        crate::e820::ClipError::Capacity => HierarchyError::Capacity,
+        crate::e820::ClipError::InvalidRange | crate::e820::ClipError::Overflow => HierarchyError::InvalidRequirement,
+    })?;
+    if count == 0 { return Err(HierarchyError::InvalidRequirement); }
+    plan_hierarchy_rebalance(&host[..count], requests, existing, output)
+}
