@@ -65,6 +65,16 @@ impl KernelAmlMutex {
  fn object(&self)->*mut core::ffi::c_void{self.header.get().cast()}
 }
 unsafe impl Sync for KernelAmlMutex {}
+const MAX_ACPI_EVENTS:usize=acpi::aml::MAX_NAMESPACE_NODES;
+#[repr(C,align(8))]
+struct KernelAmlEvent{initialized:core::sync::atomic::AtomicU8,header:core::cell::UnsafeCell<[u64;3]>}
+const _:()=assert!(core::mem::size_of::<KernelAmlEvent>()==32);
+impl KernelAmlEvent{
+ const fn new()->Self{Self{initialized:core::sync::atomic::AtomicU8::new(0),header:core::cell::UnsafeCell::new([0;3])}}
+ fn object(&self)->*mut core::ffi::c_void{self.header.get().cast()}
+}
+unsafe impl Sync for KernelAmlEvent{}
+static KERNEL_AML_EVENTS:[KernelAmlEvent;MAX_ACPI_EVENTS]=[const{KernelAmlEvent::new()};MAX_ACPI_EVENTS];
 struct KernelAmlMethodSynchronizer;
 static KERNEL_AML_METHOD_MUTEXES:[KernelAmlMutex;MAX_ACPI_METHOD_MUTEXES]=
  [const{KernelAmlMutex::new()};MAX_ACPI_METHOD_MUTEXES];
@@ -74,6 +84,24 @@ unsafe extern "win64" {
  fn KeInitializeMutex(mutex:*mut core::ffi::c_void,level:u32);
  fn KeWaitForSingleObject(object:*mut core::ffi::c_void,wait_reason:i32,wait_mode:i32,alertable:u8,timeout:*const i64)->i32;
  fn KeReleaseMutex(mutex:*mut core::ffi::c_void,wait:u8)->i32;
+ fn KeInitializeEvent(event:*mut core::ffi::c_void,event_type:i32,state:u8);
+ fn KeSetEvent(event:*mut core::ffi::c_void,increment:i32,wait:u8)->i32;
+ fn KeResetEvent(event:*mut core::ffi::c_void)->i32;
+}
+impl KernelAmlMethodSynchronizer{
+ fn event(&self,event_index:u16)->Result<&'static KernelAmlEvent,acpi::aml_exec::ExecError>{
+  let event=KERNEL_AML_EVENTS.get(event_index as usize).ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
+  loop{match event.initialized.load(Ordering::Acquire){
+   2=>break,
+   0=>if event.initialized.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){
+    // SynchronizationEvent is auto-reset: one waiter consumes each signal.
+    unsafe{KeInitializeEvent(event.object(),1,0);}
+    event.initialized.store(2,Ordering::Release);break;
+   },
+   _=>core::hint::spin_loop(),
+  }}
+  Ok(event)
+ }
 }
 impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
  fn acquire(&self,method_index:u16,_sync_level:u8)->Result<(),acpi::aml_exec::ExecError>{
@@ -133,13 +161,21 @@ impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
  fn release_mutex(&self,mutex_index:u16)->Result<(),acpi::aml_exec::ExecError>{
   let mutex=KERNEL_AML_METHOD_MUTEXES.get(mutex_index as usize)
    .ok_or(acpi::aml_exec::ExecError::SynchronizationUnavailable)?;
-  if mutex.initialized.load(Ordering::Acquire)!=2{
-   return Err(acpi::aml_exec::ExecError::SynchronizationUnavailable)
-  }
-  // The dispatcher mutant table enforces current-thread ownership and
-  // recursive release semantics; AML's interpreter enforces LIFO SyncLevel.
-  unsafe{let _=KeReleaseMutex(mutex.object(),0);}
-  Ok(())
+  if mutex.initialized.load(Ordering::Acquire)!=2{return Err(acpi::aml_exec::ExecError::SynchronizationUnavailable)}
+  unsafe{let _=KeReleaseMutex(mutex.object(),0);}Ok(())
+ }
+ fn signal_event(&self,event_index:u16)->Result<(),acpi::aml_exec::ExecError>{
+  let event=self.event(event_index)?;unsafe{let _=KeSetEvent(event.object(),0,0);}Ok(())
+ }
+ fn wait_event(&self,event_index:u16,timeout_ms:u16)->Result<bool,acpi::aml_exec::ExecError>{
+  let event=self.event(event_index)?;
+  let relative_timeout=-(timeout_ms as i64)*10_000;
+  let timeout=if timeout_ms==u16::MAX{core::ptr::null()}else{&relative_timeout as *const i64};
+  let status=unsafe{KeWaitForSingleObject(event.object(),0,0,0,timeout)};
+  match status{STATUS_SUCCESS=>Ok(true),0x0000_0102=>Ok(false),_=>Err(acpi::aml_exec::ExecError::ExecutionBusy)}
+ }
+ fn reset_event(&self,event_index:u16)->Result<(),acpi::aml_exec::ExecError>{
+  let event=self.event(event_index)?;unsafe{let _=KeResetEvent(event.object());}Ok(())
  }
 }
 
@@ -204,6 +240,12 @@ __imp_ke_KeInitializeMutex: .quad 0
 __imp_ke_KeWaitForSingleObject: .quad 0
 .global __imp_ke_KeReleaseMutex
 __imp_ke_KeReleaseMutex: .quad 0
+.global __imp_ke_KeInitializeEvent
+__imp_ke_KeInitializeEvent: .quad 0
+.global __imp_ke_KeSetEvent
+__imp_ke_KeSetEvent: .quad 0
+.global __imp_ke_KeResetEvent
+__imp_ke_KeResetEvent: .quad 0
 .section .text.import_thunks,"ax",@progbits
 .global KeInitializeMutex
 .type KeInitializeMutex,@function
@@ -220,6 +262,21 @@ KeWaitForSingleObject:
 KeReleaseMutex:
  jmp QWORD PTR [rip + __imp_ke_KeReleaseMutex]
 .size KeReleaseMutex, .-KeReleaseMutex
+.global KeInitializeEvent
+.type KeInitializeEvent,@function
+KeInitializeEvent:
+ jmp QWORD PTR [rip + __imp_ke_KeInitializeEvent]
+.size KeInitializeEvent, .-KeInitializeEvent
+.global KeSetEvent
+.type KeSetEvent,@function
+KeSetEvent:
+ jmp QWORD PTR [rip + __imp_ke_KeSetEvent]
+.size KeSetEvent, .-KeSetEvent
+.global KeResetEvent
+.type KeResetEvent,@function
+KeResetEvent:
+ jmp QWORD PTR [rip + __imp_ke_KeResetEvent]
+.size KeResetEvent, .-KeResetEvent
 
 .section .data.imports.io,"aw",@progbits
 .p2align 3
