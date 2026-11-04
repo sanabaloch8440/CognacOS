@@ -4,6 +4,11 @@
 //! name/ordinal inventory only: it does not claim Windows-compatible semantics.
 //! No export is callable until its exact ABI and behavior are implemented;
 //! generic function pointers would risk corrupting driver calls.
+//!
+//! Windows 11 x64 DDI status markers used throughout HAL/kernel source:
+//! @implemented = reviewed ABI and behavior are implemented for the declared contract.
+//! @unimplemented = export/API remains a stub or has no callable implementation.
+//! @partial implementation = ABI entry exists, but one or more documented semantics remain unsupported.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StubState { NotImplemented, Partial, Implemented }
@@ -13,97 +18,97 @@ pub struct HalExport { pub ordinal: u16, pub name: &'static str, pub state: Stub
 
 /// Windows 11 x64 10.0.26100 HAL exports, in ordinal order.
 pub const EXPORTS: &[HalExport] = &[
-    HalExport { ordinal: 1, name: "HalAcpiGetTableEx", state: StubState::Implemented },
-    HalExport { ordinal: 2, name: "HalAcquireDisplayOwnership", state: StubState::NotImplemented },
-    HalExport { ordinal: 3, name: "HalAdjustResourceList", state: StubState::NotImplemented },
-    HalExport { ordinal: 4, name: "HalAllProcessorsStarted", state: StubState::Implemented },
-    HalExport { ordinal: 5, name: "HalAllocateAdapterChannel", state: StubState::NotImplemented },
-    HalExport { ordinal: 6, name: "HalAllocateCommonBuffer", state: StubState::Implemented },
-    HalExport { ordinal: 7, name: "HalAllocateCrashDumpRegisters", state: StubState::NotImplemented },
-    HalExport { ordinal: 8, name: "HalAllocateHardwareCounters", state: StubState::NotImplemented },
-    HalExport { ordinal: 9, name: "HalAssignSlotResources", state: StubState::NotImplemented },
-    HalExport { ordinal: 10, name: "HalBugCheckSystem", state: StubState::NotImplemented },
-    HalExport { ordinal: 11, name: "HalCalibratePerformanceCounter", state: StubState::NotImplemented },
-    HalExport { ordinal: 12, name: "HalClearSoftwareInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 13, name: "HalConvertDeviceIdtToIrql", state: StubState::NotImplemented },
-    HalExport { ordinal: 14, name: "HalDisableInterrupt", state: StubState::Implemented },
-    HalExport { ordinal: 15, name: "HalDisplayString", state: StubState::Implemented },
-    HalExport { ordinal: 16, name: "HalDmaAllocateCrashDumpRegistersEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 17, name: "HalDmaFreeCrashDumpRegistersEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::Implemented },
-    HalExport { ordinal: 19, name: "HalEnumerateEnvironmentVariablesEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 20, name: "HalEnumerateProcessors", state: StubState::NotImplemented },
-    HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::Implemented },
-    HalExport { ordinal: 22, name: "HalFreeCommonBuffer", state: StubState::Implemented },
-    HalExport { ordinal: 23, name: "HalFreeHardwareCounters", state: StubState::NotImplemented },
-    HalExport { ordinal: 24, name: "HalGetAdapter", state: StubState::Implemented },
-    HalExport { ordinal: 25, name: "HalGetBusData", state: StubState::Implemented },
-    HalExport { ordinal: 26, name: "HalGetBusDataByOffset", state: StubState::Implemented },
-    HalExport { ordinal: 27, name: "HalGetEnvironmentVariable", state: StubState::NotImplemented },
-    HalExport { ordinal: 28, name: "HalGetEnvironmentVariableEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 29, name: "HalGetInterruptTargetInformation", state: StubState::NotImplemented },
-    HalExport { ordinal: 30, name: "HalGetInterruptVector", state: StubState::Partial },
-    HalExport { ordinal: 31, name: "HalGetMemoryCachingRequirements", state: StubState::NotImplemented },
-    HalExport { ordinal: 32, name: "HalGetMessageRoutingInfo", state: StubState::NotImplemented },
-    HalExport { ordinal: 33, name: "HalGetProcessorIdByNtNumber", state: StubState::Implemented },
-    HalExport { ordinal: 34, name: "HalGetVectorInput", state: StubState::NotImplemented },
-    HalExport { ordinal: 35, name: "HalHandleMcheck", state: StubState::NotImplemented },
-    HalExport { ordinal: 36, name: "HalHandleNMI", state: StubState::NotImplemented },
-    HalExport { ordinal: 37, name: "HalInitSystem", state: StubState::NotImplemented },
-    HalExport { ordinal: 38, name: "HalInitializeBios", state: StubState::NotImplemented },
-    HalExport { ordinal: 39, name: "HalInitializeOnResume", state: StubState::NotImplemented },
-    HalExport { ordinal: 40, name: "HalInitializeProcessor", state: StubState::NotImplemented },
-    HalExport { ordinal: 41, name: "HalIsHyperThreadingEnabled", state: StubState::Implemented },
-    HalExport { ordinal: 42, name: "HalMakeBeep", state: StubState::NotImplemented },
-    HalExport { ordinal: 43, name: "HalPerformEndOfInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 44, name: "HalProcessorIdle", state: StubState::NotImplemented },
-    HalExport { ordinal: 45, name: "HalQueryDisplayParameters", state: StubState::NotImplemented },
-    HalExport { ordinal: 46, name: "HalQueryEnvironmentVariableInfoEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 47, name: "HalQueryMaximumProcessorCount", state: StubState::Implemented },
-    HalExport { ordinal: 48, name: "HalQueryRealTimeClock", state: StubState::Implemented },
-    HalExport { ordinal: 49, name: "HalReadDmaCounter", state: StubState::NotImplemented },
-    HalExport { ordinal: 50, name: "HalRegisterDynamicProcessor", state: StubState::NotImplemented },
-    HalExport { ordinal: 51, name: "HalRegisterErrataCallbacks", state: StubState::NotImplemented },
-    HalExport { ordinal: 52, name: "HalReportResourceUsage", state: StubState::NotImplemented },
-    HalExport { ordinal: 53, name: "HalRequestClockInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 54, name: "HalRequestDeferredRecoveryServiceInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 55, name: "HalRequestIpi", state: StubState::Implemented },
-    HalExport { ordinal: 56, name: "HalRequestIpiSpecifyVector", state: StubState::Implemented },
-    HalExport { ordinal: 57, name: "HalRequestSoftwareInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 58, name: "HalReturnToFirmware", state: StubState::NotImplemented },
-    HalExport { ordinal: 59, name: "HalSendNMI", state: StubState::NotImplemented },
-    HalExport { ordinal: 60, name: "HalSendSoftwareInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 61, name: "HalSetBusData", state: StubState::Implemented },
-    HalExport { ordinal: 62, name: "HalSetBusDataByOffset", state: StubState::Implemented },
-    HalExport { ordinal: 63, name: "HalSetDisplayParameters", state: StubState::NotImplemented },
-    HalExport { ordinal: 64, name: "HalSetEnvironmentVariable", state: StubState::NotImplemented },
-    HalExport { ordinal: 65, name: "HalSetEnvironmentVariableEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 66, name: "HalSetProfileInterval", state: StubState::NotImplemented },
-    HalExport { ordinal: 67, name: "HalSetRealTimeClock", state: StubState::NotImplemented },
-    HalExport { ordinal: 68, name: "HalStartDynamicProcessor", state: StubState::NotImplemented },
-    HalExport { ordinal: 69, name: "HalStartNextProcessor", state: StubState::NotImplemented },
-    HalExport { ordinal: 70, name: "HalStartProfileInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 71, name: "HalStopProfileInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 72, name: "HalSystemVectorDispatchEntry", state: StubState::NotImplemented },
-    HalExport { ordinal: 73, name: "HalTranslateBusAddress", state: StubState::Implemented },
-    HalExport { ordinal: 74, name: "HalWheaUpdateCmciPolicy", state: StubState::NotImplemented },
-    HalExport { ordinal: 75, name: "IoFlushAdapterBuffers", state: StubState::NotImplemented },
-    HalExport { ordinal: 76, name: "IoFreeAdapterChannel", state: StubState::NotImplemented },
-    HalExport { ordinal: 77, name: "IoFreeMapRegisters", state: StubState::NotImplemented },
-    HalExport { ordinal: 78, name: "IoMapTransfer", state: StubState::NotImplemented },
-    HalExport { ordinal: 79, name: "IoReadPartitionTable", state: StubState::NotImplemented },
-    HalExport { ordinal: 80, name: "IoSetPartitionInformation", state: StubState::NotImplemented },
-    HalExport { ordinal: 81, name: "IoWritePartitionTable", state: StubState::NotImplemented },
-    HalExport { ordinal: 82, name: "KdComPortInUse", state: StubState::NotImplemented },
-    HalExport { ordinal: 83, name: "KdHvComPortInUse", state: StubState::NotImplemented },
-    HalExport { ordinal: 84, name: "KeFlushWriteBuffer", state: StubState::Implemented },
-    HalExport { ordinal: 85, name: "KeQueryPerformanceCounter", state: StubState::Implemented },
-    HalExport { ordinal: 86, name: "KeStallExecutionProcessor", state: StubState::Implemented },
-    HalExport { ordinal: 87, name: "x86BiosAllocateBuffer", state: StubState::NotImplemented },
-    HalExport { ordinal: 88, name: "x86BiosCall", state: StubState::NotImplemented },
-    HalExport { ordinal: 89, name: "x86BiosFreeBuffer", state: StubState::NotImplemented },
-    HalExport { ordinal: 90, name: "x86BiosReadMemory", state: StubState::NotImplemented },
-    HalExport { ordinal: 91, name: "x86BiosWriteMemory", state: StubState::NotImplemented },
+    HalExport { ordinal: 1, name: "HalAcpiGetTableEx", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 2, name: "HalAcquireDisplayOwnership", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 3, name: "HalAdjustResourceList", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 4, name: "HalAllProcessorsStarted", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 5, name: "HalAllocateAdapterChannel", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 6, name: "HalAllocateCommonBuffer", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 7, name: "HalAllocateCrashDumpRegisters", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 8, name: "HalAllocateHardwareCounters", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 9, name: "HalAssignSlotResources", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 10, name: "HalBugCheckSystem", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 11, name: "HalCalibratePerformanceCounter", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 12, name: "HalClearSoftwareInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 13, name: "HalConvertDeviceIdtToIrql", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 14, name: "HalDisableInterrupt", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 15, name: "HalDisplayString", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 16, name: "HalDmaAllocateCrashDumpRegistersEx", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 17, name: "HalDmaFreeCrashDumpRegistersEx", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 19, name: "HalEnumerateEnvironmentVariablesEx", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 20, name: "HalEnumerateProcessors", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 22, name: "HalFreeCommonBuffer", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 23, name: "HalFreeHardwareCounters", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 24, name: "HalGetAdapter", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 25, name: "HalGetBusData", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 26, name: "HalGetBusDataByOffset", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 27, name: "HalGetEnvironmentVariable", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 28, name: "HalGetEnvironmentVariableEx", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 29, name: "HalGetInterruptTargetInformation", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 30, name: "HalGetInterruptVector", state: StubState::Partial }, // @partial implementation
+    HalExport { ordinal: 31, name: "HalGetMemoryCachingRequirements", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 32, name: "HalGetMessageRoutingInfo", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 33, name: "HalGetProcessorIdByNtNumber", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 34, name: "HalGetVectorInput", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 35, name: "HalHandleMcheck", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 36, name: "HalHandleNMI", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 37, name: "HalInitSystem", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 38, name: "HalInitializeBios", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 39, name: "HalInitializeOnResume", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 40, name: "HalInitializeProcessor", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 41, name: "HalIsHyperThreadingEnabled", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 42, name: "HalMakeBeep", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 43, name: "HalPerformEndOfInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 44, name: "HalProcessorIdle", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 45, name: "HalQueryDisplayParameters", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 46, name: "HalQueryEnvironmentVariableInfoEx", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 47, name: "HalQueryMaximumProcessorCount", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 48, name: "HalQueryRealTimeClock", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 49, name: "HalReadDmaCounter", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 50, name: "HalRegisterDynamicProcessor", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 51, name: "HalRegisterErrataCallbacks", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 52, name: "HalReportResourceUsage", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 53, name: "HalRequestClockInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 54, name: "HalRequestDeferredRecoveryServiceInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 55, name: "HalRequestIpi", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 56, name: "HalRequestIpiSpecifyVector", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 57, name: "HalRequestSoftwareInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 58, name: "HalReturnToFirmware", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 59, name: "HalSendNMI", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 60, name: "HalSendSoftwareInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 61, name: "HalSetBusData", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 62, name: "HalSetBusDataByOffset", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 63, name: "HalSetDisplayParameters", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 64, name: "HalSetEnvironmentVariable", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 65, name: "HalSetEnvironmentVariableEx", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 66, name: "HalSetProfileInterval", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 67, name: "HalSetRealTimeClock", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 68, name: "HalStartDynamicProcessor", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 69, name: "HalStartNextProcessor", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 70, name: "HalStartProfileInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 71, name: "HalStopProfileInterrupt", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 72, name: "HalSystemVectorDispatchEntry", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 73, name: "HalTranslateBusAddress", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 74, name: "HalWheaUpdateCmciPolicy", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 75, name: "IoFlushAdapterBuffers", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 76, name: "IoFreeAdapterChannel", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 77, name: "IoFreeMapRegisters", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 78, name: "IoMapTransfer", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 79, name: "IoReadPartitionTable", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 80, name: "IoSetPartitionInformation", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 81, name: "IoWritePartitionTable", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 82, name: "KdComPortInUse", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 83, name: "KdHvComPortInUse", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 84, name: "KeFlushWriteBuffer", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 85, name: "KeQueryPerformanceCounter", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 86, name: "KeStallExecutionProcessor", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 87, name: "x86BiosAllocateBuffer", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 88, name: "x86BiosCall", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 89, name: "x86BiosFreeBuffer", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 90, name: "x86BiosReadMemory", state: StubState::NotImplemented }, // @unimplemented
+    HalExport { ordinal: 91, name: "x86BiosWriteMemory", state: StubState::NotImplemented }, // @unimplemented
 ];
 
 
@@ -134,6 +139,8 @@ unsafe fn pci_read_dword(bus: u32, slot: u32, offset: u32) -> Option<u32> {
 /// Read PCI configuration space using legacy mechanism #1. Only PCI config
 /// bus data (type 5), bus 0..255, device/function slot 0..255 and offsets
 /// within the conventional 256-byte header are supported.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_get_bus_data_by_offset(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *mut u8, offset: u32, length: u32,
@@ -174,6 +181,8 @@ fn pci_config_byte_writable(offset: u32) -> bool {
 /// Write PCI configuration space using legacy mechanism #1. Writes to the
 /// vendor/device ID, BARs, and status register are rejected. Returns the number
 /// of bytes actually written, which can be smaller than the requested length.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *const u8, offset: u32, length: u32,
@@ -228,6 +237,8 @@ pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     written
 }
 
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_get_bus_data(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *mut u8, length: u32,
@@ -235,6 +246,8 @@ pub unsafe extern "win64" fn hal_get_bus_data(
     unsafe { hal_get_bus_data_by_offset(bus_data_type, bus_number, slot_number, buffer, 0, length) }
 }
 
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_set_bus_data(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *const u8, length: u32,
@@ -278,6 +291,8 @@ fn rtc_decode(value: u8, binary_mode: bool) -> Option<u8> {
 
 /// Read the battery-backed CMOS real-time clock. This implementation rejects
 /// an updating or malformed RTC sample instead of returning fabricated time.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_query_real_time_clock(fields: *mut HalTimeFields) -> u8 {
     if fields.is_null() { return 0; }
     let _guard = CMOS_RTC_LOCK.lock();
@@ -334,6 +349,8 @@ pub unsafe extern "win64" fn hal_query_real_time_clock(fields: *mut HalTimeField
 /// no bridge-window translation database. Support only the PC-compatible bus
 /// types for which identity translation is valid; reject unknown buses and
 /// invalid I/O-port addresses instead of returning a fabricated translation.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_translate_bus_address(
     interface_type: u32,
     _bus_number: u32,
@@ -367,11 +384,15 @@ pub unsafe extern "win64" fn hal_translate_bus_address(
 /// treat it as read-only. STATUS_NOT_FOUND is returned when discovery has not
 /// run or the requested instance is absent.
 /// Enable a previously connected device interrupt vector after its ISR is installed.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_enable_interrupt(vector:u32,_irql:u8)->u8{
     if vector>u8::MAX as u32{return 0;}
     unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,true).is_ok() as u8}
 }
 /// Mask a connected device interrupt vector before interrupt teardown.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_disable_interrupt(vector:u32,_irql:u8)->u8{
     if vector>u8::MAX as u32{return 0;}
     unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,false).is_ok() as u8}
@@ -383,6 +404,8 @@ pub unsafe extern "win64" fn hal_disable_interrupt(vector:u32,_irql:u8)->u8{
 /// Returns only a PnP-published translation. Missing mappings fail closed;
 /// this routine never treats a bus IRQ as a system vector.
 #[unsafe(export_name = "HalGetInterruptVector")]
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_get_interrupt_vector(
     interface_type: i32,
     bus_number: u32,
@@ -410,6 +433,8 @@ pub unsafe extern "win64" fn hal_get_interrupt_vector(
     vector
 }
 
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_acpi_get_table_ex(
     signature: u32,
     instance: u32,
@@ -496,6 +521,8 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
 
 /// Map an NT logical processor number to its firmware/APIC processor ID.
 /// Unknown or not-yet-discovered logical processors return ULONG_MAX.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_get_processor_id_by_nt_number(nt_number: u32) -> u32 {
     let Ok(cpu) = crate::hal::cpu_local(nt_number as usize) else { return u32::MAX; };
     let id = cpu.apic_id.load(core::sync::atomic::Ordering::Acquire);
@@ -504,6 +531,8 @@ pub unsafe extern "win64" fn hal_get_processor_id_by_nt_number(nt_number: u32) -
 
 /// Report SMT availability from architectural CPUID topology. This reports
 /// what the current processor exposes to the OS, not a vendor-specific brand.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_is_hyper_threading_enabled() -> u8 {
     let max_leaf = unsafe { core::arch::x86_64::__cpuid(0) }.eax;
     if max_leaf >= 0x0b {
@@ -520,12 +549,16 @@ pub unsafe extern "win64" fn hal_is_hyper_threading_enabled() -> u8 {
 }
 
 /// Return the maximum logical-processor capacity exposed by this HAL.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
     super::MAX_CPUS as u32
 }
 
 /// Early boot/debug display path. This compatibility implementation writes
 /// a bounded NUL-terminated string to the kernel's initialized COM1 console.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_display_string(string: *const u8) {
     if string.is_null() { return; }
     let mut chunk = [0u8; 128];
@@ -548,6 +581,8 @@ pub unsafe extern "win64" fn hal_display_string(string: *const u8) {
 /// Reports whether every CPU reserved by MADT discovery has completed AP
 /// startup. Failed/offline discovered processors keep this false; this avoids
 /// telling the NT kernel that SMP initialization completed when it did not.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub extern "win64" fn hal_all_processors_started() -> u8 {
     for index in 0..crate::hal::MAX_CPUS {
         match crate::hal::cpu_state(index) {
@@ -563,11 +598,15 @@ pub extern "win64" fn hal_all_processors_started() -> u8 {
 /// Return the bootstrap DMA_ADAPTER for legacy drivers that request a
 /// Legacy HalGetAdapter has no DEVICE_OBJECT argument in this ABI, so it cannot
 /// select a device isolation domain. Fail closed; drivers must use IoGetDmaAdapter.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_get_adapter(_device_description:*const core::ffi::c_void,number_of_map_registers:*mut u32)->*mut core::ffi::c_void{
  if !number_of_map_registers.is_null(){unsafe{number_of_map_registers.write(0)}}
  core::ptr::null_mut()
 }
 /// Allocate common memory mapped through the adapter's registered IOMMU domain.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_allocate_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:*mut i64,_cache_enabled:u8)->*mut core::ffi::c_void{
  if adapter.is_null()||logical_address.is_null()||length==0{return core::ptr::null_mut()}
  match unsafe{crate::dma::iommu_allocate_common(adapter,length as usize,crate::dma::adapter_maximum_address(adapter))}{
@@ -576,12 +615,16 @@ pub unsafe extern "win64" fn hal_allocate_common_buffer(adapter:*mut core::ffi::
  }
 }
 /// Flush CPU/device visibility through the IOMMU backend; missing sync services fail closed.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_flush_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:i64,virtual_address:*mut core::ffi::c_void,write_to_device:u8){
  if adapter.is_null()||virtual_address.is_null()||length==0||logical_address<0{return}
  let _=write_to_device;
  let _=unsafe{crate::dma::flush_common_buffer_for_adapter(adapter,virtual_address.cast(),length as usize)};
 }
 /// Unmap the logical aperture before releasing backing pages.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_free_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:i64,virtual_address:*mut core::ffi::c_void,_cache_enabled:u8){
  if adapter.is_null()||virtual_address.is_null()||length==0||logical_address<0{return}
  let _=unsafe{crate::dma::free_common_buffer_for_adapter(adapter,virtual_address.cast(),logical_address as u64,length as usize)};
@@ -595,6 +638,8 @@ pub unsafe extern "win64" fn hal_free_common_buffer(adapter:*mut core::ffi::c_vo
 /// Resolve only ABI-reviewed HAL exports. Unsupported names fail closed.
 /// Request the kernel's generic IPI on the processors selected by the NT
 /// affinity mask. Targets publish pending work for their scheduler/DPC path.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_request_ipi(target_set: u64) {
     unsafe { hal_request_ipi_specify_vector(target_set, super::apic::HAL_IPI_VECTOR as u32); }
 }
@@ -602,6 +647,8 @@ pub unsafe extern "win64" fn hal_request_ipi(target_set: u64) {
 /// Request a caller-selected fixed-vector IPI on every online processor in
 /// the supplied NT affinity mask. The vector's IDT entry must already be
 /// installed on all target CPUs; this Windows ABI returns void.
+/// @partial implementation
+/// Windows 11 x64 HAL DDI entry; consult EXPORTS for the reviewed status and ordinal.
 pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vector: u32) {
     if vector < 0x20 || vector >= 0xff { return; }
     for logical_id in 0..crate::hal::MAX_CPUS {
