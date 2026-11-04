@@ -455,3 +455,63 @@ mod firmware_prt_package_tests {
         );
     }
 }
+/// Apply PCI INTx swizzling when a function's interrupt pin crosses one
+/// conventional PCI-to-PCI bridge. Pins are encoded as 0..=3 (INTA..INTD).
+pub fn swizzle_intx_pin(pin: u8, downstream_device: u8) -> Result<u8, PrtError> {
+    if pin > 3 || downstream_device >= 32 { return Err(PrtError::InvalidPin); }
+    Ok(((pin as u16 + downstream_device as u16) & 3) as u8)
+}
+
+/// Supplies the _PRT table belonging to each bus in a PCI ancestry walk.
+/// Implementations evaluate method-valued _PRT at PASSIVE_LEVEL and must
+/// invalidate cached results when namespace or device topology changes.
+pub trait PrtBusTableProvider {
+    fn table_for_bus(&self, bus_namespace_node: u16) -> Result<PrtTable, PrtError>;
+    fn bridge_slot_for_downstream_bus(&self, downstream_bus: u16, upstream_bus: u16) -> Result<u8, PrtError>;
+}
+
+/// Resolve INTx from the endpoint bus toward the root bridge. bus_nodes[0]
+/// contains the endpoint; each following node is its immediate upstream bus.
+/// At each crossing the pin is swizzled using the bridge device number on
+/// that upstream bus, then the parent bus _PRT is queried for that bridge.
+/// No PCI InterruptLine fallback is permitted.
+pub fn resolve_hierarchical_prt_route<P: PrtBusTableProvider, R: LinkDeviceResolver>(
+    provider: &P, resolver: &R, bus_nodes: &[u16], endpoint_device: u8,
+    endpoint_function: u8, interrupt_pin: u8,
+) -> Result<u32, PrtError> {
+    if bus_nodes.is_empty() || bus_nodes.len() > 32 || endpoint_device >= 32
+        || endpoint_function >= 8 || interrupt_pin > 3 { return Err(PrtError::InvalidPin); }
+    let mut pin = interrupt_pin;
+    let mut device = endpoint_device;
+    for index in 0..bus_nodes.len() {
+        let table = provider.table_for_bus(bus_nodes[index])?;
+        let address = ((device as u32) << 16) | 0xffff;
+        if let Some(route) = table.find(address, pin) {
+            return match route.source {
+                InterruptSource::DirectGsi { gsi } => Ok(gsi),
+                InterruptSource::LinkDevice { path, length, source_index } =>
+                    resolver.resolve_gsi(&path[..length as usize], source_index)
+                        .map_err(|_| PrtError::LinkResolutionFailed),
+            };
+        }
+        if index + 1 == bus_nodes.len() { break; }
+        let bridge_slot = provider.bridge_slot_for_downstream_bus(bus_nodes[index], bus_nodes[index + 1])?;
+        if bridge_slot >= 32 { return Err(PrtError::InvalidPin); }
+        pin = swizzle_intx_pin(pin, bridge_slot)?;
+        device = bridge_slot;
+    }
+    Err(PrtError::MissingRoute)
+}
+
+#[cfg(test)]
+mod bridge_swizzle_tests {
+    use super::*;
+    #[test] fn swizzle_rotates_by_slot_and_wraps() {
+        assert_eq!(swizzle_intx_pin(0, 0), Ok(0));
+        assert_eq!(swizzle_intx_pin(0, 1), Ok(1));
+        assert_eq!(swizzle_intx_pin(3, 1), Ok(0));
+        assert_eq!(swizzle_intx_pin(2, 3), Ok(1));
+        assert_eq!(swizzle_intx_pin(4, 1), Err(PrtError::InvalidPin));
+        assert_eq!(swizzle_intx_pin(0, 32), Err(PrtError::InvalidPin));
+    }
+}
