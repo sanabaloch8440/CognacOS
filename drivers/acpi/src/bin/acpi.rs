@@ -1764,7 +1764,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route(
             }
         };
         let mut io_apic = None;
-        for (index, apic) in madt.io_apics[..madt.io_apic_count].iter().enumerate() {
+        for apic in madt.io_apics[..madt.io_apic_count].iter() {
             let mut gsi_limit = apic.gsi_base.saturating_add(120);
             // The next MADT I/O-APIC GSI base bounds this controller's range;
             // do not let the 120-entry architectural ceiling overlap a
@@ -1778,7 +1778,6 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route(
                 if io_apic.is_some() { return STATUS_DEVICE_CONFIGURATION_ERROR; }
                 io_apic = Some((apic.address as u64, apic.gsi_base));
             }
-            let _ = index;
         }
         let Some(io_apic) = io_apic else { return STATUS_NOT_FOUND; };
         selected = Some(resolved);
