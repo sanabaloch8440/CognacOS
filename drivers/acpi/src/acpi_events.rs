@@ -28,8 +28,10 @@ pub fn platform_registers(fadt:&FadtInfo)->Result<AcpiPlatformRegisters,EventErr
  let model=if fadt.hardware_reduced(){AcpiHardwareModel::HardwareReduced}else{AcpiHardwareModel::FixedHardware};
  let pm1a=fadt.x_pm1a_control_block.filter(|g|g.address!=0).or_else(||(fadt.pm1a_control_legacy!=0).then_some(AcpiGas{address_space_id:1,bit_width:fadt.pm1_control_length.saturating_mul(8),bit_offset:0,access_size:1,address:fadt.pm1a_control_legacy as u64}));
  let pm1b=fadt.x_pm1b_control_block.filter(|g|g.address!=0).or_else(||(fadt.pm1b_control_legacy!=0).then_some(AcpiGas{address_space_id:1,bit_width:fadt.pm1_control_length.saturating_mul(8),bit_offset:0,access_size:1,address:fadt.pm1b_control_legacy as u64}));
- let sleep_control=fadt.sleep_control_register.filter(|g|g.address!=0);
- let sleep_status=fadt.sleep_status_register.filter(|g|g.address!=0);
+ // Do not activate the ACPI 5.0 sleep-register interface merely because
+ // a caller populated the parsed structure: pre-v5 FADTs reserve these bytes.
+ let sleep_control=if fadt.supports_acpi_5_features(){fadt.sleep_control_register.filter(|g|g.address!=0)}else{None};
+ let sleep_status=if fadt.supports_acpi_5_features(){fadt.sleep_status_register.filter(|g|g.address!=0)}else{None};
  if model==AcpiHardwareModel::HardwareReduced{
   if sleep_control.is_none(){return Err(EventError::InvalidFadt)}
   // GPE0/GPE1 blocks are not part of the hardware-reduced programming model.
