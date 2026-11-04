@@ -1932,11 +1932,14 @@ mod explicit_mutex_tests {
   fn wait_event(&self,_:u16,_:u32,timeout:u16)->Result<bool,ExecError>{self.waits.fetch_add(1,Ordering::SeqCst);self.last_timeout.store(timeout as usize,Ordering::SeqCst);Ok(self.signaled.swap(false,Ordering::SeqCst))}
   fn reset_event(&self,_:u16,_:u32)->Result<(),ExecError>{self.resets.fetch_add(1,Ordering::SeqCst);self.signaled.store(false,Ordering::SeqCst);Ok(())}
  }
- fn load_event_method(body:&[u8])->(std::vec::Vec<u8>,AmlNamespace,u16){
+ fn load_event_method_with_flags(body:&[u8],flags:u8)->(std::vec::Vec<u8>,AmlNamespace,u16){
   let mut aml=std::vec![0x5b,0x02,b'E',b'V',b'T',b'0'];
-  let package_length=1+4+1+body.len();aml.extend_from_slice(&[0x14,package_length as u8,b'T',b'E',b'S',b'T',0]);
+  let package_length=1+4+1+body.len();aml.extend_from_slice(&[0x14,package_length as u8,b'T',b'E',b'S',b'T',flags]);
   aml.extend_from_slice(body);let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
   let method=namespace.find_child(0,*b"TEST").unwrap();(aml,namespace,method)
+ }
+ fn load_event_method(body:&[u8])->(std::vec::Vec<u8>,AmlNamespace,u16){
+  load_event_method_with_flags(body,0)
  }
  #[test]
  fn signal_event_wakes_wait_and_consumes_synchronization_signal(){
@@ -1956,7 +1959,7 @@ mod explicit_mutex_tests {
  #[test]
  fn wait_timeout_is_evaluated_as_a_termarg_and_returns_width_correct_ones(){
   let body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x68];
-  let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
+  let (aml,ns,method)=load_event_method_with_flags(&body,1);let sync=TestEventSync::default();
   assert_eq!(execute_method_with_sync(&aml,&ns,method,&[0x4321],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
   assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x4321);
   assert_eq!(execute_method_with_sync(&aml,&ns,method,&[0x1234],32,&sync),Ok(AmlValue::Integer(u32::MAX as u64)));
