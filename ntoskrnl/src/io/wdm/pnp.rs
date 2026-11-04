@@ -172,7 +172,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
   }else{
    for r in resources[..count].iter(){
     for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=resource_owner){
-     let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length,..ParsedResource::EMPTY};
+     let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length,flags:claim.flags,share:claim.share,..ParsedResource::EMPTY};
      if resources_overlap(r,&existing){result=STATUS_DEVICE_BUSY;break}
     }
     if result!=STATUS_SUCCESS{break}
@@ -846,4 +846,15 @@ mod cm_resource_abi_tests {
   assert_eq!(parsed[0].vector,9);
   assert_eq!(parsed[0].affinity,0);
  }
+ #[test]
+ fn only_shared_level_sensitive_interrupts_may_overlap(){
+  let shared_a=ParsedResource{kind:CM_RESOURCE_INTERRUPT,start:0x45,length:1,share:3,flags:0,..ParsedResource::EMPTY};
+  let shared_b=ParsedResource{kind:CM_RESOURCE_INTERRUPT,start:0x45,length:1,share:3,flags:0,..ParsedResource::EMPTY};
+  let exclusive=ParsedResource{kind:CM_RESOURCE_INTERRUPT,start:0x45,length:1,share:1,flags:0,..ParsedResource::EMPTY};
+  let latched=ParsedResource{kind:CM_RESOURCE_INTERRUPT,start:0x45,length:1,share:3,flags:0x0001,..ParsedResource::EMPTY};
+  assert!(!resources_overlap(&shared_a,&shared_b));
+  assert!(resources_overlap(&shared_a,&exclusive));
+  assert!(resources_overlap(&shared_a,&latched));
+ }
+
 }
