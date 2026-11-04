@@ -18,13 +18,14 @@
 use core::{cell::{Cell, UnsafeCell}, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU8, Ordering}};
 use cognacos_acpi as acpi;
 use acpi::aml_tables::AmlExecutionGate;
-use cognacos_hal_contract::AcpiSciHalServices;
+use cognacos_hal_contract::{AcpiSciHalServices, PciHostBridgeResourceSet};
 use cognacos_nt_abi::{bus::{
     ACPI_FIRMWARE_INTERFACE, ACPI_FIRMWARE_INTERFACE_V2, ACPI_FIRMWARE_INTERFACE_V3, ACPI_FIRMWARE_INTERFACE_V4,
     ACPI_FIRMWARE_INTERFACE_VERSION, ACPI_FIRMWARE_INTERFACE_VERSION_2,
     ACPI_FIRMWARE_INTERFACE_VERSION_3, ACPI_FIRMWARE_INTERFACE_VERSION_4, ACPI_PCI_INTERRUPT_ROUTE,
     ACPI_PCI_INTERRUPT_ROUTE_REQUEST, ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2, ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3,
-    INTERFACE_HEADER,
+    INTERFACE_HEADER, ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE,
+    ACPI_PCI_HOST_BRIDGE_RESOURCES_VERSION,
 }, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
 
@@ -1009,6 +1010,11 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                 && version as u32 == ACPI_FIRMWARE_INTERFACE_VERSION_4
                 && (size as usize) >= core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V4>() {
                 unsafe { cognac_acpi_get_firmware_interface_v4(output.cast()) }
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_ACPI_PCI_HOST_BRIDGE_RESOURCES
+                && version as u32 == ACPI_PCI_HOST_BRIDGE_RESOURCES_VERSION
+                && (size as usize) >= core::mem::size_of::<ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE>()
+                && device != unsafe { ACPI_BUS_DEVICE } {
+                unsafe { cognac_acpi_get_host_bridge_resources_interface(device, output.cast()) }
             } else {
                 STATUS_NOT_SUPPORTED
             }
@@ -2107,6 +2113,112 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v4(
             reserved2: 0,
         });
     }
+    STATUS_SUCCESS
+}
+
+/// Return the host-bridge _CRS interface only on a genuine ACPI PCI root PDO.
+unsafe fn cognac_acpi_get_host_bridge_resources_interface(
+    device: *mut cognacos_nt_abi::io::DEVICE_OBJECT,
+    output: *mut ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE,
+) -> i32 {
+    if device.is_null() || output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    let ext = unsafe { (*device).device_extension.cast::<AcpiPdoExtension>() };
+    if ext.is_null() || unsafe { (*ext).signature != ACPI_PDO_SIGNATURE } {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let identity = unsafe { &(*ext).identity };
+    if !identity.has_hid
+        || (identity.hid.as_bytes() != b"PNP0A03" && identity.hid.as_bytes() != b"PNP0A08") {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let context = core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>();
+    unsafe {
+        output.write(ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE {
+            header: INTERFACE_HEADER {
+                size: core::mem::size_of::<ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE>() as u16,
+                version: ACPI_PCI_HOST_BRIDGE_RESOURCES_VERSION as u16,
+                context,
+                interface_reference: Some(acpi_interface_reference),
+                interface_dereference: Some(acpi_interface_dereference),
+            },
+            query_resources: Some(acpi_query_host_bridge_resources),
+        });
+        acpi_interface_reference(context);
+    }
+    STATUS_SUCCESS
+}
+
+/// Query the selected root PDO's _SEG/_BBN and _CRS. Bus-number ranges are
+/// mandatory; absent or ambiguous ranges fail closed rather than inventing a
+/// 0..255 PCI bus aperture.
+unsafe extern "win64" fn acpi_query_host_bridge_resources(
+    context: PVOID,
+    root_pdo: PVOID,
+    output: PVOID,
+) -> i32 {
+    if context != core::ptr::addr_of!(STATE).cast_mut().cast() || root_pdo.is_null() || output.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let Some(_operation) = AcpiOperationGuard::enter() else { return STATUS_DEVICE_NOT_READY; };
+    let device = root_pdo.cast::<cognacos_nt_abi::io::DEVICE_OBJECT>();
+    let ext = unsafe { (*device).device_extension.cast::<AcpiPdoExtension>() };
+    if ext.is_null() || unsafe { (*ext).signature != ACPI_PDO_SIGNATURE } {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let identity = unsafe { &(*ext).identity };
+    if !identity.has_hid
+        || (identity.hid.as_bytes() != b"PNP0A03" && identity.hid.as_bytes() != b"PNP0A08") {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    let manager = unsafe { (*STATE.aml_manager.get()).assume_init_ref() };
+    let gate = unsafe { &*STATE.aml_barrier.get() };
+    let namespace = manager.namespace();
+    let records = unsafe { (*STATE.device_records.get()).assume_init_ref() };
+    let record_count = STATE.device_count.load(Ordering::Acquire).min(MAX_ACPI_DEVICES);
+    let mut sources: AcpiRouteTableSources = [&[]; acpi::aml_tables::MAX_AML_TABLES];
+    let mut handles: AcpiRouteTableHandles = [None; acpi::aml_tables::MAX_AML_TABLES];
+    build_route_table_sources(namespace, records, record_count, &mut sources, &mut handles);
+
+    let segment = match namespace.find_child(unsafe { (*ext).node }, *b"_SEG") {
+        Some(object) => match evaluate_aml_integer_object(manager, gate, namespace, object, &sources, &handles) {
+            Ok(value) if value <= u16::MAX as u64 => value as u16,
+            _ => return STATUS_DEVICE_CONFIGURATION_ERROR,
+        },
+        None => 0,
+    };
+    let root_bus = match namespace.find_child(unsafe { (*ext).node }, *b"_BBN") {
+        Some(object) => match evaluate_aml_integer_object(manager, gate, namespace, object, &sources, &handles) {
+            Ok(value) if value <= u8::MAX as u64 => value as u8,
+            _ => return STATUS_DEVICE_CONFIGURATION_ERROR,
+        },
+        None => 0,
+    };
+
+    let resources = match read_pdo_resource_template(device, *b"_CRS") {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let mut bus_range: Option<(u8, u8)> = None;
+    for entry in resources.entries[..resources.count].iter().flatten() {
+        if let acpi::acpi_resources::Resource::BusNumber { minimum, maximum, length } = *entry {
+            if length == 0 || minimum > maximum || maximum > u8::MAX as u64 || minimum > u8::MAX as u64
+                || bus_range.is_some() {
+                return STATUS_DEVICE_CONFIGURATION_ERROR;
+            }
+            bus_range = Some((minimum as u8, maximum as u8));
+        }
+    }
+    let Some((bus_start, bus_end)) = bus_range else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
+    if root_bus < bus_start || root_bus > bus_end { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    let set = match acpi::acpi_resources::build_pci_host_bridge_resource_set(
+        &resources, segment, bus_start, bus_end,
+    ) {
+        Ok(value) => value,
+        Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+    };
+    unsafe { output.cast::<PciHostBridgeResourceSet>().write(set); }
     STATUS_SUCCESS
 }
 
