@@ -629,10 +629,11 @@ struct BusInterruptTranslation {
     system_vector: u32,
     irql: u8,
     affinity: u64,
+    references: u32,
 }
 impl BusInterruptTranslation {
     const EMPTY: Self = Self { interface_type: u32::MAX, bus_number: 0, bus_level: 0,
-        bus_vector: 0, system_vector: 0, irql: 0, affinity: 0 };
+        bus_vector: 0, system_vector: 0, irql: 0, affinity: 0, references: 0 };
 }
 const MAX_BUS_INTERRUPT_TRANSLATIONS: usize = 256;
 static BUS_INTERRUPT_TRANSLATIONS: IrqSpinLock<[BusInterruptTranslation; MAX_BUS_INTERRUPT_TRANSLATIONS]> =
@@ -654,6 +655,7 @@ pub fn register_bus_interrupt_translation(
             && entry.bus_level == bus_level && entry.bus_vector == bus_vector)
     {
         if existing.system_vector == system_vector && existing.irql == irql && existing.affinity == affinity {
+            existing.references = existing.references.checked_add(1).ok_or(HalError::PlatformFailure)?;
             return Ok(());
         }
         return Err(HalError::InvalidTransition);
@@ -661,7 +663,27 @@ pub fn register_bus_interrupt_translation(
     let slot = table.iter_mut().find(|entry| entry.interface_type == u32::MAX)
         .ok_or(HalError::PlatformFailure)?;
     *slot = BusInterruptTranslation { interface_type, bus_number, bus_level, bus_vector,
-        system_vector, irql, affinity };
+        system_vector, irql, affinity, references: 1 };
+    Ok(())
+}
+
+/// @partial implementation
+/// Release one PnP resource owner's reference to a bus interrupt translation.
+pub fn unregister_bus_interrupt_translation(
+    interface_type: u32, bus_number: u32, bus_level: u32, bus_vector: u32,
+) -> Result<(), HalError> {
+    let mut table = BUS_INTERRUPT_TRANSLATIONS.lock();
+    let Some(entry) = table.iter_mut().find(|entry|
+        entry.interface_type == interface_type && entry.bus_number == bus_number
+            && entry.bus_level == bus_level && entry.bus_vector == bus_vector)
+    else {
+        return Err(HalError::InvalidTransition);
+    };
+    if entry.references > 1 {
+        entry.references -= 1;
+    } else {
+        *entry = BusInterruptTranslation::EMPTY;
+    }
     Ok(())
 }
 
