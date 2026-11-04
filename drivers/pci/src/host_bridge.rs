@@ -136,6 +136,35 @@ pub fn prepare_host_bridge_apertures(
     Ok(result)
 }
 
+
+/// Build a complete root-hierarchy allocation plan directly from the ACPI
+/// _CRS resource set. This is the allocator boundary: the only host apertures
+/// passed to the topology planner are validated and protected-RAM-clipped.
+/// Callers must supply a complete, current physical-memory snapshot; an empty
+/// snapshot is rejected by prepare_host_bridge_apertures().
+pub fn plan_root_hierarchy(
+    resources: &PciHostBridgeResourceSet,
+    protected_ram: &[E820Range],
+    requests: &[crate::topology_resources::EndpointRequest],
+    existing: &[crate::resource_manager::OccupiedRange],
+    output: &mut crate::topology_resources::HierarchyPlan,
+) -> Result<PreparedHostBridgeApertures, HostBridgeHandoffError> {
+    let prepared = prepare_host_bridge_apertures(resources, protected_ram)?;
+    if prepared.count == 0 && requests.iter().any(|request| request.requirement_count != 0) {
+        return Err(HostBridgeHandoffError::ProtectedMemory);
+    }
+    crate::topology_resources::plan_hierarchy_rebalance(
+        prepared.as_slice(), requests, existing, output,
+    ).map_err(|error| match error {
+        crate::topology_resources::HierarchyError::Capacity => HostBridgeHandoffError::Capacity,
+        crate::topology_resources::HierarchyError::InvalidPath
+        | crate::topology_resources::HierarchyError::InvalidRequirement
+        | crate::topology_resources::HierarchyError::Bridge(_)
+        | crate::topology_resources::HierarchyError::Resource(_) => HostBridgeHandoffError::InvalidDescriptor,
+    })?;
+    Ok(prepared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
