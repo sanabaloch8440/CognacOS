@@ -10,9 +10,9 @@
 use crate::aml::{decode_package_length,AmlError,AmlNamespace,AmlObjectType};
 use crate::aml_exec::evaluate_term_argument;
 
-pub const MAX_AML_VALUES:usize=128;
+pub const MAX_AML_VALUES:usize=256;
 pub const MAX_AML_BYTES:usize=256;
-pub const MAX_PACKAGE_ELEMENTS:usize=16;
+pub const MAX_PACKAGE_ELEMENTS:usize=32;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
