@@ -48,14 +48,16 @@ Task 29 follow-up (2026-11-04): the ACPI driver now supplies a concrete `AmlMeth
 
 30. [x] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
 
-Task 30 implementation slice (2026-11-04): added `aml_mutation.rs` and
-`AML_DYNAMIC_NAMESPACE_MUTATION.md`. The bounded service currently provides
-transactional dynamic Name insertion/binding, canonical-target Alias insertion,
-validated BufferField descriptor creation for the Create*Field family, and
-Store/CopyObject forwarding to the typed runtime. The crate exports the module.
-Task 30 remains unchecked: the method executor does not yet own this service or
-dispatch Create*Field opcodes; dynamic namespace synchronization and table
-unload integration remain open. No runtime or QEMU pass is claimed.
+Task 30 completion (2026-11-04): implemented end-to-end and merged in
+[PR #51](https://github.com/sanabaloch8440/CognacOS/pull/51). The executor
+dispatches all six Create*Field forms through the persistent dynamic namespace,
+resolves dynamic field names in TermArgs and targets, and routes Store/CopyObject
+through stable BufferField references. The table manager owns the dynamic
+namespace and retires table-owned fields under the execution-quiescence gate;
+cached Name bindings are invalidated during unload. ACPI workflow
+[41811376890](https://github.com/sanabaloch8440/CognacOS/actions/runs/41811376890)
+passed the library, native WDM driver type-check, kernel dispatcher type-check,
+and firmware/AML regression stages. UEFI/QEMU boot remains a separate gate.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
 
 Task 31 implementation progress (2026-11-04, PR branch `acpi-task-31-reference-semantics`; not yet checked):
