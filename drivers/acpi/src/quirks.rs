@@ -661,4 +661,42 @@ mod tests {
             boot_arch_set: 0, boot_arch_clear: 0, boot_arch_writable_mask: 0 };
         assert_eq!(apply_fadt_override(0, 0, bad), Err(QuirkError::InvalidFadtMask));
     }
+
+    #[test]
+    fn stage1_dmi_registry_selects_only_the_documented_platform_actions() {
+        let mut hp = PlatformIdentity::EMPTY;
+        hp.system_vendor.set(b"Hewlett-Packard");
+        hp.product_name.set(b"HP Compaq nx6115");
+        let hp_policy = evaluate_registry(&hp, PLATFORM_QUIRK_REGISTRY).unwrap();
+        assert!(hp_policy.flags.contains(QuirkFlags::IGNORE_IRQ0_OVERRIDE));
+        assert!(!hp_policy.flags.contains(QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION));
+
+        let mut ibm = PlatformIdentity::EMPTY;
+        ibm.board_vendor.set(b"IBM");
+        ibm.board_name.set(b"2645");
+        let ibm_policy = evaluate_registry(&ibm, PLATFORM_QUIRK_REGISTRY).unwrap();
+        assert!(ibm_policy.flags.contains(QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING));
+        assert!(!ibm_policy.flags.contains(QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION));
+
+        let mut asus = PlatformIdentity::EMPTY;
+        asus.board_vendor.set(b"ASUSTeK Computer INC.");
+        asus.board_name.set(b"PR-DLS");
+        asus.bios_version.set(b"ASUS PR-DLS ACPI BIOS Revision 1010");
+        asus.bios_date.set(b"03/21/2003");
+        let asus_policy = evaluate_registry(&asus, PLATFORM_QUIRK_REGISTRY).unwrap();
+        assert!(asus_policy.flags.contains(QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION));
+        assert!(asus_policy.flags.contains(QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING));
+    }
+
+    #[test]
+    fn stage1_lenovo_iil_requires_product_version_match() {
+        let mut identity = PlatformIdentity::EMPTY;
+        identity.system_vendor.set(b"LENOVO");
+        identity.product_version.set(b"Yoga IIL platform");
+        let policy = evaluate_registry(&identity, PLATFORM_QUIRK_REGISTRY).unwrap();
+        assert!(policy.flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
+        identity.product_version.set(b"Yoga platform");
+        let policy = evaluate_registry(&identity, PLATFORM_QUIRK_REGISTRY).unwrap();
+        assert!(!policy.flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
+    }
 }
