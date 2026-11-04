@@ -85,3 +85,21 @@ mod tests {
         assert_eq!(windows_11_x64_osi(b"Extended Address Space Descriptor"), 0);
     }
 }
+
+/// Evaluate _OSI with the immutable DMI-selected platform policy layered over
+/// the Windows 11 compatibility profile. A quirk may suppress an advertised
+/// interface or explicitly advertise one; all other strings retain defaults.
+pub fn windows_11_x64_osi_with_quirks(
+    argument: &[u8],
+    policy: &crate::quirks::QuirkPolicy,
+) -> u64 {
+    if let Ok(name) = core::str::from_utf8(argument) {
+        if !policy.osi_is_advertised(name, windows_11_x64_osi(argument) != 0) {
+            return 0;
+        }
+        if policy.osi_is_advertised(name, false) {
+            return 0xFFFF_FFFF;
+        }
+    }
+    windows_11_x64_osi(argument)
+}
