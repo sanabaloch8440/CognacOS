@@ -10,13 +10,13 @@ const OK:i32=0;
 const INVALID:i32=0xC000_000Du32 as i32;
 const RESOURCES:i32=0xC000_009Au32 as i32;
 const NOT_SUPPORTED:i32=0xC000_00BBu32 as i32;
-pub type MapFn=unsafe extern "system" fn(*mut c_void,usize,u64,u32,u8,*mut u64,*mut u64)->i32;
-pub type UnmapFn=unsafe extern "system" fn(*mut c_void,usize,u64,u64)->i32;
-pub type SyncFn=unsafe extern "system" fn(*mut c_void,usize,u64,u32,u8)->i32;
-#[repr(C)]
-#[derive(Clone,Copy)]
-pub struct IommuBackend { pub size:u32,pub context:*mut c_void,pub map:Option<MapFn>,pub unmap:Option<UnmapFn>,pub sync:Option<SyncFn> }
-unsafe impl Send for IommuBackend{} unsafe impl Sync for IommuBackend{}
+// The HAL and I/O manager share one canonical, versioned callback layout.
+// Keeping the ABI in the HAL contract crate prevents either side from
+// depending on the other's private implementation types.
+pub use cognacos_hal_contract::IommuBackend;
+pub type MapFn = cognacos_hal_contract::IommuMap;
+pub type UnmapFn = cognacos_hal_contract::IommuUnmap;
+pub type SyncFn = cognacos_hal_contract::IommuSync;
 // Copy the callback table into kernel-owned storage at registration. Keeping an
 // AtomicPtr to the caller's struct allowed a stack-allocated descriptor to
 // become a use-after-free after the registration function returned.
