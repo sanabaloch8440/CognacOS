@@ -4,7 +4,16 @@
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_pci::EcamWindowExt;
-use cognacos_nt_abi::{bus::{BUS_INTERFACE_STANDARD, BUS_INTERFACE_STANDARD_VERSION, GUID_BUS_INTERFACE_STANDARD, PCI_WHICHSPACE_CONFIG, PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION, PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION, PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION}, io::{DEVICE_OBJECT, DRIVER_OBJECT}, ntstatus::*, types::PVOID};
+use cognacos_hal_contract::PciInterruptHalServices;
+use cognacos_nt_abi::{bus::{
+    BUS_INTERFACE_STANDARD, BUS_INTERFACE_STANDARD_VERSION, GUID_BUS_INTERFACE_STANDARD,
+    PCI_WHICHSPACE_CONFIG, PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION,
+    PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION,
+    PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION,
+    ACPI_FIRMWARE_INTERFACE_V2, ACPI_PCI_INTERRUPT_ROUTE, ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
+    PCI_INTERRUPT_INTERFACE, PCI_INTERRUPT_INTERFACE_VERSION, PCI_INTERRUPT_ISR,
+    PCI_INTERRUPT_DPC,
+}, io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION}, ntstatus::*, types::PVOID};
 use cognacos_nt_abi::object::UNICODE_STRING;
 
 unsafe extern "win64" {
@@ -18,6 +27,13 @@ unsafe extern "win64" {
     fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
     fn ObfReferenceObject(object: PVOID);
     fn ObDereferenceObject(object: PVOID);
+    fn IoAllocateIrp(stack_size: i8, charge_quota: u8) -> *mut IRP;
+    fn IoCallDriver(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32;
+    fn IoFreeIrp(irp: *mut IRP);
+    fn IoCompleteRequest(irp: *mut IRP, priority_boost: i8);
+    fn IoPnPReferenceBusFdo(enumerator_id: u32, identity_hash: u64, output: *mut *mut DEVICE_OBJECT) -> i32;
+    fn IoPnPDereferenceBusFdo(device: *mut DEVICE_OBJECT);
+    fn HalPciGetInterruptServices(output: *mut PciInterruptHalServices) -> i32;
 }
 
 // These are ordinary PE import thunks. The PE conversion step turns the
@@ -82,14 +98,90 @@ __imp_ntoskrnl_ObfReferenceObject: .quad 0
 .type __imp_ntoskrnl_ObDereferenceObject,@object
 __imp_ntoskrnl_ObDereferenceObject: .quad 0
 .size __imp_ntoskrnl_ObDereferenceObject,8
+
+// Keep executable import thunks in .text; the IAT slots below must remain
+// one contiguous, ordered block for the native PE import-table converter.
+.section .text.import_thunks,"ax",@progbits
+.global IoAllocateIrp
+.type IoAllocateIrp,@function
+IoAllocateIrp:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoAllocateIrp]
+.size IoAllocateIrp, .-IoAllocateIrp
+.global IoCallDriver
+.type IoCallDriver,@function
+IoCallDriver:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoCallDriver]
+.size IoCallDriver, .-IoCallDriver
+.global IoFreeIrp
+.type IoFreeIrp,@function
+IoFreeIrp:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoFreeIrp]
+.size IoFreeIrp, .-IoFreeIrp
+.global IoCompleteRequest
+.type IoCompleteRequest,@function
+IoCompleteRequest:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoCompleteRequest]
+.size IoCompleteRequest, .-IoCompleteRequest
+.global IoPnPReferenceBusFdo
+.type IoPnPReferenceBusFdo,@function
+IoPnPReferenceBusFdo:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoPnPReferenceBusFdo]
+.size IoPnPReferenceBusFdo, .-IoPnPReferenceBusFdo
+.global IoPnPDereferenceBusFdo
+.type IoPnPDereferenceBusFdo,@function
+IoPnPDereferenceBusFdo:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_IoPnPDereferenceBusFdo]
+.size IoPnPDereferenceBusFdo, .-IoPnPDereferenceBusFdo
+
+.global HalPciGetInterruptServices
+.type HalPciGetInterruptServices,@function
+HalPciGetInterruptServices:
+    jmp QWORD PTR [rip + __imp_hal_HalPciGetInterruptServices]
+.size HalPciGetInterruptServices, .-HalPciGetInterruptServices
+
+.section .data.imports.ntoskrnl,"aw",@progbits
+.p2align 3
+.global __imp_ntoskrnl_IoAllocateIrp
+.type __imp_ntoskrnl_IoAllocateIrp,@object
+__imp_ntoskrnl_IoAllocateIrp: .quad 0
+.size __imp_ntoskrnl_IoAllocateIrp,8
+.global __imp_ntoskrnl_IoCallDriver
+.type __imp_ntoskrnl_IoCallDriver,@object
+__imp_ntoskrnl_IoCallDriver: .quad 0
+.size __imp_ntoskrnl_IoCallDriver,8
+.global __imp_ntoskrnl_IoFreeIrp
+.type __imp_ntoskrnl_IoFreeIrp,@object
+__imp_ntoskrnl_IoFreeIrp: .quad 0
+.size __imp_ntoskrnl_IoFreeIrp,8
+.global __imp_ntoskrnl_IoCompleteRequest
+.type __imp_ntoskrnl_IoCompleteRequest,@object
+__imp_ntoskrnl_IoCompleteRequest: .quad 0
+.size __imp_ntoskrnl_IoCompleteRequest,8
+.global __imp_ntoskrnl_IoPnPReferenceBusFdo
+.type __imp_ntoskrnl_IoPnPReferenceBusFdo,@object
+__imp_ntoskrnl_IoPnPReferenceBusFdo: .quad 0
+.size __imp_ntoskrnl_IoPnPReferenceBusFdo,8
+.global __imp_ntoskrnl_IoPnPDereferenceBusFdo
+.type __imp_ntoskrnl_IoPnPDereferenceBusFdo,@object
+__imp_ntoskrnl_IoPnPDereferenceBusFdo: .quad 0
+.size __imp_ntoskrnl_IoPnPDereferenceBusFdo,8
+
+.section .data.imports.hal,"aw",@progbits
+.p2align 3
+.global __imp_hal_HalPciGetInterruptServices
+.type __imp_hal_HalPciGetInterruptServices,@object
+__imp_hal_HalPciGetInterruptServices: .quad 0
+.size __imp_hal_HalPciGetInterruptServices,8
 "#);
 
+const STATUS_INVALID_DEVICE_STATE: i32 = 0xC000_0184_u32 as i32;
 const PCI_PDO_EXTENSION_MAGIC: u64 = 0x434f_474e_5044_4f31;
 #[repr(C)]
 struct PciPdoExtension {
     magic: u64,
     version: u32,
     function_index: u32,
+    device_object: *mut DEVICE_OBJECT,
     started: u8,
     raw_resources: PVOID,
     raw_resources_size: usize,
@@ -98,12 +190,24 @@ struct PciPdoExtension {
     information: PCI_DEVICE_INFORMATION,
     ide_ports: pci::ide::IdeControllerPorts,
     ide_ports_valid: u8,
+    interrupt_vector: u8,
+    interrupt_allocated: u8,
+    interrupt_registered: u8,
+    interrupt_reserved: u8,
+    interrupt_context: u64,
+    interrupt_hal: PciInterruptHalServices,
 }
 
 unsafe fn delete_pdo(pdo: *mut DEVICE_OBJECT) {
     if pdo.is_null() { return; }
     let extension = unsafe { (*pdo).device_extension.cast::<PciPdoExtension>() };
     if !extension.is_null() && unsafe { (*extension).magic == PCI_PDO_EXTENSION_MAGIC } {
+        if unsafe { release_pci_interrupt(extension) } != STATUS_SUCCESS {
+            // Never free a PDO extension while a registered ISR/DPC can still
+            // reference it. PnP STOP/REMOVE reports the failure to the manager;
+            // this fallback keeps unload from creating a use-after-free.
+            return;
+        }
         unsafe {
             if !(*extension).raw_resources.is_null() { ExFreePoolWithTag((*extension).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
             if !(*extension).translated_resources.is_null() { ExFreePoolWithTag((*extension).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
@@ -362,7 +466,7 @@ unsafe fn query_standard_bus_interface(device:*mut DEVICE_OBJECT,version:u16,siz
     // The bus driver owns one interface reference for every successful
     // IRP_MN_QUERY_INTERFACE response; the consumer releases it through
     // InterfaceDereference when it has finished using the returned table.
-    pci_bus_interface_reference(device.cast());
+    unsafe { pci_bus_interface_reference(device.cast()); }
     unsafe{core::ptr::write_unaligned(output.cast::<BUS_INTERFACE_STANDARD>(),interface);}
     STATUS_SUCCESS
 }
@@ -411,6 +515,283 @@ pub unsafe extern "win64" fn CognacPciGetIdePorts(
     }
     unsafe { output.write((*extension).ide_ports); }
     STATUS_SUCCESS
+}
+
+unsafe fn query_acpi_pci_interrupt_route(
+    request: &ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
+    route: &mut ACPI_PCI_INTERRUPT_ROUTE,
+) -> i32 {
+    let mut acpi_bus = core::ptr::null_mut::<DEVICE_OBJECT>();
+    let lookup = unsafe {
+        IoPnPReferenceBusFdo(
+            cognacos_nt_abi::bus::ACPI_BUS_ENUMERATOR_ID,
+            cognacos_nt_abi::bus::ACPI_BUS_IDENTITY_HASH,
+            &mut acpi_bus,
+        )
+    };
+    if lookup != STATUS_SUCCESS { return lookup; }
+    if acpi_bus.is_null() { return STATUS_NOT_FOUND; }
+
+    let mut interface = core::mem::MaybeUninit::<ACPI_FIRMWARE_INTERFACE_V2>::zeroed();
+    let irp = unsafe { IoAllocateIrp((*acpi_bus).stack_size as i8, 0) };
+    if irp.is_null() {
+        unsafe { IoPnPDereferenceBusFdo(acpi_bus); }
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    let status = (|| {
+        let current = unsafe { (*irp).tail[8] as *mut IO_STACK_LOCATION };
+        if current.is_null() { return STATUS_INVALID_PARAMETER; }
+        // IoGetNextIrpStackLocation is the WDM macro equivalent of
+        // CurrentStackLocation - 1. IoCallDriver advances the IRP to this slot.
+        let next = unsafe { current.sub(1) };
+        unsafe {
+            (*next).major_function = IRP_MJ_PNP as u8;
+            (*next).minor_function = IRP_MN_QUERY_INTERFACE;
+            let parameters = (*next).parameters.as_mut_ptr();
+            core::ptr::write_unaligned(
+                parameters.cast::<*const cognacos_nt_abi::bus::GUID>(),
+                &cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE_V2,
+            );
+            core::ptr::write_unaligned(
+                parameters.add(8).cast::<u16>(),
+                core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>() as u16,
+            );
+            core::ptr::write_unaligned(
+                parameters.add(10).cast::<u16>(),
+                cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_2 as u16,
+            );
+            core::ptr::write_unaligned(parameters.add(16).cast::<PVOID>(), interface.as_mut_ptr().cast());
+            (*irp).io_status.status.status = STATUS_NOT_SUPPORTED;
+            (*irp).io_status.information = 0;
+        }
+        let call_status = unsafe { IoCallDriver(acpi_bus, irp) };
+        // The ACPI query-interface dispatch is synchronous. The current
+        // executive's IoCallDriver returns the dispatch status but leaves
+        // completion to the PnP request owner, so this stack-owned helper
+        // completes its own IRP before freeing it.
+        if call_status == STATUS_PENDING {
+            unsafe { (*irp).io_status.status.status = STATUS_INVALID_DEVICE_STATE; }
+        }
+        let io_status = unsafe { (*irp).io_status.status.status };
+        let status = if call_status == STATUS_SUCCESS { io_status }
+            else if call_status == STATUS_PENDING { STATUS_INVALID_DEVICE_STATE }
+            else { call_status };
+        unsafe { IoCompleteRequest(irp, 0); }
+        if status != STATUS_SUCCESS { return status; }
+
+        let interface = unsafe { interface.assume_init_ref() };
+        if interface.header.version as u32 != cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_2
+            || (interface.header.size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>()
+            || interface.query_pci_interrupt_route.is_none()
+            || interface.header.interface_dereference.is_none() {
+            if let Some(deref) = interface.header.interface_dereference {
+                unsafe { deref(interface.header.context); }
+            }
+            return STATUS_NOT_SUPPORTED;
+        }
+        let query = interface.query_pci_interrupt_route.unwrap();
+        let dereference = interface.header.interface_dereference.unwrap();
+        let route_status = unsafe { query(interface.header.context, request, route) };
+        unsafe { dereference(interface.header.context); }
+        route_status
+    })();
+
+    unsafe {
+        IoFreeIrp(irp);
+        IoPnPDereferenceBusFdo(acpi_bus);
+    }
+    status
+}
+
+fn hal_status_to_ntstatus(status: u32) -> i32 {
+    if status == 0 { STATUS_SUCCESS } else { STATUS_DEVICE_CONFIGURATION_ERROR }
+}
+
+unsafe fn configure_pci_intx_masked(
+    extension: *mut PciPdoExtension,
+    function: pci::PciFunction,
+    window: &pci::EcamWindow,
+) -> i32 {
+    let pin = match unsafe {
+        window.read_u8(function.segment, function.bus, function.device, function.function, 0x3d)
+    } {
+        Ok(value) => value,
+        Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+    };
+    // InterruptLine (offset 0x3c) is intentionally ignored. Firmware routing
+    // comes from the matching ACPI root bridge _PRT, never the legacy byte.
+    if pin == 0 { return STATUS_SUCCESS; }
+    if pin > 4 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+
+    let request = ACPI_PCI_INTERRUPT_ROUTE_REQUEST {
+        segment: function.segment,
+        bus: function.bus,
+        device: function.device,
+        function: function.function,
+        pin,
+        reserved: 0,
+    };
+    let mut route = ACPI_PCI_INTERRUPT_ROUTE::default();
+    let status = unsafe { query_acpi_pci_interrupt_route(&request, &mut route) };
+    if status != STATUS_SUCCESS { return status; }
+    if route.reserved != [0; 2] || route.reserved2 != 0
+        || route.active_low > 1 || route.level_triggered > 1
+        || route.io_apic_base == 0 || route.io_apic_base & 0xfff != 0
+        || route.gsi < route.gsi_base || route.gsi - route.gsi_base >= 120 {
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+
+    let mut hal = unsafe { core::mem::zeroed::<PciInterruptHalServices>() };
+    let status = unsafe { HalPciGetInterruptServices(&mut hal) };
+    if status != STATUS_SUCCESS || !hal.compatible() { return STATUS_NOT_SUPPORTED; }
+    let Some(allocate) = hal.allocate_vector else { return STATUS_NOT_SUPPORTED; };
+    let Some(configure) = hal.configure_masked else { return STATUS_NOT_SUPPORTED; };
+    let Some(release) = hal.release_vector else { return STATUS_NOT_SUPPORTED; };
+    let mut vector = 0u8;
+    let hal_status = unsafe { allocate(&mut vector) };
+    if hal_status != 0 { return hal_status_to_ntstatus(hal_status); }
+    let hal_status = unsafe {
+        configure(
+            vector, route.io_apic_base, route.gsi_base, route.gsi,
+            route.active_low != 0, route.level_triggered != 0,
+        )
+    };
+    if hal_status != 0 {
+        let _ = unsafe { release(vector) };
+        return hal_status_to_ntstatus(hal_status);
+    }
+    unsafe {
+        (*extension).interrupt_vector = vector;
+        (*extension).interrupt_allocated = 1;
+        (*extension).interrupt_registered = 0;
+        (*extension).interrupt_context = 0;
+        (*extension).interrupt_hal = hal;
+    }
+    STATUS_SUCCESS
+}
+
+unsafe fn pdo_interrupt_extension(context: PVOID) -> Result<*mut PciPdoExtension, i32> {
+    if context.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    let device = context.cast::<DEVICE_OBJECT>();
+    let extension = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+    if extension.is_null()
+        || unsafe { (*extension).magic != PCI_PDO_EXTENSION_MAGIC || (*extension).version != 1 } {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    Ok(extension)
+}
+
+unsafe extern "win64" fn pci_pdo_interrupt_register(
+    context: PVOID,
+    callback_context: u64,
+    isr: PCI_INTERRUPT_ISR,
+    dpc: PCI_INTERRUPT_DPC,
+) -> i32 {
+    let extension = match unsafe { pdo_interrupt_extension(context) } {
+        Ok(extension) => extension, Err(status) => return status,
+    };
+    if unsafe { (*extension).started == 0 || (*extension).interrupt_allocated == 0
+        || (*extension).interrupt_registered != 0 || callback_context == 0 } {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    let Some(register) = (unsafe { (*extension).interrupt_hal.register_isr }) else {
+        return STATUS_NOT_SUPPORTED;
+    };
+    let status = unsafe {
+        register((*extension).interrupt_vector, callback_context, Some(isr), Some(dpc))
+    };
+    if status == 0 {
+        unsafe {
+            (*extension).interrupt_context = callback_context;
+            (*extension).interrupt_registered = 1;
+        }
+        STATUS_SUCCESS
+    } else {
+        hal_status_to_ntstatus(status)
+    }
+}
+
+unsafe extern "win64" fn pci_pdo_interrupt_enable(context: PVOID) -> i32 {
+    let extension = match unsafe { pdo_interrupt_extension(context) } {
+        Ok(extension) => extension, Err(status) => return status,
+    };
+    if unsafe { (*extension).started == 0 || (*extension).interrupt_allocated == 0
+        || (*extension).interrupt_registered == 0 } {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    let Some(enable) = (unsafe { (*extension).interrupt_hal.enable }) else {
+        return STATUS_NOT_SUPPORTED;
+    };
+    hal_status_to_ntstatus(unsafe { enable((*extension).interrupt_vector) })
+}
+
+unsafe extern "win64" fn pci_pdo_interrupt_disable(context: PVOID) -> i32 {
+    let extension = match unsafe { pdo_interrupt_extension(context) } {
+        Ok(extension) => extension, Err(status) => return status,
+    };
+    if unsafe { (*extension).interrupt_allocated == 0 || (*extension).interrupt_registered == 0 } {
+        return STATUS_SUCCESS;
+    }
+    let Some(disable) = (unsafe { (*extension).interrupt_hal.disable }) else {
+        return STATUS_NOT_SUPPORTED;
+    };
+    hal_status_to_ntstatus(unsafe { disable((*extension).interrupt_vector) })
+}
+
+unsafe extern "win64" fn pci_pdo_interrupt_unregister(context: PVOID) -> i32 {
+    let extension = match unsafe { pdo_interrupt_extension(context) } {
+        Ok(extension) => extension, Err(status) => return status,
+    };
+    if unsafe { (*extension).interrupt_registered == 0 } { return STATUS_SUCCESS; }
+    let Some(disable) = (unsafe { (*extension).interrupt_hal.disable }) else {
+        return STATUS_NOT_SUPPORTED;
+    };
+    let Some(unregister) = (unsafe { (*extension).interrupt_hal.unregister }) else {
+        return STATUS_NOT_SUPPORTED;
+    };
+    let vector = unsafe { (*extension).interrupt_vector };
+    let callback_context = unsafe { (*extension).interrupt_context };
+    let status = unsafe { disable(vector) };
+    if status != 0 { return hal_status_to_ntstatus(status); }
+    let status = unsafe { unregister(vector, callback_context) };
+    if status == 0 {
+        unsafe {
+            (*extension).interrupt_registered = 0;
+            (*extension).interrupt_context = 0;
+        }
+        STATUS_SUCCESS
+    } else {
+        hal_status_to_ntstatus(status)
+    }
+}
+
+unsafe fn release_pci_interrupt(extension: *mut PciPdoExtension) -> i32 {
+    if extension.is_null() || unsafe { (*extension).interrupt_allocated == 0 } {
+        return STATUS_SUCCESS;
+    }
+    if unsafe { (*extension).interrupt_registered != 0 } {
+        let device = unsafe { (*extension).device_object };
+        if device.is_null() { return STATUS_INVALID_PARAMETER; }
+        let status = unsafe { pci_pdo_interrupt_unregister(device.cast()) };
+        if status != STATUS_SUCCESS { return status; }
+    }
+    let Some(release) = (unsafe { (*extension).interrupt_hal.release_vector }) else {
+        return STATUS_NOT_SUPPORTED;
+    };
+    let status = unsafe { release((*extension).interrupt_vector) };
+    if status == 0 {
+        unsafe {
+            (*extension).interrupt_allocated = 0;
+            (*extension).interrupt_registered = 0;
+            (*extension).interrupt_context = 0;
+            (*extension).interrupt_vector = 0;
+            (*extension).interrupt_hal = core::mem::zeroed();
+        }
+        STATUS_SUCCESS
+    } else {
+        hal_status_to_ntstatus(status)
+    }
 }
 
 /// Consume the PnP manager's assigned raw/translated resource lists. BARs are
@@ -595,6 +976,15 @@ unsafe fn start_pci_device(
         }
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
+    let interrupt_status = unsafe { configure_pci_intx_masked(extension, function, window) };
+    if interrupt_status != STATUS_SUCCESS {
+        let _ = unsafe { release_pci_interrupt(extension) };
+        unsafe {
+            ExFreePoolWithTag(raw_copy, PCI_REQUIREMENTS_POOL_TAG);
+            ExFreePoolWithTag(translated_copy, PCI_REQUIREMENTS_POOL_TAG);
+        }
+        return interrupt_status;
+    }
     unsafe {
         if !(*extension).raw_resources.is_null() { ExFreePoolWithTag((*extension).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
         if !(*extension).translated_resources.is_null() { ExFreePoolWithTag((*extension).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
@@ -643,21 +1033,26 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
     unsafe { (*irp).io_status.information = 0; }
     let status = match unsafe { (*stack).minor_function } {
                 IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => {
-            if !device.is_null() {
+            if device.is_null() { STATUS_INVALID_PARAMETER } else {
                 let ext = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
-                if !ext.is_null() && unsafe { (*ext).magic == PCI_PDO_EXTENSION_MAGIC } {
-                    unsafe {
-                        if !(*ext).raw_resources.is_null() { ExFreePoolWithTag((*ext).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
-                        if !(*ext).translated_resources.is_null() { ExFreePoolWithTag((*ext).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
-                        (*ext).raw_resources = core::ptr::null_mut();
-                        (*ext).translated_resources = core::ptr::null_mut();
-                        (*ext).raw_resources_size = 0;
-                        (*ext).translated_resources_size = 0;
-                        (*ext).started = 0;
+                if ext.is_null() || unsafe { (*ext).magic != PCI_PDO_EXTENSION_MAGIC } {
+                    STATUS_INVALID_PARAMETER
+                } else {
+                    let teardown = unsafe { release_pci_interrupt(ext) };
+                    if teardown != STATUS_SUCCESS { teardown } else {
+                        unsafe {
+                            if !(*ext).raw_resources.is_null() { ExFreePoolWithTag((*ext).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
+                            if !(*ext).translated_resources.is_null() { ExFreePoolWithTag((*ext).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
+                            (*ext).raw_resources = core::ptr::null_mut();
+                            (*ext).translated_resources = core::ptr::null_mut();
+                            (*ext).raw_resources_size = 0;
+                            (*ext).translated_resources_size = 0;
+                            (*ext).started = 0;
+                        }
+                        STATUS_SUCCESS
                     }
                 }
             }
-            STATUS_SUCCESS
         },
         IRP_MN_QUERY_DEVICE_RELATIONS => {
             let relation_type = unsafe {
@@ -738,6 +1133,42 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                             query_resources:Some(query_pdo_ide_resources),
                         };
                         unsafe{core::ptr::write_unaligned(output.cast::<cognacos_nt_abi::bus::PCI_IDE_RESOURCE_INTERFACE>(),interface);}
+                        STATUS_SUCCESS
+                    }
+                }
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_INTERRUPT_INTERFACE {
+                if version as u32 != PCI_INTERRUPT_INTERFACE_VERSION
+                    || (size as usize) < core::mem::size_of::<PCI_INTERRUPT_INTERFACE>()
+                    || device.is_null() {
+                    STATUS_NOT_SUPPORTED
+                } else {
+                    let extension = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+                    if extension.is_null()
+                        || unsafe {
+                            (*extension).magic != PCI_PDO_EXTENSION_MAGIC
+                                || (*extension).version != 1
+                                || (*extension).started == 0
+                                || (*extension).interrupt_allocated == 0
+                        } {
+                        STATUS_DEVICE_NOT_READY
+                    } else {
+                        let interface = PCI_INTERRUPT_INTERFACE {
+                            header: INTERFACE_HEADER {
+                                size: core::mem::size_of::<PCI_INTERRUPT_INTERFACE>() as u16,
+                                version: PCI_INTERRUPT_INTERFACE_VERSION as u16,
+                                context: device.cast(),
+                                interface_reference: Some(pci_bus_interface_reference),
+                                interface_dereference: Some(pci_bus_interface_dereference),
+                            },
+                            register: Some(pci_pdo_interrupt_register),
+                            enable: Some(pci_pdo_interrupt_enable),
+                            disable: Some(pci_pdo_interrupt_disable),
+                            unregister: Some(pci_pdo_interrupt_unregister),
+                        };
+                        unsafe {
+                            pci_bus_interface_reference(device.cast());
+                            core::ptr::write_unaligned(output.cast::<PCI_INTERRUPT_INTERFACE>(), interface);
+                        }
                         STATUS_SUCCESS
                     }
                 }
@@ -845,6 +1276,7 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
                     magic: PCI_PDO_EXTENSION_MAGIC,
                     version: 1,
                     function_index: index as u32,
+                    device_object: pdo,
                     started: 0,
                     raw_resources: core::ptr::null_mut(),
                     raw_resources_size: 0,
@@ -853,6 +1285,12 @@ unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
                     information,
                     ide_ports: pci::ide::IdeControllerPorts::default(),
                     ide_ports_valid: 0,
+                    interrupt_vector: 0,
+                    interrupt_allocated: 0,
+                    interrupt_registered: 0,
+                    interrupt_reserved: 0,
+                    interrupt_context: 0,
+                    interrupt_hal: core::mem::zeroed(),
                 });
                 // DO_BUS_ENUMERATED_DEVICE: this is a PDO created by its bus.
                 (*pdo).flags |= 0x0000_0200;

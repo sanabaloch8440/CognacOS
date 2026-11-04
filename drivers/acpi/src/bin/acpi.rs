@@ -15,10 +15,14 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU8, Ordering}};
+use core::{cell::{Cell, UnsafeCell}, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU8, Ordering}};
 use cognacos_acpi as acpi;
 use cognacos_hal_contract::AcpiSciHalServices;
-use cognacos_nt_abi::{bus::{ACPI_FIRMWARE_INTERFACE, INTERFACE_HEADER, ACPI_FIRMWARE_INTERFACE_VERSION}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
+use cognacos_nt_abi::{bus::{
+    ACPI_FIRMWARE_INTERFACE, ACPI_FIRMWARE_INTERFACE_V2, ACPI_FIRMWARE_INTERFACE_VERSION,
+    ACPI_FIRMWARE_INTERFACE_VERSION_2, ACPI_PCI_INTERRUPT_ROUTE,
+    ACPI_PCI_INTERRUPT_ROUTE_REQUEST, INTERFACE_HEADER,
+}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
 
 const MAX_ACPI_DEVICES:usize=256;
@@ -983,15 +987,19 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
             let guid = unsafe { core::ptr::read_unaligned(parameters.as_ptr().cast::<*const cognacos_nt_abi::bus::GUID>()) };
             let size = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(8).cast::<u16>()) };
             let version = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(10).cast::<u16>()) };
-            let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut ACPI_FIRMWARE_INTERFACE>()) };
+            let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<PVOID>()) };
             if guid.is_null() || output.is_null() {
                 STATUS_INVALID_PARAMETER
-            } else if unsafe { *guid } != cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE
-                || version as u32 != ACPI_FIRMWARE_INTERFACE_VERSION
-                || (size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() {
-                STATUS_NOT_SUPPORTED
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE
+                && version as u32 == ACPI_FIRMWARE_INTERFACE_VERSION
+                && (size as usize) >= core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() {
+                unsafe { cognac_acpi_get_firmware_interface(output.cast()) }
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE_V2
+                && version as u32 == ACPI_FIRMWARE_INTERFACE_VERSION_2
+                && (size as usize) >= core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>() {
+                unsafe { cognac_acpi_get_firmware_interface_v2(output.cast()) }
             } else {
-                unsafe { cognac_acpi_get_firmware_interface(output) }
+                STATUS_NOT_SUPPORTED
             }
         },
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
@@ -1474,23 +1482,365 @@ unsafe extern "win64" fn query_firmware_table(
     STATUS_SUCCESS
 }
 
+const ACPI_ROUTE_BUFFER_CAPACITY: usize = 4096;
+
+type AcpiRouteTableSources = [&'static [u8]; acpi::aml_tables::MAX_AML_TABLES];
+type AcpiRouteTableHandles = [Option<acpi::aml_tables::TableHandle>; acpi::aml_tables::MAX_AML_TABLES];
+
+fn build_route_table_sources(
+    namespace: &acpi::aml::AmlNamespace,
+    records: &[AcpiDeviceRecord],
+    count: usize,
+    sources: &mut AcpiRouteTableSources,
+    handles: &mut AcpiRouteTableHandles,
+) {
+    sources.fill(&[]);
+    handles.fill(None);
+    for record in records.iter().take(count) {
+        let Some(handle) = record.table else { continue; };
+        let Some(node) = namespace.nodes.get(record.node as usize) else { continue; };
+        let slot = node.source_table as usize;
+        if slot < sources.len() {
+            sources[slot] = record.aml_bytes;
+            handles[slot] = Some(handle);
+        }
+    }
+}
+
+fn object_table<'a>(
+    namespace: &'a acpi::aml::AmlNamespace,
+    object: u16,
+    sources: &'a AcpiRouteTableSources,
+    handles: &'a AcpiRouteTableHandles,
+) -> Result<(usize, &'a [u8], acpi::aml_tables::TableHandle), i32> {
+    let node = namespace.nodes.get(object as usize).filter(|_| (object as usize) < namespace.count)
+        .ok_or(STATUS_NOT_FOUND)?;
+    let slot = node.source_table as usize;
+    let bytes = *sources.get(slot).ok_or(STATUS_NOT_FOUND)?;
+    let handle = handles.get(slot).and_then(|entry| *entry).ok_or(STATUS_NOT_FOUND)?;
+    if bytes.len() < 36 { return Err(STATUS_DEVICE_CONFIGURATION_ERROR); }
+    Ok((slot, bytes, handle))
+}
+
+fn evaluate_aml_integer_object(
+    manager: &acpi::aml_tables::AmlTableManager,
+    gate: &acpi::aml_tables::AmlExecutionBarrier,
+    namespace: &acpi::aml::AmlNamespace,
+    object: u16,
+    sources: &AcpiRouteTableSources,
+    handles: &AcpiRouteTableHandles,
+) -> Result<u64, i32> {
+    let (_, bytes, handle) = object_table(namespace, object, sources, handles)?;
+    let node = &namespace.nodes[object as usize];
+    match node.object_type {
+        acpi::aml::AmlObjectType::Name => {
+            let body = bytes.get(36..).ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+            let start = node.body_start as usize;
+            let end = start.checked_add(node.body_length as usize)
+                .filter(|end| *end <= body.len()).ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+            let (value, next) = acpi::aml::decode_integer_constant(body, start, end, 2)
+                .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)?;
+            if next != end { return Err(STATUS_DEVICE_CONFIGURATION_ERROR); }
+            Ok(value.value)
+        }
+        acpi::aml::AmlObjectType::Method => {
+            let mut runtime = acpi::acpi_device::SynchronizedMethodInvoker { synchronizer: &KERNEL_AML_METHOD_SYNCHRONIZER };
+            match manager.evaluate_method_value(handle, bytes, object, gate, &mut runtime)
+                .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)? {
+                acpi::acpi_device::AcpiMethodValue::Integer(value) => Ok(value),
+                _ => Err(STATUS_DEVICE_CONFIGURATION_ERROR),
+            }
+        }
+        _ => Err(STATUS_DEVICE_CONFIGURATION_ERROR),
+    }
+}
+
+fn read_aml_resource_buffer(
+    manager: &acpi::aml_tables::AmlTableManager,
+    gate: &acpi::aml_tables::AmlExecutionBarrier,
+    namespace: &acpi::aml::AmlNamespace,
+    object: u16,
+    sources: &AcpiRouteTableSources,
+    handles: &AcpiRouteTableHandles,
+    output: &mut [u8],
+) -> Result<usize, i32> {
+    let (_, bytes, handle) = object_table(namespace, object, sources, handles)?;
+    let node = &namespace.nodes[object as usize];
+    match node.object_type {
+        acpi::aml::AmlObjectType::Name => manager
+            .read_named_buffer(handle, bytes, object, gate, output)
+            .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR),
+        acpi::aml::AmlObjectType::Method => {
+            let mut runtime = acpi::acpi_device::IntegerMethodInvoker;
+            manager.read_method_buffer(handle, bytes, object, gate, &mut runtime, output)
+                .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)
+        }
+        _ => Err(STATUS_DEVICE_CONFIGURATION_ERROR),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedLinkRoute {
+    gsi: u32,
+    active_low: bool,
+    level_triggered: bool,
+}
+struct AcpiPrtLinkResolver<'a> {
+    namespace: &'a acpi::aml::AmlNamespace,
+    manager: &'a acpi::aml_tables::AmlTableManager,
+    gate: &'a acpi::aml_tables::AmlExecutionBarrier,
+    sources: &'a AcpiRouteTableSources,
+    handles: &'a AcpiRouteTableHandles,
+    madt: &'a acpi::MadtInfo,
+    last: Cell<Option<ResolvedLinkRoute>>,
+}
+impl acpi::acpi_prt::LinkDeviceResolver for AcpiPrtLinkResolver<'_> {
+    fn resolve_gsi(&self, canonical_path: &[u8], source_index: u32) -> Result<u32, acpi::acpi_prt::PrtError> {
+        let link = acpi::acpi_prt::find_namespace_path(self.namespace, canonical_path)
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+        let prs = self.namespace.find_child(link, *b"_PRS")
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+        let crs = self.namespace.find_child(link, *b"_CRS")
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+        let allocation = unsafe {
+            ExAllocatePoolWithTag(PAGED_POOL, ACPI_ROUTE_BUFFER_CAPACITY, ACPI_POOL_TAG)
+        };
+        if allocation.is_null() { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
+        let resolved_result = (|| {
+            let bytes = unsafe {
+                core::slice::from_raw_parts_mut(allocation.cast::<u8>(), ACPI_ROUTE_BUFFER_CAPACITY)
+            };
+            // _PRT SourceIndex addresses a resource descriptor in the link
+            // device's _PRS template. Validate that descriptor before using
+            // the corresponding currently-assigned _CRS entry.
+            let prs_length = read_aml_resource_buffer(
+                self.manager, self.gate, self.namespace, prs,
+                self.sources, self.handles, bytes,
+            ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let possible = acpi::acpi_resources::parse_resource_template(&bytes[..prs_length])
+                .map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let possible_resource = possible.entries.get(source_index as usize)
+                .and_then(|entry| *entry)
+                .ok_or(acpi::acpi_prt::PrtError::InvalidSourceIndex)?;
+            if !matches!(possible_resource,
+                acpi::acpi_resources::Resource::Irq { .. }
+                    | acpi::acpi_resources::Resource::ExtendedIrq { .. }) {
+                return Err(acpi::acpi_prt::PrtError::InvalidSourceIndex);
+            }
+            let length = read_aml_resource_buffer(
+                self.manager, self.gate, self.namespace, crs,
+                self.sources, self.handles, bytes,
+            ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let resources = acpi::acpi_resources::parse_resource_template(&bytes[..length])
+                .map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let resource = resources.entries.get(source_index as usize)
+                .and_then(|entry| *entry)
+                .ok_or(acpi::acpi_prt::PrtError::InvalidSourceIndex)?;
+            let resolved = match resource {
+            acpi::acpi_resources::Resource::ExtendedIrq { flags, interrupts, count } if count == 1 => {
+                ResolvedLinkRoute {
+                    gsi: interrupts[0],
+                    active_low: flags & 0x04 != 0,
+                    level_triggered: flags & 0x02 != 0,
+                }
+            }
+            acpi::acpi_resources::Resource::Irq {
+                mask, level_triggered, active_low, ..
+            } if mask.count_ones() == 1 => {
+                let irq = mask.trailing_zeros() as u8;
+                let override_entry = self.madt.irq_overrides[..self.madt.irq_override_count]
+                    .iter().find(|entry| entry.bus == 0 && entry.source_irq == irq);
+                if let Some(entry) = override_entry {
+                    ResolvedLinkRoute { gsi: entry.gsi, active_low: entry.active_low, level_triggered: entry.level_triggered }
+                } else {
+                    ResolvedLinkRoute { gsi: irq as u32, active_low, level_triggered }
+                }
+            }
+            _ => return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed),
+            };
+            Ok(resolved)
+        })();
+        unsafe { ExFreePoolWithTag(allocation, ACPI_POOL_TAG); }
+        let resolved = resolved_result?;
+        self.last.set(Some(resolved));
+        Ok(resolved.gsi)
+    }
+}
+
+unsafe extern "win64" fn acpi_query_pci_interrupt_route(
+    context: PVOID,
+    request: *const ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
+    output: *mut ACPI_PCI_INTERRUPT_ROUTE,
+) -> i32 {
+    let Some(_operation) = AcpiOperationGuard::enter() else { return STATUS_DEVICE_NOT_READY; };
+    if context != core::ptr::addr_of!(STATE).cast_mut().cast()
+        || request.is_null() || output.is_null() || !STATE.ready.load(Ordering::Acquire) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let request = unsafe { *request };
+    if request.reserved != 0 || request.device >= 32 || request.function >= 8
+        || !(1..=4).contains(&request.pin) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let manager = unsafe { (&*STATE.aml_manager.get()).assume_init_ref() };
+    let gate = unsafe { &*STATE.aml_barrier.get() };
+    let namespace = manager.namespace();
+    let records = unsafe { (&*STATE.device_records.get()).assume_init_ref() };
+    let count = STATE.device_count.load(Ordering::Acquire).min(MAX_ACPI_DEVICES);
+    let mut sources: AcpiRouteTableSources = [&[]; acpi::aml_tables::MAX_AML_TABLES];
+    let mut handles: AcpiRouteTableHandles = [None; acpi::aml_tables::MAX_AML_TABLES];
+    build_route_table_sources(namespace, records, count, &mut sources, &mut handles);
+    let madt = unsafe { (&*STATE.madt.get()).assume_init_ref() };
+
+    let mut selected: Option<ResolvedLinkRoute> = None;
+    let mut selected_io_apic: Option<(u64, u32)> = None;
+    let mut matching_roots = 0usize;
+    for record in records.iter().take(count) {
+        if !record.identity.has_hid { continue; }
+        let hid = record.identity.hid.as_bytes();
+        if hid != b"PNP0A08" && hid != b"PNP0A03" { continue; }
+        let segment = match namespace.find_child(record.node, *b"_SEG") {
+            Some(object) => match evaluate_aml_integer_object(manager, gate, namespace, object, &sources, &handles) {
+                Ok(value) => value, Err(_) => continue,
+            },
+            None => 0,
+        };
+        let root_bus = match namespace.find_child(record.node, *b"_BBN") {
+            Some(object) => match evaluate_aml_integer_object(manager, gate, namespace, object, &sources, &handles) {
+                Ok(value) => value, Err(_) => continue,
+            },
+            None => 0,
+        };
+        if segment != request.segment as u64 || root_bus > u8::MAX as u64 { continue; }
+
+        let Some(crs_object) = namespace.find_child(record.node, *b"_CRS") else { continue; };
+        let crs_allocation = unsafe {
+            ExAllocatePoolWithTag(PAGED_POOL, ACPI_ROUTE_BUFFER_CAPACITY, ACPI_POOL_TAG)
+        };
+        if crs_allocation.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+        let root_resources_result = (|| {
+            let crs_bytes = unsafe {
+                core::slice::from_raw_parts_mut(crs_allocation.cast::<u8>(), ACPI_ROUTE_BUFFER_CAPACITY)
+            };
+            let crs_length = read_aml_resource_buffer(
+                manager, gate, namespace, crs_object, &sources, &handles, crs_bytes,
+            )?;
+            acpi::parse_pci_root_resources(&crs_bytes[..crs_length])
+                .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)
+        })();
+        unsafe { ExFreePoolWithTag(crs_allocation, ACPI_POOL_TAG); }
+        let root_resources = match root_resources_result {
+            Ok(resources) => resources, Err(_) => continue,
+        };
+        let bus_match = root_resources.apertures[..root_resources.count].iter().any(|aperture|
+            aperture.resource_type == 2
+                && request.bus as u64 >= aperture.minimum
+                && (request.bus as u64) <= aperture.maximum
+        ) || (root_resources.apertures[..root_resources.count].iter().all(|a| a.resource_type != 2)
+            && request.bus as u64 == root_bus);
+        if !bus_match { continue; }
+
+        matching_roots += 1;
+        if matching_roots > 1 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+        let resolver = AcpiPrtLinkResolver {
+            namespace, manager, gate, sources: &sources, handles: &handles,
+            madt, last: Cell::new(None),
+        };
+        let prt = match acpi::acpi_prt::evaluate_prt_name_object(namespace, &sources, record.node, &resolver) {
+            Ok(table) => table, Err(_) => return STATUS_NOT_FOUND,
+        };
+        let address = ((request.device as u32) << 16) | request.function as u32;
+        let Some(entry) = prt.find(address, request.pin - 1) else { return STATUS_NOT_FOUND; };
+        let resolved = match entry.source {
+            acpi::acpi_prt::InterruptSource::DirectGsi { gsi } => ResolvedLinkRoute {
+                gsi, active_low: true, level_triggered: true,
+            },
+            acpi::acpi_prt::InterruptSource::LinkDevice { path, length, source_index } => {
+                if acpi::acpi_prt::LinkDeviceResolver::resolve_gsi(&resolver, &path[..length as usize], source_index).is_err() {
+                    return STATUS_NOT_FOUND;
+                }
+                let Some(resolved) = resolver.last.get() else { return STATUS_NOT_FOUND; };
+                resolved
+            }
+        };
+        let mut io_apic = None;
+        for apic in madt.io_apics[..madt.io_apic_count].iter() {
+            let mut gsi_limit = apic.gsi_base.saturating_add(120);
+            // The next MADT I/O-APIC GSI base bounds this controller's range;
+            // do not let the 120-entry architectural ceiling overlap a
+            // neighbouring controller with a smaller redirection table.
+            for other in madt.io_apics[..madt.io_apic_count].iter() {
+                if other.gsi_base > apic.gsi_base && other.gsi_base < gsi_limit {
+                    gsi_limit = other.gsi_base;
+                }
+            }
+            if resolved.gsi >= apic.gsi_base && resolved.gsi < gsi_limit {
+                if io_apic.is_some() { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+                io_apic = Some((apic.address as u64, apic.gsi_base));
+            }
+        }
+        let Some(io_apic) = io_apic else { return STATUS_NOT_FOUND; };
+        selected = Some(resolved);
+        selected_io_apic = Some(io_apic);
+    }
+    let Some(route) = selected else { return STATUS_NOT_FOUND; };
+    let Some((io_apic_base, gsi_base)) = selected_io_apic else { return STATUS_NOT_FOUND; };
+    unsafe {
+        output.write(ACPI_PCI_INTERRUPT_ROUTE {
+            gsi: route.gsi,
+            active_low: route.active_low as u8,
+            level_triggered: route.level_triggered as u8,
+            reserved: [0; 2],
+            io_apic_base,
+            gsi_base,
+            reserved2: 0,
+        });
+    }
+    STATUS_SUCCESS
+}
+
+unsafe extern "win64" fn cognac_acpi_get_firmware_interface_v2(
+    output: *mut ACPI_FIRMWARE_INTERFACE_V2,
+) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    let context = core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>();
+    unsafe {
+        output.write(ACPI_FIRMWARE_INTERFACE_V2 {
+            header: INTERFACE_HEADER {
+                size: core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>() as u16,
+                version: ACPI_FIRMWARE_INTERFACE_VERSION_2 as u16,
+                context,
+                interface_reference: Some(acpi_interface_reference),
+                interface_dereference: Some(acpi_interface_dereference),
+            },
+            query_table: Some(query_firmware_table),
+            query_pci_interrupt_route: Some(acpi_query_pci_interrupt_route),
+        });
+    }
+    unsafe { acpi_interface_reference(context); }
+    STATUS_SUCCESS
+}
+
 /// Return ACPI.sys' stable, versioned firmware-table interface to a consumer.
 unsafe extern "win64" fn cognac_acpi_get_firmware_interface(
     output: *mut ACPI_FIRMWARE_INTERFACE,
 ) -> i32 {
     if output.is_null() { return STATUS_INVALID_PARAMETER; }
     if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    let context = core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>();
     unsafe {
         output.write(ACPI_FIRMWARE_INTERFACE {
             header: INTERFACE_HEADER {
                 size: core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() as u16,
                 version: ACPI_FIRMWARE_INTERFACE_VERSION as u16,
-                context: core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>(),
+                context,
                 interface_reference: Some(acpi_interface_reference),
                 interface_dereference: Some(acpi_interface_dereference),
             },
             query_table: Some(query_firmware_table),
         });
+        acpi_interface_reference(context);
     }
     STATUS_SUCCESS
 }
