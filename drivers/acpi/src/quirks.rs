@@ -573,12 +573,16 @@ quirk_def!(IBM_600_2646_IRQ_QUIRK,"ibm-thinkpad-600-2646-disable-acpi-pci-irq",I
 quirk_def!(ASUS_PR_DLS_PCI_QUIRK,"asus-pr-dls-disable-acpi-pci",ASUS_PR_DLS_MATCH,QuirkFlags((1 << 6) | (1 << 5)));
 quirk_def!(ACER_TRAVELMATE_360_PCI_QUIRK,"acer-travelmate-360-disable-acpi-pci",ACER_TRAVELMATE_360_MATCH,QuirkFlags((1 << 6) | (1 << 5)));
 quirk_def!(NEC_BEARLAKE_RSDT_QUIRK,"nec-bearlake-v1-12-prefer-rsdt",NEC_BEARLAKE_MATCH,QuirkFlags::PREFER_RSDT);
+quirk_def!(LENOVO_IIL_NO_E820_QUIRK,"lenovo-iil-do-not-clip-e820-from-pci-crs",LENOVO_IIL_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
+quirk_def!(ACER_SPIN_5_NO_E820_QUIRK,"acer-spin-sp513-54n-do-not-clip-e820-from-pci-crs",ACER_SPIN_5_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
+quirk_def!(CLEVO_X170KM_G_NO_E820_QUIRK,"clevo-x170km-g-do-not-clip-e820-from-pci-crs",CLEVO_X170KM_G_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
 
 pub const PLATFORM_QUIRK_REGISTRY:&[QuirkDefinition]=&[
  FUJITSU_SIEMENS_QUIRK,DELL_0A3E_QUIRK,
  HP_NX6115_IRQ0_QUIRK,HP_NX6125_IRQ0_QUIRK,HP_NX6325_IRQ0_QUIRK,
  IBM_600_2645_IRQ_QUIRK,IBM_600_2646_IRQ_QUIRK,ASUS_PR_DLS_PCI_QUIRK,
  ACER_TRAVELMATE_360_PCI_QUIRK,NEC_BEARLAKE_RSDT_QUIRK,
+ LENOVO_IIL_NO_E820_QUIRK,ACER_SPIN_5_NO_E820_QUIRK,CLEVO_X170KM_G_NO_E820_QUIRK,
 ];
 
 #[cfg(test)]
@@ -680,15 +684,19 @@ mod tests {
     }
 
     #[test]
-    fn lenovo_iil_quirk_stays_inactive_without_e820_clipping_consumer() {
-        let mut identity = PlatformIdentity::EMPTY;
-        identity.system_vendor.set(b"LENOVO");
-        identity.product_version.set(b"Yoga IIL platform");
-        let policy = evaluate_registry(&identity, PLATFORM_QUIRK_REGISTRY).unwrap();
-        // Keep this inactive until the PCI host-bridge allocator actually clips E820 ranges.
-        assert!(!policy.flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
-        identity.product_version.set(b"Yoga platform");
-        let policy = evaluate_registry(&identity, PLATFORM_QUIRK_REGISTRY).unwrap();
-        assert!(!policy.flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
+    fn e820_quirks_are_exactly_scoped_and_enable_allocator_opt_out() {
+        let mut lenovo = PlatformIdentity::EMPTY;
+        lenovo.system_vendor.set(b"LENOVO");
+        lenovo.product_version.set(b"ThinkPad IIL Gen");
+        assert!(evaluate_registry(&lenovo, PLATFORM_QUIRK_REGISTRY).unwrap().flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
+        lenovo.product_version.set(b"ThinkPad T14");
+        assert!(!evaluate_registry(&lenovo, PLATFORM_QUIRK_REGISTRY).unwrap().flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
+        let mut acer = PlatformIdentity::EMPTY;
+        acer.system_vendor.set(b"Acer");
+        acer.product_name.set(b"Spin SP513-54N");
+        assert!(evaluate_registry(&acer, PLATFORM_QUIRK_REGISTRY).unwrap().flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
+        let mut clevo = PlatformIdentity::EMPTY;
+        clevo.board_name.set(b"X170KM-G");
+        assert!(evaluate_registry(&clevo, PLATFORM_QUIRK_REGISTRY).unwrap().flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
     }
 }
