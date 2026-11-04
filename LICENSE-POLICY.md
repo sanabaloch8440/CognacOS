@@ -33,9 +33,4 @@ copyright statements. Existing upstream notices must remain intact. See
 
 ## ACPI implementation independence
 
-CognacOS's ACPI/AML implementation must be independently authored. Do not
-integrate ACPICA, copy ACPICA source, or create a close code-level derivative
-of its implementation. ACPI specifications and operating-system interface
-documentation may be used as behavioral references; implementation structure,
-code, and tests must be independently developed. Any future external code
-must undergo provenance and license review before inclusion.
+CognacOS's ACPI/AML implementation must be independently authored. Do not integrate, copy, adapt, or create close code-level derivatives of ACPICA, ReactOS, or Linux ACPI implementation code or tests. ACPI specifications and operating-system interface documentation may be used as behavioral references; implementation structure, code, and tests must be independently developed. Public implementation repositories may be consulted only to clarify specification questions, never as sources for reusable code, implementation structure, or fixtures. Any future external code must undergo provenance and license review before inclusion.

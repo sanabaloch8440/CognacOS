@@ -57,7 +57,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 41. [ ] Enforce instruction budgets, deadlines, recursion limits, and object-size limits.
 42. [ ] Guarantee lock release and temporary-object cleanup on every error path.
 43. [ ] Implement module-level AML execution and table dependency ordering.
-44. [ ] Differential-test supported method results against ACPICA AcpiExec.
+44. [ ] Validate supported method results against independently authored expected-value vectors derived from the ACPI specification and documented Windows behavior; record unsupported cases separately.
 45. [ ] Document every unsupported opcode and distinguish unsupported from malformed AML.
 
 ## Device enumeration and PnP
@@ -136,7 +136,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 - [ ] Unit and malformed-input tests pass for every parser/interpreter/resource path changed.
 - [ ] QEMU boot and device-enumeration tests pass with ACPI fixtures.
 - [ ] Failure injection proves initialization/PnP rollback do not leak resources or leave stale pointers.
-- [ ] Supported behavior is compared against ACPICA/iASL fixtures; unsupported behavior fails closed.
+- [ ] Supported behavior is compared against independently authored ACPI-specification-derived vectors; unsupported behavior fails closed.
 - [ ] Suspend/resume, IRQ routing, EC/thermal, NUMA, and DMA-remapping claims are limited to tested features.
 - [ ] Production readiness is withheld until critical-path gates have evidence.
 

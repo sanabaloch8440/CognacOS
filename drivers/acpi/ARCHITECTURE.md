@@ -6,13 +6,7 @@ the HAL, PCI driver, or kernel executive.
 
 ## Independent implementation and licensing
 
-The ACPI/AML implementation in CognacOS is independently authored. ACPICA is
-not a dependency or implementation source: do not integrate its code, copy its
-source, or create a close code-level derivative. Use the ACPI specifications
-and documented Windows driver contracts as behavioral requirements, while
-maintaining an independently designed implementation and test suite. Any
-external code proposed for this subsystem requires a provenance and license
-review before it is accepted. See the repository [license policy](../../LICENSE-POLICY.md).
+The ACPI/AML implementation in CognacOS is independently authored. ACPICA, ReactOS, and Linux implementation code are not dependencies or implementation sources: do not integrate, copy, adapt, or create close code-level derivatives of their ACPI implementations or tests. Use the ACPI specifications and documented Windows driver contracts as behavioral requirements, while maintaining an independently designed implementation and test suite. Public implementations may be consulted only to identify specification questions; no source, implementation structure, or test fixtures may be reused. Any external code proposed for this subsystem requires a provenance and license review before it is accepted. See the repository [license policy](../../LICENSE-POLICY.md).
 
 ## Reference architecture
 
@@ -24,12 +18,7 @@ Microsoft Windows driver documentation is the primary behavioral reference:
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/irp-mn-query-resources
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/mapping-bus-relative-addresses-to-virtual-addresses
 
-ReactOS is an implementation reference, not a substitute for the WDK contract:
-
-- https://github.com/reactos/reactos/tree/master/drivers/bus/acpi
-- https://github.com/reactos/reactos/blob/master/drivers/bus/acpi/main.c
-- https://github.com/reactos/reactos/blob/master/drivers/bus/acpi/buspdo.c
-- https://doxygen.reactos.org/df/d5f/drivers_2bus_2acpi_2pnp_8c_source.html
+Implementation source-code repositories are intentionally not listed as references. Use the ACPI specification and Microsoft WDK documentation for requirements; all implementation and tests in this subsystem must remain independently authored.
 
 ## Ownership boundaries
 
