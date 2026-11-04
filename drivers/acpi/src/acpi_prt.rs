@@ -765,3 +765,35 @@ mod method_prt_execution_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod varpackage_prt_tests {
+    use super::*;
+    use crate::aml::{AmlNamespace, AmlNode, AmlObjectType};
+    struct NoSync;
+    impl crate::aml_exec::AmlMethodSynchronizer for NoSync {
+        fn acquire(&self, _: u16, _: u8) -> Result<(), crate::aml_exec::ExecError> { Ok(()) }
+        fn release(&self, _: u16) {}
+    }
+    struct NoLinks;
+    impl LinkDeviceResolver for NoLinks {
+        fn resolve_gsi(&self, _: &[u8], _: u32) -> Result<u32, PrtError> { Err(PrtError::LinkResolutionFailed) }
+    }
+    #[test]
+    fn evaluates_varpackage_with_runtime_element_count() {
+        // Return (VarPackage (One) { Package (4) { 0x0005ffff, 0, 0, 19 } })
+        let aml = [
+            0x14, 23, b'P', b'R', b'T', b'0', 0,
+            0xa4, 0x13, 15, 0x0a, 1,
+            0x12, 10, 4, 0x0c, 0xff, 0xff, 0x05, 0,
+            0, 0, 0x0a, 19,
+        ];
+        let mut ns = AmlNamespace::new();
+        ns.nodes[1] = AmlNode { parent: 0, name: *b"PCI0", object_type: AmlObjectType::Device, ..AmlNode::ROOT };
+        ns.nodes[2] = AmlNode { parent: 1, name: *b"_PRT", object_type: AmlObjectType::Method,
+            source_table: 0, body_start: 7, body_length: 17, ..AmlNode::ROOT };
+        ns.count = 3;
+        let table = evaluate_prt_method_object(&ns, &[&aml], 1, 64, &NoSync, &NoLinks).unwrap();
+        assert_eq!(table.find(0x0005_0000, 0).unwrap().source, InterruptSource::DirectGsi { gsi: 19 });
+    }
+}
