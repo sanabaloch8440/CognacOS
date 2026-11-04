@@ -366,11 +366,19 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         // and declared structure-table range against the active identity map
         // before constructing physical slices.
         if info.smbios_entry_point != 0 {
-            let ep_mapped = unsafe {
-                memory::validate_identity_range(info.pml4_physical, info.smbios_entry_point, 31)
+            let prefix_mapped = unsafe {
+                memory::validate_identity_range(info.pml4_physical, info.smbios_entry_point, 5)
             }.is_ok();
-            if ep_mapped {
-                let ep = unsafe { core::slice::from_raw_parts(info.smbios_entry_point as *const u8, 31) };
+            if prefix_mapped {
+                let anchor = unsafe { core::slice::from_raw_parts(info.smbios_entry_point as *const u8, 5) };
+                let entry_length = if anchor == b"_SM3_" { 24usize } else { 31usize };
+                let ep_mapped = unsafe {
+                    memory::validate_identity_range(info.pml4_physical, info.smbios_entry_point, entry_length as u64)
+                }.is_ok();
+                if !ep_mapped {
+                    serial_write(b"WARNING: SMBIOS entry point is truncated or unmapped; platform quirks disabled.\\r\\n");
+                } else {
+                let ep = unsafe { core::slice::from_raw_parts(info.smbios_entry_point as *const u8, entry_length) };
                 match acpi::quirks::parse_smbios_entry_point(ep) {
                     Ok(desc) if desc.table_length <= 16 * 1024 * 1024
                         && unsafe { memory::validate_identity_range(
@@ -400,6 +408,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                     }
                     Ok(_) => serial_write(b"WARNING: SMBIOS structure table is oversized or unmapped; platform quirks disabled.\\r\\n"),
                     Err(_) => serial_write(b"WARNING: invalid SMBIOS entry point; platform quirks disabled.\\r\\n"),
+                }
                 }
             } else {
                 serial_write(b"WARNING: SMBIOS entry point is not identity mapped; platform quirks disabled.\\r\\n");
