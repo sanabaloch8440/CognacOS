@@ -17,6 +17,7 @@
 
 use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_acpi as acpi;
+use cognacos_hal_contract::AcpiSciHalServices;
 use cognacos_nt_abi::{bus::{ACPI_FIRMWARE_INTERFACE, INTERFACE_HEADER, ACPI_FIRMWARE_INTERFACE_VERSION}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
 
@@ -254,6 +255,12 @@ unsafe extern "win64" {
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
 .section .text.import_thunks,"ax",@progbits
+.global HalAcpiGetSciServices
+.type HalAcpiGetSciServices,@function
+HalAcpiGetSciServices:
+    jmp QWORD PTR [rip + __imp_hal_HalAcpiGetSciServices]
+.size HalAcpiGetSciServices, .-HalAcpiGetSciServices
+
 .global HalAcpiGetTableEx
 .type HalAcpiGetTableEx,@function
 HalAcpiGetTableEx:
@@ -262,11 +269,40 @@ HalAcpiGetTableEx:
 
 .section .data.imports.hal,"aw",@progbits
 .p2align 3
+.global __imp_hal_HalAcpiGetSciServices
+.type __imp_hal_HalAcpiGetSciServices,@object
+__imp_hal_HalAcpiGetSciServices: .quad 0
+.size __imp_hal_HalAcpiGetSciServices,8
+
+.p2align 3
 .global __imp_hal_HalAcpiGetTableEx
 .type __imp_hal_HalAcpiGetTableEx,@object
 __imp_hal_HalAcpiGetTableEx: .quad 0
 .size __imp_hal_HalAcpiGetTableEx,8
 "#);
+
+struct SciServicesStorage(core::cell::UnsafeCell<MaybeUninit<AcpiSciHalServices>>);
+unsafe impl Sync for SciServicesStorage {}
+static ACPI_SCI_SERVICES: SciServicesStorage =
+    SciServicesStorage(core::cell::UnsafeCell::new(MaybeUninit::uninit()));
+static ACPI_SCI_SERVICES_READY: AtomicBool = AtomicBool::new(false);
+
+/// Obtain the private versioned HAL SCI interface only after the kernel has
+/// published its PASSIVE_LEVEL work queue. Retry is allowed while boot stages
+/// are still installing executive services.
+fn acquire_sci_hal_services() -> Result<&'static AcpiSciHalServices, i32> {
+    if ACPI_SCI_SERVICES_READY.load(Ordering::Acquire) {
+        return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() });
+    }
+    let mut table = core::mem::MaybeUninit::<AcpiSciHalServices>::uninit();
+    let status = unsafe { HalAcpiGetSciServices(table.as_mut_ptr()) };
+    if status != STATUS_SUCCESS { return Err(status); }
+    let table = unsafe { table.assume_init() };
+    if !table.compatible() { return Err(STATUS_DEVICE_CONFIGURATION_ERROR); }
+    unsafe { (*ACPI_SCI_SERVICES.0.get()).write(table); }
+    ACPI_SCI_SERVICES_READY.store(true, Ordering::Release);
+    Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() })
+}
 
 const MAX_ACPI_TABLE_LENGTH: u32 = 1024 * 1024;
 unsafe fn query_hal_table(signature: [u8; 4], instance: u32) -> Result<&'static [u8], i32> {
