@@ -41,7 +41,7 @@ pub fn validate_runtime_value(value:&AmlRuntimeValue,arena:&AmlObjectArena)->Res
         }
         AmlValueKind::ObjectReference=>{
             match reference_from_value(value)?{
-                AmlReference::ArenaValue(value)=>{ if arena.get(value).is_none(){return Err(RuntimeError::InvalidReference)} }
+                AmlReference::ArenaValue(value)=>{ if arena.get(value).filter(|object|object.kind!=AmlValueKind::Empty).is_none(){return Err(RuntimeError::InvalidReference)} }
                 AmlReference::NamespaceNode(node)=>{
                     if node as usize>=MAX_NAMESPACE_NODES{return Err(RuntimeError::InvalidReference)}
                 }
@@ -304,7 +304,7 @@ pub fn dereference(reference:AmlReference,bindings:&AmlBindings,arena:&AmlObject
     ->Result<AmlRuntimeValue,RuntimeError>{
     match reference{
         AmlReference::NamespaceNode(node)=>Ok(*arena.get(bindings.value_id(node)?).ok_or(RuntimeError::InvalidReference)?),
-        AmlReference::ArenaValue(id)=>Ok(*arena.get(id).ok_or(RuntimeError::InvalidReference)?),
+        AmlReference::ArenaValue(id)=>{let value=*arena.get(id).ok_or(RuntimeError::InvalidReference)?;if value.kind==AmlValueKind::Empty{return Err(RuntimeError::InvalidReference)}Ok(value)},
         AmlReference::PackageElement{package,index}=>{
             let p=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
             if p.kind!=AmlValueKind::Package||index as usize>=checked_element_count(p)?{return Err(RuntimeError::InvalidReference)}
@@ -517,7 +517,7 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
     validate_runtime_value(&source,arena)?;
     match reference{
         AmlReference::ArenaValue(id)=>{
-            let target=*arena.get(id).ok_or(RuntimeError::InvalidReference)?;
+            let target=*arena.get(id).filter(|object|object.kind!=AmlValueKind::Empty).ok_or(RuntimeError::InvalidReference)?;
             let stored=if mode==StoreMode::CopyObject{source}else{
                 convert_to_target_type(&source,&target,arena,bindings.integer_width_bits,true)?
             };
