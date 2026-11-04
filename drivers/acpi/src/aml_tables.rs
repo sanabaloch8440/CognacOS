@@ -126,6 +126,9 @@ impl<G:AmlExecutionGate,I:AcpiMethodInvoker> AcpiMethodInvoker for GatedDeviceIn
 
 pub struct AmlTableManager {
     namespace:AmlNamespace,
+    /// Dynamic AML fields share the namespace lifetime and are retired under
+    /// the same execution-quiescence gate as their owning DefinitionBlock.
+    dynamic_namespace:crate::aml_mutation::AmlDynamicNamespace,
     // Parser declarations can resolve and refine External placeholders that
     // were created by earlier tables. Keep a persistent snapshot buffer so a
     // failed table can restore both appended nodes and mutations to existing
@@ -138,7 +141,7 @@ pub struct AmlTableManager {
 }
 impl AmlTableManager {
     pub const fn new()->Self {
-        Self{namespace:AmlNamespace::new(),rollback_nodes:[crate::aml::AmlNode::ROOT;MAX_NAMESPACE_NODES],
+        Self{namespace:AmlNamespace::new(),dynamic_namespace:crate::aml_mutation::AmlDynamicNamespace::new(),rollback_nodes:[crate::aml::AmlNode::ROOT;MAX_NAMESPACE_NODES],
             records:[TableRecord::EMPTY;MAX_AML_TABLES],count:0,next_generation:1,dsdt_loaded:false}
     }
     /// # Safety
@@ -209,6 +212,11 @@ impl AmlTableManager {
         self.load_firmware_tables(dsdt,&ssdts[..ssdt_count],gate)
     }
     pub fn namespace(&self)->&AmlNamespace{&self.namespace}
+    /// Borrow static and dynamic namespace state together for one AML runtime.
+    /// The mutable dynamic borrow serializes Create*Field namespace publication.
+    pub fn runtime_namespace(&mut self)->(&AmlNamespace,&mut crate::aml_mutation::AmlDynamicNamespace){
+        (&self.namespace,&mut self.dynamic_namespace)
+    }
     pub fn table_count(&self)->usize{self.count}
     pub fn dsdt_loaded(&self)->bool{self.dsdt_loaded}
     pub fn table_info(&self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
@@ -474,6 +482,32 @@ impl AmlTableManager {
     pub fn unload<G:AmlExecutionGate>(&mut self,handle:TableHandle,gate:&G)->Result<AmlTableInfo,TableError>{
         self.with_quiescence(gate,|manager|manager.unload_quiesced(handle))
     }
+
+    /// Production unload path for a live AML runtime. It drains method
+    /// execution, validates reverse-order unload, invalidates cached Name
+    /// bindings, removes the table's namespace nodes, and retires its dynamic
+    /// Create*Field objects as one quiesced operation.
+    pub fn unload_with_runtime<G:AmlExecutionGate>(&mut self,handle:TableHandle,
+        gate:&G,bindings:&mut crate::aml_runtime::AmlBindings)
+        ->Result<AmlTableInfo,TableError>{
+        self.with_quiescence(gate,|manager|{
+            if manager.count==0 || handle.slot as usize!=manager.count-1 {
+                return Err(TableError::UnloadOrder);
+            }
+            let record=manager.records[handle.slot as usize];
+            if !record.active || record.generation!=handle.generation {
+                return Err(TableError::InvalidHandle);
+            }
+            if manager.namespace.count!=record.info.namespace_end as usize {
+                return Err(TableError::NamespaceChanged);
+            }
+            if record.info.signature==*b"DSDT" && manager.count!=1 {
+                return Err(TableError::UnloadOrder);
+            }
+            bindings.invalidate_table(&manager.namespace,handle.slot as u32);
+            manager.unload_quiesced(handle)
+        })
+    }
     fn unload_quiesced(&mut self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
         if self.count==0||handle.slot as usize!=self.count-1{return Err(TableError::UnloadOrder)}
         let record=self.records[handle.slot as usize];
@@ -482,6 +516,9 @@ impl AmlTableManager {
         if record.info.signature==*b"DSDT"&&self.count!=1{return Err(TableError::UnloadOrder)}
         crate::aml::unload_definition_block(&mut self.namespace,handle.slot as u32);
         if self.namespace.count!=record.info.namespace_start as usize{return Err(TableError::NamespaceChanged)}
+        // No method can still hold a dynamic field reference here: unload_quiesced
+        // is called only after the execution gate has drained all active methods.
+        self.dynamic_namespace.remove_owner_table(handle.slot as u32);
         self.records[handle.slot as usize]=TableRecord::EMPTY;
         self.count-=1;
         if record.info.signature==*b"DSDT"{self.dsdt_loaded=false;}

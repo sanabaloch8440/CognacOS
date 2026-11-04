@@ -9,6 +9,7 @@
 use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_string,resolve_name_string};
 use crate::aml_osi::platform_osi;
 use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,AmlValueKind};
+use crate::aml_mutation::AmlDynamicNamespace;
 use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value,validate_runtime_value};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -69,7 +70,7 @@ impl AmlMethodSynchronizer for NoMethodSynchronizer{
 // While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
-struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,current_sync_level:u8}
+struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,dynamic:&'b mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32}
 impl<'a,'b> Machine<'a,'b>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn name_reference(&mut self,node:u16)->Result<AmlReference,ExecError>{
@@ -96,12 +97,20 @@ impl<'a,'b> Machine<'a,'b>{
     r.pos-=1;
     let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::BadTarget)?;
     r.pos=next;
-    let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::BadTarget)?;
+    let node=match resolve_name_string(self.namespace,self.scope,&name) {
+     Ok(node)=>node,
+     Err(_)=>{
+      let dynamic_node=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name).map_err(|_|ExecError::BadTarget)?;
+      let reference=self.dynamic.field_reference(self.namespace,dynamic_node).map_err(|_|ExecError::BadTarget)?;
+      return Ok(Target::Reference(reference));
+     }
+    };
     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
     let entry=self.namespace.nodes.get(canonical as usize)
         .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
-    if entry.object_type!=AmlObjectType::Name{return Err(ExecError::BadTarget)}
-    Ok(Target::Reference(self.name_reference(canonical)?))
+    if entry.object_type==AmlObjectType::Name { return Ok(Target::Reference(self.name_reference(canonical)?)); }
+    r.pos = r.pos; // preserve the parsed target boundary
+    Err(ExecError::BadTarget)
    }
   }
  }
@@ -158,7 +167,7 @@ impl<'a,'b> Machine<'a,'b>{
  fn store_value(&mut self,t:Target,value:AmlRuntimeValue,mode:StoreMode)->Result<(),ExecError>{
   match t{
    Target::Null=>Ok(()),
-   Target::Local(i)=>{self.locals[i]=value;Ok(())},
+   Target::Local(i)=>{let current=self.locals[i];if current.kind==AmlValueKind::ObjectReference{let reference=reference_from_value(&current).map_err(|_|ExecError::NonIntegerName)?;self.store_reference_value(reference,value,mode)}else{self.locals[i]=value;Ok(())}},
    Target::Arg(i)=>{
     let current=self.args[i];
     if current.kind==AmlValueKind::ObjectReference{
@@ -252,10 +261,69 @@ impl<'a,'b> Machine<'a,'b>{
   self.store_value(target,converted,StoreMode::CopyObject)?;
   Ok(converted)
  }
+ fn create_field_term(&mut self,r:&mut Reader<'_>,op:u8)->Result<AmlRuntimeValue,ExecError>{
+  let source_start=r.pos;
+  let source=self.term_value(r)?;
+  if source.kind!=AmlValueKind::Buffer{return Err(ExecError::TargetTypeMismatch)}
+  let source_opcode=*r.bytes.get(source_start).ok_or(ExecError::Truncated)?;
+  let buffer_id=if (0x60..=0x67).contains(&source_opcode) {
+   let slot=(source_opcode-0x60) as usize;
+   let current=self.locals[slot];
+   let id=if current.kind==AmlValueKind::ObjectReference {
+    match reference_from_value(&current).map_err(|_|ExecError::NonIntegerName)? {
+     AmlReference::ArenaValue(id)=>id,
+     _=>{let id=self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)?;self.locals[slot]=make_object_reference(AmlReference::ArenaValue(id));id}
+    }
+   } else {let id=self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)?;self.locals[slot]=make_object_reference(AmlReference::ArenaValue(id));id};
+   id
+  } else if (0x68..=0x6e).contains(&source_opcode) {
+   let slot=(source_opcode-0x68) as usize;
+   let current=self.args[slot];
+   let id=if current.kind==AmlValueKind::ObjectReference {
+    match reference_from_value(&current).map_err(|_|ExecError::NonIntegerName)? {
+     AmlReference::ArenaValue(id)=>id,
+     _=>{let id=self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)?;self.args[slot]=make_object_reference(AmlReference::ArenaValue(id));id}
+    }
+   } else {let id=self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)?;self.args[slot]=make_object_reference(AmlReference::ArenaValue(id));id};
+   id
+  } else if matches!(source_opcode,0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z') {
+   let (source_name,_) = parse_name_string(r.bytes,source_start,r.end).map_err(|_|ExecError::InvalidName)?;
+   let source_node=resolve_name_string(self.namespace,self.scope,&source_name).map_err(|_|ExecError::NameNotFound)?;
+   let canonical=self.namespace.resolve_alias(source_node).map_err(|_|ExecError::NameNotFound)?;
+   if self.namespace.nodes[canonical as usize].object_type==AmlObjectType::Name {
+    let _=self.name_reference(canonical)?;
+    self.bindings.value_id(canonical).map_err(|_|ExecError::NonIntegerName)?
+   } else { self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)? }
+  } else { self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)? };
+  let (bit_offset,bit_width)=if op==0x5b {
+   let index_value=self.term_value(r)?;let index=self.operand_integer(&index_value)? as u32;
+   let width_value=self.term_value(r)?;let width=self.operand_integer(&width_value)? as u32;
+   (index,width)
+  } else {
+   let index_value=self.term_value(r)?;let index=self.operand_integer(&index_value)? as u32;
+   let width=match op{0x8d=>1,0x8c=>8,0x8b=>16,0x8a=>32,0x8f=>64,_=>return Err(ExecError::UnsupportedOpcode)};
+   if op==0x8d{(index,width)}else{(index.checked_mul(8).ok_or(ExecError::TargetTypeMismatch)?,width)}
+  };
+  let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;
+  r.pos=next;
+  let node=self.dynamic.create_buffer_field_at(self.namespace,self.scope,&name,
+      self.arena,buffer_id,bit_offset,bit_width,self.owner_table)
+      .map_err(|_|ExecError::TargetTypeMismatch)?;
+  let reference=self.dynamic.field_reference(self.namespace,node).map_err(|_|ExecError::BadTarget)?;
+  Ok(make_object_reference(reference))
+ }
+ fn dynamic_field_value(&self,name:&crate::aml::AmlName)->Result<AmlRuntimeValue,ExecError>{
+  let node=self.dynamic.resolve_buffer_field(self.namespace,self.scope,name)
+      .map_err(|_|ExecError::NameNotFound)?;
+  let reference=self.dynamic.field_reference(self.namespace,node).map_err(|_|ExecError::BadTarget)?;
+  dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)
+ }
  fn term_value(&mut self,r:&mut Reader<'_>)->Result<AmlRuntimeValue,ExecError>{
   let start=r.pos;let op=r.byte()?;
   match op{
    0x00=>Ok(Self::integer_value(0)),0x01=>Ok(Self::integer_value(1)),
+   0x8a|0x8b|0x8c|0x8d|0x8f=>self.create_field_term(r,op),
+   0x5b=>{let extended=r.byte()?;if extended==0x13{self.create_field_term(r,0x5b)}else{r.pos=start;self.term(r).map(Self::integer_value)}},
    0xff=>Ok(Self::integer_value(self.integer_mask())),
    0x0a=>Ok(Self::integer_value(r.byte()? as u64)),
    0x0b=>{let b=r.take(2)?;Ok(Self::integer_value(u16::from_le_bytes([b[0],b[1]]) as u64))},
@@ -311,7 +379,7 @@ impl<'a,'b> Machine<'a,'b>{
     }
     Ok(value)
    }
-   0x60..=0x67=>Ok(self.locals[(op-0x60) as usize]),
+   0x60..=0x67=>{let value=self.locals[(op-0x60) as usize];if value.kind==AmlValueKind::ObjectReference{let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)}else{Ok(value)}},
    0x68..=0x6e=>self.argument_value((op-0x68) as usize),
    0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
     r.pos=start;
@@ -326,11 +394,12 @@ impl<'a,'b> Machine<'a,'b>{
      } else { 0 };
      return Ok(Self::integer_value(supported));
     }
-    let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
+    let node=match resolve_name_string(self.namespace,self.scope,&name){Ok(node)=>node,Err(_)=>return self.dynamic_field_value(&name)};
     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;
     let entry=*self.namespace.nodes.get(canonical as usize)
         .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::NameNotFound)?;
     match entry.object_type{
+     AmlObjectType::Field=>return self.dynamic_field_value(&name),
      AmlObjectType::Name=>{
       let reference=self.name_reference(canonical)?;
       dereference(reference,&self.bindings,&self.arena).map_err(|_|ExecError::NonIntegerName)
@@ -340,7 +409,7 @@ impl<'a,'b> Machine<'a,'b>{
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
       execute_method_inner(self.aml,self.namespace,canonical,
-          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.current_sync_level)
+          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.current_sync_level,entry.source_table)
      }
      // Device objects used as _PRT Source values are namespace references,
      // not scalar Names. Preserve the reference so the PRT decoder can resolve
@@ -373,6 +442,7 @@ impl<'a,'b> Machine<'a,'b>{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
    0x5b=>{
     let extended=r.byte()?;
+    if extended==0x13 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
     let operand=self.term_depth(r,depth+1)?;
     let result=match extended{
      0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
@@ -388,7 +458,8 @@ impl<'a,'b> Machine<'a,'b>{
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
-   0x60..=0x67=>self.operand_integer(&self.locals[(op-0x60)as usize]),0x68..=0x6e=>{let value=self.argument_value((op-0x68)as usize)?;self.operand_integer(&value)},
+   0x8a|0x8b|0x8c|0x8d|0x8f|0x5b=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)},
+   0x60..=0x67=>{let value=self.locals[(op-0x60)as usize];if value.kind==AmlValueKind::ObjectReference{let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;let deref=dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)?;self.operand_integer(&deref)}else{self.operand_integer(&value)}},0x68..=0x6e=>{let value=self.argument_value((op-0x68)as usize)?;self.operand_integer(&value)},
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
     let v=match op{
@@ -441,7 +512,7 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.current_sync_level)?;self.operand_integer(&value)}
+      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.current_sync_level,entry.source_table)?;self.operand_integer(&value)}
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
@@ -454,6 +525,7 @@ impl<'a,'b> Machine<'a,'b>{
      _=>Err(ExecError::NonIntegerName),
     }
    }
+   0x8a|0x8b|0x8c|0x8d|0x8f|0x5b=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)}
    _=>Err(ExecError::UnsupportedOpcode)
   }
  }
@@ -502,7 +574,7 @@ impl<'a,'b> Machine<'a,'b>{
     0xa1=>return Err(ExecError::UnsupportedOpcode),
     0xa5=>return Ok(ExecFlow::Break),
     0x9f=>return Ok(ExecFlow::ContinueLoop),
-    _=>{r.pos-=1;let _=self.term(r)?;}
+    _=>{r.pos-=1;let _=self.term_value(r)?;}
    }
   }
   Ok(ExecFlow::Continue)
@@ -515,12 +587,13 @@ pub fn evaluate_term_argument_in_context(
     bytes: &[u8], arena: &mut AmlObjectArena, bindings: &mut AmlBindings,
 ) -> Result<(u64, usize), ExecError> {
     let namespace = AmlNamespace::new();
+    let mut dynamic = AmlDynamicNamespace::new();
     let checkpoint = arena.count;
     let empty = Machine::uninitialized_value();
     let mut machine = Machine {
         locals: [empty; 8], args: [empty; 7], arena, bindings,
         integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
-        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, current_sync_level: 0,
+        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, dynamic: &mut dynamic, current_sync_level: 0, owner_table: 0,
     };
     let mut reader = Reader { bytes, pos: 0, end: bytes.len() };
     let result = machine.term(&mut reader).map(|value| (value, reader.pos));
@@ -545,7 +618,7 @@ pub fn evaluate_term_argument(bytes: &[u8]) -> Result<(u64, usize), ExecError> {
 /// Execute a method using bounded AML runtime objects and an explicit context.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,current_sync_level:u8)->Result<AmlRuntimeValue,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,dynamic:&mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32)->Result<AmlRuntimeValue,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
@@ -565,7 +638,7 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
   let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
   if end>aml.len(){return Err(ExecError::InvalidMethod)}
   let empty=Machine::uninitialized_value();
-  let mut m=Machine{locals:[empty;8],args:[empty;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,current_sync_level:active_sync_level};
+  let mut m=Machine{locals:[empty;8],args:[empty;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,dynamic,current_sync_level:active_sync_level,owner_table:node.source_table};
   for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
   let mut r=Reader{bytes:aml,pos:start,end};
   let value=match m.execute(&mut r,0)?{
@@ -600,10 +673,11 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
         { AmlObjectArena::new() }
     };
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
-    let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,0)?;
+    let mut dynamic=AmlDynamicNamespace::new();
+    let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,&mut dynamic,0,0)?;
     // The convenience wrapper destroys its local arena on return, so it must
     // not expose Package handles whose elements live in that arena.
-    if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
+    if value.kind==AmlValueKind::Package || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
     Ok(value)
 }
 
@@ -614,15 +688,10 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
 /// returns, and references into nested runtime objects therefore remain valid
 /// for the caller's context lifetime. The caller must not reset either context
 /// while any returned Package or ObjectReference is still in use.
-pub fn execute_method_in_context(
-    aml:&[u8],
-    namespace:&AmlNamespace,
-    method_index:u16,
-    args:&[AmlRuntimeValue],
-    integer_width_bits:u8,
-    arena:&mut AmlObjectArena,
-    bindings:&mut AmlBindings,
-    sync:&dyn AmlMethodSynchronizer,
+pub fn execute_method_in_dynamic_context(
+    aml:&[u8], namespace:&AmlNamespace, method_index:u16, args:&[AmlRuntimeValue],
+    integer_width_bits:u8, arena:&mut AmlObjectArena, bindings:&mut AmlBindings,
+    dynamic:&mut AmlDynamicNamespace, sync:&dyn AmlMethodSynchronizer,
 )->Result<AmlRuntimeValue,ExecError>{
     if args.len()>7{return Err(ExecError::BadArgumentCount)}
     for argument in args {
@@ -630,10 +699,23 @@ pub fn execute_method_in_context(
             .map_err(|_|ExecError::UnsupportedArgumentValue)?;
     }
     if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
-    execute_method_inner(
-        aml,namespace,method_index,args,0,integer_width_bits,
-        arena,bindings,sync,0,
-    )
+    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
+        arena,bindings,sync,dynamic,0,0)
+}
+
+/// Compatibility wrapper for methods that do not publish dynamic fields.
+/// Callers using Create*Field must retain an AmlDynamicNamespace and call
+/// execute_method_in_dynamic_context across the AML namespace lifetime.
+pub fn execute_method_in_context(
+    aml:&[u8], namespace:&AmlNamespace, method_index:u16, args:&[AmlRuntimeValue],
+    integer_width_bits:u8, arena:&mut AmlObjectArena, bindings:&mut AmlBindings,
+    sync:&dyn AmlMethodSynchronizer,
+)->Result<AmlRuntimeValue,ExecError>{
+    let mut dynamic=AmlDynamicNamespace::new();
+    let value=execute_method_in_dynamic_context(aml,namespace,method_index,args,
+        integer_width_bits,arena,bindings,&mut dynamic,sync)?;
+    if dynamic.field_count()!=0 { return Err(ExecError::UnsupportedReturnType); }
+    Ok(value)
 }
 
 /// Convenience entry point for non-Serialized methods. Serialized methods fail
@@ -1377,4 +1459,53 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[1]),Err(ExecError::BadArgumentCount));
  }
+ #[test]
+ fn executes_create_dword_field_store_and_reload_through_persistent_context(){
+  // Name(BUF0, Buffer(4) {0,0,0,0}); Method(TEST) {
+  //   CreateDWordField(BUF0, Zero, FLD0); Store(One, FLD0); Return(FLD0)
+  // }
+  let aml=[
+   0x08,b'B',b'U',b'F',b'0',0x11,0x07,0x0a,4,0,0,0,0,
+   0x14,0x1c,b'T',b'E',b'S',b'T',0,
+   0x8a,b'B',b'U',b'F',b'0',0x0a,0,b'F',b'L',b'D',b'0',
+   0x70,0x01,b'F',b'L',b'D',b'0',
+   0xa4,b'F',b'L',b'D',b'0'
+  ];
+  let mut namespace=AmlNamespace::new();
+  load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();
+  let mut bindings=AmlBindings::with_aml_revision(2);
+  let mut dynamic=AmlDynamicNamespace::new();
+  let result=execute_method_in_dynamic_context(&aml,&namespace,method,&[],64,
+      &mut arena,&mut bindings,&mut dynamic,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(result.kind,AmlValueKind::Integer);
+  assert_eq!(result.integer,1);
+  assert_eq!(dynamic.field_count(),1);
+  let field=dynamic.resolve_buffer_field(&namespace,0,
+      &crate::aml::AmlName{segments:[*b"FLD0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:0}).unwrap();
+  let reference=dynamic.field_reference(&namespace,field).unwrap();
+  assert_eq!(dereference(reference,&bindings,&arena).unwrap().integer,1);
+ }
+
+ #[test]
+ fn create_field_rejects_out_of_range_bit_extent_without_publishing_name(){
+  let aml=[
+   0x08,b'B',b'U',b'F',b'0',0x11,0x07,0x0a,4,0,0,0,0,
+   0x14,0x16,b'T',b'E',b'S',b'T',0,
+   0x5b,0x13,b'B',b'U',b'F',b'0',0x0a,31,0x0a,2,b'F',b'L',b'D',b'0',
+   0xa4,0x00
+  ];
+  let mut namespace=AmlNamespace::new();
+  load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();
+  let mut bindings=AmlBindings::with_aml_revision(2);
+  let mut dynamic=AmlDynamicNamespace::new();
+  assert_eq!(execute_method_in_dynamic_context(&aml,&namespace,method,&[],64,
+      &mut arena,&mut bindings,&mut dynamic,&NO_METHOD_SYNCHRONIZER),
+      Err(ExecError::TargetTypeMismatch));
+  assert_eq!(dynamic.field_count(),0);
+ }
+
 }

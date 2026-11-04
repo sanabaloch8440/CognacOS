@@ -13,6 +13,7 @@ pub mod aml_osi;
 pub mod aml_objects;
 pub mod aml_buffer;
 pub mod aml_runtime;
+pub mod aml_mutation;
 pub mod aml_region;
 pub mod aml_field;
 pub mod aml_tables;
