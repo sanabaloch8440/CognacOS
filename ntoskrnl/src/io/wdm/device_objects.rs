@@ -68,20 +68,22 @@ pub unsafe extern "win64" fn io_start_packet(device: *mut DeviceObject, irp: *mu
 /// VOID IoStartNextPacket(PDEVICE_OBJECT, BOOLEAN Cancelable).
 pub unsafe extern "win64" fn io_start_next_packet(device: *mut DeviceObject, _cancelable: u8) {
     if device.is_null() { return; }
-    let next = {
+    let (next,finalize_deleting)={
         let mut state=WDM.lock();
         let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
         unsafe{(*device).current_irp=ptr::null_mut();}
         let q=&mut slot.start_io;
-        if q.count==0{ptr::null_mut()}else{
+        let next=if q.count==0{ptr::null_mut()}else{
             let irp=q.entries[0];
             for n in 1..q.count{q.entries[n-1]=q.entries[n];q.keys[n-1]=q.keys[n];}
             q.count-=1;q.entries[q.count]=ptr::null_mut();q.keys[q.count]=0;
             unsafe{(*device).current_irp=irp;}
             irp
-        }
+        };
+        (next,slot.deleting&&next.is_null()&&q.count==0)
     };
-    if !next.is_null() { unsafe { invoke_start_io(device, next); } }
+    if !next.is_null(){unsafe{invoke_start_io(device,next);}}
+    else if finalize_deleting{unsafe{io_delete_device(device);}}
 }
 
 #[unsafe(export_name = "IoCreateDevice")]
