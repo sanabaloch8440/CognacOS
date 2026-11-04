@@ -44,6 +44,16 @@ impl From<AmlError> for ObjectError { fn from(e:AmlError)->Self { match e { AmlE
 pub struct AmlObjectArena { pub values:[AmlRuntimeValue;MAX_AML_VALUES],pub count:usize }
 impl AmlObjectArena {
     pub const fn new()->Self { Self{values:[AmlRuntimeValue::EMPTY;MAX_AML_VALUES],count:0} }
+    /// Initialize a pool-backed arena without constructing its large fixed array
+    /// as a temporary on the caller's kernel stack. All-zero is the exact EMPTY
+    /// representation (AmlValueKind::Empty has discriminant zero).
+    ///
+    /// # Safety
+    /// destination must be non-null, correctly aligned, and writable for
+    /// size_of::<AmlObjectArena>() bytes, with no live arena value at that address.
+    pub unsafe fn initialize_in_place(destination:*mut Self) {
+        unsafe { core::ptr::write_bytes(destination.cast::<u8>(), 0, core::mem::size_of::<Self>()); }
+    }
     fn push(&mut self,value:AmlRuntimeValue)->Result<u16,ObjectError>{
         if self.count==MAX_AML_VALUES{return Err(ObjectError::ValueArenaFull)}
         let id=self.count as u16;self.values[self.count]=value;self.count+=1;Ok(id)
