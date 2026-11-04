@@ -313,7 +313,7 @@ pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
     if count > MAX_PRT_ENTRIES { return Err(PrtDecodeError::TooManyEntries); }
     let mut elements = [EvaluatedPrtElement { address: 0, pin: 0, source_path: None, source_index: 0 }; MAX_PRT_ENTRIES];
     let mut paths = [[0u8; MAX_SOURCE_PATH]; MAX_PRT_ENTRIES];
-    let mut path_lengths = [0usize; MAX_PRT_ENTRIES];
+    let mut link_nodes = [u16::MAX; MAX_PRT_ENTRIES];
     for index in 0..count {
         if body.get(cursor) != Some(&0x12) { return Err(PrtDecodeError::BadPackage); }
         let (_, sub_end) = crate::aml::decode_package_length(body, cursor + 1, package_end)
@@ -336,9 +336,9 @@ pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
                 if namespace.nodes[link as usize].object_type != crate::aml::AmlObjectType::Device {
                     return Err(PrtDecodeError::UnresolvedLink);
                 }
-                path_lengths[index] = canonical_namespace_path(namespace, link, &mut paths[index])?;
+                link_nodes[index] = link;
                 field = next;
-                Some(&paths[index][..path_lengths[index]])
+                None
             }
             None => return Err(PrtDecodeError::Truncated),
         };
@@ -348,6 +348,14 @@ pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
         cursor = sub_end;
     }
     if cursor != package_end { return Err(PrtDecodeError::BadPackage); }
+    // Materialize link paths in a second pass so the table's borrowed path
+    // slices are created only after every backing buffer has been written.
+    for index in 0..count {
+        if link_nodes[index] != u16::MAX {
+            let length = canonical_namespace_path(namespace, link_nodes[index], &mut paths[index])?;
+            elements[index].source_path = Some(&paths[index][..length]);
+        }
+    }
     let table = build_prt_table(&elements[..count]).map_err(|_| PrtDecodeError::BadPackage)?;
     // Validate every link route while the namespace and link-device resolver
     // are live. The route table remains symbolic so later resource changes can
