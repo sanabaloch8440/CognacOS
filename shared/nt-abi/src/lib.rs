@@ -130,6 +130,23 @@ pub mod bus {
         pub data3: u16,
         pub data4: [u8; 8],
     }
+    /// ACPI root-PDO host-bridge resource interface. Queried on a PNP0A03/PNP0A08
+    /// PDO; the callback returns that bridge's validated _CRS windows and bus range.
+    pub const ACPI_PCI_HOST_BRIDGE_RESOURCES_VERSION: u32 = 1;
+    pub const GUID_ACPI_PCI_HOST_BRIDGE_RESOURCES: GUID = GUID {
+        data1: 0x7b7a_2a09, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+    pub type PACPI_QUERY_HOST_BRIDGE_RESOURCES = Option<
+        unsafe extern "win64" fn(context: PVOID, root_pdo: PVOID, output: PVOID) -> NTSTATUS,
+    >;
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE {
+        pub header: INTERFACE_HEADER,
+        pub query_resources: PACPI_QUERY_HOST_BRIDGE_RESOURCES,
+    }
+
     pub const GUID_ACPI_FIRMWARE_INTERFACE: GUID = GUID {
         data1: 0x7b7a_2a01, data2: 0x5d31, data3: 0x4f18,
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
