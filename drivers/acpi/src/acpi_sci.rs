@@ -69,45 +69,9 @@ pub fn resolve_sci_route(fadt: &FadtInfo, madt: &MadtInfo) -> Result<SciRoute, S
     })
 }
 
-/// Function-pointer callbacks have the same lifetime as the ACPI driver image.
-/// The ISR callback may only inspect/acknowledge hardware and capture bounded
-/// event records. The DPC callback may only enqueue passive work.
-pub type SciIsr = extern "C" fn(context: u64) -> bool;
-pub type SciDpc = extern "C" fn(context: u64);
-pub type SciPassiveWorker = extern "C" fn(context: u64);
-
-/// Versioned, size-tagged service ABI consumed by ACPI.sys. The HAL must
-/// install its IDT gate and callback before the I/O-APIC route is unmasked.
-/// configure_masked also binds the route to the vector for later enable/disable.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AcpiSciHalServices {
-    pub size: u32,
-    pub version: u32,
-    pub allocate_vector: Option<unsafe extern "C" fn(vector: *mut u8) -> u32>,
-    pub configure_masked: Option<unsafe extern "C" fn(
-        vector: u8, io_apic: u64, gsi_base: u32, gsi: u32,
-        active_low: bool, level_triggered: bool,
-    ) -> u32>,
-    pub register: Option<unsafe extern "C" fn(
-        vector: u8, context: u64, isr: Option<SciIsr>, dpc: Option<SciDpc>,
-    ) -> u32>,
-    pub set_enabled: Option<unsafe extern "C" fn(vector: u8, enabled: bool) -> u32>,
-    pub unregister: Option<unsafe extern "C" fn(vector: u8, context: u64) -> u32>,
-    pub release_vector: Option<unsafe extern "C" fn(vector: u8) -> u32>,
-}
-impl AcpiSciHalServices {
-    pub const fn compatible(&self) -> bool {
-        self.size as usize >= core::mem::size_of::<Self>()
-            && self.version == SCI_ABI_VERSION
-            && self.allocate_vector.is_some()
-            && self.configure_masked.is_some()
-            && self.register.is_some()
-            && self.set_enabled.is_some()
-            && self.unregister.is_some()
-            && self.release_vector.is_some()
-    }
-}
+/// Callback signatures and the size/version-tagged HAL service table live in
+/// the shared HAL contract crate so both sides compile against one ABI definition.
+pub use cognacos_hal_contract::{AcpiSciHalServices, AcpiSciIsr as SciIsr, AcpiSciDpc as SciDpc, AcpiQueuePassiveWorker, AcpiRundownPassiveWorker};
 
 /// Lifecycle state makes partial startup and teardown retryable. A route is
 /// never enabled until vector allocation, masked route setup, IDT/ISR/DPC
@@ -119,14 +83,26 @@ pub struct SciLifecycle {
     state: SciState,
     vector: u8,
     context: u64,
+    vector_allocated: bool,
+    handler_registered: bool,
+    route_enabled: bool,
 }
 impl SciLifecycle {
     pub const fn new() -> Self {
-        Self { state: SciState::Stopped, vector: 0, context: 0 }
+        Self { state: SciState::Stopped, vector: 0, context: 0,
+            vector_allocated: false, handler_registered: false, route_enabled: false }
     }
     pub fn state(&self) -> SciState { self.state }
     pub fn vector(&self) -> Option<u8> {
-        if matches!(self.state, SciState::Stopped | SciState::Failed) { None } else { Some(self.vector) }
+        if self.vector_allocated { Some(self.vector) } else { None }
+    }
+    fn reset_stopped(&mut self) {
+        self.state = SciState::Stopped;
+        self.vector = 0;
+        self.context = 0;
+        self.vector_allocated = false;
+        self.handler_registered = false;
+        self.route_enabled = false;
     }
 
     pub unsafe fn start(
@@ -142,6 +118,7 @@ impl SciLifecycle {
         let enable = services.set_enabled.ok_or(SciError::BackendUnavailable)?;
         let unregister = services.unregister.ok_or(SciError::BackendUnavailable)?;
         let release = services.release_vector.ok_or(SciError::BackendUnavailable)?;
+        let rundown = services.rundown_passive_worker.ok_or(SciError::BackendUnavailable)?;
         let mut vector = 0u8;
         if unsafe { allocate(&mut vector) } != 0 { return Err(SciError::BackendFailure); }
         if vector < 0x20 || vector > 0xdf {
@@ -150,62 +127,77 @@ impl SciLifecycle {
         }
         self.vector = vector;
         self.context = context;
+        self.vector_allocated = true;
         self.state = SciState::VectorAllocated;
 
         if unsafe { configure(vector, route.io_apic_address, route.io_apic_gsi_base,
             route.gsi, route.active_low, route.level_triggered) } != 0 {
-            let _ = unsafe { release(vector) };
-            self.state = SciState::Stopped;
+            if unsafe { release(vector) } == 0 { self.reset_stopped(); }
+            else { self.state = SciState::Failed; }
             return Err(SciError::BackendFailure);
         }
         self.state = SciState::RouteConfigured;
         if !initialize_gpe() {
-            let _ = unsafe { release(vector) };
-            self.state = SciState::Stopped;
+            if unsafe { release(vector) } == 0 { self.reset_stopped(); }
+            else { self.state = SciState::Failed; }
             return Err(SciError::QueueFailure);
         }
         if unsafe { register(vector, context, Some(isr), Some(dpc)) } != 0 {
-            let _ = unsafe { release(vector) };
-            self.state = SciState::Stopped;
+            if unsafe { release(vector) } == 0 { self.reset_stopped(); }
+            else { self.state = SciState::Failed; }
             return Err(SciError::BackendFailure);
         }
+        self.handler_registered = true;
         self.state = SciState::HandlerRegistered;
         if unsafe { enable(vector, true) } != 0 {
-            let _ = unsafe { enable(vector, false) };
-            let _ = unsafe { unregister(vector, context) };
-            let _ = unsafe { release(vector) };
-            self.state = SciState::Stopped;
+            // Do not discard ownership flags when any rollback step fails. A
+            // later stop() can resume from the exact completed teardown stage.
+            if unsafe { enable(vector, false) } == 0 { self.route_enabled = false; }
+            if self.handler_registered && unsafe { unregister(vector, context) } == 0 {
+                self.handler_registered = false;
+                if !rundown(context) { self.state = SciState::Failed; return Err(SciError::QueueFailure); }
+            }
+            if !self.handler_registered && unsafe { release(vector) } == 0 {
+                self.reset_stopped();
+            } else {
+                self.state = SciState::Failed;
+            }
             return Err(SciError::BackendFailure);
         }
+        self.route_enabled = true;
         self.state = SciState::Enabled;
         Ok(vector)
     }
 
-    /// Mask first, then unregister (which must drain HAL ISR/DPC activity),
-    /// then release the vector. Caller must drain the passive worker before
-    /// freeing context or AML namespace state.
+    /// Mask first, unregister and drain HAL ISR/DPC activity, then close the
+    /// per-context passive queue and wait for AML to return before releasing
+    /// the vector. State flags make partial teardown safely retryable.
     pub unsafe fn stop(&mut self, services: &AcpiSciHalServices) -> Result<(), SciError> {
-        if self.state == SciState::Stopped { return Ok(()); }
+        if !self.vector_allocated { return Ok(()); }
         if !services.compatible() { return Err(SciError::BackendUnavailable); }
-        let vector = self.vector;
-        let context = self.context;
-        let handler_was_registered = matches!(self.state, SciState::HandlerRegistered | SciState::Enabled);
         self.state = SciState::Stopping;
-        let enable = services.set_enabled.ok_or(SciError::BackendUnavailable)?;
-        let unregister = services.unregister.ok_or(SciError::BackendUnavailable)?;
-        let release = services.release_vector.ok_or(SciError::BackendUnavailable)?;
-        if unsafe { enable(vector, false) } != 0 { return Err(SciError::BackendFailure); }
-        if handler_was_registered && unsafe { unregister(vector, context) } != 0 {
-            return Err(SciError::BackendFailure);
+        if self.route_enabled {
+            let enable = services.set_enabled.ok_or(SciError::BackendUnavailable)?;
+            if unsafe { enable(self.vector, false) } != 0 { return Err(SciError::BackendFailure); }
+            self.route_enabled = false;
         }
-        if unsafe { release(vector) } != 0 { return Err(SciError::BackendFailure); }
-        self.state = SciState::Stopped;
-        self.vector = 0;
-        self.context = 0;
+        if self.handler_registered {
+            let unregister = services.unregister.ok_or(SciError::BackendUnavailable)?;
+            if unsafe { unregister(self.vector, self.context) } != 0 {
+                return Err(SciError::BackendFailure);
+            }
+            self.handler_registered = false;
+        }
+        // The DPC has completed before this callback is reached. It closes
+        // admission for this owner and waits for any active passive callback.
+        let rundown = services.rundown_passive_worker.ok_or(SciError::BackendUnavailable)?;
+        if !rundown(self.context) { return Err(SciError::QueueFailure); }
+        let release = services.release_vector.ok_or(SciError::BackendUnavailable)?;
+        if unsafe { release(self.vector) } != 0 { return Err(SciError::BackendFailure); }
+        self.reset_stopped();
         Ok(())
     }
 }
-
 
 /// Driver-owned callback context. Allocate this in nonpaged, stable storage
 /// before registering the interrupt and retain it until HAL unregister plus
@@ -217,10 +209,39 @@ pub struct SciCallbackContext {
     /// records to the bounded GPE queue. Must be ISR-safe and nonblocking.
     pub capture_gpes: extern "C" fn(owner_context: u64) -> bool,
     /// Enqueues a kernel work item. Must not execute the worker inline.
-    pub queue_passive_worker: extern "C" fn(owner_context: u64) -> bool,
+    pub queue_passive_worker: AcpiQueuePassiveWorker,
+    /// Close admission and drain callbacks for this owner context before unload.
+    pub rundown_passive_worker: AcpiRundownPassiveWorker,
     /// Drains the GPE/EC queues and invokes AML at PASSIVE_LEVEL.
     pub run_passive_worker: extern "C" fn(owner_context: u64),
 }
+impl SciCallbackContext {
+    /// Bind the executive queue callbacks from the versioned kernel/HAL table.
+    /// The caller must place this value in stable nonpaged driver storage.
+    pub fn new(
+        owner_context: u64,
+        capture_gpes: extern "C" fn(u64) -> bool,
+        run_passive_worker: extern "C" fn(u64),
+        services: &AcpiSciHalServices,
+    ) -> Result<Self, SciError> {
+        if owner_context == 0 || !services.compatible() {
+            return Err(SciError::BackendUnavailable);
+        }
+        Ok(Self {
+            owner_context,
+            capture_gpes,
+            queue_passive_worker: services.queue_passive_worker.ok_or(SciError::BackendUnavailable)?,
+            rundown_passive_worker: services.rundown_passive_worker.ok_or(SciError::BackendUnavailable)?,
+            run_passive_worker,
+        })
+    }
+
+    /// Called only after SCI is masked and HAL has drained ISR/DPC callbacks.
+    pub fn rundown(&self) -> bool {
+        (self.rundown_passive_worker)(self as *const Self as u64)
+    }
+}
+
 /// HAL ISR callback: capture only. The HAL queues the associated DPC after
 /// interrupt dispatch/EOI; no AML or passive synchronization is permitted here.
 pub extern "C" fn sci_isr_trampoline(context: u64) -> bool {
@@ -233,7 +254,7 @@ pub extern "C" fn sci_isr_trampoline(context: u64) -> bool {
 pub extern "C" fn sci_dpc_trampoline(context: u64) {
     if context == 0 { return; }
     let callbacks = unsafe { &*(context as *const SciCallbackContext) };
-    let _ = (callbacks.queue_passive_worker)(callbacks.owner_context);
+    let _ = (callbacks.queue_passive_worker)(context, sci_passive_worker_trampoline);
 }
 /// Kernel work-item entry point. The caller guarantees PASSIVE_LEVEL and holds
 /// an ACPI operation/rundown reference for the entire worker invocation.

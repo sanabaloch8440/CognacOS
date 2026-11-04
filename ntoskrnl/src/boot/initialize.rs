@@ -773,6 +773,18 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
 
         // Exercise scheduler metadata/priority/affinity without switching stacks.
         scheduler::initialize();
+        if !ntoskrnl::ke::work_item::initialize() {
+            serial_write(b"FATAL: PASSIVE_LEVEL work-item worker initialization failed.\\r\\n");
+            halt();
+        }
+        if !ntoskrnl::ke::work_item::self_test() {
+            serial_write(b"FATAL: PASSIVE_LEVEL work-item queue/rundown execution test failed.\\r\\n");
+            halt();
+        }
+        hal::install_acpi_passive_work_hooks(
+            ntoskrnl::ke::work_item::queue_from_dpc,
+            ntoskrnl::ke::work_item::rundown_context,
+        );
         let low = match scheduler::create_task(1, 1, 0x7000, 0x1000) {
             Ok(id) => id, Err(_) => { serial_write(b"FATAL: scheduler task creation failed.\r\n"); halt(); }
         };

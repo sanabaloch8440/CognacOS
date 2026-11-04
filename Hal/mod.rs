@@ -1050,34 +1050,60 @@ unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Optio
     DEVICE_ACTIVE[i].store(true,Ordering::Release);
     driver_hal_success()
 }
-unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->DriverHalStatus{
-    if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
-    let i=vector as usize;if DEVICE_CONTEXT[i].load(Ordering::Acquire)!=context||DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
+unsafe fn service_unregister_interrupt_impl(
+    vector: u32, context: u64, release_vector: bool,
+) -> DriverHalStatus {
+    if !(0x20..=0xdf).contains(&vector) { return driver_hal_invalid(); }
+    let i = vector as usize;
+    if DEVICE_CONTEXT[i].load(Ordering::Acquire) != context
+        || DEVICE_ISR[i].load(Ordering::Acquire) == 0 {
+        return driver_hal_invalid();
+    }
     // Close the callback gate before masking hardware so a concurrent
     // enable request cannot reopen the route during teardown.
-    DEVICE_ACTIVE[i].store(false,Ordering::Release);
-    let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
-    if io!=0&&unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),false)}.is_err(){
-        return driver_hal_unsupported()
+    DEVICE_ACTIVE[i].store(false, Ordering::Release);
+    let io = DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
+    if io != 0 && unsafe {
+        set_device_interrupt_route_enabled(
+            io, DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),
+            DEVICE_ROUTE_GSI[i].load(Ordering::Acquire), false,
+        )
+    }.is_err() {
+        return driver_hal_unsupported();
     }
-    // Remove a pending DPC, then wait for any ISR or already-running DPC to
-    // leave before releasing driver-owned context.
-    let dpc=core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
-    let remove=DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire);
-    if remove==0{return driver_hal_unsupported()}
-    let remove_fn:DeviceDpcRemoveHook=unsafe{core::mem::transmute(remove)};
-    let _=remove_fn(dpc);
-    let mut spins=0usize;
-    while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0&&spins<1_000_000{core::hint::spin_loop();spins+=1;}
-    if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0{return driver_hal_unsupported()}
-    // APIC detaches the handler and waits for in-flight ISR dispatch before
-    // callback storage is cleared. A timeout leaves the inactive record intact
-    // so teardown can be retried without reusing the vector prematurely.
-    if release_device_interrupt_vector(vector as u8).is_err(){return driver_hal_unsupported()}
-    DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);DEVICE_CONTEXT[i].store(0,Ordering::Release);
-    DEVICE_ROUTE_IO_BASE[i].store(0,Ordering::Release);
+    // Remove and drain the queued DPC before detaching the ISR. A failed
+    // remove leaves the inactive record intact so teardown can be retried.
+    let dpc = core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
+    let remove = DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire);
+    if remove == 0 { return driver_hal_unsupported(); }
+    let remove_fn: DeviceDpcRemoveHook = unsafe { core::mem::transmute(remove) };
+    // FALSE means no queued instance was removed; DEVICE_ACTIVE is already
+    // closed, and DEVICE_IN_FLIGHT below drains any ISR/DPC already executing.
+    let _ = remove_fn(dpc);
+    let mut spins = 0usize;
+    while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire) != 0 && spins < 1_000_000 {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire) != 0 { return driver_hal_unsupported(); }
+    // The SCI path retains the allocated vector until the passive AML worker
+    // has rundown; ordinary device unregister preserves its legacy release.
+    let detached = if release_vector {
+        release_device_interrupt_vector(vector as u8).is_ok()
+    } else {
+        apic::unregister_interrupt_handler(vector as u8).is_ok()
+    };
+    if !detached { return driver_hal_unsupported(); }
+    DEVICE_ISR[i].store(0, Ordering::Release);
+    DEVICE_DPC[i].store(0, Ordering::Release);
+    DEVICE_CONTEXT[i].store(0, Ordering::Release);
+    DEVICE_ROUTE_IO_BASE[i].store(0, Ordering::Release);
     driver_hal_success()
 }
+unsafe extern "C" fn service_unregister_interrupt(vector: u32, context: u64) -> DriverHalStatus {
+    unsafe { service_unregister_interrupt_impl(vector, context, true) }
+}
+
 unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->DriverHalStatus{
     if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
     let i=vector as usize;
@@ -1126,9 +1152,130 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
     }
 }
 
+
+/// Kernel-owned passive-work callbacks are installed before ACPI.sys starts.
+/// HAL publishes them in the SCI service table but never executes the work.
+pub type AcpiPassiveQueueHook = cognacos_hal_contract::AcpiQueuePassiveWorker;
+pub type AcpiPassiveRundownHook = cognacos_hal_contract::AcpiRundownPassiveWorker;
+static ACPI_PASSIVE_QUEUE_HOOK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+static ACPI_PASSIVE_RUNDOWN_HOOK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+pub fn install_acpi_passive_work_hooks(
+    queue: AcpiPassiveQueueHook,
+    rundown: AcpiPassiveRundownHook,
+) {
+    ACPI_PASSIVE_QUEUE_HOOK.store(queue as usize, Ordering::Release);
+    ACPI_PASSIVE_RUNDOWN_HOOK.store(rundown as usize, Ordering::Release);
+}
+
+unsafe extern "C" fn acpi_sci_allocate_vector(out: *mut u8) -> u32 {
+    if out.is_null() { return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code; }
+    match allocate_device_interrupt_vector() {
+        Ok(vector) => { unsafe { out.write(vector); } cognacos_hal_contract::HalStatus::SUCCESS.code }
+        Err(_) => cognacos_hal_contract::HalStatus::NOT_SUPPORTED.code,
+    }
+}
+unsafe extern "C" fn acpi_sci_configure_masked(
+    vector: u8, io_apic: u64, gsi_base: u32, gsi: u32,
+    active_low: bool, level_triggered: bool,
+) -> u32 {
+    let destination = current_cpu_local()
+        .map(|cpu| cpu.apic_id.load(Ordering::Acquire))
+        .unwrap_or_else(|| (unsafe { core::arch::x86_64::__cpuid(1) }.ebx >> 24) & 0xff);
+    if destination > u8::MAX as u32 {
+        return cognacos_hal_contract::HalStatus::NOT_SUPPORTED.code;
+    }
+    match unsafe { configure_interrupt_route(
+        io_apic, gsi_base, gsi, vector, destination as u8, active_low, level_triggered,
+    ) } {
+        Ok(()) => match bind_device_interrupt_route(vector, io_apic, gsi_base, gsi) {
+            Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
+            Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+        },
+        Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+    }
+}
+unsafe extern "C" fn acpi_sci_register(
+    vector: u8, context: u64,
+    isr: Option<cognacos_hal_contract::AcpiSciIsr>,
+    dpc: Option<cognacos_hal_contract::AcpiSciDpc>,
+) -> u32 {
+    if context == 0 { return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code; }
+    unsafe { service_register_interrupt(vector as u32, context, isr, dpc) }.code
+}
+unsafe extern "C" fn acpi_sci_set_enabled(vector: u8, enabled: bool) -> u32 {
+    match unsafe { set_device_interrupt_vector_enabled(vector, enabled) } {
+        Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
+        Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+    }
+}
+unsafe extern "C" fn acpi_sci_unregister(vector: u8, context: u64) -> u32 {
+    unsafe { service_unregister_interrupt_impl(vector as u32, context, false) }.code
+}
+unsafe extern "C" fn acpi_sci_release_vector(vector: u8) -> u32 {
+    if !apic::interrupt_vector_allocated(vector) {
+        return cognacos_hal_contract::HalStatus::SUCCESS.code;
+    }
+    match release_device_interrupt_vector(vector) {
+        Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
+        Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
+    }
+}
+
+/// Concrete SCI backend. The vector is allocated from the external interrupt
+/// range, its I/O-APIC entry is programmed masked with firmware polarity/trigger,
+/// and the existing HAL ISR/DPC machinery owns registration and in-flight drain.
+pub fn acpi_sci_service_table() -> cognacos_hal_contract::AcpiSciHalServices {
+    let queue = ACPI_PASSIVE_QUEUE_HOOK.load(Ordering::Acquire);
+    let rundown = ACPI_PASSIVE_RUNDOWN_HOOK.load(Ordering::Acquire);
+    cognacos_hal_contract::AcpiSciHalServices {
+        size: core::mem::size_of::<cognacos_hal_contract::AcpiSciHalServices>() as u32,
+        version: cognacos_hal_contract::ACPI_SCI_SERVICES_VERSION,
+        allocate_vector: Some(acpi_sci_allocate_vector),
+        configure_masked: Some(acpi_sci_configure_masked),
+        register: Some(acpi_sci_register),
+        set_enabled: Some(acpi_sci_set_enabled),
+        unregister: Some(acpi_sci_unregister),
+        release_vector: Some(acpi_sci_release_vector),
+        queue_passive_worker: if queue == 0 { None } else {
+            Some(unsafe { core::mem::transmute::<usize, AcpiPassiveQueueHook>(queue) })
+        },
+        rundown_passive_worker: if rundown == 0 { None } else {
+            Some(unsafe { core::mem::transmute::<usize, AcpiPassiveRundownHook>(rundown) })
+        },
+    }
+}
+
+/// Private kernel/HAL interface entry used by ACPI.sys to obtain the versioned
+/// SCI service table. It is deliberately not assigned a Windows HAL ordinal.
+pub unsafe extern "win64" fn hal_acpi_get_sci_services(
+    output: *mut cognacos_hal_contract::AcpiSciHalServices,
+) -> i32 {
+    if output.is_null() { return 0xC000_000D_u32 as i32; }
+    let table = acpi_sci_service_table();
+    if !table.compatible() { return 0xC000_00A3_u32 as i32; }
+    unsafe { output.write(table); }
+    0
+}
+
 #[cfg(test)]
 mod driver_service_publication_tests {
     use super::*;
+    #[test]
+    fn sci_service_table_is_versioned_and_withholds_passive_hooks_until_ready() {
+        let table = acpi_sci_service_table();
+        assert_eq!(table.version, cognacos_hal_contract::ACPI_SCI_SERVICES_VERSION);
+        assert_eq!(table.size as usize, core::mem::size_of::<cognacos_hal_contract::AcpiSciHalServices>());
+        assert!(table.allocate_vector.is_some());
+        assert!(table.configure_masked.is_some());
+        if ACPI_PASSIVE_QUEUE_HOOK.load(Ordering::Acquire) == 0
+            || ACPI_PASSIVE_RUNDOWN_HOOK.load(Ordering::Acquire) == 0 {
+            assert!(!table.compatible());
+        }
+    }
+
     #[test]
     fn base_service_table_is_versioned_and_exposes_only_existing_primitives() {
         let table=driver_service_table();

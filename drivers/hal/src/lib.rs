@@ -267,3 +267,51 @@ mod hardware_contract_tests {
         assert!(!t.has_mmio_mapping());
     }
 }
+
+
+/// Private, size/version-tagged ACPI SCI backend contract shared by HAL and ACPI.sys.
+/// This is an internal CognacOS interface, not an additional Windows HAL export.
+pub const ACPI_SCI_SERVICES_VERSION: u32 = 1;
+pub type AcpiSciIsr = extern "C" fn(context: u64) -> bool;
+pub type AcpiSciDpc = extern "C" fn(context: u64);
+pub type AcpiSciAllocateVector = unsafe extern "C" fn(vector: *mut u8) -> u32;
+pub type AcpiSciConfigureMasked = unsafe extern "C" fn(
+    vector: u8, io_apic: u64, gsi_base: u32, gsi: u32,
+    active_low: bool, level_triggered: bool,
+) -> u32;
+pub type AcpiSciRegister = unsafe extern "C" fn(
+    vector: u8, context: u64, isr: Option<AcpiSciIsr>, dpc: Option<AcpiSciDpc>,
+) -> u32;
+pub type AcpiSciSetEnabled = unsafe extern "C" fn(vector: u8, enabled: bool) -> u32;
+pub type AcpiSciUnregister = unsafe extern "C" fn(vector: u8, context: u64) -> u32;
+pub type AcpiSciReleaseVector = unsafe extern "C" fn(vector: u8) -> u32;
+pub type AcpiQueuePassiveWorker = extern "C" fn(context: u64, routine: AcpiSciDpc) -> bool;
+pub type AcpiRundownPassiveWorker = extern "C" fn(context: u64) -> bool;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AcpiSciHalServices {
+    pub size: u32,
+    pub version: u32,
+    pub allocate_vector: Option<AcpiSciAllocateVector>,
+    pub configure_masked: Option<AcpiSciConfigureMasked>,
+    pub register: Option<AcpiSciRegister>,
+    pub set_enabled: Option<AcpiSciSetEnabled>,
+    pub unregister: Option<AcpiSciUnregister>,
+    pub release_vector: Option<AcpiSciReleaseVector>,
+    pub queue_passive_worker: Option<AcpiQueuePassiveWorker>,
+    pub rundown_passive_worker: Option<AcpiRundownPassiveWorker>,
+}
+impl AcpiSciHalServices {
+    pub const fn compatible(&self) -> bool {
+        self.size as usize >= core::mem::size_of::<Self>()
+            && self.version == ACPI_SCI_SERVICES_VERSION
+            && self.allocate_vector.is_some()
+            && self.configure_masked.is_some()
+            && self.register.is_some()
+            && self.set_enabled.is_some()
+            && self.unregister.is_some()
+            && self.release_vector.is_some()
+            && self.queue_passive_worker.is_some()
+            && self.rundown_passive_worker.is_some()
+    }
+}

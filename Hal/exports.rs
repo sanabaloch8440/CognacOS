@@ -580,7 +580,9 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
 }
 
 pub fn resolve(name: &[u8]) -> Option<u64> {
-    if name.eq_ignore_ascii_case(b"HalQueryRealTimeClock") {
+    if name.eq_ignore_ascii_case(b"HalAcpiGetSciServices") {
+        Some(super::hal_acpi_get_sci_services as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalQueryRealTimeClock") {
         Some(hal_query_real_time_clock as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalEnableInterrupt") {
         Some(hal_enable_interrupt as usize as u64)
@@ -677,6 +679,8 @@ pub fn self_test() -> bool {
         && resolve(b"HalQueryRealTimeClock").is_some()
         && resolve_ordinal(48).is_some()
         && resolve(b"HalAcpiGetTableEx").is_some()
+        && resolve(b"HalAcpiGetSciServices").is_some()
+        && find_by_name(b"HalAcpiGetSciServices").is_none()
         && resolve(b"HalEnableInterrupt").is_some()
         && resolve(b"HalDisableInterrupt").is_some()
         && resolve_ordinal(1).is_some()

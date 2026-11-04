@@ -311,5 +311,8 @@ pub(crate) mod dispatcher;
 pub(crate) mod scheduler;
 pub(crate) mod thread;
 
+// Bounded executive work items always execute on a PASSIVE_LEVEL kernel thread.
+pub(crate) mod work_item;
+
 // Early x86-64 architectural protection setup.
 pub(crate) mod mitigations;

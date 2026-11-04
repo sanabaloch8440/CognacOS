@@ -559,6 +559,28 @@ pub fn release_interrupt_vector(vector: u8) -> Result<(), ApicError> {
     Ok(())
 }
 
+/// Detach a handler while retaining ownership of the vector. Used by
+/// multi-stage teardown where a passive callback rundown must complete before
+/// the vector can be returned to the allocator.
+pub fn unregister_interrupt_handler(vector: u8) -> Result<(), ApicError> {
+    if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) { return Err(ApicError::InvalidVector); }
+    let _guard = VECTOR_REGISTRATION_LOCK.lock();
+    if !VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire) {
+        return Err(ApicError::InvalidVector);
+    }
+    VECTOR_HANDLERS[vector as usize].store(0, Ordering::Release);
+    let mut spins = 0usize;
+    while VECTOR_IN_FLIGHT[vector as usize].load(Ordering::Acquire) != 0 && spins < 1_000_000 {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    if VECTOR_IN_FLIGHT[vector as usize].load(Ordering::Acquire) != 0 {
+        return Err(ApicError::Timeout);
+    }
+    VECTOR_CONTEXTS[vector as usize].store(0, Ordering::Release);
+    Ok(())
+}
+
 /// Register a handler for a vector already allocated by allocate_interrupt_vector.
 /// Install the corresponding architecture IDT gate before unmasking its source.
 pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context: *mut core::ffi::c_void) -> Result<(), ApicError> {
@@ -573,6 +595,12 @@ pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context
     VECTOR_CONTEXTS[vector as usize].store(context as usize, Ordering::Relaxed);
     VECTOR_HANDLERS[vector as usize].store(handler as usize, Ordering::Release);
     Ok(())
+}
+
+/// True when a vector is reserved, whether or not a handler is attached.
+pub fn interrupt_vector_allocated(vector: u8) -> bool {
+    (VECTOR_FIRST..=VECTOR_LAST).contains(&vector)
+        && VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire)
 }
 
 /// True only when a device vector is allocated and has a registered callback.
