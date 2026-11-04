@@ -21,15 +21,18 @@ struct QueueState {
     tail: usize,
     count: usize,
     active: usize,
+    active_context: u64,
+    closed_contexts: [u64; 16],
     accepting: bool,
 }
 impl QueueState {
     const fn new() -> Self {
         Self { entries: [WorkRecord::EMPTY; MAX_WORK_ITEMS], head: 0, tail: 0,
-            count: 0, active: 0, accepting: false }
+            count: 0, active: 0, active_context: 0, closed_contexts: [0; 16], accepting: false }
     }
     fn push(&mut self, item: WorkRecord) -> bool {
-        if !self.accepting || self.count == MAX_WORK_ITEMS { return false; }
+        if !self.accepting || self.count == MAX_WORK_ITEMS
+            || self.closed_contexts.contains(&item.context) { return false; }
         self.entries[self.tail] = item;
         self.tail = (self.tail + 1) % MAX_WORK_ITEMS;
         self.count += 1;
@@ -42,6 +45,7 @@ impl QueueState {
         self.head = (self.head + 1) % MAX_WORK_ITEMS;
         self.count -= 1;
         self.active += 1;
+        self.active_context = item.context;
         Some(item)
     }
 }
@@ -63,6 +67,7 @@ extern "C" fn worker_entry(_argument: *mut c_void) {
             if let Some(routine) = item.routine { routine(item.context); }
             let mut state = QUEUE.lock();
             state.active = state.active.saturating_sub(1);
+            if state.active == 0 { state.active_context = 0; }
             continue;
         }
         // The queue insertion and thread wake are ordered so a producer racing
@@ -139,6 +144,54 @@ pub fn rundown() -> bool {
 /// AML execution and only publishes a bounded record to the passive worker.
 pub extern "C" fn queue_from_dpc(context: u64, routine: WorkRoutine) -> bool {
     queue(routine, context)
+}
+
+/// Permanently close one driver's work-item admission, cancel its queued items,
+/// and wait until its currently executing callback returns. The callback context
+/// may be reclaimed only after this function succeeds.
+pub extern "C" fn rundown_context(context: u64) -> bool {
+    if context == 0 || crate::thread::current_thread_id() == Some(WORKER_ID.load(Ordering::Acquire)) {
+        return false;
+    }
+    {
+        let mut state = QUEUE.lock();
+        if !state.closed_contexts.contains(&context) {
+            let Some(slot) = state.closed_contexts.iter_mut().find(|slot| **slot == 0) else { return false; };
+            *slot = context;
+        }
+        let mut retained = [WorkRecord::EMPTY; MAX_WORK_ITEMS];
+        let mut retained_count = 0usize;
+        for offset in 0..state.count {
+            let index = (state.head + offset) % MAX_WORK_ITEMS;
+            let item = state.entries[index];
+            if item.context != context {
+                retained[retained_count] = item;
+                retained_count += 1;
+            }
+        }
+        state.entries = retained;
+        state.head = 0;
+        state.tail = retained_count % MAX_WORK_ITEMS;
+        state.count = retained_count;
+    }
+    let id = WORKER_ID.load(Ordering::Acquire);
+    if id != 0 { let _ = crate::thread::wake(id); }
+    let mut spins = 0usize;
+    while QUEUE.lock().active_context == context && spins < 10_000_000 {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    QUEUE.lock().active_context != context
+}
+
+/// Reopen a context slot before registering a newly initialized ACPI instance.
+pub extern "C" fn allow_context(context: u64) -> bool {
+    if context == 0 { return false; }
+    let mut state = QUEUE.lock();
+    if let Some(slot) = state.closed_contexts.iter_mut().find(|slot| **slot == context) {
+        *slot = 0;
+    }
+    state.accepting
 }
 
 #[cfg(test)]
