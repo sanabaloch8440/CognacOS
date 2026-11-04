@@ -115,6 +115,7 @@ pub fn parse_smbios_entry_point(bytes: &[u8]) -> Result<SmbiosTableDescriptor, S
 
 fn smbios_string(strings: &[u8], index: u8) -> Result<&[u8], SmbiosError> {
     if index == 0 { return Ok(&[]); }
+    if strings.first() == Some(&0) { return Err(SmbiosError::MalformedStructure); }
     let mut current = 1u8;
     let mut start = 0usize;
     let mut i = 0usize;
@@ -534,6 +535,21 @@ mod tests {
             EfiConfigurationTable { vendor_guid: SMBIOS3_TABLE_GUID, vendor_table: 0x2000 },
         ];
         assert_eq!(find_smbios_entry_point(&entries), Some(0x2000));
+    }
+    #[test]
+    fn dell_adr_override_is_exact_and_dmi_scoped() {
+        let mut policy = QuirkPolicy::EMPTY;
+        policy.adr[0] = Some(AdrOverride {
+            parent_path: "*", from: 0x00020025d071100,
+            to: 0x00021025d071500,
+        });
+        policy.adr_count = 1;
+        assert_eq!(policy.override_adr("\\\\_SB.SDWT", 0x00020025d071100), 0x00021025d071500);
+        assert_eq!(policy.override_adr("\\\\_SB.SDWT", 0x00020025d071101), 0x00020025d071101);
+    }
+    #[test]
+    fn missing_smbios_string_index_is_not_accepted_as_empty() {
+        assert_eq!(smbios_string(b"\\0\\0", 1), Err(SmbiosError::MalformedStructure));
     }
     #[test]
     fn dmi_match_is_case_insensitive_and_requires_all_fields() {
