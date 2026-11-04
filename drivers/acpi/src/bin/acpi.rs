@@ -1598,6 +1598,8 @@ impl acpi::acpi_prt::LinkDeviceResolver for AcpiPrtLinkResolver<'_> {
     fn resolve_gsi(&self, canonical_path: &[u8], source_index: u32) -> Result<u32, acpi::acpi_prt::PrtError> {
         let link = acpi::acpi_prt::find_namespace_path(self.namespace, canonical_path)
             .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+        let prs = self.namespace.find_child(link, *b"_PRS")
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
         let crs = self.namespace.find_child(link, *b"_CRS")
             .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
         let allocation = unsafe {
@@ -1608,6 +1610,23 @@ impl acpi::acpi_prt::LinkDeviceResolver for AcpiPrtLinkResolver<'_> {
             let bytes = unsafe {
                 core::slice::from_raw_parts_mut(allocation.cast::<u8>(), ACPI_ROUTE_BUFFER_CAPACITY)
             };
+            // _PRT SourceIndex addresses a resource descriptor in the link
+            // device's _PRS template. Validate that descriptor before using
+            // the corresponding currently-assigned _CRS entry.
+            let prs_length = read_aml_resource_buffer(
+                self.manager, self.gate, self.namespace, prs,
+                self.sources, self.handles, bytes,
+            ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let possible = acpi::acpi_resources::parse_resource_template(&bytes[..prs_length])
+                .map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let possible_resource = possible.entries.get(source_index as usize)
+                .and_then(|entry| *entry)
+                .ok_or(acpi::acpi_prt::PrtError::InvalidSourceIndex)?;
+            if !matches!(possible_resource,
+                acpi::acpi_resources::Resource::Irq { .. }
+                    | acpi::acpi_resources::Resource::ExtendedIrq { .. }) {
+                return Err(acpi::acpi_prt::PrtError::InvalidSourceIndex);
+            }
             let length = read_aml_resource_buffer(
                 self.manager, self.gate, self.namespace, crs,
                 self.sources, self.handles, bytes,
