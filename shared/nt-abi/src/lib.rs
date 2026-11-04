@@ -152,6 +152,34 @@ pub mod bus {
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
     };
 
+    /// Per-PCI-PDO interrupt lifecycle interface. PCI configures its ACPI
+    /// route masked during START_DEVICE; the function driver registers its
+    /// ISR/DPC and explicitly enables delivery only after device initialization.
+    pub const PCI_INTERRUPT_INTERFACE_VERSION: u32 = 1;
+    pub const GUID_PCI_INTERRUPT_INTERFACE: GUID = GUID {
+        data1: 0x7b7a_2a05, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+    pub type PCI_INTERRUPT_ISR = extern "C" fn(context: u64) -> u8;
+    pub type PCI_INTERRUPT_DPC = extern "C" fn(context: u64);
+    pub type PPCI_REGISTER_INTERRUPT = Option<unsafe extern "win64" fn(
+        context: PVOID,
+        callback_context: u64,
+        isr: PCI_INTERRUPT_ISR,
+        dpc: PCI_INTERRUPT_DPC,
+    ) -> NTSTATUS>;
+    pub type PPCI_SET_INTERRUPT_ENABLED = Option<unsafe extern "win64" fn(context: PVOID) -> NTSTATUS>;
+    pub type PPCI_UNREGISTER_INTERRUPT = Option<unsafe extern "win64" fn(context: PVOID) -> NTSTATUS>;
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct PCI_INTERRUPT_INTERFACE {
+        pub header: INTERFACE_HEADER,
+        pub register: PPCI_REGISTER_INTERRUPT,
+        pub enable: PPCI_SET_INTERRUPT_ENABLED,
+        pub disable: PPCI_SET_INTERRUPT_ENABLED,
+        pub unregister: PPCI_UNREGISTER_INTERRUPT,
+    }
+
     /// Common prefix for all published bus interfaces.
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -257,6 +285,11 @@ pub mod bus {
         pub active_low: u8,
         pub level_triggered: u8,
         pub reserved: [u8; 2],
+        /// I/O-APIC physical base selected from the ACPI MADT for this GSI.
+        pub io_apic_base: u64,
+        /// First GSI owned by the selected I/O-APIC.
+        pub gsi_base: u32,
+        pub reserved2: u32,
     }
 
     pub type PACPI_QUERY_PCI_INTERRUPT_ROUTE = Option<
@@ -283,7 +316,7 @@ pub mod bus {
     const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V2, query_table) == 0x20);
     const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V2, query_pci_interrupt_route) == 0x28);
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>() == 8);
-    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>() == 8);
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>() == 24);
 
     /// PCI configuration-space access provided by pci.sys. Device and
     /// function are conventional PCI coordinates; segment and bus are
