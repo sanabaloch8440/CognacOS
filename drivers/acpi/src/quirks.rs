@@ -680,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn stage1_lenovo_iil_requires_product_version_match() {
+    fn lenovo_iil_quirk_stays_inactive_without_e820_clipping_consumer() {
         let mut identity = PlatformIdentity::EMPTY;
         identity.system_vendor.set(b"LENOVO");
         identity.product_version.set(b"Yoga IIL platform");
