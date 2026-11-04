@@ -1452,4 +1452,53 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[1]),Err(ExecError::BadArgumentCount));
  }
+ #[test]
+ fn executes_create_dword_field_store_and_reload_through_persistent_context(){
+  // Name(BUF0, Buffer(4) {0,0,0,0}); Method(TEST) {
+  //   CreateDWordField(BUF0, Zero, FLD0); Store(One, FLD0); Return(FLD0)
+  // }
+  let aml=[
+   0x08,b'B',b'U',b'F',b'0',0x11,0x07,0x0a,4,0,0,0,0,
+   0x14,0x1c,b'T',b'E',b'S',b'T',0,
+   0x8a,b'B',b'U',b'F',b'0',0x0a,0,b'F',b'L',b'D',b'0',
+   0x70,0x01,b'F',b'L',b'D',b'0',
+   0xa4,b'F',b'L',b'D',b'0'
+  ];
+  let mut namespace=AmlNamespace::new();
+  load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();
+  let mut bindings=AmlBindings::with_aml_revision(2);
+  let mut dynamic=AmlDynamicNamespace::new();
+  let result=execute_method_in_dynamic_context(&aml,&namespace,method,&[],64,
+      &mut arena,&mut bindings,&mut dynamic,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(result.kind,AmlValueKind::Integer);
+  assert_eq!(result.integer,1);
+  assert_eq!(dynamic.field_count(),1);
+  let field=dynamic.resolve_buffer_field(&namespace,0,
+      &crate::aml::AmlName{segments:[*b"FLD0",[0;4],[0;4],[0;4],[0;4],[0;4],[0;4],[0;4]],count:1,rooted:false,parents:0}).unwrap();
+  let reference=dynamic.field_reference(&namespace,field).unwrap();
+  assert_eq!(dereference(reference,&bindings,&arena).unwrap().integer,1);
+ }
+
+ #[test]
+ fn create_field_rejects_out_of_range_bit_extent_without_publishing_name(){
+  let aml=[
+   0x08,b'B',b'U',b'F',b'0',0x11,0x07,0x0a,4,0,0,0,0,
+   0x14,0x1c,b'T',b'E',b'S',b'T',0,
+   0x5b,0x13,b'B',b'U',b'F',b'0',0x0a,31,0x0a,2,b'F',b'L',b'D',b'0',
+   0xa4,0x00
+  ];
+  let mut namespace=AmlNamespace::new();
+  load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();
+  let mut bindings=AmlBindings::with_aml_revision(2);
+  let mut dynamic=AmlDynamicNamespace::new();
+  assert_eq!(execute_method_in_dynamic_context(&aml,&namespace,method,&[],64,
+      &mut arena,&mut bindings,&mut dynamic,&NO_METHOD_SYNCHRONIZER),
+      Err(ExecError::TargetTypeMismatch));
+  assert_eq!(dynamic.field_count(),0);
+ }
+
 }
