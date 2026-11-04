@@ -1633,7 +1633,7 @@ impl acpi::acpi_prt::LinkDeviceResolver for AcpiPrtLinkResolver<'_> {
     }
 }
 
-fn acpi_query_pci_interrupt_route(
+unsafe extern "win64" fn acpi_query_pci_interrupt_route(
     context: PVOID,
     request: *const ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
     output: *mut ACPI_PCI_INTERRUPT_ROUTE,
@@ -1665,12 +1665,18 @@ fn acpi_query_pci_interrupt_route(
         if !record.identity.has_hid { continue; }
         let hid = record.identity.hid.as_bytes();
         if hid != b"PNP0A08" && hid != b"PNP0A03" { continue; }
-        let Some(seg_object) = namespace.find_child(record.node, *b"_SEG") else { continue; };
-        let segment = evaluate_aml_integer_object(manager, gate, namespace, seg_object, &sources, &handles)
-            .unwrap_or(0);
-        let Some(bbn_object) = namespace.find_child(record.node, *b"_BBN") else { continue; };
-        let root_bus = evaluate_aml_integer_object(manager, gate, namespace, bbn_object, &sources, &handles)
-            .unwrap_or(0);
+        let segment = match namespace.find_child(record.node, *b"_SEG") {
+            Some(object) => match evaluate_aml_integer_object(manager, gate, namespace, object, &sources, &handles) {
+                Ok(value) => value, Err(_) => continue,
+            },
+            None => 0,
+        };
+        let root_bus = match namespace.find_child(record.node, *b"_BBN") {
+            Some(object) => match evaluate_aml_integer_object(manager, gate, namespace, object, &sources, &handles) {
+                Ok(value) => value, Err(_) => continue,
+            },
+            None => 0,
+        };
         if segment != request.segment as u64 || root_bus > u8::MAX as u64 { continue; }
 
         let Some(crs_object) = namespace.find_child(record.node, *b"_CRS") else { continue; };
@@ -1705,9 +1711,11 @@ fn acpi_query_pci_interrupt_route(
                 gsi, active_low: true, level_triggered: true,
             },
             acpi::acpi_prt::InterruptSource::LinkDevice { path, length, source_index } => {
-                resolver.resolve_gsi(&path[..length as usize], source_index)
-                    .map_err(|_| STATUS_NOT_FOUND)?;
-                resolver.last.get().ok_or(STATUS_NOT_FOUND)?
+                if resolver.resolve_gsi(&path[..length as usize], source_index).is_err() {
+                    return STATUS_NOT_FOUND;
+                }
+                let Some(resolved) = resolver.last.get() else { return STATUS_NOT_FOUND; };
+                resolved
             }
         };
         let mut io_apic = None;
@@ -1766,17 +1774,19 @@ unsafe extern "win64" fn cognac_acpi_get_firmware_interface(
 ) -> i32 {
     if output.is_null() { return STATUS_INVALID_PARAMETER; }
     if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    let context = core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>();
     unsafe {
         output.write(ACPI_FIRMWARE_INTERFACE {
             header: INTERFACE_HEADER {
                 size: core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() as u16,
                 version: ACPI_FIRMWARE_INTERFACE_VERSION as u16,
-                context: core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>(),
+                context,
                 interface_reference: Some(acpi_interface_reference),
                 interface_dereference: Some(acpi_interface_dereference),
             },
             query_table: Some(query_firmware_table),
         });
+        acpi_interface_reference(context);
     }
     STATUS_SUCCESS
 }
