@@ -60,7 +60,7 @@ const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // Stable boot-info ABI magic; preserve the existing value.
-const BOOT_INFO_VERSION: u32 = 11;
+const BOOT_INFO_VERSION: u32 = 12;
 const HIGH_HALF_PT_PAGES: usize = 64;
 const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
 
@@ -78,6 +78,7 @@ struct BootInfo {
     kernel_stack_pages: u64,
     kernel_stack_virtual_guard: u64,
     rsdp_address: u64,
+    smbios_entry_point: u64,
     ap_trampoline_physical: u64,
     kernel_physical_sections: [(u64, u64); 4],
     kernel_physical_section_count: usize,
@@ -319,10 +320,16 @@ fn main() -> Status {
     };
 
     let rsdp_address = find_rsdp();
+    let smbios_entry_point = find_smbios_entry_point();
     if rsdp_address == 0 {
         uefi::println!("WARNING: no ACPI RSDP found in UEFI configuration tables");
     } else {
         uefi::println!("Found ACPI RSDP at {:#x}", rsdp_address);
+    }
+    if smbios_entry_point == 0 {
+        uefi::println!("WARNING: no SMBIOS 2.x/3.x entry point in UEFI configuration tables");
+    } else {
+        uefi::println!("Found SMBIOS entry point at {:#x}", smbios_entry_point);
     }
 
     uefi::println!("Exiting UEFI boot services");
@@ -382,6 +389,7 @@ fn main() -> Status {
         kernel_stack_pages: KERNEL_STACK_PAGES as u64,
         kernel_stack_virtual_guard: KERNEL_STACK_VIRTUAL_GUARD,
         rsdp_address,
+        smbios_entry_point,
         ap_trampoline_physical,
         kernel_physical_sections,
         kernel_physical_section_count,
@@ -409,6 +417,7 @@ fn main() -> Status {
         boot_info_storage.as_ptr() as u64,
         kernel_stack_guard_page,
         if rsdp_address < 0x1_0000_0000 { rsdp_address } else { 0 },
+        smbios_entry_point,
         ap_trampoline_physical,
     ];
     let kernel_aliases_ok = loaded_kernel.segments[..loaded_kernel.segment_count].iter().all(|segment| {
@@ -473,6 +482,24 @@ fn find_rsdp() -> u64 {
     });
     let candidate = if acpi2.get() != 0 { acpi2.get() } else { acpi1.get() };
     if candidate < 0x1_0000_0000 { candidate } else { 0 }
+}
+
+/// Locate SMBIOS through the UEFI configuration table. Firmware table
+/// addresses are physical and remain physical after ExitBootServices.
+fn find_smbios_entry_point() -> u64 {
+    let smbios3 = core::cell::Cell::new(0u64);
+    let smbios2 = core::cell::Cell::new(0u64);
+    uefi::system::with_config_table(|entries| {
+        for entry in entries {
+            if entry.address.is_null() { continue; }
+            if entry.guid == uefi::table::cfg::SMBIOS3_GUID {
+                smbios3.set(entry.address as u64);
+            } else if entry.guid == uefi::table::cfg::SMBIOS_GUID {
+                smbios2.set(entry.address as u64);
+            }
+        }
+    });
+    if smbios3.get() != 0 { smbios3.get() } else { smbios2.get() }
 }
 
 /// Allocate a zeroed page below 4 GiB using UEFI services before the handoff.
