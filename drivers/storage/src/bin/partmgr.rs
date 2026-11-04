@@ -336,7 +336,7 @@ unsafe extern "win64" fn add_device(driver:*mut DRIVER_OBJECT,pdo:*mut DEVICE_OB
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn DriverEntry(driver:*mut DRIVER_OBJECT,_context:PVOID)->i32{
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
- let extension=unsafe{(*driver).driver_extension.cast::<DriverExtension>()};
+ let extension=unsafe{(*driver).driver_extension.cast::<DRIVER_EXTENSION>()};
  if extension.is_null(){return STATUS_INVALID_PARAMETER}
  unsafe{
   for index in 0..=IRP_MJ_MAXIMUM_FUNCTION{(*driver).major_function[index]=Some(dispatch)}
