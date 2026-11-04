@@ -788,48 +788,73 @@ pub unsafe fn import_pci_inventory(
         }
     }
 
+    // Publish the inventory transactionally. A malformed later function or
+    // an inconsistent bridge topology must not leave an arbitrary prefix of
+    // the bus visible to PnP. Existing duplicate devnodes are not owned by
+    // this import and are therefore never retired by rollback.
     let root_index = register_root_device()?;
-    let mut imported = 0usize;
-    for index in 0..functions {
-        let mut information = PCI_DEVICE_INFORMATION::default();
-        let status = unsafe { query_function(header.context, index, &mut information) };
-        if status == STATUS_NOT_FOUND { break; }
-        if status != STATUS_SUCCESS { return Err(PnpError::InvalidState); }
+    let mut inserted = [u32::MAX; MAX_PNP_DEVICES];
+    let mut inserted_count = 0usize;
+    let result = (|| -> Result<usize, PnpError> {
+        let mut imported = 0usize;
+        for index in 0..functions {
+            let mut information = PCI_DEVICE_INFORMATION::default();
+            let status = unsafe { query_function(header.context, index, &mut information) };
+            // query_counts is authoritative: an early NOT_FOUND means the
+            // inventory changed during the snapshot and must be retried later.
+            if status == STATUS_NOT_FOUND { return Err(PnpError::InvalidState); }
+            if status != STATUS_SUCCESS { return Err(PnpError::InvalidState); }
 
-        // Select the narrowest containing bridge range. Equal-width matches
-        // are ambiguous and rejected rather than creating a false parent.
-        let mut best: Option<PCI_BRIDGE_INFORMATION> = None;
-        let mut ambiguous = false;
-        for bridge in topology[..bridges as usize].iter().copied().filter(|bridge|
-            bridge.segment == information.segment
-                && bridge.secondary_bus <= information.bus
-                && information.bus <= bridge.subordinate_bus) {
-            match best {
-                None => { best = Some(bridge); ambiguous = false; }
-                Some(old) => {
-                    let old_width = old.subordinate_bus as u16 - old.secondary_bus as u16;
-                    let new_width = bridge.subordinate_bus as u16 - bridge.secondary_bus as u16;
-                    if new_width < old_width { best = Some(bridge); ambiguous = false; }
-                    else if new_width == old_width { ambiguous = true; }
+            // Select the narrowest containing bridge range. Equal-width
+            // matches are ambiguous and rejected rather than mis-parented.
+            let mut best: Option<PCI_BRIDGE_INFORMATION> = None;
+            let mut ambiguous = false;
+            for bridge in topology[..bridges as usize].iter().copied().filter(|bridge|
+                bridge.segment == information.segment
+                    && bridge.secondary_bus <= information.bus
+                    && information.bus <= bridge.subordinate_bus) {
+                match best {
+                    None => { best = Some(bridge); ambiguous = false; }
+                    Some(old) => {
+                        let old_width = old.subordinate_bus as u16 - old.secondary_bus as u16;
+                        let new_width = bridge.subordinate_bus as u16 - bridge.secondary_bus as u16;
+                        if new_width < old_width { best = Some(bridge); ambiguous = false; }
+                        else if new_width == old_width { ambiguous = true; }
+                    }
                 }
             }
+            if ambiguous { return Err(PnpError::InvalidFunction); }
+            let parent = if let Some(bridge) = best {
+                Some(find_pnp_pci_function(
+                    bridge.segment, bridge.primary_bus, bridge.device, bridge.function,
+                ).ok_or(PnpError::InvalidState)?)
+            } else {
+                Some(root_index)
+            };
+            match register_pci_information(&information, parent) {
+                Ok(device_index) => {
+                    if inserted_count == inserted.len() { return Err(PnpError::TableFull); }
+                    inserted[inserted_count] = device_index;
+                    inserted_count += 1;
+                    imported += 1;
+                }
+                Err(PnpError::DuplicateDevice) => {}
+                Err(error) => return Err(error),
+            }
         }
-        if ambiguous { return Err(PnpError::InvalidFunction); }
-        let parent = if let Some(bridge) = best {
-            let parent = find_pnp_pci_function(
-                bridge.segment, bridge.primary_bus, bridge.device, bridge.function,
-            ).ok_or(PnpError::InvalidState)?;
-            Some(parent)
-        } else {
-            Some(root_index)
-        };
-        match register_pci_information(&information, parent) {
-            Ok(_) => imported += 1,
-            Err(PnpError::DuplicateDevice) => {},
-            Err(error) => return Err(error),
+        Ok(imported)
+    })();
+
+    if result.is_err() {
+        // Each newly registered devnode is still in ENUMERATED state and has
+        // no PDO reference/resources yet, so the normal removal transition is
+        // the single cleanup path and safely makes its slot reusable.
+        while inserted_count != 0 {
+            inserted_count -= 1;
+            let _ = transition_pnp_device(inserted[inserted_count], PNP_DEVICE_REMOVED, STATUS_INVALID_PARAMETER);
         }
     }
-    Ok(imported)
+    result
 }
 
 /// Complete the bus-to-PnP discovery handoff and resolve registry-installed
