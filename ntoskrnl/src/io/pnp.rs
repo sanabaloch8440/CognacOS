@@ -275,9 +275,11 @@ pub fn xhci_resources()->Option<XhciPciResources> {
             endpoint_bus:d.bus.load(Ordering::Relaxed) as u8,
             endpoint_device:d.device.load(Ordering::Relaxed) as u8,
             endpoint_function:d.function.load(Ordering::Relaxed) as u8,
-            path:{let mut p=[cognacos_pci::PciPathElement::default();8];
+            path:{let mut p=[cognacos_pci::PciPathElement::default();256];
+                // The kernel stores at most eight bridge hops. Keep the remaining
+                // ABI slots zeroed and reject corrupted counts rather than reading past storage.
                 for i in 0..8 {let v=d.path_devfn[i].load(Ordering::Relaxed);p[i]=cognacos_pci::PciPathElement{device:(v>>3) as u8,function:(v&7) as u8};}p},
-            path_count:d.path_count.load(Ordering::Relaxed) as u8,
+            path_count:d.path_count.load(Ordering::Relaxed).min(8),
         }})
 }
 
