@@ -182,7 +182,7 @@ pub struct SciCallbackContext {
     /// records to the bounded GPE queue. Must be ISR-safe and nonblocking.
     pub capture_gpes: extern "C" fn(owner_context: u64) -> bool,
     /// Enqueues a kernel work item. Must not execute the worker inline.
-    pub queue_passive_worker: extern "C" fn(owner_context: u64) -> bool,
+    pub queue_passive_worker: extern "C" fn(owner_context: u64, routine: SciPassiveWorker) -> bool,
     /// Drains the GPE/EC queues and invokes AML at PASSIVE_LEVEL.
     pub run_passive_worker: extern "C" fn(owner_context: u64),
 }
@@ -198,7 +198,7 @@ pub extern "C" fn sci_isr_trampoline(context: u64) -> bool {
 pub extern "C" fn sci_dpc_trampoline(context: u64) {
     if context == 0 { return; }
     let callbacks = unsafe { &*(context as *const SciCallbackContext) };
-    let _ = (callbacks.queue_passive_worker)(callbacks.owner_context);
+    let _ = (callbacks.queue_passive_worker)(callbacks.owner_context, sci_passive_worker_trampoline);
 }
 /// Kernel work-item entry point. The caller guarantees PASSIVE_LEVEL and holds
 /// an ACPI operation/rundown reference for the entire worker invocation.
