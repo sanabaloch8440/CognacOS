@@ -600,6 +600,34 @@ mod hierarchical_prt_tests {
         let provider = Provider { endpoint: wildcard, root: PrtTable::EMPTY };
         assert_eq!(resolve_hierarchical_prt_route(&provider, &NoLinks, &[10], 5, 2, 0), Ok(24));
     }
+    struct TwoBridgeProvider { root: PrtTable }
+    impl PrtBusTableProvider for TwoBridgeProvider {
+        fn table_for_bus(&self, node: u16) -> Result<PrtTable, PrtError> {
+            match node { 10 | 20 => Ok(PrtTable::EMPTY), 30 => Ok(self.root), _ => Err(PrtError::MissingRoute) }
+        }
+        fn bridge_slot_for_downstream_bus(&self, downstream: u16, upstream: u16)
+            -> Result<(u8, u8), PrtError> {
+            match (downstream, upstream) {
+                (10, 20) => Ok((3, 0)),
+                (20, 30) => Ok((5, 1)),
+                _ => Err(PrtError::MissingRoute),
+            }
+        }
+    }
+    #[test]
+    fn two_downstream_bridges_swizzle_each_boundary_before_root_prt() {
+        let entries = [EvaluatedPrtElement {
+            // Endpoint pin A -> bridge slot 3 gives pin D; then slot 5
+            // gives pin A on the root-facing bridge function.
+            address: (5u64 << 16) | 1, pin: 0,
+            source_path: None, source_index: 55,
+        }];
+        let provider = TwoBridgeProvider { root: build_prt_table(&entries).unwrap() };
+        assert_eq!(
+            resolve_hierarchical_prt_route(&provider, &NoLinks, &[10, 20, 30], 7, 4, 0),
+            Ok(55),
+        );
+    }
     #[test]
     fn hierarchy_does_not_fall_back_when_parent_route_is_missing() {
         let provider = Provider { endpoint: PrtTable::EMPTY, root: PrtTable::EMPTY };
