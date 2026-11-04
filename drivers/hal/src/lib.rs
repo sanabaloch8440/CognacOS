@@ -683,3 +683,17 @@ mod kernel_hal_boundary_tests {
         assert_eq!(core::mem::size_of::<IommuBackend>(), 40);
     }
 }
+
+
+/// HAL-neutral representation of an ACPI Generic Address Structure.
+/// Firmware parsing and namespace ownership remain in ACPI.sys; HAL receives
+/// only the validated register descriptor needed for hardware access.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GenericAddressStructure {
+    pub address_space_id: u8,
+    pub bit_width: u8,
+    pub bit_offset: u8,
+    pub access_size: u8,
+    pub address: u64,
+}
