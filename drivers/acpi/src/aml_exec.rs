@@ -1969,6 +1969,7 @@ mod explicit_mutex_tests {
  impl DeadlineClockSync{fn new(constant:bool)->Self{Self{reads:AtomicUsize::new(0),constant}}}
  impl AmlMethodSynchronizer for DeadlineClockSync{
   fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
+  fn acquire_with_timeout(&self,_:u16,_:u8,timeout:u16)->Result<bool,ExecError>{LAST_BOUNDED_TIMEOUT.store(timeout as usize,Ordering::SeqCst);Ok(false)}
   fn release(&self,_:u16){}
   fn monotonic_time_100ns(&self)->Option<u64>{
    let read=self.reads.fetch_add(1,Ordering::SeqCst);
@@ -1984,6 +1985,15 @@ mod explicit_mutex_tests {
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(false);
   assert_eq!(execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::DeadlineExceeded));
+ }
+
+ #[test]fn serialized_method_mutex_wait_is_bounded_by_execution_deadline(){
+  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0x08,0xa4,0x01];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(true);
+  LAST_BOUNDED_TIMEOUT.store(0,Ordering::SeqCst);
+  assert_eq!(execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::ExecutionBusy));
+  assert_eq!(LAST_BOUNDED_TIMEOUT.load(Ordering::SeqCst),30_000);
  }
  #[test]fn nested_methods_consume_one_shared_instruction_budget(){
   let aml=[0x14,0x08,b'C',b'H',b'L',b'D',0,0xa4,0x01,
