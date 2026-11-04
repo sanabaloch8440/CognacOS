@@ -777,6 +777,10 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: PASSIVE_LEVEL work-item worker initialization failed.\\r\\n");
             halt();
         }
+        if !ntoskrnl::ke::work_item::self_test() {
+            serial_write(b"FATAL: PASSIVE_LEVEL work-item queue/rundown execution test failed.\\r\\n");
+            halt();
+        }
         hal::install_acpi_passive_work_hooks(
             ntoskrnl::ke::work_item::queue_from_dpc,
             ntoskrnl::ke::work_item::rundown_context,
