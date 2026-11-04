@@ -50,7 +50,7 @@ pub fn prepare_host_bridge_apertures(
     protected_ram: &[E820Range],
 ) -> Result<PreparedHostBridgeApertures, HostBridgeHandoffError> {
     if resources.version != PCI_HOST_BRIDGE_RESOURCES_VERSION
-        || resources.size as usize < core::mem::size_of::<PciHostBridgeResourceSet>()
+        || (resources.size as usize) < core::mem::size_of::<PciHostBridgeResourceSet>()
         || resources.count as usize > PCI_HOST_BRIDGE_MAX_WINDOWS {
         return Err(HostBridgeHandoffError::InvalidVersion);
     }
