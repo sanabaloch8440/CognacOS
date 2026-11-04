@@ -266,6 +266,32 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
  unsafe{io_dereference_device_object(resource_owner)};
 }
 
+/// @partial implementation
+/// Verify a CONNECT_FULLY_SPECIFIED request against the PDO's committed,
+/// translated PnP interrupt resource. A caller cannot connect an arbitrary
+/// vector or substitute its own IRQL, affinity, trigger, or sharing policy.
+pub(crate) fn io_validate_pnp_interrupt_resource(
+ device:*mut DeviceObject, vector:u32, irql:u8, interrupt_mode:u32,
+ share_vector:u8, affinity:u64, group:u16,
+)->bool{
+ if device.is_null()||!(0x20..=0xdf).contains(&vector){return false}
+ let owner=unsafe{io_get_device_attachment_base_ref(device)};
+ if owner.is_null(){return false}
+ let valid={
+  let arbiter=RESOURCE_ARBITER.lock();
+  arbiter.claims.iter().any(|claim|
+   claim.used&&claim.committed&&claim.owner==owner&&claim.kind==CM_RESOURCE_INTERRUPT
+    &&claim.flags&0x0002==0&&claim.system_vector==vector
+    &&claim.irql==irql as u32&&claim.group==group
+    &&claim.affinity==affinity
+    &&(if claim.flags&0x0001!=0{1}else{0})==interrupt_mode
+    &&(if claim.share==3{1}else{0})==share_vector
+  )
+ };
+ unsafe{io_dereference_device_object(owner)};
+ valid
+}
+
 /// Translated line-based interrupt resource retained by the PnP arbiter.
 /// A single group-zero line interrupt is currently connectable; shared level-sensitive lines are supported.
 pub(crate) struct PnpLineInterruptResource {
