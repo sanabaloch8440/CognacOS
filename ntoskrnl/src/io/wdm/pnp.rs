@@ -242,7 +242,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
    if effective_status==STATUS_SUCCESS {
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner&&c.committed){
      released[released_count]=claim.owner;released_count+=1;
-     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
+     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0&&claim.irql<=u8::MAX as u32 {
       removed_translations[removed_count]=*claim;removed_count+=1;
      }
      *claim=ResourceClaim::EMPTY;
@@ -277,7 +277,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
 }
 
 /// @partial implementation
-/// Verify a CONNECT_FULLY_SPECIFIED request against the PDO's committed,
+/// Verify a CONNECT_FULLY_SPECIFIED request against the PDO's pending or committed,
 /// translated PnP interrupt resource. A caller cannot connect an arbitrary
 /// vector or substitute its own IRQL, affinity, trigger, or sharing policy.
 pub(crate) fn io_validate_pnp_interrupt_resource(
@@ -314,7 +314,7 @@ pub(crate) struct PnpLineInterruptResource {
 }
 
 /// @partial implementation
-/// Query the committed translated interrupt resource for CONNECT_LINE_BASED.
+/// Query the pending START_DEVICE or committed translated interrupt resource.
 /// Shared level-sensitive lines are accepted; message-signaled resources are rejected.
 pub(crate) fn io_query_pnp_line_interrupt_resource(
  device:*mut DeviceObject,
