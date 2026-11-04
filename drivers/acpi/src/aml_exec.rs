@@ -589,12 +589,11 @@ impl<'a,'b> Machine<'a,'b>{
     Ok(result)
    }
    0x71|0x83|0x88=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)}
-   0x5b=>{r.pos-=2;let value=self.term_value(r)?;self.operand_integer(&value)},
    0x96..=0x99|0x9c=>{let value=self.conversion_value(r,op)?;self.operand_integer(&value)},0x0a=>Ok(r.byte()? as u64),
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
-   0x8a|0x8b|0x8c|0x8d|0x8f|0x5b|0x88=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)},
+   0x8a|0x8b|0x8c|0x8d|0x8f=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)},
    0x60..=0x67=>{let value=self.locals[(op-0x60)as usize];if value.kind==AmlValueKind::ObjectReference{let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;let deref=dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)?;self.operand_integer(&deref)}else{self.operand_integer(&value)}},0x68..=0x6e=>{let value=self.argument_value((op-0x68)as usize)?;self.operand_integer(&value)},
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
