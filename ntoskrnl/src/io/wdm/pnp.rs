@@ -226,7 +226,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
     }
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
      claim.committed=true;claim.irp=ptr::null_mut();
-     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
       added_translations[added_count]=*claim;added_count+=1;
      }
     }
