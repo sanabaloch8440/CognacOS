@@ -297,11 +297,6 @@ impl QuirkFlags {
     pub const fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
 }
 
-impl core::ops::BitOr for QuirkFlags {
-    type Output = Self;
-    fn bitor(self, rhs: Self) -> Self::Output { Self(self.0 | rhs.0) }
-}
-
 
 pub type QuirkHook = fn(&PlatformIdentity, &mut QuirkPolicy) -> Result<(), QuirkError>;
 #[derive(Clone, Copy)]
@@ -575,19 +570,15 @@ quirk_def!(HP_NX6125_IRQ0_QUIRK,"hp-compaq-nx6125-ignore-irq0-override",HP_IRQ0_
 quirk_def!(HP_NX6325_IRQ0_QUIRK,"hp-compaq-nx6325-ignore-irq0-override",HP_IRQ0_NX6325_MATCH,QuirkFlags::IGNORE_IRQ0_OVERRIDE);
 quirk_def!(IBM_600_2645_IRQ_QUIRK,"ibm-thinkpad-600-2645-disable-acpi-pci-irq",IBM_600_2645_MATCH,QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
 quirk_def!(IBM_600_2646_IRQ_QUIRK,"ibm-thinkpad-600-2646-disable-acpi-pci-irq",IBM_600_2646_MATCH,QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
-quirk_def!(ASUS_PR_DLS_PCI_QUIRK,"asus-pr-dls-disable-acpi-pci",ASUS_PR_DLS_MATCH,QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION|QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
-quirk_def!(ACER_TRAVELMATE_360_PCI_QUIRK,"acer-travelmate-360-disable-acpi-pci",ACER_TRAVELMATE_360_MATCH,QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION|QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
+quirk_def!(ASUS_PR_DLS_PCI_QUIRK,"asus-pr-dls-disable-acpi-pci",ASUS_PR_DLS_MATCH,QuirkFlags((1 << 6) | (1 << 5)));
+quirk_def!(ACER_TRAVELMATE_360_PCI_QUIRK,"acer-travelmate-360-disable-acpi-pci",ACER_TRAVELMATE_360_MATCH,QuirkFlags((1 << 6) | (1 << 5)));
 quirk_def!(NEC_BEARLAKE_RSDT_QUIRK,"nec-bearlake-v1-12-prefer-rsdt",NEC_BEARLAKE_MATCH,QuirkFlags::PREFER_RSDT);
-quirk_def!(LENOVO_IIL_PCI_CRS_QUIRK,"lenovo-iil-ignore-e820-for-pci-crs",LENOVO_IIL_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
-quirk_def!(ACER_SPIN_5_PCI_CRS_QUIRK,"acer-spin-sp513-54n-ignore-e820-for-pci-crs",ACER_SPIN_5_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
-quirk_def!(CLEVO_X170KM_G_PCI_CRS_QUIRK,"clevo-x170km-g-ignore-e820-for-pci-crs",CLEVO_X170KM_G_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
 
 pub const PLATFORM_QUIRK_REGISTRY:&[QuirkDefinition]=&[
  FUJITSU_SIEMENS_QUIRK,DELL_0A3E_QUIRK,
  HP_NX6115_IRQ0_QUIRK,HP_NX6125_IRQ0_QUIRK,HP_NX6325_IRQ0_QUIRK,
  IBM_600_2645_IRQ_QUIRK,IBM_600_2646_IRQ_QUIRK,ASUS_PR_DLS_PCI_QUIRK,
  ACER_TRAVELMATE_360_PCI_QUIRK,NEC_BEARLAKE_RSDT_QUIRK,
- LENOVO_IIL_PCI_CRS_QUIRK,ACER_SPIN_5_PCI_CRS_QUIRK,CLEVO_X170KM_G_PCI_CRS_QUIRK,
 ];
 
 #[cfg(test)]
