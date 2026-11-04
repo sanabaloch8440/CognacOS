@@ -281,6 +281,7 @@ pub struct PrtOverride {
     pub pin: u8, pub gsi: u32, pub active_low: bool, pub level_triggered: bool,
 }
 
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuirkFlags(pub u32);
 impl QuirkFlags {
@@ -315,6 +316,7 @@ pub struct QuirkDefinition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuirkError { Capacity, ConflictingOsiPolicy, InvalidPatch, PatchMismatch, UnsupportedTable, InvalidFadtMask }
 
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct QuirkPolicy {
     pub flags: QuirkFlags,
