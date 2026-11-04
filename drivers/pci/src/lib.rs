@@ -536,6 +536,20 @@ mod full_depth_path_tests {
         assert_eq!(path.path[0], PciPathElement { device: 1, function: 0 });
         assert_eq!(path.path[255], PciPathElement { device: 2, function: 0 });
     }
+
+    #[test]
+    fn rejects_duplicate_secondary_bus_ownership() {
+        let bridges = [
+            PciBridgeRange { segment: 0, primary_bus: 0, secondary_bus: 1,
+                subordinate_bus: 8, device: 1, function: 0 },
+            PciBridgeRange { segment: 0, primary_bus: 0, secondary_bus: 1,
+                subordinate_bus: 4, device: 2, function: 0 },
+        ];
+        assert_eq!(
+            resolve_requester_path(0, 0, 1, 3, 0, &bridges),
+            Err(PciTopologyError::AmbiguousParentBridge),
+        );
+    }
 }
 
 #[cfg(test)]
