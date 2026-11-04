@@ -341,4 +341,27 @@ mod tests {
         assert_eq!(field, Err(RuntimeError::ValueTooLarge));
         assert_eq!(namespace.count, 1);
     }
+    #[test]
+    fn unload_retires_owned_fields_without_recycling_reference_ids() {
+        let mut namespace = AmlNamespace::new();
+        let mut dynamic = AmlDynamicNamespace::new();
+        let mut arena = AmlObjectArena::new();
+        let mut buffer = AmlRuntimeValue::EMPTY;
+        buffer.kind = AmlValueKind::Buffer;
+        buffer.byte_length = 4;
+        let id = arena.allocate(buffer).unwrap();
+        let name = AmlName { segments: [*b"FLD0", [0;4], [0;4], [0;4], [0;4], [0;4], [0;4], [0;4]],
+            count: 1, rooted: false, parents: 0 };
+        let first = dynamic.create_buffer_field_at(&namespace, 0, &name, &arena,
+            id, 0, 32, 17).unwrap();
+        assert_eq!(dynamic.field_count(), 1);
+        assert_eq!(dynamic.remove_owner_table(17), 1);
+        assert_eq!(dynamic.field_count(), 0);
+        assert_eq!(dynamic.field_reference(&namespace, first), Err(RuntimeError::InvalidReference));
+        let second = dynamic.create_buffer_field_at(&namespace, 0, &name, &arena,
+            id, 0, 32, 18).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(dynamic.field_count(), 1);
+    }
+
 }
