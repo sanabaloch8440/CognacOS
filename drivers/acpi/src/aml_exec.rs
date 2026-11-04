@@ -36,6 +36,7 @@ enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
 /// per-thread ownership so nested calls obey ACPI mutex reentrancy rules.
 pub trait AmlMethodSynchronizer:Sync{
  fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>;
+ fn acquire_with_timeout(&self,method_index:u16,sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{self.acquire(method_index,sync_level)?;Ok(true)}
  fn release(&self,method_index:u16);
  fn acquire_mutex(&self,_mutex_index:u16,_sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
  fn release_mutex(&self,_mutex_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
@@ -877,7 +878,13 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  let sync_level=(node.method_flags>>4)&0x0f;
  if serialized&&sync_level<sync_state.current_sync_level{return Err(ExecError::SyncLevelViolation)}
  let mutex_checkpoint=sync_state.held_count;let previous_sync_level=sync_state.current_sync_level;
- if serialized{sync.acquire(method_index,sync_level)?;sync_state.current_sync_level=sync_level;}
+ if serialized{
+  let timeout=budget.bounded_timeout(u16::MAX,sync)?;
+  let acquired=sync.acquire_with_timeout(method_index,sync_level,timeout)?;
+  if !acquired{budget.check_deadline(sync)?;return Err(ExecError::ExecutionBusy)}
+  if let Err(error)=budget.check_deadline(sync){sync.release(method_index);return Err(error)}
+  sync_state.current_sync_level=sync_level;
+ }
  // Each invocation owns its own LocalX/ArgX frame and execution budget.
  // Namespace objects and the method synchronizer are shared with nested calls.
  let result=(||{
