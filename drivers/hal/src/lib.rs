@@ -27,6 +27,8 @@ pub struct PciHostBridgeResourceWindow {
     pub minimum: u64,
     pub maximum: u64,
     pub alignment: u64,
+    /// ACPI bus-to-primary address translation offset; nonzero offsets must be handled explicitly.
+    pub translation_offset: u64,
     /// Size of the resource window at each permitted base.
     pub length: u64,
 }
@@ -49,7 +51,7 @@ impl PciHostBridgeResourceSet {
             segment, bus_start, bus_end, count: 0,
             windows: [PciHostBridgeResourceWindow {
                 space: 0, attributes: 0, address_width: 0, reserved: 0,
-                minimum: 0, maximum: 0, alignment: 0, length: 0,
+                minimum: 0, maximum: 0, alignment: 0, translation_offset: 0, length: 0,
             }; PCI_HOST_BRIDGE_MAX_WINDOWS],
         }
     }
