@@ -13,7 +13,7 @@ pub const MAX_BYTE_PATCHES: usize = 16;
 pub const MAX_IRQ_OVERRIDES: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DmiField { SystemVendor, ProductName, BoardVendor, BoardName, ProductSku, BiosVersion, BiosDate }
+pub enum DmiField { SystemVendor, ProductName, BoardVendor, BoardName, ProductSku, ProductVersion, BiosVersion, BiosDate }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DmiValue {
@@ -39,6 +39,7 @@ pub struct PlatformIdentity {
     pub board_vendor: DmiValue,
     pub board_name: DmiValue,
     pub product_sku: DmiValue,
+    pub product_version: DmiValue,
     pub bios_version: DmiValue,
     pub bios_date: DmiValue,
     pub smbios_major: u8,
@@ -58,6 +59,7 @@ impl PlatformIdentity {
             DmiField::BoardVendor => self.board_vendor.as_bytes(),
             DmiField::BoardName => self.board_name.as_bytes(),
             DmiField::ProductSku => self.product_sku.as_bytes(),
+            DmiField::ProductVersion => self.product_version.as_bytes(),
             DmiField::BiosVersion => self.bios_version.as_bytes(),
             DmiField::BiosDate => self.bios_date.as_bytes(),
         }
@@ -194,6 +196,7 @@ pub fn parse_smbios_table(table: &[u8], major: u8, minor: u8)
             1 if formatted_len >= 6 => {
                 id.system_vendor.set(smbios_string(strings, formatted[4])?);
                 id.product_name.set(smbios_string(strings, formatted[5])?);
+                if formatted_len >= 7 { id.product_version.set(smbios_string(strings, formatted[6])?); }
                 if formatted_len >= 0x1b { id.product_sku.set(smbios_string(strings, formatted[0x19])?); }
             }
             2 if formatted_len >= 6 => {
@@ -286,6 +289,11 @@ impl QuirkFlags {
     pub const FORCE_APIC: Self = Self(1 << 1);
     pub const PM_TIMER_32BIT: Self = Self(1 << 2);
     pub const DISABLE_BROKEN_LINK_DEVICE: Self = Self(1 << 3);
+    pub const IGNORE_IRQ0_OVERRIDE: Self = Self(1 << 4);
+    pub const DISABLE_ACPI_PCI_IRQ_ROUTING: Self = Self(1 << 5);
+    pub const DISABLE_ACPI_PCI_ENUMERATION: Self = Self(1 << 6);
+    pub const PREFER_RSDT: Self = Self(1 << 7);
+    pub const IGNORE_E820_FOR_PCI_CRS: Self = Self(1 << 8);
     pub const fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
 }
 
@@ -532,6 +540,49 @@ pub const DELL_0A3E_QUIRK: QuirkDefinition = QuirkDefinition {
     matches: DELL_0A3E_MATCH, flags: QuirkFlags::NONE,
     osi: &[], table_patches: &[], fadt: None, prt: &[], adr: DELL_0A3E_ADR, hook: None,
 };
+
+
+/// DMI-scoped early ACPI/PCI compatibility cases documented by Linux.
+pub const HP_IRQ0_NX6115_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::SystemVendor,b"Hewlett-Packard"),DmiMatch::exact(DmiField::ProductName,b"HP Compaq nx6115")];
+pub const HP_IRQ0_NX6125_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::SystemVendor,b"Hewlett-Packard"),DmiMatch::exact(DmiField::ProductName,b"HP Compaq nx6125")];
+pub const HP_IRQ0_NX6325_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::SystemVendor,b"Hewlett-Packard"),DmiMatch::exact(DmiField::ProductName,b"HP Compaq nx6325")];
+pub const IBM_600_2645_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::BoardVendor,b"IBM"),DmiMatch::exact(DmiField::BoardName,b"2645")];
+pub const IBM_600_2646_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::BoardVendor,b"IBM"),DmiMatch::exact(DmiField::BoardName,b"2646")];
+pub const ASUS_PR_DLS_MATCH:&[DmiMatch]=&[
+ DmiMatch::exact(DmiField::BoardVendor,b"ASUSTeK Computer INC."),DmiMatch::exact(DmiField::BoardName,b"PR-DLS"),
+ DmiMatch::exact(DmiField::BiosVersion,b"ASUS PR-DLS ACPI BIOS Revision 1010"),DmiMatch::exact(DmiField::BiosDate,b"03/21/2003")];
+pub const ACER_TRAVELMATE_360_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::SystemVendor,b"Acer"),DmiMatch::exact(DmiField::ProductName,b"TravelMate 360")];
+pub const NEC_BEARLAKE_MATCH:&[DmiMatch]=&[
+ DmiMatch::exact(DmiField::SystemVendor,b"NEC"),DmiMatch::exact(DmiField::ProductName,b"Bearlake CRB Board"),
+ DmiMatch::exact(DmiField::BiosVersion,b"V1.12"),DmiMatch::exact(DmiField::BiosDate,b"02/01/2011")];
+pub const LENOVO_IIL_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::SystemVendor,b"LENOVO"),DmiMatch::contains(DmiField::ProductVersion,b"IIL")];
+pub const ACER_SPIN_5_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::SystemVendor,b"Acer"),DmiMatch::exact(DmiField::ProductName,b"Spin SP513-54N")];
+pub const CLEVO_X170KM_G_MATCH:&[DmiMatch]=&[DmiMatch::exact(DmiField::BoardName,b"X170KM-G")];
+
+macro_rules! quirk_def {
+ ($name:ident,$id:literal,$matches:ident,$flags:expr) => {
+  pub const $name:QuirkDefinition=QuirkDefinition{id:$id,matches:$matches,flags:$flags,osi:&[],table_patches:&[],fadt:None,prt:&[],adr:&[],hook:None};
+ };
+}
+quirk_def!(HP_NX6115_IRQ0_QUIRK,"hp-compaq-nx6115-ignore-irq0-override",HP_IRQ0_NX6115_MATCH,QuirkFlags::IGNORE_IRQ0_OVERRIDE);
+quirk_def!(HP_NX6125_IRQ0_QUIRK,"hp-compaq-nx6125-ignore-irq0-override",HP_IRQ0_NX6125_MATCH,QuirkFlags::IGNORE_IRQ0_OVERRIDE);
+quirk_def!(HP_NX6325_IRQ0_QUIRK,"hp-compaq-nx6325-ignore-irq0-override",HP_IRQ0_NX6325_MATCH,QuirkFlags::IGNORE_IRQ0_OVERRIDE);
+quirk_def!(IBM_600_2645_IRQ_QUIRK,"ibm-thinkpad-600-2645-disable-acpi-pci-irq",IBM_600_2645_MATCH,QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
+quirk_def!(IBM_600_2646_IRQ_QUIRK,"ibm-thinkpad-600-2646-disable-acpi-pci-irq",IBM_600_2646_MATCH,QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
+quirk_def!(ASUS_PR_DLS_PCI_QUIRK,"asus-pr-dls-disable-acpi-pci",ASUS_PR_DLS_MATCH,QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION|QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
+quirk_def!(ACER_TRAVELMATE_360_PCI_QUIRK,"acer-travelmate-360-disable-acpi-pci",ACER_TRAVELMATE_360_MATCH,QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION|QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING);
+quirk_def!(NEC_BEARLAKE_RSDT_QUIRK,"nec-bearlake-v1-12-prefer-rsdt",NEC_BEARLAKE_MATCH,QuirkFlags::PREFER_RSDT);
+quirk_def!(LENOVO_IIL_PCI_CRS_QUIRK,"lenovo-iil-ignore-e820-for-pci-crs",LENOVO_IIL_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
+quirk_def!(ACER_SPIN_5_PCI_CRS_QUIRK,"acer-spin-sp513-54n-ignore-e820-for-pci-crs",ACER_SPIN_5_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
+quirk_def!(CLEVO_X170KM_G_PCI_CRS_QUIRK,"clevo-x170km-g-ignore-e820-for-pci-crs",CLEVO_X170KM_G_MATCH,QuirkFlags::IGNORE_E820_FOR_PCI_CRS);
+
+pub const PLATFORM_QUIRK_REGISTRY:&[QuirkDefinition]=&[
+ FUJITSU_SIEMENS_QUIRK,DELL_0A3E_QUIRK,
+ HP_NX6115_IRQ0_QUIRK,HP_NX6125_IRQ0_QUIRK,HP_NX6325_IRQ0_QUIRK,
+ IBM_600_2645_IRQ_QUIRK,IBM_600_2646_IRQ_QUIRK,ASUS_PR_DLS_PCI_QUIRK,
+ ACER_TRAVELMATE_360_PCI_QUIRK,NEC_BEARLAKE_RSDT_QUIRK,
+ LENOVO_IIL_PCI_CRS_QUIRK,ACER_SPIN_5_PCI_CRS_QUIRK,CLEVO_X170KM_G_PCI_CRS_QUIRK,
+];
 
 #[cfg(test)]
 mod tests {
