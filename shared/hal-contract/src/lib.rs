@@ -574,13 +574,10 @@ pub struct IommuBackend {
 unsafe impl Send for IommuBackend {}
 unsafe impl Sync for IommuBackend {}
 
-#[repr(C)]
-#[derive(Clone, Copy)]
 // The raw context is an opaque, kernel-lifetime callback context. Its
 // synchronization and immutability are guaranteed by the one-shot installer.
-unsafe impl Send for HalKernelServices {}
-unsafe impl Sync for HalKernelServices {}
-
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct HalKernelServices {
     pub size: u32,
     pub version: u32,
@@ -593,6 +590,9 @@ pub struct HalKernelServices {
     pub create_dma_adapter: Option<HalKernelCreateDmaAdapter>,
     pub allocate_common_buffer: Option<HalKernelAllocateCommonBuffer>,
     pub free_common_buffer: Option<HalKernelFreeCommonBuffer>,
+}
+unsafe impl Send for HalKernelServices {}
+unsafe impl Sync for HalKernelServices {}
     pub validate_common_buffer: Option<HalKernelValidateCommonBuffer>,
     pub register_iommu_backend: Option<HalKernelRegisterIommuBackend>,
     pub requester_identity: Option<HalKernelRequesterIdentity>,
