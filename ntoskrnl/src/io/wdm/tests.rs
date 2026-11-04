@@ -558,6 +558,21 @@ mod wdm_tests {
  }
 
  #[test]
+ fn named_device_accepts_full_counted_name_capacity() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut path=std::string::String::from("\\Device\\");
+  path.push_str(&"N".repeat(100));
+  let mut utf16=path.encode_utf16().collect::<std::vec::Vec<u16>>();
+  let byte_len=(utf16.len()*2) as u16;
+  let mut unicode=UnicodeString{length:byte_len,maximum_length:byte_len,buffer:utf16.as_mut_ptr()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,&mut unicode,7,0,0,&mut device)},STATUS_SUCCESS);
+  assert_eq!(unsafe{lookup_device_object(&mut unicode)},device);
+  unsafe{io_delete_device(device);}
+  assert!(unsafe{lookup_device_object(&mut unicode)}.is_null());
+ }
+
+ #[test]
  fn asynchronous_fsd_request_sets_read_parameters_and_iosb() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
   let mut device:*mut DeviceObject=ptr::null_mut();

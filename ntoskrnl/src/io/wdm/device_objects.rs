@@ -146,8 +146,10 @@ pub unsafe extern "win64" fn io_create_device(
  }
  unsafe { (*driver).device_object=object; output.write(object); }
  drop(state);
- let mut ob_name=[0u16;128];
- if name_len>ob_name.len() { unsafe{io_delete_device(object)}; return STATUS_INVALID_PARAMETER; }
+ // The I/O-manager name buffer and the device-slot name buffer share the
+ // same 260-WCHAR bound. Do not impose a second, shorter limit when
+ // publishing the object to the Object Manager.
+ let mut ob_name=[0u16;260];
  ob_name[..name_len].copy_from_slice(&counted_name[..name_len]);
  let type_name=[b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16];
  if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(object.cast(),&type_name,&ob_name[..name_len],false,ptr::null(),0,io_object_manager_finalizer)}.is_err() {
