@@ -301,6 +301,6 @@ mod tests {
     #[test] fn rejects_truncated_strings_and_oversized_packages(){
         let mut arena = test_arena();
         assert_eq!(decode_data_object(&[0x0d,b'x'],0,2,&mut arena),Err(ObjectError::Truncated));
-        assert_eq!(decode_data_object(&[0x12,0x02,17],0,3,&mut arena),Err(ObjectError::TooManyElements));
+        assert_eq!(decode_data_object(&[0x12,0x02,(MAX_PACKAGE_ELEMENTS as u8)+1],0,3,&mut arena),Err(ObjectError::TooManyElements));
     }
 }
