@@ -113,6 +113,11 @@ impl<'a,'b> Machine<'a,'b>{
      if let Ok(id)=self.bindings.value_id(node){let nested=self.arena.get(id).ok_or(ExecError::BadTarget)?;return self.result_contains_frame_reference(nested,depth+1)}
      return Ok(false)
     }
+    AmlReference::NamespaceNodeGeneration{node,generation}=>{
+     self.bindings.validate_node_generation(node,generation).map_err(|_|ExecError::BadTarget)?;
+     if let Ok(id)=self.bindings.value_id(node){let nested=self.arena.get(id).ok_or(ExecError::BadTarget)?;return self.result_contains_frame_reference(nested,depth+1)}
+     return Ok(false)
+    }
    }
   }
   if value.kind==AmlValueKind::Package{
@@ -127,6 +132,10 @@ impl<'a,'b> Machine<'a,'b>{
  fn reference_object_id(&self,reference:AmlReference)->Result<u16,ExecError>{
   match reference{
    AmlReference::NamespaceNode(node)=>self.bindings.value_id(node).map_err(|_|ExecError::BadTarget),
+   AmlReference::NamespaceNodeGeneration{node,generation}=>{
+    self.bindings.validate_node_generation(node,generation).map_err(|_|ExecError::BadTarget)?;
+    self.bindings.value_id(node).map_err(|_|ExecError::BadTarget)
+   },
    AmlReference::ArenaValue(id)=>Ok(id),
    AmlReference::PackageElement{package,index}=>{let object=self.arena.get(package).ok_or(ExecError::BadTarget)?;
     if object.kind!=AmlValueKind::Package||index as usize>=object.element_count as usize{return Err(ExecError::BadTarget)}Ok(object.elements[index as usize])}
@@ -150,7 +159,7 @@ impl<'a,'b> Machine<'a,'b>{
      let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
      let object=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
      return match object.object_type{AmlObjectType::Name=>Ok(Some(self.name_reference(canonical)?)),
-      _=>Ok(Some(AmlReference::NamespaceNode(canonical)))};
+      _=>Ok(Some(self.bindings.reference_node(self.namespace,canonical).map_err(|_|ExecError::BadTarget)?))};
     }
     if let Ok(node)=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name){return Ok(Some(self.dynamic.field_reference(self.namespace,node).map_err(|_|ExecError::BadTarget)?));}
     Ok(None)
@@ -205,7 +214,7 @@ impl<'a,'b> Machine<'a,'b>{
     let entry=self.namespace.nodes.get(canonical as usize)
         .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
     if entry.object_type==AmlObjectType::Name { return Ok(Target::Reference(self.name_reference(canonical)?)); }
-    if entry.object_type==AmlObjectType::Device { return Ok(Target::Reference(AmlReference::NamespaceNode(canonical))); }
+    if entry.object_type==AmlObjectType::Device { return Ok(Target::Reference(self.bindings.reference_node(self.namespace,canonical).map_err(|_|ExecError::BadTarget)?)); }
     r.pos = r.pos; // preserve the parsed target boundary
     Err(ExecError::BadTarget)
    }
@@ -256,6 +265,10 @@ impl<'a,'b> Machine<'a,'b>{
    let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;
    let reference=match reference{
     AmlReference::NamespaceNode(node)=>self.name_reference(node)?,
+    AmlReference::NamespaceNodeGeneration{node,generation}=>{
+     self.bindings.validate_node_generation(node,generation).map_err(|_|ExecError::NonIntegerName)?;
+     self.name_reference(node)?
+    },
     other=>other,
    };
    dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)
@@ -271,6 +284,10 @@ impl<'a,'b> Machine<'a,'b>{
      let reference=reference_from_value(&current).map_err(|_|ExecError::NonIntegerName)?;
      let reference=match reference{
       AmlReference::NamespaceNode(node)=>self.name_reference(node)?,
+      AmlReference::NamespaceNodeGeneration{node,generation}=>{
+       self.bindings.validate_node_generation(node,generation).map_err(|_|ExecError::NonIntegerName)?;
+       self.name_reference(node)?
+      },
       other=>other,
      };
      self.store_reference_value(reference,value,mode)
@@ -517,7 +534,7 @@ impl<'a,'b> Machine<'a,'b>{
      // Device objects used as _PRT Source values are namespace references,
      // not scalar Names. Preserve the reference so the PRT decoder can resolve
      // aliases and canonical paths after method evaluation.
-     AmlObjectType::Device=>Ok(make_object_reference(AmlReference::NamespaceNode(canonical))),
+     AmlObjectType::Device=>Ok(make_object_reference(self.bindings.reference_node(self.namespace,canonical).map_err(|_|ExecError::BadTarget)?)),
      _=>Err(ExecError::NonIntegerName),
     }
    }

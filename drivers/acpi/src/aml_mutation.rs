@@ -238,7 +238,7 @@ impl AmlDynamicNamespace {
     pub fn store_name(&mut self, namespace: &AmlNamespace, bindings: &mut AmlBindings,
         arena: &mut AmlObjectArena, node: u16, value: u16, mode: StoreMode)
         -> Result<(), RuntimeError> {
-        let reference = AmlReference::NamespaceNode(node);
+        let reference = bindings.reference_node(namespace, node)?;
         store_reference_with_mode(reference, value, mode, bindings, namespace, arena)
     }
 
