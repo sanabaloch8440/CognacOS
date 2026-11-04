@@ -880,12 +880,12 @@ mod dependent_requirement_tests {
  fn extended_address_descriptor_preserves_qword_translation_fields() {
   let mut bytes = [0u8; 58];
   bytes[0] = 0x8b; bytes[1] = 53; bytes[3] = 0;
-  bytes[8] = 1; bytes[9] = 0;
-  bytes[11..19].copy_from_slice(&0x0fffu64.to_le_bytes());
-  bytes[19..27].copy_from_slice(&0x9000_0000u64.to_le_bytes());
-  bytes[27..35].copy_from_slice(&0x9fff_ffffu64.to_le_bytes());
-  bytes[35..43].copy_from_slice(&0x2000u64.to_le_bytes());
-  bytes[43..51].copy_from_slice(&0x1000u64.to_le_bytes());
+  bytes[6] = 1; bytes[7] = 0;
+  bytes[8..16].copy_from_slice(&0x0fffu64.to_le_bytes());
+  bytes[16..24].copy_from_slice(&0x9000_0000u64.to_le_bytes());
+  bytes[24..32].copy_from_slice(&0x9fff_ffffu64.to_le_bytes());
+  bytes[32..40].copy_from_slice(&0x2000u64.to_le_bytes());
+  bytes[40..48].copy_from_slice(&0x1000u64.to_le_bytes());
   bytes[56] = 0x79; bytes[57] = 0;
   let resources = parse_resource_template(&bytes).unwrap();
   let mut windows = [HostBridgeWindow {
