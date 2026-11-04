@@ -828,3 +828,64 @@ pub fn program_assignments_exclusive<C: resources::ConfigAccess>(
     let _guard = try_acquire_config_transaction().map_err(|_| resources::ResourceError::Config)?;
     resource_manager::program_assignments(config, header_type, plan)
 }
+
+
+/// A resolved legacy PCI INTx route supplied by ACPI.sys. The GSI and
+/// electrical attributes must originate from _PRT plus MADT/link-device
+/// resource translation; pci.sys never infers them from InterruptLine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AcpiIntxRoute {
+    pub gsi: u32,
+    pub active_low: bool,
+    pub level_triggered: bool,
+}
+
+/// HAL boundary used by the PCI bus driver's PnP start path. Implementations
+/// must allocate/register a vector, program the I/O-APIC entry masked, and
+/// leave it masked until the device driver's ISR is registered.
+pub trait PciIntxHalBackend {
+    type Error;
+    fn configure_masked(
+        &mut self, gsi: u32, active_low: bool, level_triggered: bool,
+    ) -> Result<u8, Self::Error>;
+    fn bind_route(&mut self, vector: u8, gsi: u32) -> Result<(), Self::Error>;
+}
+
+/// Complete the ACPI-to-HAL half of PCI INTx startup using an already-resolved
+/// ACPI route. This is deliberately separate from MSI/MSI-X; those use PCI
+/// capabilities and do not consult _PRT. On any HAL failure the caller must
+/// release the allocated vector and fail START_DEVICE rather than fall back
+/// to the legacy InterruptLine byte.
+pub fn configure_acpi_intx_route<B: PciIntxHalBackend>(
+    route: AcpiIntxRoute,
+    backend: &mut B,
+) -> Result<u8, B::Error> {
+    let vector = backend.configure_masked(route.gsi, route.active_low, route.level_triggered)?;
+    if let Err(error) = backend.bind_route(vector, route.gsi) {
+        return Err(error);
+    }
+    Ok(vector)
+}
+
+#[cfg(test)]
+mod acpi_intx_hal_consumer_tests {
+    use super::*;
+    struct Hal { configured: Option<AcpiIntxRoute>, bound: Option<(u8,u32)> }
+    impl PciIntxHalBackend for Hal {
+        type Error = ();
+        fn configure_masked(&mut self,gsi:u32,active_low:bool,level_triggered:bool)->Result<u8,()>{
+            self.configured=Some(AcpiIntxRoute{gsi,active_low,level_triggered});Ok(0x51)
+        }
+        fn bind_route(&mut self,vector:u8,gsi:u32)->Result<(),()>{self.bound=Some((vector,gsi));Ok(())}
+    }
+    #[test]
+    fn resolved_acpi_route_is_configured_masked_and_bound_to_hal_vector(){
+        let mut hal=Hal{configured:None,bound:None};
+        let vector=configure_acpi_intx_route(
+            AcpiIntxRoute{gsi:23,active_low:true,level_triggered:true},&mut hal,
+        ).unwrap();
+        assert_eq!(vector,0x51);
+        assert_eq!(hal.configured,Some(AcpiIntxRoute{gsi:23,active_low:true,level_triggered:true}));
+        assert_eq!(hal.bound,Some((0x51,23)));
+    }
+}
