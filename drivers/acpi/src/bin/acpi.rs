@@ -1909,7 +1909,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v4(
         || request.is_null() || output.is_null() || !STATE.ready.load(Ordering::Acquire) {
         return STATUS_INVALID_PARAMETER;
     }
-    let request = unsafe { *request };
+    let request = unsafe { &*request };
     if request.device >= 32 || request.function >= 8
         || !(1..=4).contains(&request.pin) || request.bridge_count as usize > request.bridges.len() {
         return STATUS_INVALID_PARAMETER;
