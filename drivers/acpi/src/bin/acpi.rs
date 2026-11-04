@@ -1823,10 +1823,6 @@ struct AcpiPrtBusProvider<'a> {
 }
 impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
     fn table_for_bus(&self, bus_node: u16) -> Result<acpi::acpi_prt::PrtTable, acpi::acpi_prt::PrtError> {
-        if acpi::aml_osi::platform_quirk_policy().is_some_and(|policy|
-            policy.flags.contains(acpi::quirks::QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING)) {
-            return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
-        }
         if self.gate.enter_method().is_err() {
             return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
         }
@@ -1834,6 +1830,10 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
             let Some(prt) = self.namespace.find_child(bus_node, *b"_PRT") else {
                 return Ok(acpi::acpi_prt::PrtTable::EMPTY);
             };
+            if acpi::aml_osi::platform_quirk_policy().is_some_and(|policy|
+                policy.flags.contains(acpi::quirks::QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING)) {
+                return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
+            }
             let table_index = self.namespace.nodes.get(prt as usize)
                 .filter(|_| (prt as usize) < self.namespace.count)
                 .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?.source_table as usize;
