@@ -104,8 +104,8 @@ fn resources_overlap(a:&ParsedResource,b:&ParsedResource)->bool{
   // Shared line-based resources may overlap only when both assignments are
   // explicitly shareable and level-sensitive. Message-signaled resources may
   // overlap only when both assignments explicitly permit message sharing.
-  let a_shared=a.share==3&&(a.flags&0x0002!=0||a.flags&0x0001==0);
-  let b_shared=b.share==3&&(b.flags&0x0002!=0||b.flags&0x0001==0);
+  let a_shared=a.share==3&&((a.flags&0x0002!=0&&a.flags&0x0001!=0)||(a.flags&0x0002==0&&a.flags&0x0001==0));
+  let b_shared=b.share==3&&((b.flags&0x0002!=0&&b.flags&0x0001!=0)||(b.flags&0x0002==0&&b.flags&0x0001==0));
   return !(a_shared&&b_shared)
  }
  let a_end=a.start.saturating_add(a.length);
@@ -296,6 +296,8 @@ pub(crate) fn io_validate_pnp_interrupt_resource(
     &&claim.irql==irql as u32&&claim.group==group
     &&claim.affinity==affinity
     &&(if claim.flags&0x0001!=0{1}else{0})==interrupt_mode
+    &&(!(claim.flags&0x0002!=0)||interrupt_mode==1)
+    &&(!(claim.flags&0x0002==0&&claim.share==3)||interrupt_mode==0)
     &&(if claim.share==3{1}else{0})==share_vector
   )
  };
@@ -893,6 +895,15 @@ mod cm_resource_abi_tests {
   assert!(!resources_overlap(&shared_a,&shared_b));
   assert!(resources_overlap(&shared_a,&exclusive));
   assert!(resources_overlap(&shared_a,&latched));
+ }
+
+ #[test]
+ fn shared_msi_vectors_must_be_latched(){
+  let shared_msi_a=ParsedResource{kind:CM_RESOURCE_INTERRUPT,start:0x46,length:1,share:3,flags:0x0003,..ParsedResource::EMPTY};
+  let shared_msi_b=ParsedResource{kind:CM_RESOURCE_INTERRUPT,start:0x46,length:1,share:3,flags:0x0003,..ParsedResource::EMPTY};
+  let invalid_msi=ParsedResource{kind:CM_RESOURCE_INTERRUPT,start:0x46,length:1,share:3,flags:0x0002,..ParsedResource::EMPTY};
+  assert!(!resources_overlap(&shared_msi_a,&shared_msi_b));
+  assert!(resources_overlap(&shared_msi_a,&invalid_msi));
  }
 
 }
