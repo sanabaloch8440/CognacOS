@@ -32,7 +32,7 @@ impl QueueState {
     }
     fn push(&mut self, item: WorkRecord) -> bool {
         if !self.accepting || self.count == MAX_WORK_ITEMS
-            || self.closed_contexts.contains(&item.context) { return false; }
+            || (item.context != 0 && self.closed_contexts.contains(&item.context)) { return false; }
         self.entries[self.tail] = item;
         self.tail = (self.tail + 1) % MAX_WORK_ITEMS;
         self.count += 1;
