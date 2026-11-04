@@ -177,7 +177,7 @@ mod tests {
             address_width: 1, reserved: 0,
             translation_offset: 0,
             minimum: 0x8000_0000, maximum: 0x8fff_ffff,
-            alignment: 0x0fff, translation_offset: 0, length: 0x1000,
+            alignment: 0x0fff, length: 0x1000,
         };
         set.count = 1;
         set
