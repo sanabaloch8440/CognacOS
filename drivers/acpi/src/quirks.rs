@@ -297,6 +297,12 @@ impl QuirkFlags {
     pub const fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
 }
 
+impl core::ops::BitOr for QuirkFlags {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output { Self(self.0 | rhs.0) }
+}
+
+
 pub type QuirkHook = fn(&PlatformIdentity, &mut QuirkPolicy) -> Result<(), QuirkError>;
 #[derive(Clone, Copy)]
 pub struct QuirkDefinition {
