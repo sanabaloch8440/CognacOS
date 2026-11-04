@@ -1860,11 +1860,20 @@ pub unsafe extern "win64" fn CognacPciQueryResourceRequirements(
         break;
     }
     let Some(function) = selected else { return STATUS_NOT_FOUND; };
-    let Some(window) = handoff.windows[..handoff.window_count as usize]
-        .iter().find(|w| w.segment == function.segment
+    let Some((window_index, window)) = handoff.windows[..handoff.window_count as usize]
+        .iter().enumerate().find(|(_, w)| w.segment == function.segment
             && function.bus >= w.bus_start && function.bus <= w.bus_end) else {
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     };
+    let host_count = STATE.host_bridge_resource_count.load(Ordering::Acquire);
+    if window_index >= host_count || window_index >= MAX_WINDOWS {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    let clipped = unsafe { (*STATE.clipped_host_apertures.get())[window_index] };
+    if clipped.segment != function.segment || function.bus < clipped.bus_start
+        || function.bus > clipped.bus_end {
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
     let mut config = pci::EcamFunctionConfig {
         window,
         segment: function.segment,
@@ -1873,10 +1882,11 @@ pub unsafe extern "win64" fn CognacPciQueryResourceRequirements(
         function: function.function,
     };
     let result = unsafe {
-        pci::resource_manager::probe_and_encode_requirements(
+        pci::resource_manager::probe_and_encode_requirements_in_apertures(
             &mut config,
             function.header.header_type,
             function.bus as u32,
+            clipped.as_slice(),
             core::slice::from_raw_parts_mut(output, output_capacity),
         )
     };
