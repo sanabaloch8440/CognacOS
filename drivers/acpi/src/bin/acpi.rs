@@ -1737,7 +1737,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route(
                 gsi, active_low: true, level_triggered: true,
             },
             acpi::acpi_prt::InterruptSource::LinkDevice { path, length, source_index } => {
-                if resolver.resolve_gsi(&path[..length as usize], source_index).is_err() {
+                if acpi::acpi_prt::LinkDeviceResolver::resolve_gsi(&resolver, &path[..length as usize], source_index).is_err() {
                     return STATUS_NOT_FOUND;
                 }
                 let Some(resolved) = resolver.last.get() else { return STATUS_NOT_FOUND; };
