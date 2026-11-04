@@ -59,3 +59,44 @@ code into the MIT OR Apache-2.0 components. If licensed third-party code is ever
 integrated, preserve its complete notices and comply with its exact license
 terms. Record the source of each hardware observation and test both matching
 and nonmatching DMI fixtures.
+
+
+## Stage 1 early PCI and interrupt quirks
+
+The reviewed DMI registry is defined in `src/quirks.rs` and selected during
+kernel boot before ACPI.sys starts. Matching uses all fields in each rule;
+there are no broad vendor-only PCI disable rules.
+
+| DMI identity | Selected policy | Consumer |
+| --- | --- | --- |
+| HP Compaq nx6115/nx6125/nx6325 | Ignore only the ISA IRQ0 MADT interrupt-source override | ACPI MADT normalization |
+| IBM ThinkPad 600 board 2645/2646 | Disable ACPI `_PRT` PCI interrupt routing | ACPI `_PRT` provider |
+| ASUS PR-DLS, BIOS 1010 dated 03/21/2003 | Suppress ACPI PCI root-bridge PDO enumeration and `_PRT` routing | ACPI PDO publication and `_PRT` provider |
+| Acer TravelMate 360 | Suppress ACPI PCI root-bridge PDO enumeration and `_PRT` routing | ACPI PDO publication and `_PRT` provider |
+| NEC Bearlake CRB, BIOS V1.12 dated 02/01/2011 | Prefer RSDT when both root pointers exist | Mapper-backed and bootstrap SDT lookup |
+
+The HP rule removes only bus-0/source-IRQ-0 from the normalized MADT override
+list; all other interrupt-source overrides remain intact. The IBM rule refuses
+ACPI `_PRT` route publication rather than inventing a legacy IRQ or GSI.
+The ASUS/Acer rules leave the AML namespace available but do not publish
+`PNP0A03`/`PNP0A08` root-bridge PDOs from the ACPI bus.
+
+The Lenovo IIL, Acer Spin SP513-54N, and Clevo X170KM-G DMI signatures are
+recognized in the policy model, but their Linux workaround disables E820
+reservation clipping while allocating PCI host-bridge `_CRS` windows. The
+current CognacOS PCI resource path does not yet perform that E820 clipping.
+Consequently, those flags are not treated as an active fix: wiring them into a
+future host-bridge allocator is required before those three cases can be
+reported as ported. Do not add E820 clipping merely to make the quirk active.
+
+## Stage 1 verification requirements
+
+- Run the ACPI crate unit tests, including the DMI matching tests in
+  `quirks.rs`.
+- Test matching and nonmatching SMBIOS fixtures for every registry entry.
+- Test the NEC case with a valid XSDT and RSDT where only the RSDT is usable.
+- Test HP MADTs with IRQ0 plus unrelated overrides and verify only IRQ0 is
+  removed.
+- Test IBM/ASUS/Acer policy paths without silently substituting an unvalidated
+  interrupt source.
+- Test PCI root bridge PDO suppression without suppressing unrelated ACPI PDOs.
