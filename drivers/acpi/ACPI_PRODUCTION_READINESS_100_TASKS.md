@@ -93,6 +93,14 @@ Task 33 implementation progress (PR branch `acpi-task33-explicit-mutex`; not che
 39. [ ] Implement Notify queue overflow policy and deferred callbacks outside interpreter locks.
 40. [x] Define and security-review a documented Windows 11 x64 _OSI compatibility profile. Security review and exact-string/return-value regressions are documented in `AML_WINDOWS_11_X64_OSI_PROFILE.md`; `_OSI` tests passed in ACPI workflow run [41861209016](https://github.com/sanabaloch8440/CognacOS/actions/runs/41861209016). The profile advertises only documented Windows interface levels, rejects unknown and unimplemented feature-group strings, and constrains immutable platform overrides.
 41. [ ] Enforce instruction budgets, deadlines, recursion limits, and object-size limits.
+
+Task 41 implementation progress (unchecked):
+- Replaced per-method instruction counters with one 100,000-step budget shared across the complete top-level invocation and all nested method calls.
+- Added a 30-second monotonic execution deadline sourced from `KeQueryInterruptTimePrecise` through the native kernel synchronization provider.
+- Applies the remaining deadline to explicit Mutex Acquire, Event Wait, and serialized-method mutex waits; an infinite AML wait is bounded by the invocation deadline rather than pinning a kernel worker indefinitely.
+- Preserves the existing method recursion limit and bounded object/arena capacities; deadline expiry and budget exhaustion are distinct executor errors.
+- Added regressions for deadline expiry, nested-method shared step exhaustion, deadline-bounded serialized-method acquisition, and infinite AML Mutex wait bounding.
+- Still requires ACPI library regression CI and native ACPI driver/kernel type-check before this task can be checked.
 42. [ ] Guarantee lock release and temporary-object cleanup on every error path.
 43. [ ] Implement module-level AML execution and table dependency ordering.
 44. [ ] Validate supported method results against independently authored expected-value vectors derived from the ACPI specification and documented Windows behavior; record unsupported cases separately.
