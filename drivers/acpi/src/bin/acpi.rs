@@ -87,6 +87,7 @@ unsafe extern "win64" {
  fn KeInitializeEvent(event:*mut core::ffi::c_void,event_type:i32,state:u8);
  fn KeSetEvent(event:*mut core::ffi::c_void,increment:i32,wait:u8)->i32;
  fn KeResetEvent(event:*mut core::ffi::c_void)->i32;
+ fn KeQueryInterruptTimePrecise(qpc_timestamp:*mut u64)->u64;
 }
 impl KernelAmlMethodSynchronizer{
  fn event(&self,event_index:u16)->Result<&'static KernelAmlEvent,acpi::aml_exec::ExecError>{
@@ -177,6 +178,7 @@ impl acpi::aml_exec::AmlMethodSynchronizer for KernelAmlMethodSynchronizer {
  fn reset_event(&self,event_index:u16)->Result<(),acpi::aml_exec::ExecError>{
   let event=self.event(event_index)?;unsafe{let _=KeResetEvent(event.object());}Ok(())
  }
+ fn monotonic_time_100ns(&self)->Option<u64>{Some(unsafe{KeQueryInterruptTimePrecise(core::ptr::null_mut())})}
 }
 
 unsafe extern "win64" {
@@ -244,8 +246,10 @@ __imp_ke_KeReleaseMutex: .quad 0
 __imp_ke_KeInitializeEvent: .quad 0
 .global __imp_ke_KeSetEvent
 __imp_ke_KeSetEvent: .quad 0
-.global __imp_ke_KeResetEvent
+ .global __imp_ke_KeResetEvent
 __imp_ke_KeResetEvent: .quad 0
+.global __imp_ke_KeQueryInterruptTimePrecise
+__imp_ke_KeQueryInterruptTimePrecise: .quad 0
 .section .text.import_thunks,"ax",@progbits
 .global KeInitializeMutex
 .type KeInitializeMutex,@function
@@ -277,6 +281,11 @@ KeSetEvent:
 KeResetEvent:
  jmp QWORD PTR [rip + __imp_ke_KeResetEvent]
 .size KeResetEvent, .-KeResetEvent
+.global KeQueryInterruptTimePrecise
+.type KeQueryInterruptTimePrecise,@function
+KeQueryInterruptTimePrecise:
+ jmp QWORD PTR [rip + __imp_ke_KeQueryInterruptTimePrecise]
+.size KeQueryInterruptTimePrecise, .-KeQueryInterruptTimePrecise
 
 .section .data.imports.io,"aw",@progbits
 .p2align 3
