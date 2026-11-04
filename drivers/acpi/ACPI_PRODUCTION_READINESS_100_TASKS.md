@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `main`  
-**Status (2026-11-04):** tasks 1–28, 32, and 67 have implementation evidence recorded below; task 29 remains partial and unchecked; all other unchecked tasks remain open. This is a readiness work log, not a production-readiness certification.
+**Status (2026-11-04):** tasks 1–28, 32, and 67 have implementation evidence recorded below; task 29 remains partial and unchecked; all other unchecked tasks remain open. ACPI firmware interface v4 now carries a full 255-hop PCI bridge path; dynamic pool-backed `_PRT` storage remains open. This is a readiness work log, not a production-readiness certification.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -259,3 +259,42 @@ Microsoft's public ACPI documentation describes Windows' use of ACPI tables but 
 3. Replace fixed 128-entry AML package/object arrays with pool-backed, validated dynamic storage governed by a documented per-method and per-table memory budget.
 4. Add adversarial tests for 255-hop chains, maximum valid bus-number allocation, duplicate secondary buses, cycles, overlapping subordinate ranges, oversized AML packages, allocation failure, and rollback.
 5. Keep task 67 checked for the implemented routing semantics, but do not claim unrestricted-depth or unrestricted-size routing until these follow-ups and their CI/QEMU tests pass.
+## ACPI firmware interface v4 and cross-OS PCI INTx routing review (2026-11-04)
+
+Implementation commits after the prior checklist update:
+
+- `ed1f7fdf88915f3c0bc70eb0d38b22dcd624c229` — add version-4 ACPI firmware interface ABI and 255-entry bridge path request.
+- `6f9997d34f7a92ecb5ff7c8676e4ce5ef9449d1d` — widen PCI requester-path representation to 255 bridges plus endpoint.
+- `de4d28f2bc0a01b4a997d8a45b2e71c495fdb147` — allow up to 256 bus nodes in hierarchical `_PRT` traversal.
+- `be3732ef7723ce0dfebb2e5812c892f4c9230d59` — publish ACPI interface v4 and preserve v1/v2/v3 query callbacks/layouts.
+- `91456dbaead88af25f1939220874b2f48a3b1782` — consume and validate v4 from PCI.
+- `9f038648c1c2c122ce6ac16bf9f436aabcd2ea45` — add maximum-depth PCI requester-path regression test.
+- `c38a11929dde84933ff0464dbff90ff3720bc32a` — allocate the expanded route request and bridge inventory from nonpaged pool instead of placing multi-kilobyte buffers on the kernel stack.
+- `eac1b30648442ee78e13bbbfef1f970d522d249e` — avoid copying the 2 KiB v4 request into another stack local in ACPI.
+- `41dc287b9773f000ae9bd606e50132e04811929a` — assert v4 ABI size and GUID isolation.
+
+### Interface and topology behavior
+
+- ACPI firmware interface v4 uses a new GUID and a new version; v1/v2/v3 structures and callbacks remain unchanged.
+- The v4 request carries up to 255 validated bridge entries, which is the maximum number of bridge transitions possible in an 8-bit bus-number space when the root bus is included.
+- PCI requester path storage has 256 entries (255 bridges plus the endpoint) and uses a 16-bit path count.
+- ACPI traverses up to 256 namespace bus nodes; the bridge request and segment topology are still validated and ambiguous or incomplete paths fail closed.
+- PCI route request and bridge inventory scratch buffers are allocated from nonpaged pool. The ACPI callback borrows the request rather than copying its full 2 KiB payload to the kernel stack.
+- The older interface callbacks remain available for compatibility; the PCI driver now queries v4 for its full-depth route operation.
+
+### InterruptLine fallback decision — deliberately not added
+
+Cross-platform source review does not support a generic PCI endpoint InterruptLine fallback as a Windows 11 compatibility requirement:
+
+- Windows documents ACPI `_PRT` routing failures, including a missing link node and a missing route mapping, as ACPI BIOS routing failures. Its public documentation does not specify falling back to the PCI Interrupt Line register. See [Microsoft ACPI_BIOS_ERROR](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/bug-check-0xa5--acpi-bios-error) and [Acpi.sys](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/acpi-driver).
+- Linux resolves PCI INTx using the `_PRT` associated with the parent bus and walks upstream bridges applying standard swizzling. Its `acpi_isa_register_gsi()` use of `dev->irq` is an ISA/EISA-specific fallback constrained to IRQs 1–15, not a generic PCI endpoint route fallback. See [Linux ACPI PCI IRQ routing](https://github.com/torvalds/linux/blob/master/drivers/acpi/pci_irq.c) and [Linux PCI swizzling](https://github.com/torvalds/linux/blob/master/drivers/pci/irq.c).
+- FreeBSD's documented routing architecture uses ACPI `_PRT`, PCI link devices, PCI-PCI swizzling, and legacy `$PIR`/MP-table mechanisms where applicable. Its historical ACPI link-driver behavior may inspect endpoint InterruptLine values to infer a link's firmware-selected IRQ when a link `_CRS` is absent; this is link-resource recovery, not a general endpoint route fallback. See [FreeBSD PCI Interrupt Routing](https://people.freebsd.org/~jhb/papers/bsdcan/2007/article/node5.html) and [FreeBSD routing architecture](https://people.freebsd.org/~jhb/papers/bsdcan/2007/article/node11.html).
+
+Therefore the PCI driver's generic InterruptLine fallback remains disabled. The register is an 8-bit legacy BIOS-assigned interrupt number, not a portable GSI or a trustworthy APIC route. Using it as one could program the wrong I/O-APIC input, especially where GSI bases are nonzero or the link is reprogrammed. If a future platform-compatibility mode is added, it must be a narrowly scoped, validated legacy-PIC or link-device recovery path with explicit mode detection, IRQ range validation, and no override of a valid `_PRT` route.
+
+### Remaining work after v4
+
+- The `_PRT` decoder and `PrtTable` still have a 128-entry fixed-capacity representation; this is an implementation limit, not an ACPI, Windows, Linux, or FreeBSD limit. The required next change is a pool-backed variable-capacity route table whose capacity is checked against the enclosing AML package/table size and a documented memory budget.
+- The AML object arena still has fixed `MAX_AML_VALUES` and `MAX_PACKAGE_ELEMENTS` capacities. Increasing constants alone is not considered completion; the arena and nested package element storage need explicit pool-backed ownership and rundown.
+- Add ACPI-side 255-hop namespace-path tests, end-to-end v4 interface tests, allocation-failure tests, and QEMU validation. A PCI unit test now covers the maximum-depth requester path, but that alone does not prove the complete firmware route path.
+- No Windows 11, Linux, or FreeBSD hardware interoperability claim is made from source comparison alone.
