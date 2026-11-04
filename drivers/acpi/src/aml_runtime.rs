@@ -213,7 +213,7 @@ impl AmlBindings {
         if canonical as usize>=namespace.count{return Err(RuntimeError::InvalidNode)}
         Ok(AmlReference::NamespaceNode(canonical))
     }
-    fn value_id(&self,node:u16)->Result<u16,RuntimeError>{
+    pub fn value_id(&self,node:u16)->Result<u16,RuntimeError>{
         let i=node as usize;if i>=MAX_NAMESPACE_NODES||!self.bound[i]{return Err(RuntimeError::UnboundNode)}
         Ok(self.values[i])
     }
