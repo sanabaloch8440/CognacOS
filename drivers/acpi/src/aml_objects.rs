@@ -321,6 +321,33 @@ mod tests {
         assert_eq!(arena.count,0);
         assert!(arena.values.iter().all(|value|value.kind==AmlValueKind::Empty));
     }
+    #[test] fn varpackage_accepts_full_bounded_count_with_no_initializers(){
+        // VarPackage(ByteConst(128), {}) materializes 128 Uninitialized slots.
+        let bytes=[0x13,0x03,0x0a,128];
+        let mut arena=test_arena();
+        let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
+        assert_eq!(end,bytes.len());
+        let package=arena.get(id).unwrap();
+        assert_eq!(package.kind,AmlValueKind::Package);
+        assert_eq!(package.element_count as usize,MAX_PACKAGE_ELEMENTS);
+        for child in package.elements.iter().take(MAX_PACKAGE_ELEMENTS){
+            assert_eq!(arena.get(*child).unwrap().kind,AmlValueKind::Uninitialized);
+        }
+    }
+    #[test] fn package_decode_rolls_back_when_arena_budget_is_exhausted(){
+        let mut arena=test_arena();
+        let mut existing=AmlRuntimeValue::EMPTY;
+        existing.kind=AmlValueKind::Integer;
+        existing.integer=0xfeed;
+        for _ in 0..(MAX_AML_VALUES-1){arena.allocate(existing).unwrap();}
+        let before=arena.count;
+        // The child fits in the final slot, but the enclosing Package does not.
+        let bytes=[0x12,0x02,1];
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::ValueArenaFull));
+        assert_eq!(arena.count,before);
+        assert_eq!(arena.get((before-1) as u16).unwrap().integer,0xfeed);
+        assert!(arena.get(before as u16).is_none());
+    }
     #[test] fn rejects_truncated_strings_and_oversized_packages(){
         let mut arena = test_arena();
         assert_eq!(decode_data_object(&[0x0d,b'x'],0,2,&mut arena),Err(ObjectError::Truncated));
