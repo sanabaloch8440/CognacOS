@@ -1818,12 +1818,21 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
         let root_resources = match root_resources_result {
             Ok(resources) => resources, Err(_) => continue,
         };
-        let bus_match = root_resources.apertures[..root_resources.count].iter().any(|aperture|
-            aperture.resource_type == 2
-                && request.bus as u64 >= aperture.minimum
-                && (request.bus as u64) <= aperture.maximum
-        ) || (root_resources.apertures[..root_resources.count].iter().all(|a| a.resource_type != 2)
-            && request.bus as u64 == root_bus);
+        let has_bus_aperture = root_resources.apertures[..root_resources.count]
+            .iter().any(|aperture| aperture.resource_type == 2);
+        let bus_match = if has_bus_aperture {
+            root_resources.apertures[..root_resources.count].iter().any(|aperture|
+                aperture.resource_type == 2
+                    && request.bus as u64 >= aperture.minimum
+                    && request.bus as u64 <= aperture.maximum
+            )
+        } else if request.bridge_count == 0 {
+            request.bus as u64 == root_bus
+        } else {
+            // When firmware omits an explicit bus-number aperture, the
+            // validated Type-1 bridge chain is the authoritative child-bus proof.
+            true
+        };
         if !bus_match { continue; }
 
         matching_roots += 1;
