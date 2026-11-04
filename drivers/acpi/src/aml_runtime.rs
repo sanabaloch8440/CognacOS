@@ -45,6 +45,9 @@ pub fn validate_runtime_value(value:&AmlRuntimeValue,arena:&AmlObjectArena)->Res
                 AmlReference::NamespaceNode(node)=>{
                     if node as usize>=MAX_NAMESPACE_NODES{return Err(RuntimeError::InvalidReference)}
                 }
+                AmlReference::NamespaceNodeGeneration{node,..}=>{
+                    if node as usize>=MAX_NAMESPACE_NODES{return Err(RuntimeError::InvalidReference)}
+                }
                 AmlReference::PackageElement{package,index}=>{
                     let object=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
                     if object.kind!=AmlValueKind::Package||index as usize>=checked_element_count(object)?{
@@ -125,6 +128,11 @@ pub fn make_object_reference(reference:AmlReference)->AmlRuntimeValue{
     value.kind=AmlValueKind::ObjectReference;
     match reference{
         AmlReference::NamespaceNode(node)=>{value.reference_kind=0;value.reference_id=node;}
+        AmlReference::NamespaceNodeGeneration{node,generation}=>{
+            value.reference_kind=5;value.reference_id=node;
+            value.reference_index=generation as u16;
+            value.reference_bit_width=(generation>>16) as u16;
+        }
         AmlReference::ArenaValue(id)=>{value.reference_kind=4;value.reference_id=id;}
         AmlReference::PackageElement{package,index}=>{value.reference_kind=1;value.reference_id=package;value.reference_index=index as u16;}
         AmlReference::BufferByte{buffer,index}=>{value.reference_kind=2;value.reference_id=buffer;value.reference_index=index;}
@@ -141,6 +149,8 @@ pub fn reference_from_value(value:&AmlRuntimeValue)->Result<AmlReference,Runtime
     if value.kind!=AmlValueKind::ObjectReference{return Err(RuntimeError::TypeMismatch)}
     match value.reference_kind{
         0=>Ok(AmlReference::NamespaceNode(value.reference_id)),
+        5=>Ok(AmlReference::NamespaceNodeGeneration{node:value.reference_id,
+            generation:(value.reference_index as u32)|((value.reference_bit_width as u32)<<16)}),
         4=>Ok(AmlReference::ArenaValue(value.reference_id)),
         1=>{
             if value.reference_index>u8::MAX as u16{return Err(RuntimeError::InvalidReference)}
@@ -156,6 +166,10 @@ pub fn reference_from_value(value:&AmlRuntimeValue)->Result<AmlReference,Runtime
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlReference {
     NamespaceNode(u16),
+    /// Namespace reference tied to the current node incarnation. The generation
+    /// prevents a stale reference from resolving after table unload/reload and
+    /// namespace compaction reuses the same 16-bit node index.
+    NamespaceNodeGeneration{node:u16,generation:u32},
     /// Stable reference to a caller-owned arena object promoted from Local/Arg.
     ArenaValue(u16),
     PackageElement { package:u16,index:u8 },
@@ -169,14 +183,15 @@ pub enum AmlReference {
 pub struct AmlBindings {
     values:[u16;MAX_NAMESPACE_NODES],
     bound:[bool;MAX_NAMESPACE_NODES],
+    node_generations:[u32;MAX_NAMESPACE_NODES],
     integer_width_bits:u8,
 }
 impl AmlBindings {
-    pub const fn new()->Self{Self{values:[0;MAX_NAMESPACE_NODES],bound:[false;MAX_NAMESPACE_NODES],integer_width_bits:64}}
+    pub const fn new()->Self{Self{values:[0;MAX_NAMESPACE_NODES],bound:[false;MAX_NAMESPACE_NODES],node_generations:[0;MAX_NAMESPACE_NODES],integer_width_bits:64}}
     /// Construct bindings using the Integer width selected by the AML
     /// DefinitionBlock revision (revision 1 is 32-bit; revision 2+ is 64-bit).
     pub const fn with_aml_revision(revision:u8)->Self{
-        Self{values:[0;MAX_NAMESPACE_NODES],bound:[false;MAX_NAMESPACE_NODES],
+        Self{values:[0;MAX_NAMESPACE_NODES],bound:[false;MAX_NAMESPACE_NODES],node_generations:[0;MAX_NAMESPACE_NODES],
             integer_width_bits:if revision<2{32}else{64}}
     }
     pub const fn integer_width_bits(&self)->u8{self.integer_width_bits}
@@ -186,10 +201,16 @@ impl AmlBindings {
     pub fn invalidate_table(&mut self, namespace:&AmlNamespace, owner_table:u32)->usize {
         let mut invalidated=0;
         for index in 0..namespace.count {
-            if namespace.nodes[index].source_table==owner_table && self.bound[index] {
-                self.bound[index]=false;
-                self.values[index]=0;
-                invalidated+=1;
+            if namespace.nodes[index].source_table==owner_table {
+                // Invalidate references even when the Name has never been
+                // evaluated/bound. Bump before namespace compaction so any
+                // saved reference to this node incarnation becomes stale.
+                self.node_generations[index]=self.node_generations[index].wrapping_add(1).max(1);
+                if self.bound[index] {
+                    self.bound[index]=false;
+                    self.values[index]=0;
+                    invalidated+=1;
+                }
             }
         }
         invalidated
@@ -211,7 +232,14 @@ impl AmlBindings {
     pub fn reference_node(&self,namespace:&AmlNamespace,node:u16)->Result<AmlReference,RuntimeError>{
         let canonical=namespace.resolve_alias(node).map_err(|_|RuntimeError::InvalidNode)?;
         if canonical as usize>=namespace.count{return Err(RuntimeError::InvalidNode)}
-        Ok(AmlReference::NamespaceNode(canonical))
+        Ok(AmlReference::NamespaceNodeGeneration{node:canonical,generation:self.node_generations[canonical as usize]})
+    }
+    pub fn validate_node_generation(&self,node:u16,generation:u32)->Result<(),RuntimeError>{
+        let index=node as usize;
+        if index>=MAX_NAMESPACE_NODES||self.node_generations[index]!=generation {
+            return Err(RuntimeError::InvalidReference)
+        }
+        Ok(())
     }
     pub fn value_id(&self,node:u16)->Result<u16,RuntimeError>{
         let i=node as usize;if i>=MAX_NAMESPACE_NODES||!self.bound[i]{return Err(RuntimeError::UnboundNode)}
@@ -304,6 +332,10 @@ pub fn dereference(reference:AmlReference,bindings:&AmlBindings,arena:&AmlObject
     ->Result<AmlRuntimeValue,RuntimeError>{
     match reference{
         AmlReference::NamespaceNode(node)=>Ok(*arena.get(bindings.value_id(node)?).ok_or(RuntimeError::InvalidReference)?),
+        AmlReference::NamespaceNodeGeneration{node,generation}=>{
+            bindings.validate_node_generation(node,generation)?;
+            Ok(*arena.get(bindings.value_id(node)?).ok_or(RuntimeError::InvalidReference)?)
+        }
         AmlReference::ArenaValue(id)=>{let value=*arena.get(id).ok_or(RuntimeError::InvalidReference)?;if value.kind==AmlValueKind::Empty{return Err(RuntimeError::InvalidReference)}Ok(value)},
         AmlReference::PackageElement{package,index}=>{
             let p=arena.get(package).ok_or(RuntimeError::InvalidReference)?;
@@ -527,6 +559,10 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
             let replacement=*arena.get(stored_id).ok_or(RuntimeError::InvalidReference)?;
             *arena.get_mut(id).ok_or(RuntimeError::InvalidReference)?=replacement;
             Ok(())
+        }
+        AmlReference::NamespaceNodeGeneration{node,generation}=>{
+            bindings.validate_node_generation(node,generation)?;
+            store_reference_with_mode(AmlReference::NamespaceNode(node),value,mode,bindings,namespace,arena)
         }
         AmlReference::NamespaceNode(node)=>{
             let canonical=namespace.resolve_alias(node).map_err(|_|RuntimeError::InvalidNode)?;
