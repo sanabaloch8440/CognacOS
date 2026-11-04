@@ -14,7 +14,7 @@ cognacos-nt-abi = { path = "../shared/nt-abi" }
 cognacos-storage = { path = "../drivers/storage" }
 cognacos-acpi = { path = "../drivers/acpi" }
 cognacos-pci = { path = "../drivers/pci" }
-cognacos-hal-contract = { path = "../drivers/hal" }
+cognacos-hal-contract = { path = "../shared/hal-contract" }
 cognacos-fat32 = { path = "../drivers/fat32", features = ["write-support"] }
 cognacos-kbdclass = { path = "../drivers/kbdclass" }
 cognacos-i8042prt = { path = "../drivers/i8042prt" }
