@@ -1418,7 +1418,7 @@ mod acpi_5_6_revision_tests {
     fn parses_acpi_65_multiprocessor_wakeup_mailbox(){
         let mut table=header(*b"APIC",60,6);
         table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
-        table[44..60].copy_from_slice(&[16,16,0,0,0x00,0x10,0,0,0,0,0,0,0,0,0,0]);
+        table[44..60].copy_from_slice(&[16,16,0,0,0,0,0,0,0,0x10,0,0,0,0,0,0]);
         checksum(&mut table);
         let madt=parse_madt(&table).unwrap();
         assert_eq!(madt.wakeup_mailbox,Some(MadtWakeupMailbox{version:0,address:0x1000}));
