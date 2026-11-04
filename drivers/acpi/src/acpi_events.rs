@@ -371,10 +371,13 @@ mod tests{
   assert_eq!(g.dispatch_deferred(&mut io,&mut exec,1).unwrap(),1);
   assert_eq!(exec.calls,1);assert_eq!(g.pending(),0);assert_eq!(io.regs[7]&2,2);
  }
+ struct LargeIo{regs:[u8;64]}
+ impl GasIo for LargeIo{fn read(&mut self,g:AcpiGas,_:u8)->Result<u64,EventError>{Ok(self.regs[g.address as usize] as u64)}fn write(&mut self,g:AcpiGas,_:u8,v:u64)->Result<(),EventError>{self.regs[g.address as usize]=v as u8;Ok(())}}
+ impl GpeIo for LargeIo{fn clear_status_w1c(&mut self,g:AcpiGas,mask:u8)->Result<(),EventError>{self.regs[g.address as usize]&=!mask;Ok(())}}
  #[test]fn gpe_overflow_retains_masked_event_and_promotes_it_after_queue_drain(){
   let mut g=GpeController::new();g.configure_block(0,GpeRegisterBlock{gas:gas(4),length:34,event_base:0}).unwrap();
   for number in 0..129u16{g.register_event(GpeEvent{number,method_node:1000+number,trigger:ACPI_GPE_EDGE,wake_capable:false,enabled:true}).unwrap();}
-  let mut io=Io{regs:[0;32],writes:0};
+  let mut io=LargeIo{regs:[0;64]};
   for i in 0..17usize{io.regs[4+i]=0xff;io.regs[21+i]=0xff;}
   assert_eq!(g.capture_sci(&mut io),Err(EventError::QueueFull));
   assert_eq!(g.pending(),129);assert_eq!(io.regs[21+16]&1,0);
