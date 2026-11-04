@@ -1238,6 +1238,19 @@ pub unsafe extern "win64" fn hal_acpi_get_sci_services(
 mod driver_service_publication_tests {
     use super::*;
     #[test]
+    fn sci_service_table_is_versioned_and_withholds_passive_hooks_until_ready() {
+        let table = acpi_sci_service_table();
+        assert_eq!(table.version, cognacos_hal_contract::ACPI_SCI_SERVICES_VERSION);
+        assert_eq!(table.size as usize, core::mem::size_of::<cognacos_hal_contract::AcpiSciHalServices>());
+        assert!(table.allocate_vector.is_some());
+        assert!(table.configure_masked.is_some());
+        if ACPI_PASSIVE_QUEUE_HOOK.load(Ordering::Acquire) == 0
+            || ACPI_PASSIVE_RUNDOWN_HOOK.load(Ordering::Acquire) == 0 {
+            assert!(!table.compatible());
+        }
+    }
+
+    #[test]
     fn base_service_table_is_versioned_and_exposes_only_existing_primitives() {
         let table=driver_service_table();
         assert!(table.compatible());
