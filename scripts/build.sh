@@ -96,7 +96,15 @@ run_checks() {
   cargo check --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none
   cargo check --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi
   cargo check --manifest-path ntdll/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
-  cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu
+  if grep -RInE 'crate::(ntoskrnl|acpi::|pci::|kernel_vm|dma|boot_handoff)|cognacos_(acpi|pci)::' Hal --include='*.rs'; then
+    die "HAL source crosses the NTOSKRNL/ACPI/PCI/DMA ownership boundary"
+  fi
+  [[ ! -e Hal/vtd.rs && -s ntoskrnl/src/io/dma/vtd.rs ]] || die "VT-d policy/backend must live under Io/DMA"
+  grep -Fq 'pub mod hal;' drivers/hal/src/lib.rs || die "independent HAL crate module missing"
+  ! grep -Fq '#[path = "../../Hal/mod.rs"]' ntoskrnl/src/main.rs || die "NTOSKRNL still embeds HAL source"
+  cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+  cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-none --lib
+  cargo check --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none
   cargo check --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu
   cargo check --manifest-path drivers/pci/Cargo.toml --target x86_64-unknown-linux-gnu
   cargo check --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu
