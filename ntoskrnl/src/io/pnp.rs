@@ -1029,6 +1029,58 @@ mod pnp_tree_tests {
     }
 
     #[test]
+    fn bus_fdo_registry_owns_references_and_closes_lookup_on_unregister() {
+        let mut driver: crate::io::DriverObject = unsafe { core::mem::zeroed() };
+        let mut device: *mut crate::io::DeviceObject = core::ptr::null_mut();
+        assert_eq!(unsafe { crate::io::io_create_device(
+            &mut driver, 0, core::ptr::null_mut(), 0x2a, 0, 0, &mut device,
+        ) }, crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        let key = 0x4143_5049_5445_5354u64;
+        assert_eq!(unsafe { IoPnPRegisterBusFdo(ACPI_BUS_ENUMERATOR_ID, key, device) },
+            crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        // Re-registration is idempotent and must not leak a second registry ref.
+        assert_eq!(unsafe { IoPnPRegisterBusFdo(ACPI_BUS_ENUMERATOR_ID, key, device) },
+            crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        let mut acquired = core::ptr::null_mut();
+        assert_eq!(unsafe { IoPnPReferenceBusFdo(ACPI_BUS_ENUMERATOR_ID, key, &mut acquired) },
+            crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        assert_eq!(acquired, device);
+        assert_eq!(unsafe { IoPnPUnregisterBusFdo(ACPI_BUS_ENUMERATOR_ID, key, device) },
+            crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        let mut absent = core::ptr::null_mut();
+        assert_eq!(unsafe { IoPnPReferenceBusFdo(ACPI_BUS_ENUMERATOR_ID, key, &mut absent) },
+            crate::nt_abi::ntstatus::STATUS_NOT_FOUND);
+        assert!(absent.is_null());
+        // The lookup reference remains valid after registry withdrawal.
+        unsafe { IoPnPDereferenceBusFdo(acquired); }
+        unsafe { crate::io::io_delete_device(device); }
+    }
+
+    #[test]
+    fn bus_fdo_registry_rejects_identity_collision_and_wrong_owner() {
+        let mut driver_a: crate::io::DriverObject = unsafe { core::mem::zeroed() };
+        let mut driver_b: crate::io::DriverObject = unsafe { core::mem::zeroed() };
+        let mut first: *mut crate::io::DeviceObject = core::ptr::null_mut();
+        let mut second: *mut crate::io::DeviceObject = core::ptr::null_mut();
+        assert_eq!(unsafe { crate::io::io_create_device(
+            &mut driver_a, 0, core::ptr::null_mut(), 0x2a, 0, 0, &mut first,
+        ) }, crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        assert_eq!(unsafe { crate::io::io_create_device(
+            &mut driver_b, 0, core::ptr::null_mut(), 0x2a, 0, 0, &mut second,
+        ) }, crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        let key = 0x4143_5049_434f_4c4cu64;
+        assert_eq!(unsafe { IoPnPRegisterBusFdo(ACPI_BUS_ENUMERATOR_ID, key, first) },
+            crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        assert_eq!(unsafe { IoPnPRegisterBusFdo(ACPI_BUS_ENUMERATOR_ID, key, second) },
+            crate::nt_abi::ntstatus::STATUS_DEVICE_BUSY);
+        assert_eq!(unsafe { IoPnPUnregisterBusFdo(ACPI_BUS_ENUMERATOR_ID, key, second) },
+            crate::nt_abi::ntstatus::STATUS_DEVICE_BUSY);
+        assert_eq!(unsafe { IoPnPUnregisterBusFdo(ACPI_BUS_ENUMERATOR_ID, key, first) },
+            crate::nt_abi::ntstatus::STATUS_SUCCESS);
+        unsafe { crate::io::io_delete_device(first); crate::io::io_delete_device(second); }
+    }
+
+    #[test]
     fn pnp_identity_includes_pci_segment_and_duplicate_bdfs_are_rejected() {
         let mut first = sample_function();
         first.device = 6;
