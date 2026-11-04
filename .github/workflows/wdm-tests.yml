@@ -1,0 +1,49 @@
+name: WDM lifecycle tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ntoskrnl/src/io/wdm/**'
+      - 'ntoskrnl/src/io/wdm.rs'
+      - 'ntoskrnl/src/io/driver_loader.rs'
+      - 'ntoskrnl/src/po/**'
+      - 'ntoskrnl/Cargo.toml'
+      - 'shared/nt-abi/**'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/wdm-tests.yml'
+  pull_request:
+    paths:
+      - 'ntoskrnl/src/io/wdm/**'
+      - 'ntoskrnl/src/io/wdm.rs'
+      - 'ntoskrnl/src/io/driver_loader.rs'
+      - 'ntoskrnl/src/po/**'
+      - 'ntoskrnl/Cargo.toml'
+      - 'shared/nt-abi/**'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/wdm-tests.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cognacos-wdm-lifecycle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wdm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust targets and linker
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-linux-gnu x86_64-unknown-none
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          bash scripts/build.sh toolchain
+      - name: Run WDM lifecycle unit tests
+        run: cargo test --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-linux-gnu --lib wdm_tests
+      - name: Type-check native x64 kernel
+        run: cargo check --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none
