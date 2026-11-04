@@ -49,7 +49,7 @@ impl PlatformIdentity {
     pub const EMPTY: Self = Self {
         system_vendor: DmiValue::EMPTY, product_name: DmiValue::EMPTY,
         board_vendor: DmiValue::EMPTY, board_name: DmiValue::EMPTY, product_sku: DmiValue::EMPTY,
-        bios_version: DmiValue::EMPTY, bios_date: DmiValue::EMPTY,
+        product_version: DmiValue::EMPTY, bios_version: DmiValue::EMPTY, bios_date: DmiValue::EMPTY,
         smbios_major: 0, smbios_minor: 0,
     };
     pub fn get(&self, field: DmiField) -> &[u8] {
