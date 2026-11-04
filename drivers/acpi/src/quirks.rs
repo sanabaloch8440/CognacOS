@@ -433,13 +433,21 @@ pub fn apply_policy_to_fadt(
     info: &mut crate::FadtInfo,
     policy: &QuirkPolicy,
 ) -> Result<(), QuirkError> {
-    if let Some(override_) = policy.fadt {
-        let (flags, boot_arch) = apply_fadt_override(
-            info.flags, info.boot_arch_flags, override_,
-        )?;
-        info.flags = flags;
-        info.boot_arch_flags = boot_arch;
+    let timer_quirk = policy.flags.contains(QuirkFlags::PM_TIMER_32BIT);
+    if policy.fadt.is_none() && !timer_quirk { return Ok(()); }
+    let mut override_ = policy.fadt.unwrap_or(FadtOverride {
+        flags_set: 0, flags_clear: 0, flags_writable_mask: 0,
+        boot_arch_set: 0, boot_arch_clear: 0, boot_arch_writable_mask: 0,
+    });
+    if timer_quirk {
+        override_.flags_set |= 1 << 8; // FADT.TMR_VAL_EXT
+        override_.flags_writable_mask |= 1 << 8;
     }
+    let (flags, boot_arch) = apply_fadt_override(
+        info.flags, info.boot_arch_flags, override_,
+    )?;
+    info.flags = flags;
+    info.boot_arch_flags = boot_arch;
     Ok(())
 }
 
