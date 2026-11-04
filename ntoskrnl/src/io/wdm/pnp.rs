@@ -287,6 +287,7 @@ pub(crate) fn io_validate_pnp_interrupt_resource(
  if device.is_null()||!(0x20..=0xdf).contains(&vector){return false}
  let owner=unsafe{io_get_device_attachment_base_ref(device)};
  if owner.is_null(){return false}
+ if owner!=device{unsafe{io_dereference_device_object(owner)};return false}
  let valid={
   let arbiter=RESOURCE_ARBITER.lock();
   let has_pending=arbiter.claims.iter().any(|claim|claim.used&&!claim.committed&&claim.owner==owner);
@@ -324,6 +325,7 @@ pub(crate) fn io_query_pnp_line_interrupt_resource(
  if device.is_null(){return None}
  let owner=unsafe{io_get_device_attachment_base_ref(device)};
  if owner.is_null(){return None}
+ if owner!=device{unsafe{io_dereference_device_object(owner)};return None}
  let found={
   let arbiter=RESOURCE_ARBITER.lock();
   let has_pending=arbiter.claims.iter().any(|c|c.used&&!c.committed&&c.owner==owner);
