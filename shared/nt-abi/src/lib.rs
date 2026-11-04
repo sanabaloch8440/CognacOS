@@ -332,13 +332,13 @@ pub mod bus {
         pub pin: u8,
         pub bridge_count: u8,
         pub root_bus: u8,
-        pub bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY; 8],
+        pub bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY; 255],
     }
     impl Default for ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2 {
         fn default() -> Self {
             Self { segment: 0, bus: 0, device: 0, function: 0, pin: 0,
                 bridge_count: 0, root_bus: 0,
-                bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY::default(); 8] }
+                bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY::default(); 255] }
         }
     }
 
@@ -424,7 +424,7 @@ pub mod bus {
     const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V2, query_pci_interrupt_route) == 0x28);
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>() == 8);
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_BRIDGE_PATH_ENTRY>() == 8);
-    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2>() == 72);
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2>() == 2048);
     const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V3>() == 0x38);
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>() == 24);
     pub type PACPI_QUERY_PCI_INTERRUPT_ROUTE_V3 = Option<
@@ -651,7 +651,7 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V4>(), 0x40);
                 assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3>(), 2048);
                 assert_ne!(GUID_ACPI_FIRMWARE_INTERFACE_V3, GUID_ACPI_FIRMWARE_INTERFACE_V4);
-                assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2>(), 72);
+                assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2>(), 2048);
                 assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>(), 8);
                 assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>(), 24);
                 assert_eq!(core::mem::size_of::<PCI_INTERRUPT_INTERFACE>(), 0x40);
