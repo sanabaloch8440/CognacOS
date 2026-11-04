@@ -26,15 +26,23 @@ The dynamic BufferField descriptor is deliberately separate from the existing
 OperationRegion Field metadata: its backing object is an AML Buffer value ID,
 not a namespace OperationRegion node.
 
-## Remaining task-30 integration
+## Completed task-30 integration
 
-This is an implementation foundation, **not completion of task 30**. The AML
-method executor still needs to own and pass an `AmlDynamicNamespace` instance,
-decode and execute the Create*Field opcodes, and route dynamic namespace
-operations through this service. The parser's static Alias declaration and
-runtime Store path also need a unified table-owner/unload policy before the
-task can be checked off. Dynamic namespace mutation must remain serialized
-with namespace readers and must not run at interrupt level.
+Task 30 is now implemented end-to-end within the supported interpreter surface:
 
-No claim is made here for complete AML interpreter conformance, successful
-UEFI/QEMU boot, or ACPI production readiness.
+- `Machine` owns the shared dynamic namespace during execution and dispatches
+  all six Create*Field opcode forms.
+- `execute_method_in_dynamic_context` retains dynamic field objects across
+  method calls. The legacy convenience context fails closed if a method
+  publishes dynamic fields rather than returning dangling references.
+- `AmlTableManager` owns the dynamic namespace, exposes it alongside the static
+  namespace, and retires owner-tagged fields under its unload quiescence gate.
+- `AmlBindings::invalidate_table` and `unload_with_runtime` invalidate cached
+  Name values before their owning table's nodes are removed.
+- Local/Arg buffer sources are promoted to stable arena objects; namespace
+  Name sources retain their existing arena identity.
+
+Namespace and dynamic-state access requires an exclusive runtime borrow; AML
+execution remains outside interrupt/DPC context. The task's focused ACPI test
+suite passed at the recorded CI head. Full AML language conformance and overall
+ACPI production readiness remain separate checklist work.
