@@ -230,3 +230,133 @@ mod platform_prt_policy_tests {
         assert!(!other_segment.quirk_applied);
     }
 }
+
+
+/// Errors from decoding the firmware _PRT Name(Package(...)) object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrtDecodeError {
+    MissingObject, WrongObjectType, BadTableIndex, Truncated, BadPackage,
+    BadInteger, BadSource, UnresolvedLink, InvalidPath, TooManyEntries,
+}
+
+/// Construct the canonical rooted namespace path for a resolved link device.
+fn canonical_namespace_path(
+    namespace: &crate::aml::AmlNamespace,
+    node: u16,
+    output: &mut [u8; MAX_SOURCE_PATH],
+) -> Result<usize, PrtDecodeError> {
+    if node as usize >= namespace.count { return Err(PrtDecodeError::InvalidPath); }
+    let mut reverse = [0u16; 32];
+    let mut count = 0usize;
+    let mut current = node;
+    while current != 0 {
+        if count == reverse.len() { return Err(PrtDecodeError::InvalidPath); }
+        reverse[count] = current;
+        count += 1;
+        current = namespace.nodes[current as usize].parent;
+        if current as usize >= namespace.count { return Err(PrtDecodeError::InvalidPath); }
+    }
+    let mut used = 0usize;
+    output[used] = b'\\';
+    used += 1;
+    for index in (0..count).rev() {
+        if index != count - 1 {
+            if used == output.len() { return Err(PrtDecodeError::InvalidPath); }
+            output[used] = b'.';
+            used += 1;
+        }
+        if used + 4 > output.len() { return Err(PrtDecodeError::InvalidPath); }
+        output[used..used + 4].copy_from_slice(&namespace.nodes[reverse[index] as usize].name);
+        used += 4;
+    }
+    Ok(used)
+}
+
+fn read_prt_integer(bytes: &[u8], cursor: &mut usize, end: usize) -> Result<u64, PrtDecodeError> {
+    let (value, next) = crate::aml::decode_integer_constant(bytes, *cursor, end, 2)
+        .map_err(|_| PrtDecodeError::BadInteger)?;
+    *cursor = next;
+    Ok(value.value)
+}
+
+/// Evaluate a static firmware _PRT package attached to a PCI bridge namespace
+/// node. Link-device entries are resolved through the supplied resource-aware
+/// resolver; direct-GSI entries are decoded without executing AML in interrupt
+/// context. A method-valued _PRT is deliberately rejected until the runtime
+/// supports returning nested packages without lossy object flattening.
+pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
+    namespace: &crate::aml::AmlNamespace,
+    aml_tables: &[&[u8]],
+    bridge_node: u16,
+    resolver: &R,
+) -> Result<PrtTable, PrtDecodeError> {
+    let object = namespace.find_child(bridge_node, *b"_PRT")
+        .ok_or(PrtDecodeError::MissingObject)?;
+    let entry = namespace.nodes.get(object as usize)
+        .filter(|_| (object as usize) < namespace.count)
+        .ok_or(PrtDecodeError::MissingObject)?;
+    if entry.object_type != crate::aml::AmlObjectType::Name {
+        return Err(PrtDecodeError::WrongObjectType);
+    }
+    let aml = *aml_tables.get(entry.source_table as usize).ok_or(PrtDecodeError::BadTableIndex)?;
+    let start = entry.body_start as usize;
+    let end = start.checked_add(entry.body_length as usize)
+        .filter(|v| *v <= aml.len()).ok_or(PrtDecodeError::Truncated)?;
+    let body = &aml[start..end];
+    if body.first() != Some(&0x12) { return Err(PrtDecodeError::BadPackage); }
+    let (_, package_end) = crate::aml::decode_package_length(body, 1, body.len())
+        .map_err(|_| PrtDecodeError::BadPackage)?;
+    let length_bytes = 1 + ((body[1] >> 6) as usize);
+    let mut cursor = 1 + length_bytes;
+    let count = *body.get(cursor).ok_or(PrtDecodeError::Truncated)? as usize;
+    cursor += 1;
+    if count > MAX_PRT_ENTRIES { return Err(PrtDecodeError::TooManyEntries); }
+    let mut elements = [EvaluatedPrtElement { address: 0, pin: 0, source_path: None, source_index: 0 }; MAX_PRT_ENTRIES];
+    let mut paths = [[0u8; MAX_SOURCE_PATH]; MAX_PRT_ENTRIES];
+    let mut path_lengths = [0usize; MAX_PRT_ENTRIES];
+    for index in 0..count {
+        if body.get(cursor) != Some(&0x12) { return Err(PrtDecodeError::BadPackage); }
+        let (_, sub_end) = crate::aml::decode_package_length(body, cursor + 1, package_end)
+            .map_err(|_| PrtDecodeError::BadPackage)?;
+        let pkg_len_bytes = 1 + ((body[cursor + 1] >> 6) as usize);
+        let mut field = cursor + 1 + pkg_len_bytes;
+        let fields = *body.get(field).ok_or(PrtDecodeError::Truncated)?;
+        field += 1;
+        if fields != 4 { return Err(PrtDecodeError::BadPackage); }
+        let address = read_prt_integer(body, &mut field, sub_end)?;
+        let pin = read_prt_integer(body, &mut field, sub_end)?;
+        let source_path = match body.get(field).copied() {
+            Some(0x00) => { field += 1; None }
+            Some(_) => {
+                let (name, next) = crate::aml::parse_name_string(body, field, sub_end)
+                    .map_err(|_| PrtDecodeError::BadSource)?;
+                let link = crate::aml::resolve_name_string(namespace, bridge_node, &name)
+                    .map_err(|_| PrtDecodeError::UnresolvedLink)?;
+                let link = namespace.resolve_alias(link).map_err(|_| PrtDecodeError::UnresolvedLink)?;
+                if namespace.nodes[link as usize].object_type != crate::aml::AmlObjectType::Device {
+                    return Err(PrtDecodeError::UnresolvedLink);
+                }
+                path_lengths[index] = canonical_namespace_path(namespace, link, &mut paths[index])?;
+                field = next;
+                Some(&paths[index][..path_lengths[index]])
+            }
+            None => return Err(PrtDecodeError::Truncated),
+        };
+        let source_index = read_prt_integer(body, &mut field, sub_end)?;
+        if field != sub_end { return Err(PrtDecodeError::BadPackage); }
+        elements[index] = EvaluatedPrtElement { address, pin, source_path, source_index };
+        cursor = sub_end;
+    }
+    if cursor != package_end { return Err(PrtDecodeError::BadPackage); }
+    let table = build_prt_table(&elements[..count]).map_err(|_| PrtDecodeError::BadPackage)?;
+    // Validate every link route while the namespace and link-device resolver
+    // are live. The route table remains symbolic so later resource changes can
+    // be re-resolved instead of caching a stale GSI.
+    for route in table.entries[..table.count].iter().flatten() {
+        if let InterruptSource::LinkDevice { path, length, source_index } = route.source {
+            resolver.resolve_gsi(&path[..length as usize], source_index)
+                .map_err(|_| PrtDecodeError::UnresolvedLink)?;
+        }
+    }
+    Ok(table)
+}
