@@ -2,7 +2,7 @@
 
 **Repository:** `sanabaloch8440/CognacOS`  
 **Branch:** `main`  
-**Status (2026-11-04):** tasks 1–28, 32, and 67 have implementation evidence recorded below; task 29 remains partial and unchecked; all other unchecked tasks remain open. ACPI firmware interface v4 now carries a full 255-hop PCI bridge path; dynamic pool-backed `_PRT` storage remains open. This is a readiness work log, not a production-readiness certification.
+**Status (2026-11-04):** tasks 1–28, 30, 32, and 67 have implementation evidence recorded below; tasks 29 and 31 remain partial and unchecked; all other unchecked tasks remain open. ACPI firmware interface v4 now carries a full 255-hop PCI bridge path; dynamic pool-backed `_PRT` storage remains open. This is a readiness work log, not a production-readiness certification.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -48,16 +48,31 @@ Task 29 follow-up (2026-11-04): the ACPI driver now supplies a concrete `AmlMeth
 
 30. [x] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
 
-Task 30 implementation slice (2026-11-04): added `aml_mutation.rs` and
-`AML_DYNAMIC_NAMESPACE_MUTATION.md`. The bounded service currently provides
-transactional dynamic Name insertion/binding, canonical-target Alias insertion,
-validated BufferField descriptor creation for the Create*Field family, and
-Store/CopyObject forwarding to the typed runtime. The crate exports the module.
-Task 30 remains unchecked: the method executor does not yet own this service or
-dispatch Create*Field opcodes; dynamic namespace synchronization and table
-unload integration remain open. No runtime or QEMU pass is claimed.
+Task 30 completion (2026-11-04): implemented end-to-end and merged in
+[PR #51](https://github.com/sanabaloch8440/CognacOS/pull/51). The executor
+dispatches all six Create*Field forms through the persistent dynamic namespace,
+resolves dynamic field names in TermArgs and targets, and routes Store/CopyObject
+through stable BufferField references. The table manager owns the dynamic
+namespace and retires table-owned fields under the execution-quiescence gate;
+cached Name bindings are invalidated during unload. ACPI workflow
+[41811376890](https://github.com/sanabaloch8440/CognacOS/actions/runs/41811376890)
+passed the library, native WDM driver type-check, kernel dispatcher type-check,
+and firmware/AML regression stages. UEFI/QEMU boot remains a separate gate.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
+
+Task 31 implementation progress (2026-11-04, PR branch `acpi-task-31-reference-semantics`; not yet checked):
+- Added explicit RefOf(Local/Arg) support by promoting the referenced frame slot into bounded arena storage. The method executor invalidates those frame-owned cells on every normal or error exit; runtime validation and dereference reject the retired cells rather than resolving stale handles.
+- DerefOf now reads a raw Local/Arg reference before dereferencing, rather than prematurely resolving it as an ordinary TermArg.
+- Added zero-based Index execution for Package elements and Buffer bytes. The target receives a typed reference and subsequent Store/DerefOf operations use the existing reference-store path.
+- Added CondRefOf handling for existing Name/Device objects and dynamic BufferFields, returning false for an absent namespace path.
+- Extended parser term validation for RefOf and CondRefOf and added executor regressions for Local references, expired-frame rejection, Package Index, and present/missing CondRefOf.
+- Additional regressions now cover Buffer-byte Index and a nested method receiving a reference to its caller's Local slot. Remaining before task 31 can be checked: owner-tagged namespace-reference invalidation across DefinitionBlock unload/reload; complete SuperName/namespace-object coverage (including OperationRegion Fields and method references); failure-injection coverage; run the focused AML, driver type-check, kernel dispatcher, and QEMU gates. Frame-temporary reference roots are bounded to 128 per invocation and fail closed when exhausted. Retired IDs are tombstoned rather than reused to prevent ABA/stale-handle aliasing; because the shared arena has 768 slots, generation-tagged safe reclamation remains a production blocker.
+
 32. [x] Evaluate Package/VarPackage elements including dynamic counts.
+
+Task 32 follow-up hardening (PR #52): added a VarPackage regression where the runtime count exceeds the explicit initializer list and verified the remaining slots are Uninitialized; added a malformed nested-package regression proving decoder failure rolls the entire arena back to its pre-decode count with no partially visible objects. Existing coverage continues to exercise nested packages, expression-derived counts, the 128-entry route-package boundary, excess initializer rejection, depth limits, and buffer-size expressions.
+
+The current representation is still deliberately bounded: each package stores at most 128 element IDs inline, each AML value stores at most 256 payload bytes, and one execution arena holds at most 768 values. These are fail-closed implementation budgets, not ACPI or Windows limits. Removing these ceilings requires pool-backed package-element/payload ownership plus a per-table/per-execution budget and rundown; that capacity redesign remains an explicit production follow-up and is not implied by the task-32 semantic checkbox.
 33. [ ] Implement mutex acquire/release timeout and synchronization-level rules.
 34. [ ] Implement Event signal/wait semantics and safe kernel wakeup integration.
 35. [ ] Implement FACS-backed AML Global Lock acquisition/release.

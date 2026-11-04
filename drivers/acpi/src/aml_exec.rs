@@ -2,7 +2,7 @@
 //! This constrained interpreter fails closed on unsupported AML terms and hardware access.
 /*
  * FIXME(ACPI-PRODUCTION) — AML method execution
- * FIXME(ACPI-PRODUCTION): This is a constrained AML executor, not yet a full production interpreter. Operand/target semantics, core control flow, method frames, and the Serialized-method host interface are implemented; a concrete kernel-backed AmlMethodSynchronizer is still required. Remaining work includes Mutex/Acquire/Release, Events/Global Lock, namespace mutation, OperationRegion/Field handlers, module-level execution, _OSI policy, shared execution budgets/timeouts, and cleanup on every exit path. Keep hardware access behind validated region handlers; never execute AML in interrupt context. Add differential tests against the public ACPI specification for every supported opcode.
+ * FIXME(ACPI-PRODUCTION): This is a constrained AML executor, not yet a full production interpreter. Core operand/target semantics, method frames, namespace mutation, and initial reference semantics are implemented. Remaining work includes complete SuperName/reference lifetime rules across table unload/reload, Mutex/Acquire/Release, Events/Global Lock, OperationRegion/Field handlers, module-level execution, _OSI policy, shared execution budgets/timeouts, and broader conformance coverage. Keep hardware access behind validated region handlers; never execute AML in interrupt context. Add independently authored ACPI-specification-derived tests for every supported opcode.
  */
 
 #![no_std]
@@ -10,7 +10,7 @@ use crate::aml::{AmlNamespace,AmlObjectType,decode_package_length,parse_name_str
 use crate::aml_osi::platform_osi;
 use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,AmlValueKind};
 use crate::aml_mutation::AmlDynamicNamespace;
-use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value,validate_runtime_value};
+use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value,validate_runtime_value,index_reference};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType,SynchronizationUnavailable,SyncLevelViolation,UnsupportedArgumentValue}
@@ -70,9 +70,94 @@ impl AmlMethodSynchronizer for NoMethodSynchronizer{
 // While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
-struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,dynamic:&'b mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32}
+struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],frame_cells:[u16;128],frame_cell_count:usize,arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,dynamic:&'b mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32}
 impl<'a,'b> Machine<'a,'b>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
+ fn frame_slot_reference(&mut self,argument:bool,index:usize)->Result<AmlReference,ExecError>{
+  if self.frame_cell_count>=self.frame_cells.len(){return Err(ExecError::TargetTypeMismatch)}
+  let current=if argument{*self.args.get(index).ok_or(ExecError::BadTarget)?}else{*self.locals.get(index).ok_or(ExecError::BadTarget)?};
+  if current.kind==AmlValueKind::ObjectReference{
+   if let Ok(AmlReference::ArenaValue(id))=reference_from_value(&current){
+    if self.frame_cells[..self.frame_cell_count].contains(&id){return Ok(AmlReference::ArenaValue(id))}
+   }
+  }
+  let id=self.arena.allocate(current).map_err(|_|ExecError::TargetTypeMismatch)?;
+  if argument{self.args[index]=make_object_reference(AmlReference::ArenaValue(id));}else{self.locals[index]=make_object_reference(AmlReference::ArenaValue(id));}
+  self.frame_cells[self.frame_cell_count]=id;self.frame_cell_count+=1;Ok(AmlReference::ArenaValue(id))
+ }
+ fn own_frame_value(&mut self,value:AmlRuntimeValue)->Result<u16,ExecError>{
+  if self.frame_cell_count>=self.frame_cells.len(){return Err(ExecError::TargetTypeMismatch)}
+  let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;
+  self.frame_cells[self.frame_cell_count]=id;self.frame_cell_count+=1;Ok(id)
+ }
+ fn retire_frame_cells(&mut self){for id in self.frame_cells[..self.frame_cell_count].iter().copied(){if let Some(value)=self.arena.get_mut(id){*value=AmlRuntimeValue::EMPTY;}}self.frame_cell_count=0;}
+ fn result_contains_frame_reference(&self,value:&AmlRuntimeValue,depth:u8)->Result<bool,ExecError>{
+  if depth>32{return Err(ExecError::NestingLimit)}
+  if value.kind==AmlValueKind::ObjectReference{
+   let reference=reference_from_value(value).map_err(|_|ExecError::BadTarget)?;
+   match reference{
+    AmlReference::ArenaValue(id)=>{
+     if self.frame_cells[..self.frame_cell_count].contains(&id){return Ok(true)}
+     let nested=self.arena.get(id).ok_or(ExecError::BadTarget)?;
+     return self.result_contains_frame_reference(nested,depth+1)
+    }
+    AmlReference::PackageElement{package,index}=>{
+     if self.frame_cells[..self.frame_cell_count].contains(&package){return Ok(true)}
+     let parent=self.arena.get(package).ok_or(ExecError::BadTarget)?;
+     if parent.kind!=AmlValueKind::Package||index as usize>=parent.element_count as usize{return Err(ExecError::BadTarget)}
+     let nested=self.arena.get(parent.elements[index as usize]).ok_or(ExecError::BadTarget)?;
+     return self.result_contains_frame_reference(nested,depth+1)
+    }
+    AmlReference::BufferByte{buffer,..}|AmlReference::BufferField{buffer,..}=>return Ok(self.frame_cells[..self.frame_cell_count].contains(&buffer)),
+    AmlReference::NamespaceNode(node)=>{
+     if let Ok(id)=self.bindings.value_id(node){let nested=self.arena.get(id).ok_or(ExecError::BadTarget)?;return self.result_contains_frame_reference(nested,depth+1)}
+     return Ok(false)
+    }
+   }
+  }
+  if value.kind==AmlValueKind::Package{
+   if value.element_count as usize>crate::aml_objects::MAX_PACKAGE_ELEMENTS{return Err(ExecError::BadTarget)}
+   for id in value.elements.iter().take(value.element_count as usize){
+    let nested=self.arena.get(*id).ok_or(ExecError::BadTarget)?;
+    if self.result_contains_frame_reference(nested,depth+1)?{return Ok(true)}
+   }
+  }
+  Ok(false)
+ }
+ fn reference_object_id(&self,reference:AmlReference)->Result<u16,ExecError>{
+  match reference{
+   AmlReference::NamespaceNode(node)=>self.bindings.value_id(node).map_err(|_|ExecError::BadTarget),
+   AmlReference::ArenaValue(id)=>Ok(id),
+   AmlReference::PackageElement{package,index}=>{let object=self.arena.get(package).ok_or(ExecError::BadTarget)?;
+    if object.kind!=AmlValueKind::Package||index as usize>=object.element_count as usize{return Err(ExecError::BadTarget)}Ok(object.elements[index as usize])}
+   _=>Err(ExecError::BadTarget),
+  }
+ }
+ fn store_reference_target(&mut self,target:Target,reference:AmlReference)->Result<(),ExecError>{
+  let value=make_object_reference(reference);
+  match target{Target::Local(i)=>self.store_value(Target::Local(i),value,StoreMode::CopyObject),
+   Target::Arg(i)=>self.store_value(Target::Arg(i),value,StoreMode::CopyObject),
+   Target::Reference(r)=>self.store_reference_value(r,value,StoreMode::CopyObject),Target::Null=>Ok(())}
+ }
+ fn optional_source_reference(&mut self,r:&mut Reader<'_>)->Result<Option<AmlReference>,ExecError>{
+  let start=r.pos;let op=*r.bytes.get(start).ok_or(ExecError::Truncated)?;
+  match op{
+   0x60..=0x67=>{r.pos+=1;Ok(Some(self.frame_slot_reference(false,(op-0x60)as usize)?))}
+   0x68..=0x6e=>{r.pos+=1;Ok(Some(self.frame_slot_reference(true,(op-0x68)as usize)?))}
+   0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
+    let (name,next)=parse_name_string(r.bytes,start,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
+    if let Ok(node)=resolve_name_string(self.namespace,self.scope,&name){
+     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
+     let object=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
+     return match object.object_type{AmlObjectType::Name=>Ok(Some(self.name_reference(canonical)?)),
+      _=>Ok(Some(AmlReference::NamespaceNode(canonical)))};
+    }
+    if let Ok(node)=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name){return Ok(Some(self.dynamic.field_reference(self.namespace,node).map_err(|_|ExecError::BadTarget)?));}
+    Ok(None)
+   }
+   _=>Err(ExecError::BadTarget)
+  }
+ }
  fn name_reference(&mut self,node:u16)->Result<AmlReference,ExecError>{
   let reference=self.bindings.reference_node(self.namespace,node).map_err(|_|ExecError::BadTarget)?;
   match dereference(reference,&self.bindings,&self.arena){
@@ -91,6 +176,17 @@ impl<'a,'b> Machine<'a,'b>{
   let op=r.byte()?;
   match op{
    0x00=>Ok(Target::Null),
+   0x83=>{
+    let source_start=r.pos;
+    let source_opcode=*r.bytes.get(source_start).ok_or(ExecError::Truncated)?;
+    let source=match source_opcode{
+     0x60..=0x67=>{r.pos+=1;self.locals[(source_opcode-0x60)as usize]},
+     0x68..=0x6e=>{r.pos+=1;self.args[(source_opcode-0x68)as usize]},
+     _=>self.term_value(r)?,
+    };
+    let reference=reference_from_value(&source).map_err(|_|ExecError::BadTarget)?;
+    Ok(Target::Reference(reference))
+   },
    0x60..=0x67=>Ok(Target::Local((op-0x60)as usize)),
    0x68..=0x6e=>Ok(Target::Arg((op-0x68)as usize)),
    _=>{
@@ -109,6 +205,7 @@ impl<'a,'b> Machine<'a,'b>{
     let entry=self.namespace.nodes.get(canonical as usize)
         .filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
     if entry.object_type==AmlObjectType::Name { return Ok(Target::Reference(self.name_reference(canonical)?)); }
+    if entry.object_type==AmlObjectType::Device { return Ok(Target::Reference(AmlReference::NamespaceNode(canonical))); }
     r.pos = r.pos; // preserve the parsed target boundary
     Err(ExecError::BadTarget)
    }
@@ -323,7 +420,13 @@ impl<'a,'b> Machine<'a,'b>{
   match op{
    0x00=>Ok(Self::integer_value(0)),0x01=>Ok(Self::integer_value(1)),
    0x8a|0x8b|0x8c|0x8d|0x8f=>self.create_field_term(r,op),
-   0x5b=>{let extended=r.byte()?;if extended==0x13{self.create_field_term(r,0x5b)}else{r.pos=start;self.term(r).map(Self::integer_value)}},
+   0x5b=>{let extended=r.byte()?;match extended{
+    0x13=>self.create_field_term(r,0x5b),
+    0x12=>{let source=self.optional_source_reference(r)?;let target=self.target(r)?;
+     if let Some(reference)=source{self.store_reference_target(target,reference)?;Ok(Self::integer_value(1))}
+     else{Ok(Self::integer_value(0))}},
+    _=>{r.pos=start;self.term(r).map(Self::integer_value)}
+   }},
    0xff=>Ok(Self::integer_value(self.integer_mask())),
    0x0a=>Ok(Self::integer_value(r.byte()? as u64)),
    0x0b=>{let b=r.take(2)?;Ok(Self::integer_value(u16::from_le_bytes([b[0],b[1]]) as u64))},
@@ -420,12 +523,39 @@ impl<'a,'b> Machine<'a,'b>{
    }
    0x71=>{
     let target=self.target(r)?;
-    match target{Target::Reference(reference)=>Ok(make_object_reference(reference)),
-        _=>Err(ExecError::UnsupportedOpcode)}
+    let reference=match target{Target::Reference(reference)=>reference,Target::Local(i)=>self.frame_slot_reference(false,i)?,
+     Target::Arg(i)=>self.frame_slot_reference(true,i)?,Target::Null=>return Err(ExecError::BadTarget)};
+    Ok(make_object_reference(reference))
+   }
+   0x88=>{
+    let source_start=r.pos;let source=self.term_value(r)?;
+    let source_opcode=*r.bytes.get(source_start).ok_or(ExecError::Truncated)?;
+    let source_id=match source_opcode{
+     0x60..=0x67=>{let slot=(source_opcode-0x60)as usize;let current=self.locals[slot];
+      if current.kind==AmlValueKind::ObjectReference{self.reference_object_id(reference_from_value(&current).map_err(|_|ExecError::BadTarget)?)?}
+      else{let id=self.own_frame_value(source)?;self.locals[slot]=make_object_reference(AmlReference::ArenaValue(id));id}}
+     0x68..=0x6e=>{let slot=(source_opcode-0x68)as usize;let current=self.args[slot];
+      if current.kind==AmlValueKind::ObjectReference{self.reference_object_id(reference_from_value(&current).map_err(|_|ExecError::BadTarget)?)?}
+      else{let id=self.own_frame_value(source)?;self.args[slot]=make_object_reference(AmlReference::ArenaValue(id));id}}
+     0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{let (name,_)=parse_name_string(r.bytes,source_start,r.end).map_err(|_|ExecError::InvalidName)?;
+      let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
+      let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;
+      if self.namespace.nodes[canonical as usize].object_type==AmlObjectType::Name{let reference=self.name_reference(canonical)?;self.reference_object_id(reference)?}
+      else{return Err(ExecError::TargetTypeMismatch)}}
+     _=>self.own_frame_value(source)?};
+    let index_value=self.term_value(r)?;let index=u16::try_from(self.operand_integer(&index_value)?).map_err(|_|ExecError::TargetTypeMismatch)?;
+    let reference=crate::aml_runtime::index_reference(self.arena,source_id,index).map_err(|_|ExecError::BadTarget)?;
+    let target=self.target(r)?;self.store_reference_target(target,reference)?;Ok(make_object_reference(reference))
    }
    0x96..=0x99|0x9c=>self.conversion_value(r,op),
    0x83=>{
-    let source=self.term_value(r)?;
+    let source_start=r.pos;
+    let source_opcode=*r.bytes.get(source_start).ok_or(ExecError::Truncated)?;
+    let source=match source_opcode{
+     0x60..=0x67=>{r.pos+=1;self.locals[(source_opcode-0x60)as usize]},
+     0x68..=0x6e=>{r.pos+=1;self.args[(source_opcode-0x68)as usize]},
+     _=>self.term_value(r)?,
+    };
     let reference=reference_from_value(&source).map_err(|_|ExecError::TargetTypeMismatch)?;
     dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)
    }
@@ -442,7 +572,7 @@ impl<'a,'b> Machine<'a,'b>{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
    0x5b=>{
     let extended=r.byte()?;
-    if extended==0x13 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
+    if extended==0x12||extended==0x13 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
     let operand=self.term_depth(r,depth+1)?;
     let result=match extended{
      0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
@@ -453,12 +583,12 @@ impl<'a,'b> Machine<'a,'b>{
     self.store_value(target,Self::integer_value(result),StoreMode::CopyObject)?;
     Ok(result)
    }
-   0x71|0x83=>{let value=self.term_value(r)?;self.operand_integer(&value)},
+   0x71|0x83|0x88=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)}
    0x96..=0x99|0x9c=>{let value=self.conversion_value(r,op)?;self.operand_integer(&value)},0x0a=>Ok(r.byte()? as u64),
    0x0b=>{let b=r.take(2)?;Ok(u16::from_le_bytes([b[0],b[1]])as u64)},
    0x0c=>{let b=r.take(4)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]])as u64)},
    0x0e=>{if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}let b=r.take(8)?;Ok(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?))},
-   0x8a|0x8b|0x8c|0x8d|0x8f|0x5b=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)},
+   0x8a|0x8b|0x8c|0x8d|0x8f=>{r.pos-=1;let value=self.term_value(r)?;self.operand_integer(&value)},
    0x60..=0x67=>{let value=self.locals[(op-0x60)as usize];if value.kind==AmlValueKind::ObjectReference{let reference=reference_from_value(&value).map_err(|_|ExecError::NonIntegerName)?;let deref=dereference(reference,&self.bindings,self.arena).map_err(|_|ExecError::NonIntegerName)?;self.operand_integer(&deref)}else{self.operand_integer(&value)}},0x68..=0x6e=>{let value=self.argument_value((op-0x68)as usize)?;self.operand_integer(&value)},
    0x72|0x74|0x77|0x79|0x7a|0x7b|0x7c|0x7d|0x7e|0x7f|0x85=>{
     let a=self.term_depth(r,depth+1)?;let b=self.term_depth(r,depth+1)?;
@@ -591,7 +721,7 @@ pub fn evaluate_term_argument_in_context(
     let checkpoint = arena.count;
     let empty = Machine::uninitialized_value();
     let mut machine = Machine {
-        locals: [empty; 8], args: [empty; 7], arena, bindings,
+        locals: [empty; 8], args: [empty; 7], frame_cells: [u16::MAX; 128], frame_cell_count: 0, arena, bindings,
         integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
         scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, dynamic: &mut dynamic, current_sync_level: 0, owner_table: 0,
     };
@@ -635,34 +765,36 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  // Each invocation owns its own LocalX/ArgX frame and execution budget.
  // Namespace objects and the method synchronizer are shared with nested calls.
  let result=(||{
-  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
+  let start=node.body_start as usize;
+  let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
   if end>aml.len(){return Err(ExecError::InvalidMethod)}
   let empty=Machine::uninitialized_value();
-  let mut m=Machine{locals:[empty;8],args:[empty;7],arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,dynamic,current_sync_level:active_sync_level,owner_table:node.source_table};
+  let mut m=Machine{locals:[empty;8],args:[empty;7],frame_cells:[u16::MAX;128],frame_cell_count:0,
+   arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,dynamic,
+   current_sync_level:active_sync_level,owner_table:node.source_table};
   for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
   let mut r=Reader{bytes:aml,pos:start,end};
-  let value=match m.execute(&mut r,0)?{
-   ExecFlow::Continue=>Machine::integer_value(0),
-   ExecFlow::Return(v)=>v,
-   ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl),
-  };
-  Ok(value)
+  let execution=(||{
+   let value=match m.execute(&mut r,0)?{
+    ExecFlow::Continue=>Machine::integer_value(0),
+    ExecFlow::Return(value)=>value,
+    ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl),
+   };
+   if m.result_contains_frame_reference(&value,0)?{return Err(ExecError::UnsupportedReturnType)}
+   Ok(value)
+  })();
+  m.retire_frame_cells();
+  execution
  })();
  if serialized{sync.release(method_index);}
  result
 }
-
-
-/// Execute a scalar-returning AML method using the Integer width encoded by
-/// the containing DefinitionBlock (32 bits for revision 1, otherwise 64).
 /// Execute a method and preserve Integer, String, or Buffer return objects.
 /// Package returns are rejected because their arena-backed element handles
 /// cannot outlive this invocation without an owning result arena.
 pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     method_index:u16,args:&[AmlRuntimeValue],integer_width_bits:u8,
     sync:&dyn AmlMethodSynchronizer)->Result<AmlRuntimeValue,ExecError>{
-    // This convenience API owns a fresh arena, so caller-supplied arena handles
-    // cannot be valid here. Namespace-node references are self-contained and remain valid.
     if args.iter().any(|value|value.kind==AmlValueKind::Package){
         return Err(ExecError::UnsupportedArgumentValue)
     }
@@ -674,10 +806,9 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     };
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
     let mut dynamic=AmlDynamicNamespace::new();
-    let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,&mut dynamic,0,0)?;
-    // The convenience wrapper destroys its local arena on return, so it must
-    // not expose Package handles whose elements live in that arena.
-    if value.kind==AmlValueKind::Package || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
+    let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
+        &mut arena,&mut bindings,sync,&mut dynamic,0,0)?;
+    if matches!(value.kind,AmlValueKind::Package|AmlValueKind::ObjectReference) || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
     Ok(value)
 }
 
@@ -892,6 +1023,64 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
+ }
+
+ #[test]fn refof_local_derefof_and_frame_lifetime_are_enforced(){
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+   0x70,0x0a,42,0x60,0xa4,0x83,0x71,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+
+  let escaping=[0x14,0x09,b'T',b'E',b'S',b'T',0,0xa4,0x71,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&escaping,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();let mut bindings=AmlBindings::with_aml_revision(2);
+  assert_eq!(execute_method_in_context(&escaping,&ns,id,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER),
+      Err(ExecError::UnsupportedReturnType));
+ }
+
+ #[test]fn index_returns_live_package_element_reference(){
+  let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x06,0x02,0x0a,0x11,0x0a,0x22,
+   0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x83,0x88,b'P',b'K',b'G',b'0',0x01,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(0x22));
+ }
+
+ #[test]fn refof_arg_is_writable_and_scoped_to_the_callee_frame(){
+  let aml=[0x14,0x10,b'T',b'E',b'S',b'T',1,
+   0x70,0x71,0x68,0x60,0x70,0x0a,42,0x60,0xa4,0x68];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[7]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn index_reads_buffer_bytes_and_preserves_nested_caller_frame_aliases(){
+  let buffer=[0x08,b'B',b'U',b'F',b'0',0x11,0x05,0x0a,0x02,0x34,0x12,
+   0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x83,0x88,b'B',b'U',b'F',b'0',0x01,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&buffer,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&buffer,&ns,id,&[]).unwrap(),AmlValue::Integer(0x12));
+
+  let nested=[0x14,0x09,b'I',b'N',b'N',b'R',1,0xa4,0x83,0x68,
+   0x14,0x11,b'O',b'U',b'T',b'R',0,0x70,0x0a,42,0x60,0xa4,b'I',b'N',b'N',b'R',0x71,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&nested,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"OUTR").unwrap();
+  assert_eq!(execute_method(&nested,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+ }
+
+ #[test]fn condrefof_reports_present_and_missing_namespace_objects(){
+  let present=[0x08,b'N',b'A',b'M',b'0',0x01,
+   0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x5b,0x12,b'N',b'A',b'M',b'0',0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&present,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&present,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
+
+  let missing=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x5b,0x12,b'M',b'I',b'S',b'S',0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&missing,&mut ns).unwrap();
+  let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&missing,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
  }
 
  #[test]fn uninitialized_locals_and_unused_arguments_are_not_integer_zero(){
@@ -1508,4 +1697,17 @@ mod tests{
   assert_eq!(dynamic.field_count(),0);
  }
 
+
+ #[test]fn refo_local_promotes_a_writable_frame_reference(){
+  let aml=[0x14,0x13,b'T',b'E',b'S',b'T',0,0x70,0x01,0x60,0x70,0x71,0x60,0x61,0x70,0x0a,42,0x61,0xa4,0x60];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
+ }
+ #[test]fn index_package_element_returns_a_write_through_reference(){
+  let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x03,1,1,0x14,0x16,b'T',b'E',b'S',b'T',0,0x88,b'P',b'K',b'G',b'0',0x00,0x60,0x70,0x0a,42,0x60,0xa4,b'P',b'K',b'G',b'0'];
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();let mut bindings=AmlBindings::with_aml_revision(2);let mut dynamic=AmlDynamicNamespace::new();
+  let value=execute_method_in_dynamic_context(&aml,&ns,id,&[],64,&mut arena,&mut bindings,&mut dynamic,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(value.kind,AmlValueKind::Package);let element=arena.get(value.elements[0]).unwrap();assert_eq!(element.kind,AmlValueKind::Integer);assert_eq!(element.integer,42);
+ }
 }
