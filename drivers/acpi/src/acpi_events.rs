@@ -281,9 +281,18 @@ mod tests{
  use super::*;
  fn gas(address:u64)->AcpiGas{AcpiGas{address_space_id:1,bit_width:8,bit_offset:0,access_size:1,address}}
  #[test]fn hardware_reduced_ignores_legacy_gpe_and_requires_sleep_control(){
-  let mut f=FadtInfo::default();f.flags=FadtInfo::HARDWARE_REDUCED_ACPI;f.sleep_control_register=Some(gas(0x100));
+  let mut f=FadtInfo::default();f.revision=5;f.flags=FadtInfo::HARDWARE_REDUCED_ACPI;f.sleep_control_register=Some(gas(0x100));
   let r=platform_registers(&f).unwrap();assert_eq!(r.model,AcpiHardwareModel::HardwareReduced);assert!(r.gpe0.is_none());
   let p=build_sleep_register_plan(&r,3,5,0).unwrap();assert_eq!(p.writes[0].unwrap().value,(5<<2)|(1<<5));
+ }
+ #[test]fn pre_v5_reserved_flag_bits_do_not_switch_to_hardware_reduced(){
+  let mut f=FadtInfo::default();f.revision=4;f.flags=FadtInfo::HARDWARE_REDUCED_ACPI;
+  f.pm1a_control_legacy=0x404;f.pm1_control_length=2;
+  f.sleep_control_register=Some(gas(0x100));
+  let r=platform_registers(&f).unwrap();
+  assert_eq!(r.model,AcpiHardwareModel::FixedHardware);
+  assert_eq!(r.pm1a_control,Some(gas(0x404)));
+  assert_eq!(r.sleep_control,None);
  }
  #[test]fn fixed_sleep_plan_sets_both_pm1_blocks(){
   let r=AcpiPlatformRegisters{model:AcpiHardwareModel::FixedHardware,pm1a_control:Some(gas(0x404)),pm1b_control:Some(gas(0x408)),sleep_control:None,sleep_status:None,gpe0:None,gpe1:None};
