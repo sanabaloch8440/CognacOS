@@ -779,7 +779,7 @@ unsafe fn acquire_protected_memory_snapshot(
             break;
         }
         if index == MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES
-            || item.base_address <= 0 || item.number_of_bytes == 0
+            || item.base_address < 0 || item.number_of_bytes == 0
             || (item.base_address as u64) & 0xfff != 0
             || item.number_of_bytes & 0xfff != 0
             || (item.base_address as u64).checked_add(item.number_of_bytes).is_none() {
