@@ -384,14 +384,14 @@ pub unsafe extern "win64" fn hal_translate_bus_address(
 /// treat it as read-only. STATUS_NOT_FOUND is returned when discovery has not
 /// run or the requested instance is absent.
 /// Enable a previously connected device interrupt vector after its ISR is installed.
-/// @implemented
+/// @partial implementation
 /// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_enable_interrupt(vector:u32,_irql:u8)->u8{
     if vector>u8::MAX as u32{return 0;}
     unsafe{crate::hal::set_device_interrupt_vector_enabled(vector as u8,true).is_ok() as u8}
 }
 /// Mask a connected device interrupt vector before interrupt teardown.
-/// @implemented
+/// @partial implementation
 /// Windows 11 x64 HAL DDI entry; see EXPORTS for the corresponding ordinal.
 pub unsafe extern "win64" fn hal_disable_interrupt(vector:u32,_irql:u8)->u8{
     if vector>u8::MAX as u32{return 0;}
