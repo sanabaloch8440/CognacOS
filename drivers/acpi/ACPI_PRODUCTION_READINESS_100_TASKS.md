@@ -353,3 +353,15 @@ Task 30 completion record (2026-11-04, PR #51):
   `runtime_namespace` accessor and `execute_method_in_dynamic_context`.
 - Focused executor, bounds, unload-ID, and binding-invalidation tests pass in
   ACPI CI run 41811235576. The UEFI/QEMU workflow is being checked separately.
+
+
+### Dynamic AML storage implementation slice (PR: acpi-dynamic-aml-storage)
+
+This PR adds allocator-backed building blocks on top of the merged PR #53 pool callback ABI:
+
+- `AmlPoolVec<T>`: uniquely owned, growable pool storage with checked capacity arithmetic, transactional growth, and append checkpoints.
+- `AmlPoolBytes`: independently owned variable-length payload storage for String/Buffer migration.
+- `AmlPoolBudget`: checked per-context byte/allocation accounting with live and peak counters.
+- Regression coverage grows a vector to 1,000 entries, exercises checkpoint rollback, and verifies budget exhaustion preserves accounting.
+
+**Important integration status:** this is the storage substrate, not the completed runtime representation migration. `AmlRuntimeValue` and `AmlObjectArena` still contain the legacy inline arrays and their existing ceilings until the interpreter/runtime call sites are migrated. The PR intentionally does not claim that >768 values, >128 Package elements, or >256-byte payloads are already accepted by AML execution. Follow-up work must migrate those consumers and tie allocations to namespace/table rundown before removing the old representation.
