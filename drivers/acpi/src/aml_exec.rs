@@ -12,9 +12,8 @@ use crate::aml_objects::{decode_namespace_name,AmlObjectArena,AmlRuntimeValue,Am
 use crate::aml_mutation::AmlDynamicNamespace;
 use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value,validate_runtime_value,index_reference};
 pub const MAX_AML_STEPS:usize=100_000;
-pub const MAX_AML_EXECUTION_TIME_100NS:u64=30*10_000_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType,SynchronizationUnavailable,SyncLevelViolation,UnsupportedArgumentValue,MutexStackFull,DeadlineExceeded,DeadlineClockUnavailable}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType,SynchronizationUnavailable,SyncLevelViolation,UnsupportedArgumentValue,MutexStackFull}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -36,46 +35,13 @@ enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
 /// per-thread ownership so nested calls obey ACPI mutex reentrancy rules.
 pub trait AmlMethodSynchronizer:Sync{
  fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>;
- fn acquire_with_timeout(&self,method_index:u16,sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{self.acquire(method_index,sync_level)?;Ok(true)}
  fn release(&self,method_index:u16);
  fn acquire_mutex(&self,_mutex_index:u16,_sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
  fn release_mutex(&self,_mutex_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
- fn signal_event(&self,_event_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
- fn wait_event(&self,_event_index:u16,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
- fn reset_event(&self,_event_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
- fn monotonic_time_100ns(&self)->Option<u64>{None}
+ fn signal_event(&self,_event_index:u16,_owner_table:u32)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn wait_event(&self,_event_index:u16,_owner_table:u32,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn reset_event(&self,_event_index:u16,_owner_table:u32)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
 }
-
-/// One top-level AML invocation budget shared by all nested method calls.
-pub struct AmlExecutionBudget{remaining_steps:usize,deadline_100ns:Option<u64>}
-impl AmlExecutionBudget{
- pub fn new(sync:&dyn AmlMethodSynchronizer)->Self{
-  let deadline_100ns=sync.monotonic_time_100ns().map(|now|now.saturating_add(MAX_AML_EXECUTION_TIME_100NS));
-  Self{remaining_steps:MAX_AML_STEPS,deadline_100ns}
- }
- fn with_limits(steps:usize,deadline_100ns:Option<u64>)->Self{Self{remaining_steps:steps,deadline_100ns}}
- fn check_deadline(&self,sync:&dyn AmlMethodSynchronizer)->Result<(),ExecError>{
-  if let Some(deadline)=self.deadline_100ns{
-   let now=sync.monotonic_time_100ns().ok_or(ExecError::DeadlineClockUnavailable)?;
-   if now>=deadline{return Err(ExecError::DeadlineExceeded)}
-  }
-  Ok(())
- }
- fn step(&mut self,sync:&dyn AmlMethodSynchronizer)->Result<(),ExecError>{
-  if self.remaining_steps==0{return Err(ExecError::StepLimit)}
-  self.remaining_steps-=1;self.check_deadline(sync)
- }
- fn bounded_timeout(&self,requested:u16,sync:&dyn AmlMethodSynchronizer)->Result<u16,ExecError>{
-  let Some(deadline)=self.deadline_100ns else{return Ok(requested)};
-  let now=sync.monotonic_time_100ns().ok_or(ExecError::DeadlineClockUnavailable)?;
-  if now>=deadline{return Err(ExecError::DeadlineExceeded)}
-  let ticks=deadline-now;
-  let remaining_ms=((ticks.saturating_add(9_999))/10_000).min(65_534) as u16;
-  if remaining_ms==0{return Err(ExecError::DeadlineExceeded)}
-  if requested==u16::MAX||requested>remaining_ms{Ok(remaining_ms)}else{Ok(requested)}
- }
-}
-
 
 #[derive(Clone,Copy)]
 struct HeldAmlMutex{node:u16,sync_level:u8,previous_sync_level:u8}
@@ -123,9 +89,9 @@ impl AmlMethodSynchronizer for NoMethodSynchronizer{
 // While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
-struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],frame_cells:[u16;128],frame_cell_count:usize,arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,budget:&'b mut AmlExecutionBudget,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,sync_state:&'b mut AmlSyncState,dynamic:&'b mut AmlDynamicNamespace,owner_table:u32}
+struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],frame_cells:[u16;128],frame_cell_count:usize,arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,sync_state:&'b mut AmlSyncState,dynamic:&'b mut AmlDynamicNamespace,owner_table:u32}
 impl<'a,'b> Machine<'a,'b>{
- fn step(&mut self)->Result<(),ExecError>{self.budget.step(self.sync)}
+ fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn frame_slot_reference(&mut self,argument:bool,index:usize)->Result<AmlReference,ExecError>{
   if self.frame_cell_count>=self.frame_cells.len(){return Err(ExecError::TargetTypeMismatch)}
   let current=if argument{*self.args.get(index).ok_or(ExecError::BadTarget)?}else{*self.locals.get(index).ok_or(ExecError::BadTarget)?};
@@ -242,31 +208,29 @@ impl<'a,'b> Machine<'a,'b>{
   if entry.object_type!=AmlObjectType::Mutex{return Err(ExecError::BadTarget)}
   Ok((canonical,entry.method_flags&0x0f))
  }
- fn event_object(&self,r:&mut Reader<'_>)->Result<u16,ExecError>{
+ fn event_object(&self,r:&mut Reader<'_>)->Result<(u16,u32),ExecError>{
   let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
   let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
   let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
   let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
   if entry.object_type!=AmlObjectType::Event{return Err(ExecError::BadTarget)}
-  Ok(canonical)
+  Ok((canonical,entry.source_table_generation))
  }
  fn wait_event(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
-  let event=self.event_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
-  let timeout=self.budget.bounded_timeout(timeout,self.sync)?;
-  let signaled=self.sync.wait_event(event,timeout)?;
-  self.budget.check_deadline(self.sync)?;
-  Ok(if signaled{0}else{1})
+  let (event,owner)=self.event_object(r)?;
+  // Wait's timeout is a full TermArg, not a fixed two-byte literal. This
+  // permits Local/Arg values and computed expressions as required by AML.
+  let timeout_value=self.term_value(r)?;
+  let timeout=u16::try_from(self.operand_integer(&timeout_value)?).map_err(|_|ExecError::TargetTypeMismatch)?;
+  Ok(if self.sync.wait_event(event,owner,timeout)?{0}else{self.integer_mask()})
  }
- fn signal_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let event=self.event_object(r)?;self.sync.signal_event(event)}
- fn reset_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let event=self.event_object(r)?;self.sync.reset_event(event)}
+ fn signal_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let (event,owner)=self.event_object(r)?;self.sync.signal_event(event,owner)}
+ fn reset_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let (event,owner)=self.event_object(r)?;self.sync.reset_event(event,owner)}
  fn acquire_mutex(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
   let (node,level)=self.mutex_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
   if self.sync_state.current_sync_level>level{return Err(ExecError::SyncLevelViolation)}
   if self.sync_state.held_count==self.sync_state.held.len(){return Err(ExecError::MutexStackFull)}
-  let timeout=self.budget.bounded_timeout(timeout,self.sync)?;
-  let acquired=self.sync.acquire_mutex(node,level,timeout)?;
-  self.budget.check_deadline(self.sync)?;
-  if !acquired{return Ok(1)}
+  if !self.sync.acquire_mutex(node,level,timeout)?{return Ok(1)}
   let i=self.sync_state.held_count;self.sync_state.held[i]=HeldAmlMutex{node,sync_level:level,previous_sync_level:self.sync_state.current_sync_level};
   self.sync_state.held_count+=1;self.sync_state.current_sync_level=level;Ok(0)
  }
@@ -275,6 +239,28 @@ impl<'a,'b> Machine<'a,'b>{
   let held=self.sync_state.held[self.sync_state.held_count-1];if held.node!=node{return Err(ExecError::SyncLevelViolation)}
   self.sync.release_mutex(node)?;self.sync_state.held_count-=1;self.sync_state.held[self.sync_state.held_count]=HeldAmlMutex::EMPTY;
   self.sync_state.current_sync_level=held.previous_sync_level;Ok(())
+ }
+ fn super_name_reference(&mut self,r:&mut Reader<'_>)->Result<AmlReference,ExecError>{
+  let start=r.pos;let opcode=*r.bytes.get(start).ok_or(ExecError::Truncated)?;
+  match opcode{
+   0x60..=0x67=>{r.pos+=1;self.frame_slot_reference(false,(opcode-0x60)as usize)},
+   0x68..=0x6e=>{r.pos+=1;self.frame_slot_reference(true,(opcode-0x68)as usize)},
+   0x00=>Err(ExecError::BadTarget),
+   0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
+    let (name,next)=parse_name_string(r.bytes,start,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
+    if let Ok(node)=resolve_name_string(self.namespace,self.scope,&name){
+     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
+     let object=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
+     if object.object_type==AmlObjectType::Name{return self.name_reference(canonical)}
+     // Preserve a generation-tagged identity for namespace Field/Method
+     // references; the field provider owns subsequent reads and writes.
+     return self.bindings.reference_node(self.namespace,canonical).map_err(|_|ExecError::BadTarget);
+    }
+    let field=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name).map_err(|_|ExecError::BadTarget)?;
+    self.dynamic.field_reference(self.namespace,field).map_err(|_|ExecError::BadTarget)
+   },
+   _=>Err(ExecError::BadTarget),
+  }
  }
  fn target(&mut self,r:&mut Reader<'_>)->Result<Target,ExecError>{
   let op=r.byte()?;
@@ -626,7 +612,7 @@ impl<'a,'b> Machine<'a,'b>{
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
       execute_method_inner(self.aml,self.namespace,canonical,
-          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,self.budget,entry.source_table)
+          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table_generation)
      }
      // Device objects used as _PRT Source values are namespace references,
      // not scalar Names. Preserve the reference so the PRT decoder can resolve
@@ -636,9 +622,7 @@ impl<'a,'b> Machine<'a,'b>{
     }
    }
    0x71=>{
-    let target=self.target(r)?;
-    let reference=match target{Target::Reference(reference)=>reference,Target::Local(i)=>self.frame_slot_reference(false,i)?,
-     Target::Arg(i)=>self.frame_slot_reference(true,i)?,Target::Null=>return Err(ExecError::BadTarget)};
+    let reference=self.super_name_reference(r)?;
     Ok(make_object_reference(reference))
    }
    0x88=>{
@@ -686,7 +670,7 @@ impl<'a,'b> Machine<'a,'b>{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
    0x5b=>{
     let extended=r.byte()?;
-    if extended==0x12||extended==0x13 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
+    if extended==0x12||extended==0x13||extended==0x25 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
     let operand=self.term_depth(r,depth+1)?;
     let result=match extended{
      0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
@@ -756,7 +740,7 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,self.budget,entry.source_table)?;self.operand_integer(&value)}
+      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table_generation)?;self.operand_integer(&value)}
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
@@ -836,10 +820,9 @@ pub fn evaluate_term_argument_in_context(
     let checkpoint = arena.count;
     let empty = Machine::uninitialized_value();
     let mut sync_state=AmlSyncState::new();
-    let mut budget=AmlExecutionBudget::new(&NO_METHOD_SYNCHRONIZER);
     let mut machine = Machine {
         locals: [empty; 8], args: [empty; 7], frame_cells: [u16::MAX; 128], frame_cell_count: 0, arena, bindings,
-        integer_width_bits: 64, budget:&mut budget, aml: &[], namespace: &namespace,
+        integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
         scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, sync_state:&mut sync_state, dynamic: &mut dynamic, owner_table: 0,
     };
     let mut reader = Reader { bytes, pos: 0, end: bytes.len() };
@@ -865,7 +848,7 @@ pub fn evaluate_term_argument(bytes: &[u8]) -> Result<(u64, usize), ExecError> {
 /// Execute a method using bounded AML runtime objects and an explicit context.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,dynamic:&mut AmlDynamicNamespace,sync_state:&mut AmlSyncState,budget:&mut AmlExecutionBudget,owner_table:u32)->Result<AmlRuntimeValue,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,dynamic:&mut AmlDynamicNamespace,sync_state:&mut AmlSyncState,owner_table:u32)->Result<AmlRuntimeValue,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
@@ -878,13 +861,7 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  let sync_level=(node.method_flags>>4)&0x0f;
  if serialized&&sync_level<sync_state.current_sync_level{return Err(ExecError::SyncLevelViolation)}
  let mutex_checkpoint=sync_state.held_count;let previous_sync_level=sync_state.current_sync_level;
- if serialized{
-  let timeout=budget.bounded_timeout(u16::MAX,sync)?;
-  let acquired=sync.acquire_with_timeout(method_index,sync_level,timeout)?;
-  if !acquired{budget.check_deadline(sync)?;return Err(ExecError::ExecutionBusy)}
-  if let Err(error)=budget.check_deadline(sync){sync.release(method_index);return Err(error)}
-  sync_state.current_sync_level=sync_level;
- }
+ if serialized{sync.acquire(method_index,sync_level)?;sync_state.current_sync_level=sync_level;}
  // Each invocation owns its own LocalX/ArgX frame and execution budget.
  // Namespace objects and the method synchronizer are shared with nested calls.
  let result=(||{
@@ -893,8 +870,8 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
   if end>aml.len(){return Err(ExecError::InvalidMethod)}
   let empty=Machine::uninitialized_value();
   let mut m=Machine{locals:[empty;8],args:[empty;7],frame_cells:[u16::MAX;128],frame_cell_count:0,
-   arena,bindings,integer_width_bits,budget,aml,namespace,scope:node.parent,call_depth,sync,sync_state,dynamic,
-   owner_table:node.source_table};
+   arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,sync_state,dynamic,
+   owner_table:node.source_table_generation};
   for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
   let mut r=Reader{bytes:aml,pos:start,end};
   let execution=(||{
@@ -938,7 +915,7 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
     let mut dynamic=AmlDynamicNamespace::new();
     let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
-        &mut arena,&mut bindings,sync,&mut dynamic,&mut AmlSyncState::new(),&mut AmlExecutionBudget::new(sync),0)?;
+        &mut arena,&mut bindings,sync,&mut dynamic,&mut AmlSyncState::new(),0)?;
     if matches!(value.kind,AmlValueKind::Package|AmlValueKind::ObjectReference) || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
     Ok(value)
 }
@@ -962,7 +939,7 @@ pub fn execute_method_in_dynamic_context(
     }
     if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
     execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
-        arena,bindings,sync,dynamic,&mut AmlSyncState::new(),&mut AmlExecutionBudget::new(sync),0)
+        arena,bindings,sync,dynamic,&mut AmlSyncState::new(),0)
 }
 
 /// Compatibility wrapper for methods that do not publish dynamic fields.
@@ -1834,6 +1811,38 @@ mod tests{
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
   assert_eq!(execute_method(&aml,&ns,id,&[]).unwrap(),AmlValue::Integer(42));
  }
+ #[test]fn refof_preserves_operation_region_field_and_method_namespace_references(){
+  let aml=[
+   0x5b,0x80,b'R',b'E',b'G',b'0',0x00,0x0a,0,0x0a,4,
+   0x5b,0x81,0x0b,b'R',b'E',b'G',b'0',0x00,b'F',b'L',b'D',b'0',0x08,
+   0x14,0x0c,b'F',b'R',b'E',b'F',0,0xa4,0x71,b'F',b'L',b'D',b'0',
+   0x14,0x06,b'M',b'E',b'T',b'0',0,
+   0x14,0x0c,b'M',b'R',b'E',b'F',0,0xa4,0x71,b'M',b'E',b'T',b'0',
+  ];
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let field=namespace.find_child(0,*b"FLD0").unwrap();
+  let method=namespace.find_child(0,*b"MET0").unwrap();
+  let field_ref_method=namespace.find_child(0,*b"FREF").unwrap();
+  let method_ref_method=namespace.find_child(0,*b"MREF").unwrap();
+  let mut arena=test_heap_arena();let mut bindings=AmlBindings::with_aml_revision(2);
+  let field_value=execute_method_in_context(&aml,&namespace,field_ref_method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(reference_from_value(&field_value).unwrap(),AmlReference::NamespaceNodeGeneration{node:field,generation:0});
+  let method_value=execute_method_in_context(&aml,&namespace,method_ref_method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(reference_from_value(&method_value).unwrap(),AmlReference::NamespaceNodeGeneration{node:method,generation:0});
+ }
+
+ #[test]fn refof_frame_promotion_fails_transactionally_when_arena_is_exhausted(){
+  let aml=[0x14,0x0e,b'T',b'E',b'S',b'T',0,
+   0x70,0x0a,42,0x60,0xa4,0x83,0x71,0x60];
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();
+  let mut arena=test_heap_arena();
+  for _ in 0..crate::aml_objects::MAX_AML_VALUES {arena.allocate(Machine::integer_value(7)).unwrap();}
+  let before=arena.count;let mut bindings=AmlBindings::with_aml_revision(2);
+  assert_eq!(execute_method_in_context(&aml,&namespace,method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER),Err(ExecError::TargetTypeMismatch));
+  assert_eq!(arena.count,before);
+ }
+
  #[test]fn index_package_element_returns_a_write_through_reference(){
   let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x03,1,1,0x14,0x16,b'T',b'E',b'S',b'T',0,0x88,b'P',b'K',b'G',b'0',0x00,0x60,0x70,0x0a,42,0x60,0xa4,b'P',b'K',b'G',b'0'];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
@@ -1919,9 +1928,9 @@ mod explicit_mutex_tests {
  impl AmlMethodSynchronizer for TestEventSync{
   fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
   fn release(&self,_:u16){}
-  fn signal_event(&self,_:u16)->Result<(),ExecError>{self.signals.fetch_add(1,Ordering::SeqCst);self.signaled.store(true,Ordering::SeqCst);Ok(())}
-  fn wait_event(&self,_:u16,timeout:u16)->Result<bool,ExecError>{self.waits.fetch_add(1,Ordering::SeqCst);self.last_timeout.store(timeout as usize,Ordering::SeqCst);Ok(self.signaled.swap(false,Ordering::SeqCst))}
-  fn reset_event(&self,_:u16)->Result<(),ExecError>{self.resets.fetch_add(1,Ordering::SeqCst);self.signaled.store(false,Ordering::SeqCst);Ok(())}
+  fn signal_event(&self,_:u16,_:u32)->Result<(),ExecError>{self.signals.fetch_add(1,Ordering::SeqCst);self.signaled.store(true,Ordering::SeqCst);Ok(())}
+  fn wait_event(&self,_:u16,_:u32,timeout:u16)->Result<bool,ExecError>{self.waits.fetch_add(1,Ordering::SeqCst);self.last_timeout.store(timeout as usize,Ordering::SeqCst);Ok(self.signaled.swap(false,Ordering::SeqCst))}
+  fn reset_event(&self,_:u16,_:u32)->Result<(),ExecError>{self.resets.fetch_add(1,Ordering::SeqCst);self.signaled.store(false,Ordering::SeqCst);Ok(())}
  }
  fn load_event_method(body:&[u8])->(std::vec::Vec<u8>,AmlNamespace,u16){
   let mut aml=std::vec![0x5b,0x02,b'E',b'V',b'T',b'0'];
@@ -1931,7 +1940,7 @@ mod explicit_mutex_tests {
  }
  #[test]
  fn signal_event_wakes_wait_and_consumes_synchronization_signal(){
-  let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0xff,0xff];
+  let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0b,0xff,0xff];
   let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
   assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(0)));
   assert_eq!(sync.signals.load(Ordering::SeqCst),1);assert_eq!(sync.waits.load(Ordering::SeqCst),1);
@@ -1939,16 +1948,30 @@ mod explicit_mutex_tests {
  }
  #[test]
  fn event_wait_returns_one_when_timeout_expires(){
-  let body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x34,0x12];
+  let body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0b,0x34,0x12];
   let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
-  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
   assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x1234);
  }
  #[test]
- fn reset_event_clears_a_previously_signaled_event(){
-  let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0x5b,0x26,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0xff,0xff];
+ fn wait_timeout_is_evaluated_as_a_termarg_and_returns_width_correct_ones(){
+  let body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x68];
   let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
-  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[0x4321],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x4321);
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[0x1234],32,&sync),Ok(AmlValue::Integer(u32::MAX as u64)));
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x1234);
+  let computed_body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x72,0x0a,2,0x0a,3,0x00];
+  let (computed_aml,computed_ns,computed_method)=load_event_method(&computed_body);
+  assert_eq!(execute_method_with_sync(&computed_aml,&computed_ns,computed_method,&[],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),5);
+ }
+
+ #[test]
+ fn reset_event_clears_a_previously_signaled_event(){
+  let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0x5b,0x26,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x0b,0xff,0xff];
+  let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(u64::MAX)));
   assert_eq!(sync.signals.load(Ordering::SeqCst),1);assert_eq!(sync.resets.load(Ordering::SeqCst),1);
   assert!(!sync.signaled.load(Ordering::SeqCst));
  }
@@ -1964,62 +1987,5 @@ mod explicit_mutex_tests {
   assert!(!sync.held.load(Ordering::SeqCst));
  }
 }
-
- struct DeadlineClockSync{reads:AtomicUsize,constant:bool}
- impl DeadlineClockSync{fn new(constant:bool)->Self{Self{reads:AtomicUsize::new(0),constant}}}
- impl AmlMethodSynchronizer for DeadlineClockSync{
-  fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
-  fn acquire_with_timeout(&self,_:u16,_:u8,timeout:u16)->Result<bool,ExecError>{LAST_BOUNDED_TIMEOUT.store(timeout as usize,Ordering::SeqCst);Ok(false)}
-  fn release(&self,_:u16){}
-  fn monotonic_time_100ns(&self)->Option<u64>{
-   let read=self.reads.fetch_add(1,Ordering::SeqCst);
-   Some(if self.constant||read==0{100}else{100+MAX_AML_EXECUTION_TIME_100NS+1})
-  }
-  fn acquire_mutex(&self,_:u16,_:u8,timeout:u16)->Result<bool,ExecError>{
-   LAST_BOUNDED_TIMEOUT.store(timeout as usize,Ordering::SeqCst);Ok(false)
-  }
- }
- static LAST_BOUNDED_TIMEOUT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
- #[test]fn execution_deadline_is_checked_against_monotonic_provider_clock(){
-  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0,0xa4,0x01];
-  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-  let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(false);
-  assert_eq!(execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::DeadlineExceeded));
- }
-
- #[test]fn serialized_method_mutex_wait_is_bounded_by_execution_deadline(){
-  let aml=[0x14,0x08,b'T',b'E',b'S',b'T',0x08,0xa4,0x01];
-  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-  let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(true);
-  LAST_BOUNDED_TIMEOUT.store(0,Ordering::SeqCst);
-  assert_eq!(execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::ExecutionBusy));
-  assert_eq!(LAST_BOUNDED_TIMEOUT.load(Ordering::SeqCst),30_000);
- }
- #[test]fn nested_methods_consume_one_shared_instruction_budget(){
-  let aml=[0x14,0x08,b'C',b'H',b'L',b'D',0,0xa4,0x01,
-           0x14,0x0b,b'P',b'A',b'R',b'N',0,0xa4,b'C',b'H',b'L',b'D'];
-  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-  let parent=ns.find_child(0,*b"PARN").unwrap();
-  let mut storage=std::boxed::Box::<AmlObjectArena>::new_uninit();
-  unsafe{AmlObjectArena::initialize_in_place(storage.as_mut_ptr());}
-  let mut arena=unsafe{storage.assume_init()};
-  let mut bindings=AmlBindings::with_aml_revision(2);let mut dynamic=AmlDynamicNamespace::new();
-  let mut sync_state=AmlSyncState::new();let mut budget=AmlExecutionBudget::with_limits(1,None);
-  assert_eq!(execute_method_inner(&aml,&ns,parent,&[],0,64,&mut arena,&mut bindings,
-      &NO_METHOD_SYNCHRONIZER,&mut dynamic,&mut sync_state,&mut budget,0),Err(ExecError::StepLimit));
- }
- #[test]fn infinite_aml_mutex_wait_is_bounded_by_execution_deadline(){
-  let mut aml=std::vec![0x5b,0x01,b'M',b'T',b'X',b'0',0];
-  let body=[0xa4,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff];
-  let package_length=1+4+1+body.len();
-  aml.extend_from_slice(&[0x14,package_length as u8,b'T',b'E',b'S',b'T',0]);
-  aml.extend_from_slice(&body);
-  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
-  let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(true);
-  LAST_BOUNDED_TIMEOUT.store(0,Ordering::SeqCst);
-  let result=execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync).unwrap();
-  assert_eq!(result.kind,AmlValueKind::Integer);assert_eq!(result.integer,1);
-  assert_eq!(LAST_BOUNDED_TIMEOUT.load(Ordering::SeqCst),30_000);
- }
 
 }

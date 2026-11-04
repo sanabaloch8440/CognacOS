@@ -23,6 +23,12 @@ on:
 permissions:
   contents: read
 
+# Keep only the newest ACPI validation run; rapid implementation pushes should
+# not consume runner minutes validating superseded commits.
+concurrency:
+  group: cognacos-acpi-unit-tests
+  cancel-in-progress: true
+
 jobs:
   acpi-unit-tests:
     runs-on: ubuntu-latest
