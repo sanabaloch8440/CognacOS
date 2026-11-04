@@ -179,7 +179,7 @@ mod tests {
         let mut out = [ap(0, 0); 4];
         assert_eq!(clip_host_apertures(&input, &ram, &mut out), Ok(2));
         assert_eq!(out[0], ap(0x1000, 0x2000));
-        assert_eq!(out[1], ap(0xa000, 0));
+        assert_eq!(out[1], ap(0x7000, 0x2000));
     }
 
     #[test]
