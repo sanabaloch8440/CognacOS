@@ -166,20 +166,31 @@ pub fn decode_namespace_name(aml:&[u8],namespace:&AmlNamespace,node_index:u16,ar
 
 #[cfg(test)]
 mod tests {
+    fn test_arena() -> std::boxed::Box<AmlObjectArena> {
+        let mut storage = std::boxed::Box::<AmlObjectArena>::new_uninit();
+        unsafe {
+            core::ptr::write_bytes(
+                storage.as_mut_ptr().cast::<u8>(), 0,
+                core::mem::size_of::<AmlObjectArena>(),
+            );
+            storage.assume_init()
+        }
+    }
+
     use super::*;
     #[test] fn resolves_namespace_name_initializer(){
         let aml=[0x08,b'_',b'H',b'I',b'D',0x0d,b'P',b'N',b'P',b'0',b'C',0];
         let mut namespace=AmlNamespace::new();
         crate::aml::load_definition_block(&aml,&mut namespace).unwrap();
         let id=namespace.find_child(0,*b"_HID").unwrap();
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let value=decode_namespace_name(&aml,&namespace,id,&mut arena).unwrap();
         let object=arena.get(value).unwrap();
         assert_eq!(object.kind,AmlValueKind::String);
         assert_eq!(&object.bytes[..5],b"PNP0C");
     }
     #[test] fn decodes_integer_and_string_objects(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let (n,p)=decode_data_object(&[0x0a,42],0,2,&mut arena).unwrap();
         assert_eq!(p,2);assert_eq!(arena.get(n).unwrap().integer,42);
         let (s,p)=decode_data_object(&[0x0d,b'O',b'K',0],0,4,&mut arena).unwrap();
@@ -187,7 +198,7 @@ mod tests {
     }
     #[test] fn decodes_buffer_with_zero_filled_tail(){
         // Buffer(PkgLength=5, ByteConst(4), bytes 0xaa,0xbb)
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let (id,end)=decode_data_object(&[0x11,0x05,0x0a,4,0xaa,0xbb],0,6,&mut arena).unwrap();
         let v=arena.get(id).unwrap();assert_eq!(end,6);assert_eq!(v.kind,AmlValueKind::Buffer);
         assert_eq!(v.byte_length,4);assert_eq!(&v.bytes[..4],&[0xaa,0xbb,0,0]);
@@ -195,7 +206,7 @@ mod tests {
     #[test] fn evaluates_computed_buffer_size_term_arguments(){
         // Buffer(Add(ByteConst(2), ByteConst(2), NullTarget), { 0xaa, 0xbb }).
         let bytes=[0x11,0x09,0x72,0x0a,2,0x0a,2,0x00,0xaa,0xbb];
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
         let value=arena.get(id).unwrap();
         assert_eq!(end,bytes.len());assert_eq!(value.kind,AmlValueKind::Buffer);
@@ -203,13 +214,13 @@ mod tests {
     }
     #[test] fn rejects_buffer_initializer_bytes_beyond_declared_size(){
         let bytes=[0x11,0x05,0x0a,1,0xaa,0xbb];
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
     }
     #[test] fn decodes_nested_packages_by_arena_reference(){
         // Package(2) { One, Package(1) { ByteConst(9) } }
         let bytes=[0x12,0x08,2,0x01,0x12,0x04,1,0x0a,9];
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
         assert_eq!(end,bytes.len());let outer=arena.get(id).unwrap();assert_eq!(outer.element_count,2);
         let inner=arena.get(outer.elements[1]).unwrap();assert_eq!(inner.kind,AmlValueKind::Package);
@@ -218,7 +229,7 @@ mod tests {
     #[test] fn evaluates_varpackage_element_count_expression(){
         // VarPackage(Add(One, One, NullTarget), { One, ByteConst(9) }).
         let bytes=[0x13,0x08,0x72,0x01,0x01,0x00,0x01,0x0a,9];
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
         let package=arena.get(id).unwrap();assert_eq!(end,bytes.len());
         assert_eq!(package.kind,AmlValueKind::Package);assert_eq!(package.element_count,2);
@@ -233,7 +244,7 @@ mod tests {
             bytes.extend_from_slice(&[0x12, 0x06, 4, 0x01, 0x01, 0x01, 0x01]);
         }
         assert_eq!(bytes.len(), 900);
-        let mut arena = AmlObjectArena::new();
+        let mut arena = test_arena();
         let (root, end) = decode_data_object(&bytes, 0, bytes.len(), &mut arena).unwrap();
         assert_eq!(end, bytes.len());
         let package = arena.get(root).unwrap();
@@ -247,7 +258,7 @@ mod tests {
         }
     }
     #[test] fn leaves_omitted_package_slots_uninitialized(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         let (id,end)=decode_data_object(&[0x12,0x02,2],0,3,&mut arena).unwrap();
         assert_eq!(end,3);
         let package=arena.get(id).unwrap();
@@ -266,17 +277,17 @@ mod tests {
             else{let length=2+body_length;package.push(0x40|((length&0x0f)as u8));package.push((length>>4)as u8);}
             package.push(1);package.extend_from_slice(&bytes);bytes=package;
         }
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
         assert_eq!(arena.count,0);
     }
     #[test] fn rejects_package_payload_after_declared_initializer_count(){
         let bytes=[0x12,0x04,1,0x01,0x01];
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
     }
     #[test] fn rejects_truncated_strings_and_oversized_packages(){
-        let mut arena=AmlObjectArena::new();
+        let mut arena = test_arena();
         assert_eq!(decode_data_object(&[0x0d,b'x'],0,2,&mut arena),Err(ObjectError::Truncated));
         assert_eq!(decode_data_object(&[0x12,0x02,17],0,3,&mut arena),Err(ObjectError::TooManyElements));
     }
