@@ -408,23 +408,30 @@ pub fn apply_table_patches(
     let signature: [u8;4] = table[..4].try_into().map_err(|_| QuirkError::UnsupportedTable)?;
     let declared = u32::from_le_bytes(table[4..8].try_into().map_err(|_| QuirkError::UnsupportedTable)?) as usize;
     if declared < 36 || declared > table.len() { return Err(QuirkError::UnsupportedTable); }
-    let mut applied = 0;
+    // Validate the entire patch set before changing a byte. A stale expected
+    // value therefore leaves the private table copy completely untouched.
+    let mut applied = 0usize;
     for patch in patches.iter().flatten() {
         if patch.table_signature != signature { continue; }
         let start = patch.offset as usize;
         let end = start.checked_add(patch.expected.len()).ok_or(QuirkError::InvalidPatch)?;
-        // Table header identity, declared length and checksum are never patchable.
         if start < 36 || patch.expected.is_empty()
             || patch.expected.len() != patch.replacement.len() || end > declared {
             return Err(QuirkError::InvalidPatch);
         }
         if &table[start..end] != patch.expected { return Err(QuirkError::PatchMismatch); }
-        table[start..end].copy_from_slice(patch.replacement);
-        table[9] = 0;
-        let sum = table[..declared].iter().fold(0u8, |a,b| a.wrapping_add(*b));
-        table[9] = 0u8.wrapping_sub(sum);
         applied += 1;
     }
+    if applied == 0 { return Ok(0); }
+    for patch in patches.iter().flatten() {
+        if patch.table_signature != signature { continue; }
+        let start = patch.offset as usize;
+        let end = start + patch.expected.len();
+        table[start..end].copy_from_slice(patch.replacement);
+    }
+    table[9] = 0;
+    let sum = table[..declared].iter().fold(0u8, |a,b| a.wrapping_add(*b));
+    table[9] = 0u8.wrapping_sub(sum);
     Ok(applied)
 }
 
