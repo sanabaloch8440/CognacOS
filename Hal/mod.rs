@@ -602,8 +602,78 @@ pub fn capture_clock_synchronization_sample() { apic::capture_tsc_sync_sample();
 #[inline]
 /// Reserve a vector for a device interrupt. This reserves the vector only;
 /// architecture IDT installation and source routing are separate prerequisites.
+/// @implemented
+/// Windows 11 x64 HAL internal: reserve an unused device vector.
 pub fn allocate_device_interrupt_vector() -> Result<u8, HalError> {
     apic::allocate_interrupt_vector().map_err(|_| HalError::PlatformFailure)
+}
+
+/// @partial implementation
+/// Claims a vector already selected by PnP. The caller must retain the returned
+/// ownership bit and release the vector only when it acquired it here.
+pub fn claim_device_interrupt_vector(vector: u8) -> Result<bool, HalError> {
+    apic::claim_interrupt_vector(vector).map_err(|_| HalError::InvalidTransition)
+}
+
+/// @partial implementation
+/// Windows HAL bus-interrupt translation records. PnP/bus enumeration must
+/// publish the raw bus tuple and its translated system vector before legacy
+/// callers use HalGetInterruptVector. Missing translations deliberately fail
+/// closed; bus IRQ numbers are never treated as system vectors.
+#[derive(Clone, Copy)]
+struct BusInterruptTranslation {
+    interface_type: u32,
+    bus_number: u32,
+    bus_level: u32,
+    bus_vector: u32,
+    system_vector: u32,
+    irql: u8,
+    affinity: u64,
+}
+impl BusInterruptTranslation {
+    const EMPTY: Self = Self { interface_type: u32::MAX, bus_number: 0, bus_level: 0,
+        bus_vector: 0, system_vector: 0, irql: 0, affinity: 0 };
+}
+const MAX_BUS_INTERRUPT_TRANSLATIONS: usize = 256;
+static BUS_INTERRUPT_TRANSLATIONS: IrqSpinLock<[BusInterruptTranslation; MAX_BUS_INTERRUPT_TRANSLATIONS]> =
+    IrqSpinLock::new([BusInterruptTranslation::EMPTY; MAX_BUS_INTERRUPT_TRANSLATIONS]);
+
+/// @partial implementation
+/// Kernel PnP publishes a bus resource translation after successful resource
+/// assignment. This is an internal HAL/kernel contract, not a WDK driver DDI.
+pub fn register_bus_interrupt_translation(
+    interface_type: u32, bus_number: u32, bus_level: u32, bus_vector: u32,
+    system_vector: u32, irql: u8, affinity: u64,
+) -> Result<(), HalError> {
+    if !(0x20..=0xdf).contains(&system_vector) || irql == 0 || affinity == 0 {
+        return Err(HalError::InvalidInterruptBase);
+    }
+    let mut table = BUS_INTERRUPT_TRANSLATIONS.lock();
+    if let Some(existing) = table.iter_mut().find(|entry|
+        entry.interface_type == interface_type && entry.bus_number == bus_number
+            && entry.bus_level == bus_level && entry.bus_vector == bus_vector)
+    {
+        if existing.system_vector == system_vector && existing.irql == irql && existing.affinity == affinity {
+            return Ok(());
+        }
+        return Err(HalError::InvalidTransition);
+    }
+    let slot = table.iter_mut().find(|entry| entry.interface_type == u32::MAX)
+        .ok_or(HalError::PlatformFailure)?;
+    *slot = BusInterruptTranslation { interface_type, bus_number, bus_level, bus_vector,
+        system_vector, irql, affinity };
+    Ok(())
+}
+
+/// @partial implementation
+/// Returns the translation registered by PnP; no identity/fallback mapping.
+pub fn query_bus_interrupt_translation(
+    interface_type: u32, bus_number: u32, bus_level: u32, bus_vector: u32,
+) -> Option<(u32, u8, u64)> {
+    BUS_INTERRUPT_TRANSLATIONS.lock().iter().find(|entry|
+        entry.interface_type == interface_type && entry.bus_number == bus_number
+            && entry.bus_level == bus_level && entry.bus_vector == bus_vector)
+        .map(|entry| (entry.system_vector, entry.irql, entry.affinity))
 }
 
 /// Callback ABI for the HAL's external-interrupt dispatcher.
