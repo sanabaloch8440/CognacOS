@@ -264,6 +264,42 @@ impl<'a,'b> Machine<'a,'b>{
     if self.integer_width_bits==32{return Err(ExecError::UnsupportedOpcode)}
     let b=r.take(8)?;Ok(Self::integer_value(u64::from_le_bytes(b.try_into().map_err(|_|ExecError::Truncated)?)))
    }
+   // PackageOp: evaluate each element as a full typed TermArg and keep
+   // nested Package/Buffer/String objects in the caller-owned AML arena.
+   0x12=>{
+    let package_end=r.pkg_end()?;
+    let count=r.byte()? as usize;
+    if count>crate::aml_objects::MAX_PACKAGE_ELEMENTS{return Err(ExecError::BadPackage)}
+    let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
+    for index in 0..count {
+     if r.pos>=package_end{return Err(ExecError::BadPackage)}
+     let child=self.term_value(r)?;
+     validate_runtime_value(&child,self.arena).map_err(|_|ExecError::BadPackage)?;
+     let child_id=self.arena.allocate(child).map_err(|_|ExecError::TargetTypeMismatch)?;
+     package.elements[index]=child_id;
+    }
+    if r.pos>package_end{return Err(ExecError::BadPackage)}
+    r.pos=package_end;package.element_count=count as u8;
+    Ok(package)
+   }
+   // VarPackageOp: the element count is itself an evaluated TermArg.
+   0x13=>{
+    let package_end=r.pkg_end()?;
+    let count=self.term_value(r)?;
+    let count=self.operand_integer(&count)? as usize;
+    if count>crate::aml_objects::MAX_PACKAGE_ELEMENTS{return Err(ExecError::BadPackage)}
+    let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
+    for index in 0..count {
+     if r.pos>=package_end{return Err(ExecError::BadPackage)}
+     let child=self.term_value(r)?;
+     validate_runtime_value(&child,self.arena).map_err(|_|ExecError::BadPackage)?;
+     let child_id=self.arena.allocate(child).map_err(|_|ExecError::TargetTypeMismatch)?;
+     package.elements[index]=child_id;
+    }
+    if r.pos>package_end{return Err(ExecError::BadPackage)}
+    r.pos=package_end;package.element_count=count as u8;
+    Ok(package)
+   }
    0x0d=>{
     let mut value=AmlRuntimeValue::EMPTY;value.kind=AmlValueKind::String;
     loop { let byte=r.byte()?; if byte==0 { break; }
