@@ -178,6 +178,7 @@ mod tests {
     use core::{ffi::c_void, sync::atomic::{AtomicUsize, Ordering}};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static mut HEAP: [u128; 8192] = [0; 8192];
 
     unsafe extern "win64" fn test_allocate(_: *mut c_void, size: usize, tag: u32, zeroed: u8) -> *mut c_void {
@@ -201,6 +202,7 @@ mod tests {
 
     #[test]
     fn vector_grows_past_old_arena_value_ceiling() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let mut values = AmlPoolVec::<u64>::new(services()).unwrap();
         for value in 0..1000u64 { values.try_push(value).unwrap(); }
         assert_eq!(values.len(), 1000);
@@ -212,6 +214,7 @@ mod tests {
 
     #[test]
     fn vector_checkpoint_rolls_back_nested_decode_appends() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let mut values = AmlPoolVec::<u16>::new(services()).unwrap();
         values.try_push(10).unwrap();
         let checkpoint = values.checkpoint();
@@ -224,6 +227,7 @@ mod tests {
 
     #[test]
     fn budget_tracks_live_and_peak_usage_without_language_limits() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let mut budget = AmlPoolBudget::new(1 << 20, 4096);
         for _ in 0..1000 { budget.charge(64).unwrap(); }
         assert_eq!(budget.allocations_live, 1000);
@@ -236,6 +240,7 @@ mod tests {
 
     #[test]
     fn budget_exhaustion_is_checked_and_does_not_mutate_accounting() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let mut budget = AmlPoolBudget::new(128, 2);
         budget.charge(64).unwrap();
         budget.charge(64).unwrap();
