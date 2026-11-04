@@ -372,7 +372,7 @@ pub(crate) fn io_release_pnp_resources(device:*mut DeviceObject){
   }
  }
  for claim in removed_translations[..removed_count].iter() {
-  let _=crate::hal::unregister_bus_interrupt_translation(claim.interface_type,claim.bus_number,claim.bus_level,claim.bus_vector);
+  let _=crate::hal::unregister_bus_interrupt_translation(claim.interface_type,claim.bus_number,claim.bus_level,claim.bus_vector,claim.system_vector,claim.irql as u8,claim.affinity);
  }
  for held in released[..released_count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
  unsafe{io_dereference_device_object(owner)};
