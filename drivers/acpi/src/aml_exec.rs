@@ -1485,7 +1485,7 @@ mod tests{
  fn create_field_rejects_out_of_range_bit_extent_without_publishing_name(){
   let aml=[
    0x08,b'B',b'U',b'F',b'0',0x11,0x07,0x0a,4,0,0,0,0,
-   0x14,0x1c,b'T',b'E',b'S',b'T',0,
+   0x14,0x16,b'T',b'E',b'S',b'T',0,
    0x5b,0x13,b'B',b'U',b'F',b'0',0x0a,31,0x0a,2,b'F',b'L',b'D',b'0',
    0xa4,0x00
   ];
