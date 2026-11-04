@@ -124,13 +124,6 @@ pub fn make_object_reference(reference:AmlReference)->AmlRuntimeValue{
     let mut value=AmlRuntimeValue::EMPTY;
     value.kind=AmlValueKind::ObjectReference;
     match reference{
-        AmlReference::ArenaValue(id)=>{
-            let target=*arena.get(id).ok_or(RuntimeError::InvalidReference)?;
-            let stored=if mode==StoreMode::CopyObject{source}else{convert_to_target_type(&source,&target,arena,bindings.integer_width_bits,true)?};
-            let stored_id=if stored.kind==AmlValueKind::Package{clone_value_tree(value,arena)?}else{arena.allocate(stored)?};
-            let replacement=*arena.get(stored_id).ok_or(RuntimeError::InvalidReference)?;
-            *arena.get_mut(id).ok_or(RuntimeError::InvalidReference)?=replacement;Ok(())
-        }
         AmlReference::NamespaceNode(node)=>{value.reference_kind=0;value.reference_id=node;}
         AmlReference::ArenaValue(id)=>{value.reference_kind=4;value.reference_id=id;}
         AmlReference::PackageElement{package,index}=>{value.reference_kind=1;value.reference_id=package;value.reference_index=index as u16;}
@@ -509,6 +502,18 @@ pub fn store_reference_with_mode(reference:AmlReference,value:u16,mode:StoreMode
     let source=*arena.get(value).ok_or(RuntimeError::InvalidReference)?;
     validate_runtime_value(&source,arena)?;
     match reference{
+        AmlReference::ArenaValue(id)=>{
+            let target=*arena.get(id).ok_or(RuntimeError::InvalidReference)?;
+            let stored=if mode==StoreMode::CopyObject{source}else{
+                convert_to_target_type(&source,&target,arena,bindings.integer_width_bits,true)?
+            };
+            let stored_id=if stored.kind==AmlValueKind::Package{
+                clone_value_tree(value,arena)?
+            }else{arena.allocate(stored)?};
+            let replacement=*arena.get(stored_id).ok_or(RuntimeError::InvalidReference)?;
+            *arena.get_mut(id).ok_or(RuntimeError::InvalidReference)?=replacement;
+            Ok(())
+        }
         AmlReference::NamespaceNode(node)=>{
             let canonical=namespace.resolve_alias(node).map_err(|_|RuntimeError::InvalidNode)?;
             let i=canonical as usize;
