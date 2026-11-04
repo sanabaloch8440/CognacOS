@@ -39,11 +39,12 @@ impl AmlDynamicBufferField {
 pub struct AmlDynamicNamespace {
     fields: [AmlDynamicBufferField; MAX_DYNAMIC_BUFFER_FIELDS],
     field_count: usize,
+    next_slot: usize,
 }
 
 impl AmlDynamicNamespace {
     pub const fn new() -> Self {
-        Self { fields: [AmlDynamicBufferField::EMPTY; MAX_DYNAMIC_BUFFER_FIELDS], field_count: 0 }
+        Self { fields: [AmlDynamicBufferField::EMPTY; MAX_DYNAMIC_BUFFER_FIELDS], field_count: 0, next_slot: 0 }
     }
 
     /// High-water mark of allocated field slots. IDs are never recycled after
@@ -55,18 +56,14 @@ impl AmlDynamicNamespace {
     /// namespace lifetime, so outstanding references fail closed.
     pub fn remove_owner_table(&mut self, owner_table: u32) -> usize {
         let mut removed = 0;
-        for field in self.fields.iter_mut().take(self.field_count_high_water()) {
+        for field in self.fields.iter_mut().take(self.next_slot) {
             if field.namespace_node != u16::MAX && field.owner_table == owner_table {
                 *field = AmlDynamicBufferField::EMPTY;
+                self.field_count -= 1;
                 removed += 1;
             }
         }
         removed
-    }
-
-    fn field_count_high_water(&self) -> usize {
-        self.fields.iter().rposition(|field| field.namespace_node != u16::MAX)
-            .map_or(0, |index| index + 1)
     }
 
     fn validate_parent(namespace: &AmlNamespace, parent: u16) -> Result<(), AmlError> {
@@ -147,12 +144,13 @@ impl AmlDynamicNamespace {
         let end = bit_offset.checked_add(bit_width).ok_or(RuntimeError::ValueTooLarge)?;
         let extent = (buffer.byte_length as u32).checked_mul(8).ok_or(RuntimeError::ValueTooLarge)?;
         if end > extent { return Err(RuntimeError::InvalidReference); }
-        if self.field_count >= self.fields.len() { return Err(RuntimeError::ValueTooLarge); }
+        if self.next_slot >= self.fields.len() { return Err(RuntimeError::ValueTooLarge); }
         let node = Self::insert(namespace, parent, name, AmlObjectType::Field, owner_table)
             .map_err(|_| RuntimeError::InvalidNode)?;
-        self.fields[self.field_count] = AmlDynamicBufferField {
+        self.fields[self.next_slot] = AmlDynamicBufferField {
             namespace_node: node, buffer_value, bit_offset, bit_width, owner_table, parent, name,
         };
+        self.next_slot += 1;
         self.field_count += 1;
         Ok(node)
     }
@@ -195,7 +193,7 @@ impl AmlDynamicNamespace {
         bit_offset: u32, bit_width: u32, owner_table: u32) -> Result<u16, RuntimeError> {
         let (parent, leaf) = Self::resolve_field_parent(namespace, current, name)?;
         if namespace.find_child(parent, leaf).is_some()
-            || self.fields[..self.field_count].iter().any(|field| field.parent == parent && field.name == leaf) {
+            || self.fields[..self.next_slot].iter().any(|field| field.parent == parent && field.name == leaf) {
             return Err(RuntimeError::InvalidNode);
         }
         let buffer = arena.get(buffer_value).ok_or(RuntimeError::InvalidReference)?;
@@ -207,12 +205,13 @@ impl AmlDynamicNamespace {
         let end = bit_offset.checked_add(bit_width).ok_or(RuntimeError::ValueTooLarge)?;
         let extent = (buffer.byte_length as u32).checked_mul(8).ok_or(RuntimeError::ValueTooLarge)?;
         if end > extent { return Err(RuntimeError::InvalidReference); }
-        if self.field_count >= self.fields.len() { return Err(RuntimeError::ValueTooLarge); }
-        let synthetic = MAX_NAMESPACE_NODES.checked_add(self.field_count)
+        if self.next_slot >= self.fields.len() { return Err(RuntimeError::ValueTooLarge); }
+        let synthetic = MAX_NAMESPACE_NODES.checked_add(self.next_slot)
             .filter(|id| *id <= u16::MAX as usize).ok_or(RuntimeError::ValueTooLarge)? as u16;
-        self.fields[self.field_count] = AmlDynamicBufferField {
+        self.fields[self.next_slot] = AmlDynamicBufferField {
             namespace_node: synthetic, buffer_value, bit_offset, bit_width, owner_table, parent, name: leaf,
         };
+        self.next_slot += 1;
         self.field_count += 1;
         Ok(synthetic)
     }
@@ -221,7 +220,7 @@ impl AmlDynamicNamespace {
     pub fn resolve_buffer_field(&self, namespace: &AmlNamespace, current: u16,
         name: &AmlName) -> Result<u16, RuntimeError> {
         let (parent, leaf) = Self::resolve_field_parent(namespace, current, name)?;
-        self.fields[..self.field_count].iter()
+        self.fields[..self.next_slot].iter()
             .find(|field| field.namespace_node != u16::MAX && field.parent == parent && field.name == leaf)
             .map(|field| field.namespace_node).ok_or(RuntimeError::InvalidNode)
     }
