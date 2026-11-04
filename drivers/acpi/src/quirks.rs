@@ -345,7 +345,7 @@ impl QuirkPolicy {
     /// caller-supplied parent path. A missing match preserves firmware data.
     pub fn override_adr(&self, parent_path: &str, firmware_adr: u64) -> u64 {
         self.adr[..self.adr_count].iter().flatten()
-            .find(|v| v.parent_path == parent_path && v.from == firmware_adr)
+            .find(|v| !v.parent_path.is_empty() && v.parent_path == parent_path && v.from == firmware_adr)
             .map(|v| v.to).unwrap_or(firmware_adr)
     }
     pub fn override_prt_gsi(&self, segment: u16, bus: u8, device: u8,
@@ -440,10 +440,11 @@ pub const FUJITSU_SIEMENS_MATCH: &[DmiMatch] = &[
 ];
 
 // Dell SKU 0A3E has a documented SoundWire ACPI _ADR topology mismatch.
-// These remaps are scoped to the SoundWire parent namespace and must be
-// consumed only by the ACPI namespace _ADR resolution hook.
+// These remaps are scoped to the SoundWire parent namespace. The namespace
+// path is intentionally empty until verified against CognacOS namespace dumps;
+// override_adr() refuses empty paths, so this sample cannot activate early.
 pub const DELL_0A3E_ADR: &[AdrOverride] = &[
-    AdrOverride { parent_path: "\\\\_SB.SDWT", from: 0x00020025d071100, to: 0x000210025d071500 },
+    AdrOverride { parent_path: "", from: 0x00020025d071100, to: 0x000210025d071500 },
     AdrOverride { parent_path: "\\\\_SB.SDWT", from: 0x000120025d130800, to: 0x000120025d071100 },
     AdrOverride { parent_path: "\\\\_SB.SDWT", from: 0x000220025d071500, to: 0x000220025d130800 },
 ];
