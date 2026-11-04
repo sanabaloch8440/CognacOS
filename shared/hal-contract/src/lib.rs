@@ -590,14 +590,13 @@ pub struct HalKernelServices {
     pub create_dma_adapter: Option<HalKernelCreateDmaAdapter>,
     pub allocate_common_buffer: Option<HalKernelAllocateCommonBuffer>,
     pub free_common_buffer: Option<HalKernelFreeCommonBuffer>,
-}
-unsafe impl Send for HalKernelServices {}
-unsafe impl Sync for HalKernelServices {}
     pub validate_common_buffer: Option<HalKernelValidateCommonBuffer>,
     pub register_iommu_backend: Option<HalKernelRegisterIommuBackend>,
     pub requester_identity: Option<HalKernelRequesterIdentity>,
     pub get_platform_quirk_policy: Option<AcpiGetPlatformQuirkPolicy>,
 }
+unsafe impl Send for HalKernelServices {}
+unsafe impl Sync for HalKernelServices {}
 impl HalKernelServices {
     pub const fn compatible(&self) -> bool {
         self.size as usize >= core::mem::size_of::<Self>()
