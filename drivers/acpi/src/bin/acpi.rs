@@ -1674,6 +1674,18 @@ impl acpi::acpi_prt::LinkDeviceResolver for AcpiPrtLinkResolver<'_> {
     }
 }
 
+struct AmlMethodExecutionGuard<'a> {
+    gate: &'a acpi::aml_tables::AmlExecutionBarrier,
+}
+impl<'a> AmlMethodExecutionGuard<'a> {
+    fn enter(gate: &'a acpi::aml_tables::AmlExecutionBarrier) -> Option<Self> {
+        gate.enter_method().ok().map(|_| Self { gate })
+    }
+}
+impl Drop for AmlMethodExecutionGuard<'_> {
+    fn drop(&mut self) { self.gate.leave_method(); }
+}
+
 struct AcpiPrtBusProvider<'a> {
     namespace: &'a acpi::aml::AmlNamespace,
     manager: &'a acpi::aml_tables::AmlTableManager,
@@ -1783,6 +1795,9 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
     }
     let manager = unsafe { (&*STATE.aml_manager.get()).assume_init_ref() };
     let gate = unsafe { &*STATE.aml_barrier.get() };
+    let Some(_aml_rundown) = AmlMethodExecutionGuard::enter(gate) else {
+        return STATUS_DEVICE_NOT_READY;
+    };
     let namespace = manager.namespace();
     let records = unsafe { (&*STATE.device_records.get()).assume_init_ref() };
     let count = STATE.device_count.load(Ordering::Acquire).min(MAX_ACPI_DEVICES);
