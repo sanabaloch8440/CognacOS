@@ -695,3 +695,73 @@ pub fn evaluate_prt_object<R: LinkDeviceResolver>(
         _ => Err(PrtDecodeError::WrongObjectType),
     }
 }
+
+#[cfg(test)]
+mod method_prt_execution_tests {
+    use super::*;
+    use crate::aml::{AmlNamespace, AmlNode, AmlObjectType};
+    struct NoSync;
+    impl crate::aml_exec::AmlMethodSynchronizer for NoSync {
+        fn acquire(&self, _: u16, _: u8) -> Result<(), crate::aml_exec::ExecError> { Ok(()) }
+        fn release(&self, _: u16) {}
+    }
+    struct NoLinks;
+    impl LinkDeviceResolver for NoLinks {
+        fn resolve_gsi(&self, _: &[u8], _: u32) -> Result<u32, PrtError> {
+            Err(PrtError::LinkResolutionFailed)
+        }
+    }
+    #[test]
+    fn executes_method_returning_nested_dynamic_package() {
+        // Method (PRT0, 0) { Return (Package (1) {
+        //   Package (4) { 0x0005ffff, Zero, Zero, 19 }
+        // }) }
+        let aml = [
+            0x14, 22, b'P', b'R', b'T', b'0', 0,
+            0xa4, 0x12, 14, 1,
+            0x12, 10, 4, 0x0c, 0xff, 0xff, 0x05, 0x00,
+            0x00, 0x00, 0x0a, 19,
+        ];
+        let mut namespace = AmlNamespace::new();
+        namespace.nodes[1] = AmlNode {
+            parent: 0, name: *b"PCI0", object_type: AmlObjectType::Device,
+            ..AmlNode::ROOT
+        };
+        namespace.nodes[2] = AmlNode {
+            parent: 1, name: *b"_PRT", object_type: AmlObjectType::Method,
+            source_table: 0, body_start: 7, body_length: 16,
+            ..AmlNode::ROOT
+        };
+        namespace.count = 3;
+        let table = evaluate_prt_method_object(
+            &namespace, &[&aml], 1, 64, &NoSync, &NoLinks,
+        ).unwrap();
+        assert_eq!(table.count, 1);
+        assert_eq!(table.find(0x0005_0000, 0).unwrap().source,
+            InterruptSource::DirectGsi { gsi: 19 });
+        assert_eq!(
+            evaluate_prt_object(&namespace, &[&aml], 1, 64, &NoSync, &NoLinks),
+            Ok(table)
+        );
+    }
+    #[test]
+    fn rejects_method_prt_with_wrong_return_type() {
+        // Method returns an Integer instead of the required Package.
+        let aml = [0x14, 9, b'P', b'R', b'T', b'0', 0, 0xa4, 0x01];
+        let mut namespace = AmlNamespace::new();
+        namespace.nodes[1] = AmlNode {
+            parent: 0, name: *b"PCI0", object_type: AmlObjectType::Device,
+            ..AmlNode::ROOT
+        };
+        namespace.nodes[2] = AmlNode {
+            parent: 1, name: *b"_PRT", object_type: AmlObjectType::Method,
+            source_table: 0, body_start: 7, body_length: 2,
+            ..AmlNode::ROOT
+        };
+        namespace.count = 3;
+        assert_eq!(
+            evaluate_prt_method_object(&namespace, &[&aml], 1, 64, &NoSync, &NoLinks),
+            Err(PrtDecodeError::BadPackage)
+        );
+    }
+}
