@@ -721,7 +721,7 @@ impl<'a,'b> Machine<'a,'b>{
    self.step()?;let op=r.byte()?;
    match op{
     0xa3=>{},
-    0x5b=>{let extended=r.byte()?;if extended==0x27{self.release_mutex(r)?;}else{return Err(ExecError::UnsupportedOpcode)}},
+    0x5b=>{let extended=r.byte()?;if extended==0x27{self.release_mutex(r)?;}else{r.pos-=2;let _=self.term_value(r)?;}},
     0xa4=>return Ok(ExecFlow::Return(self.term_value(r)?)),
     0x70=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::Store)?;},
     0x9d=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::CopyObject)?;},
