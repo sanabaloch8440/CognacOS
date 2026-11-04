@@ -509,17 +509,36 @@ impl<'a,'b> Machine<'a,'b>{
  }
 }
 
-/// Evaluate one bounded TermArg without executing a method body. Returns the
-/// value and number of bytes consumed, allowing typed object decoders to
-/// evaluate BufferSize expressions without guessing their encoded length.
-pub fn evaluate_term_argument(bytes:&[u8])->Result<(u64,usize),ExecError>{
- let namespace=AmlNamespace::new();
- let empty=Machine::uninitialized_value();
- let mut arena=AmlObjectArena::new();let mut bindings=AmlBindings::with_aml_revision(2);
- let mut machine=Machine{locals:[empty;8],args:[empty;7],arena:&mut arena,bindings:&mut bindings,integer_width_bits:64,steps:0,aml:&[],namespace:&namespace,scope:0,call_depth:0,sync:&NO_METHOD_SYNCHRONIZER,current_sync_level:0};
- let mut reader=Reader{bytes,pos:0,end:bytes.len()};
- let value=machine.term(&mut reader)?;
- Ok((value,reader.pos))
+/// Evaluate one bounded TermArg using caller-owned AML runtime storage.
+/// Any temporary arena entries are rolled back before returning.
+pub fn evaluate_term_argument_in_context(
+    bytes: &[u8], arena: &mut AmlObjectArena, bindings: &mut AmlBindings,
+) -> Result<(u64, usize), ExecError> {
+    let namespace = AmlNamespace::new();
+    let checkpoint = arena.count;
+    let empty = Machine::uninitialized_value();
+    let mut machine = Machine {
+        locals: [empty; 8], args: [empty; 7], arena, bindings,
+        integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
+        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, current_sync_level: 0,
+    };
+    let mut reader = Reader { bytes, pos: 0, end: bytes.len() };
+    let result = machine.term(&mut reader).map(|value| (value, reader.pos));
+    machine.arena.count = checkpoint;
+    result
+}
+
+/// Standalone convenience wrapper. Kernel decoders should use the context-taking
+/// form so large arenas remain in their caller-owned pool allocation.
+pub fn evaluate_term_argument(bytes: &[u8]) -> Result<(u64, usize), ExecError> {
+    let mut arena = {
+        #[cfg(test)]
+        { test_heap_arena() }
+        #[cfg(not(test))]
+        { AmlObjectArena::new() }
+    };
+    let mut bindings = AmlBindings::with_aml_revision(2);
+    evaluate_term_argument_in_context(bytes, &mut arena, &mut bindings)
 }
 
 /// Execute one loaded method against the exact AML definition-block byte slice.
@@ -574,7 +593,12 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     if args.iter().any(|value|value.kind==AmlValueKind::Package){
         return Err(ExecError::UnsupportedArgumentValue)
     }
-    let mut arena=AmlObjectArena::new();
+    let mut arena = {
+        #[cfg(test)]
+        { test_heap_arena() }
+        #[cfg(not(test))]
+        { AmlObjectArena::new() }
+    };
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
     let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,0)?;
     // The convenience wrapper destroys its local arena on return, so it must
@@ -655,17 +679,19 @@ pub fn execute_method(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[
     execute_method_with_integer_width(aml,namespace,method_index,args,64)
 }
 #[cfg(test)]
-mod tests{
-    fn test_arena() -> std::boxed::Box<AmlObjectArena> {
-        let mut storage = std::boxed::Box::<AmlObjectArena>::new_uninit();
-        unsafe {
-            core::ptr::write_bytes(
-                storage.as_mut_ptr().cast::<u8>(), 0,
-                core::mem::size_of::<AmlObjectArena>(),
-            );
-            storage.assume_init()
-        }
+fn test_heap_arena() -> std::boxed::Box<AmlObjectArena> {
+    let mut storage = std::boxed::Box::<AmlObjectArena>::new_uninit();
+    unsafe {
+        core::ptr::write_bytes(
+            storage.as_mut_ptr().cast::<u8>(), 0,
+            core::mem::size_of::<AmlObjectArena>(),
+        );
+        storage.assume_init()
     }
+}
+
+#[cfg(test)]
+mod tests{
 
  use super::*;use crate::aml::{AmlNamespace,load_definition_block};
  use core::sync::atomic::{AtomicUsize,Ordering};
@@ -928,7 +954,7 @@ mod tests{
   let aml=[0x14,0x08,b'T',b'E',b'S',b'T',1,0xa4,0x68];
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let id=ns.find_child(0,*b"TEST").unwrap();
-  let mut arena = test_arena();
+  let mut arena = test_heap_arena();
   let mut child=AmlRuntimeValue::EMPTY;child.kind=AmlValueKind::Integer;child.integer=0x1234;
   let child_id=arena.allocate(child).unwrap();
   let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
