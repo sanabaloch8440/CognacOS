@@ -435,11 +435,11 @@ impl<'a,'b> Machine<'a,'b>{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
    0x5b=>{
     let extended=r.byte()?;
+    if extended==0x13 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
     let operand=self.term_depth(r,depth+1)?;
     let result=match extended{
      0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
      0x29=>Self::to_bcd(operand,self.integer_width_bits)?,
-     0x13=>{r.pos-=2;let value=self.term_value(r)?;return self.operand_integer(&value)},
      _=>return Err(ExecError::UnsupportedOpcode),
     };
     let target=self.target(r)?;
