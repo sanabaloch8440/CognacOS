@@ -2,6 +2,22 @@
 use crate::*;
 
 pub(crate) const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
+static BOOT_ACPI_QUIRK_POLICY_READY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static mut BOOT_ACPI_QUIRK_POLICY: acpi::quirks::QuirkPolicy = acpi::quirks::QuirkPolicy::EMPTY;
+
+/// Publish the DMI-selected policy before ACPI.sys and AML namespace startup.
+pub(crate) fn publish_acpi_quirk_policy(policy: acpi::quirks::QuirkPolicy) {
+    unsafe { core::ptr::addr_of_mut!(BOOT_ACPI_QUIRK_POLICY).write(policy); }
+    BOOT_ACPI_QUIRK_POLICY_READY.store(true, core::sync::atomic::Ordering::Release);
+}
+/// Return a snapshot of the immutable boot-selected ACPI policy.
+pub(crate) fn acpi_quirk_policy() -> Option<acpi::quirks::QuirkPolicy> {
+    if !BOOT_ACPI_QUIRK_POLICY_READY.load(core::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    Some(unsafe { core::ptr::addr_of!(BOOT_ACPI_QUIRK_POLICY).read() })
+}
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub(crate) struct BootFile { pub(crate) address:u64, pub(crate) length:u64 }
