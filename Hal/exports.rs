@@ -31,11 +31,11 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 11, name: "HalCalibratePerformanceCounter", state: StubState::NotImplemented }, // @unimplemented
     HalExport { ordinal: 12, name: "HalClearSoftwareInterrupt", state: StubState::NotImplemented }, // @unimplemented
     HalExport { ordinal: 13, name: "HalConvertDeviceIdtToIrql", state: StubState::NotImplemented }, // @unimplemented
-    HalExport { ordinal: 14, name: "HalDisableInterrupt", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 14, name: "HalDisableInterrupt", state: StubState::Partial }, // @partial implementation
     HalExport { ordinal: 15, name: "HalDisplayString", state: StubState::Implemented }, // @implemented
     HalExport { ordinal: 16, name: "HalDmaAllocateCrashDumpRegistersEx", state: StubState::NotImplemented }, // @unimplemented
     HalExport { ordinal: 17, name: "HalDmaFreeCrashDumpRegistersEx", state: StubState::NotImplemented }, // @unimplemented
-    HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::Implemented }, // @implemented
+    HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::Partial }, // @partial implementation
     HalExport { ordinal: 19, name: "HalEnumerateEnvironmentVariablesEx", state: StubState::NotImplemented }, // @unimplemented
     HalExport { ordinal: 20, name: "HalEnumerateProcessors", state: StubState::NotImplemented }, // @unimplemented
     HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::Implemented }, // @implemented
