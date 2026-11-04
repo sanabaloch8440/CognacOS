@@ -1,12 +1,12 @@
 [package]
-name = "cognacos-hal-contract"
+name = "cognacos-hal"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-cognacos-nt-abi = { path = "../../shared/nt-abi" }
+cognacos-hal-contract = { path = "../../shared/hal-contract" }
 
 [lib]
 path = "src/lib.rs"
