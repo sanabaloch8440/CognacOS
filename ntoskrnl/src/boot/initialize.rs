@@ -376,7 +376,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                     memory::validate_identity_range(info.pml4_physical, info.smbios_entry_point, entry_length as u64)
                 }.is_ok();
                 if !ep_mapped {
-                    serial_write(b"WARNING: SMBIOS entry point is truncated or unmapped; platform quirks disabled.\\r\\n");
+                    serial_write(b"WARNING: SMBIOS entry point is truncated or unmapped; platform quirks disabled.\r\n");
                 } else {
                 let ep = unsafe { core::slice::from_raw_parts(info.smbios_entry_point as *const u8, entry_length) };
                 match acpi::quirks::parse_smbios_entry_point(ep) {
@@ -397,21 +397,21 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                                     Ok(policy) => {
                                         serial_write(b"SMBIOS platform identity accepted; ACPI quirks matched: ");
                                         serial_write_decimal(policy.matched_count);
-                                        serial_write(b"\\r\\n");
+                                        serial_write(b"\r\n");
                                         boot_handoff::publish_acpi_quirk_policy(policy);
                                     }
-                                    Err(_) => serial_write(b"WARNING: conflicting ACPI quirk policy; no quirks applied.\\r\\n"),
+                                    Err(_) => serial_write(b"WARNING: conflicting ACPI quirk policy; no quirks applied.\r\n"),
                                 }
                             }
-                            Err(_) => serial_write(b"WARNING: malformed SMBIOS structure table; platform quirks disabled.\\r\\n"),
+                            Err(_) => serial_write(b"WARNING: malformed SMBIOS structure table; platform quirks disabled.\r\n"),
                         }
                     }
-                    Ok(_) => serial_write(b"WARNING: SMBIOS structure table is oversized or unmapped; platform quirks disabled.\\r\\n"),
-                    Err(_) => serial_write(b"WARNING: invalid SMBIOS entry point; platform quirks disabled.\\r\\n"),
+                    Ok(_) => serial_write(b"WARNING: SMBIOS structure table is oversized or unmapped; platform quirks disabled.\r\n"),
+                    Err(_) => serial_write(b"WARNING: invalid SMBIOS entry point; platform quirks disabled.\r\n"),
                 }
                 }
             } else {
-                serial_write(b"WARNING: SMBIOS entry point is not identity mapped; platform quirks disabled.\\r\\n");
+                serial_write(b"WARNING: SMBIOS entry point is not identity mapped; platform quirks disabled.\r\n");
             }
         }
 
@@ -472,7 +472,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                     let dmar = match acpi::parse_dmar(dmar_bytes) {
                         Ok(parsed) => parsed,
                         Err(_) => {
-                            serial_write(b"FATAL: malformed ACPI DMAR table; refusing unsafe memory initialization.\\r\\n");
+                            serial_write(b"FATAL: malformed ACPI DMAR table; refusing unsafe memory initialization.\r\n");
                             halt();
                         }
                     };
@@ -480,13 +480,13 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                         let end = match region.limit.checked_add(1) {
                             Some(value) => value,
                             None => {
-                                serial_write(b"FATAL: invalid ACPI RMRR extent.\\r\\n");
+                                serial_write(b"FATAL: invalid ACPI RMRR extent.\r\n");
                                 halt();
                             }
                         };
                         if rmrr_count == rmrr_ranges.len() || region.base == 0
                             || region.base >= end || region.base & 0xfff != 0 || end & 0xfff != 0 {
-                            serial_write(b"FATAL: unsupported ACPI RMRR reservation set.\\r\\n");
+                            serial_write(b"FATAL: unsupported ACPI RMRR reservation set.\r\n");
                             halt();
                         }
                         rmrr_ranges[rmrr_count] = (region.base, end);
@@ -557,7 +557,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         } {
             Ok(count) => count,
             Err(_) => {
-                serial_write(b"FATAL: invalid physical memory map or unsafe RMRR reservation.\\r\\n");
+                serial_write(b"FATAL: invalid physical memory map or unsafe RMRR reservation.\r\n");
                 halt();
             }
         };
@@ -569,12 +569,12 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             || info.kernel_physical_section_count > info.kernel_physical_sections.len()
             || info.kernel_physical_sections[..info.kernel_physical_section_count]
                 .iter().any(|(start, end)| *start == 0 || *start >= *end) {
-            serial_write(b"FATAL: invalid PE section physical-backing metadata.\\r\\n");
+            serial_write(b"FATAL: invalid PE section physical-backing metadata.\r\n");
             halt();
         }
         for &(start, end) in info.kernel_physical_sections[..info.kernel_physical_section_count].iter() {
             if unsafe { memory::reserve_range(start, end) }.is_err() {
-                serial_write(b"FATAL: cannot reserve kernel image backing from physical allocator.\\r\\n");
+                serial_write(b"FATAL: cannot reserve kernel image backing from physical allocator.\r\n");
                 halt();
             }
         }
@@ -669,12 +669,12 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         let system_registry = match registry_init::initialize_system_registry() {
             Ok(state) => state,
             Err(_) => {
-                serial_write(b"FATAL: Configuration Manager could not initialize the SYSTEM registry hive or select a valid control set.\\r\\n");
+                serial_write(b"FATAL: Configuration Manager could not initialize the SYSTEM registry hive or select a valid control set.\r\n");
                 halt();
             }
         };
         if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::Registry).is_err() {
-            serial_write(b"FATAL: invalid boot phase transition into Registry.\\r\\n");
+            serial_write(b"FATAL: invalid boot phase transition into Registry.\r\n");
             halt();
         }
         let _active_control_set = system_registry.control_sets.current;
@@ -690,14 +690,14 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             // driver before PCI.sys receives the MCFG-derived ECAM windows.
             let acpi_driver_ready=platform_devices::initialize_acpi_driver(info.rsdp_address);
             if !acpi_driver_ready {
-                serial_write(b"FATAL: ACPI boot driver initialization failed; PCI enumeration is blocked.\\r\\n");
+                serial_write(b"FATAL: ACPI boot driver initialization failed; PCI enumeration is blocked.\r\n");
                 halt();
             }
             // PCI.sys DriverEntry is a prerequisite, not part of enumeration.
             // Do not publish the boot-driver phase until both platform drivers
             // have successfully initialized.
             if !platform_devices::initialize_pci_driver_for_boot(info.rsdp_address) {
-                serial_write(b"FATAL: PCI boot driver initialization failed; device enumeration is blocked.\\r\\n");
+                serial_write(b"FATAL: PCI boot driver initialization failed; device enumeration is blocked.\r\n");
                 halt();
             }
             // Run the generic registry-selected boot/system driver scheduler
@@ -708,7 +708,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             let boot_driver_report = match initialize_registry_boot_drivers(&system_registry, &preinitialized_platform) {
                 Ok(report) => report,
                 Err(_) => {
-                    serial_write(b"FATAL: boot-driver dependency scheduling or ErrorControl policy failed; device enumeration is blocked.\\r\\n");
+                    serial_write(b"FATAL: boot-driver dependency scheduling or ErrorControl policy failed; device enumeration is blocked.\r\n");
                     halt();
                 }
             };
@@ -716,13 +716,13 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             let _boot_drivers_failed_nonfatal = boot_driver_report.failed;
             let _pnp_enumerated={
                 if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
-                    serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\\r\\n");
+                    serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\r\n");
                     halt();
                 }
                 let enumerated = platform_devices::enumerate_acpi_pci_devices(info.rsdp_address);
                 if matches!(boot_orchestration::validate_device_tree(), Ok(count) if count != 0) {
                     if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::DeviceTree).is_err() {
-                        serial_write(b"FATAL: invalid boot phase transition into DeviceTree.\\r\\n");
+                        serial_write(b"FATAL: invalid boot phase transition into DeviceTree.\r\n");
                         halt();
                     }
                 }
@@ -819,7 +819,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             let _boot_drivers_loaded = boot_driver_report.loaded;
             let _boot_drivers_failed_nonfatal = boot_driver_report.failed;
             if BOOT_COORDINATOR.advance(boot_orchestration::BootStage::BootDrivers).is_err() {
-                serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\\r\\n");
+                serial_write(b"FATAL: invalid boot phase transition into BootDrivers.\r\n");
                 halt();
             }
         }
@@ -827,11 +827,11 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         // Exercise scheduler metadata/priority/affinity without switching stacks.
         scheduler::initialize();
         if !ntoskrnl::ke::work_item::initialize() {
-            serial_write(b"FATAL: PASSIVE_LEVEL work-item worker initialization failed.\\r\\n");
+            serial_write(b"FATAL: PASSIVE_LEVEL work-item worker initialization failed.\r\n");
             halt();
         }
         if !ntoskrnl::ke::work_item::self_test() {
-            serial_write(b"FATAL: PASSIVE_LEVEL work-item queue/rundown execution test failed.\\r\\n");
+            serial_write(b"FATAL: PASSIVE_LEVEL work-item queue/rundown execution test failed.\r\n");
             halt();
         }
         hal::install_acpi_passive_work_hooks(
