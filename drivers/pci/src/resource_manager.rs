@@ -212,6 +212,61 @@ pub fn encode_requirements_alternative(reqs:&[Option<BarRequirement>;MAX_ASSIGNM
     encode_requirements_list(core::slice::from_ref(&alternative),bus,out)
 }
 
+
+/* Probe BARs and constrain emitted PnP requirements to validated host
+ * apertures. MinimumAddress/MaximumAddress never span a protected-RAM hole. */
+pub fn probe_and_encode_requirements_in_apertures<C: ConfigAccess>(
+    config: &mut C,
+    header_type: u8,
+    bus: u32,
+    apertures: &[Aperture],
+    output: &mut [u8],
+) -> Result<usize, ResourceError> {
+    let mut requirements: [Option<BarRequirement>; MAX_ASSIGNMENTS] = [None; MAX_ASSIGNMENTS];
+    let count = crate::size_bars_exclusive(config, header_type, &mut requirements)?;
+    let alternative = RequirementAlternative { requirements, count };
+    let size = encode_requirements_list(core::slice::from_ref(&alternative), bus, output)?;
+    let mut descriptor_index = 0usize;
+    for requirement in requirements.iter().take(count).flatten() {
+        let mut selected = None;
+        for aperture in apertures {
+            let kind_matches = aperture.kind == requirement.kind
+                || (requirement.kind == BarKind::Memory32
+                    && aperture.kind == BarKind::Memory64
+                    && requirement.prefetchable && aperture.prefetchable);
+            if !kind_matches || (requirement.kind != BarKind::Io
+                && aperture.prefetchable != requirement.prefetchable) {
+                continue;
+            }
+            let Some(aperture_end) = aperture.start.checked_add(aperture.length) else {
+                return Err(ResourceError::AddressOverflow);
+            };
+            let Some(last_start) = aperture_end.checked_sub(requirement.length) else { continue; };
+            let alignment = requirement.alignment;
+            if alignment == 0 || !alignment.is_power_of_two() { return Err(ResourceError::InvalidAlignment); }
+            let Some(minimum) = aperture.start.checked_add(alignment - 1)
+                .map(|value| value & !(alignment - 1)) else { return Err(ResourceError::AddressOverflow); };
+            let maximum = last_start & !(alignment - 1);
+            if minimum <= maximum
+                && (requirement.kind != BarKind::Memory32 || maximum.checked_add(requirement.length).is_some_and(|end| end <= (1u64 << 32)))
+                && (requirement.kind != BarKind::Io || maximum.checked_add(requirement.length).is_some_and(|end| end <= 0x1_0000)) {
+                selected = Some((minimum, maximum));
+                break;
+            }
+        }
+        let Some((minimum, maximum)) = selected else { return Err(ResourceError::NoSpace); };
+        let descriptor = 40usize.checked_add(descriptor_index.checked_mul(IO_RESOURCE_DESCRIPTOR_SIZE)
+            .ok_or(ResourceError::AddressOverflow)?).ok_or(ResourceError::AddressOverflow)?;
+        if descriptor.checked_add(IO_RESOURCE_DESCRIPTOR_SIZE).is_none_or(|end| end > size) {
+            return Err(ResourceError::Capacity);
+        }
+        output[descriptor + 16..descriptor + 24].copy_from_slice(&minimum.to_le_bytes());
+        output[descriptor + 24..descriptor + 32].copy_from_slice(&maximum.to_le_bytes());
+        descriptor_index += 1;
+    }
+    Ok(size)
+}
+
 /// Emit raw or translated CM_RESOURCE_LIST data for a single full descriptor.
 pub fn encode_cm_resource_list(resources:&[Option<PublishedResource>;MAX_ASSIGNMENTS],count:usize,bus:u32,translated:bool,out:&mut[u8])->Result<usize,ResourceError>{
     let size=20usize.checked_add(count.checked_mul(CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE).ok_or(ResourceError::AddressOverflow)?).ok_or(ResourceError::AddressOverflow)?;
