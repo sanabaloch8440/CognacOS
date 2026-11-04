@@ -87,6 +87,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn protected_memory_snapshot_has_stable_x64_layout() {
+        assert_eq!(core::mem::size_of::<PHYSICAL_MEMORY_RANGE>(), 16);
+        assert_eq!(core::mem::size_of::<MM_PROTECTED_MEMORY_SNAPSHOT>(), 16 + 256 * 16);
+        assert_eq!(core::mem::offset_of!(MM_PROTECTED_MEMORY_SNAPSHOT, ranges), 16);
+        let snapshot = MM_PROTECTED_MEMORY_SNAPSHOT::empty();
+        assert_eq!(snapshot.version, MM_PROTECTED_MEMORY_SNAPSHOT_VERSION);
+        assert_eq!(snapshot.size as usize, core::mem::size_of_val(&snapshot));
+        assert_eq!(snapshot.count, 0);
+    }
+
+    #[test]
     fn memory_basic_information_matches_x64_size() {
         if cfg!(target_pointer_width = "64") {
             assert_eq!(core::mem::size_of::<MEMORY_BASIC_INFORMATION>(), 48);
