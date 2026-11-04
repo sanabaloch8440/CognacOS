@@ -208,6 +208,7 @@ pub extern "C" fn rundown_context(context: u64) -> bool {
     if crate::ntoskrnl::ke::runtime::current_irql_level() != 0 { return false; }
     if context == 0 { return false; }
     let Some(waiter) = crate::thread::current_thread_id() else { return false; };
+    if WORKER_ID.load(Ordering::Acquire) == waiter { return false; }
     {
         let mut state = QUEUE.lock();
         if !state.closed_contexts.contains(&context) {
