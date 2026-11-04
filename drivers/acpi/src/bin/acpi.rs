@@ -1401,6 +1401,11 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     if enumerate!=STATUS_SUCCESS && enumerate!=STATUS_PENDING {
         STATE.ready.store(false,Ordering::Release);
         STATE.unloading.store(true,Ordering::Release);
+        let _ = unsafe { IoPnPUnregisterBusFdo(
+            cognacos_nt_abi::bus::ACPI_BUS_ENUMERATOR_ID,
+            cognacos_nt_abi::bus::ACPI_BUS_IDENTITY_HASH,
+            bus_device,
+        ) };
         return enumerate;
     }
     patched_table_rollback.committed = true;
