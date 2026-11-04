@@ -1193,6 +1193,26 @@ mod tests{
       Err(ExecError::UnsupportedReturnType));
  }
 
+ #[test]fn refof_preserves_operation_region_field_and_method_namespace_references(){
+  let aml=[
+   0x5b,0x80,b'R',b'E',b'G',b'0',0x00,0x0a,0,0x0a,4,
+   0x5b,0x81,0x0b,b'R',b'E',b'G',b'0',0x00,b'F',b'L',b'D',b'0',0x08,
+   0x14,0x0c,b'F',b'R',b'E',b'F',0,0xa4,0x71,b'F',b'L',b'D',b'0',
+   0x14,0x06,b'M',b'E',b'T',b'0',0,
+   0x14,0x0c,b'M',b'R',b'E',b'F',0,0xa4,0x71,b'M',b'E',b'T',b'0',
+  ];
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let field=namespace.find_child(0,*b"FLD0").unwrap();
+  let method=namespace.find_child(0,*b"MET0").unwrap();
+  let field_ref_method=namespace.find_child(0,*b"FREF").unwrap();
+  let method_ref_method=namespace.find_child(0,*b"MREF").unwrap();
+  let mut arena=test_heap_arena();let mut bindings=AmlBindings::with_aml_revision(2);
+  let field_value=execute_method_in_context(&aml,&namespace,field_ref_method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(reference_from_value(&field_value).unwrap(),AmlReference::NamespaceNodeGeneration{node:field,generation:0});
+  let method_value=execute_method_in_context(&aml,&namespace,method_ref_method,&[],64,&mut arena,&mut bindings,&NO_METHOD_SYNCHRONIZER).unwrap();
+  assert_eq!(reference_from_value(&method_value).unwrap(),AmlReference::NamespaceNodeGeneration{node:method,generation:0});
+ }
+
  #[test]fn index_returns_live_package_element_reference(){
   let aml=[0x08,b'P',b'K',b'G',b'0',0x12,0x06,0x02,0x0a,0x11,0x0a,0x22,
    0x14,0x0f,b'T',b'E',b'S',b'T',0,0xa4,0x83,0x88,b'P',b'K',b'G',b'0',0x01,0x60];
