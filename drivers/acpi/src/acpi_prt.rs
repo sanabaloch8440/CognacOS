@@ -187,7 +187,7 @@ mod platform_prt_policy_tests {
         let entries = [EvaluatedPrtElement {
             address: 0x0005_ffff,
             pin: 1,
-            source_path: Some(b"\\\\_SB.PCI0.LNKA"),
+            source_path: Some(b"\\_SB.PCI0.LNKA"),
             source_index: 0,
         }];
         let table = build_prt_table(&entries).unwrap();
