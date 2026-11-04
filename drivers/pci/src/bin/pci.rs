@@ -16,6 +16,7 @@ use cognacos_nt_abi::{bus::{
     PCI_INTERRUPT_DPC,
 }, io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION}, ntstatus::*, types::PVOID};
 use cognacos_nt_abi::object::UNICODE_STRING;
+use cognacos_nt_abi::mm::{MM_PROTECTED_MEMORY_SNAPSHOT, MM_PROTECTED_MEMORY_SNAPSHOT_VERSION, MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES, PHYSICAL_MEMORY_RANGE};
 
 unsafe extern "win64" {
     fn IoCreateDevice(
@@ -242,6 +243,8 @@ const MAX_WINDOWS: usize = PCI_DRIVER_HANDOFF_MAX_WINDOWS;
 type PciDriverHandoff = PCI_DRIVER_HANDOFF;
 
 struct PciState {
+    protected_memory: UnsafeCell<MM_PROTECTED_MEMORY_SNAPSHOT>,
+
     ready: AtomicBool,
     inventory_ready: AtomicBool,
     bridge_count: AtomicUsize,
@@ -752,7 +755,57 @@ unsafe fn query_acpi_host_bridge_for_window(
 /// PCI root-FDO initialization consumes ACPI root-PDO resource interfaces
 /// before it publishes PCI children. MCFG is only config-space reachability;
 /// the ACPI _CRS resource set is retained separately for aperture arbitration.
-unsafe fn acquire_acpi_host_bridge_resources() -> i32 {
+unsafe 
+const MEMORY_RANGES_POOL_TAG: u32 = u32::from_le_bytes(*b"RMMM");
+
+/// Take a bounded, versioned copy of the kernel's authoritative RAM map.
+/// MmGetPhysicalMemoryRanges returns a terminated array owned by the caller;
+/// the PCI driver validates every element before publishing its immutable
+/// snapshot. A missing terminator or truncated/oversized map fails closed.
+unsafe fn acquire_protected_memory_snapshot(
+    output: &mut MM_PROTECTED_MEMORY_SNAPSHOT,
+) -> i32 {
+    let source = unsafe { MmGetPhysicalMemoryRanges() };
+    if source.is_null() { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+    let mut staged = MM_PROTECTED_MEMORY_SNAPSHOT::empty();
+    let ranges = source.cast::<PHYSICAL_MEMORY_RANGE>();
+    let mut terminated = false;
+    for index in 0..=MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES {
+        let item = unsafe { ranges.add(index).read_unaligned() };
+        if item.base_address == 0 && item.number_of_bytes == 0 {
+            terminated = true;
+            break;
+        }
+        if index == MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES
+            || item.base_address <= 0 || item.number_of_bytes == 0
+            || (item.base_address as u64) & 0xfff != 0
+            || item.number_of_bytes & 0xfff != 0
+            || (item.base_address as u64).checked_add(item.number_of_bytes).is_none() {
+            unsafe { ExFreePoolWithTag(source, MEMORY_RANGES_POOL_TAG); }
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+        let start = item.base_address as u64;
+        if index != 0 {
+            let previous = staged.ranges[index - 1];
+            let previous_end = (previous.base_address as u64)
+                .checked_add(previous.number_of_bytes);
+            if previous_end.is_none_or(|end| start <= end) {
+                unsafe { ExFreePoolWithTag(source, MEMORY_RANGES_POOL_TAG); }
+                return STATUS_DEVICE_CONFIGURATION_ERROR;
+            }
+        }
+        staged.ranges[index] = item;
+        staged.count += 1;
+    }
+    unsafe { ExFreePoolWithTag(source, MEMORY_RANGES_POOL_TAG); }
+    if !terminated || staged.count == 0 || staged.version != MM_PROTECTED_MEMORY_SNAPSHOT_VERSION {
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+    *output = staged;
+    STATUS_SUCCESS
+}
+
+fn acquire_acpi_host_bridge_resources() -> i32 {
     let address = HANDOFF.load(Ordering::Acquire);
     if address == 0 { return STATUS_DEVICE_NOT_READY; }
     let handoff = unsafe { &*(address as *const PciDriverHandoff) };
