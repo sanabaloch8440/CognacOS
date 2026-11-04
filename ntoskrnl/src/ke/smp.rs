@@ -772,7 +772,6 @@ pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), hal::HalError> {
     unsafe { hal::send_fixed_ipi(base, apic_id as u8, hal::TLB_SHOOTDOWN_VECTOR) }
 }
 
-#[unsafe(no_mangle)]
 #[unsafe(export_name = "cognacos_tlb_ipi_handler")]
 pub extern "C" fn rdotos_tlb_ipi_handler() {
     TLB_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
