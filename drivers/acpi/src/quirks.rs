@@ -67,6 +67,52 @@ impl PlatformIdentity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SmbiosError { Truncated, MalformedStructure, MissingEndMarker, TooManyStructures }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SmbiosTableDescriptor {
+    pub major: u8, pub minor: u8, pub table_address: u64, pub table_length: u32,
+    pub is_64_bit_entry_point: bool,
+}
+fn checksum_zero(bytes: &[u8]) -> bool {
+    bytes.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)) == 0
+}
+
+/// Validate an SMBIOS 2.x (_SM_) or 3.x (_SM3_) entry point and return the
+/// physical table descriptor. The caller must map exactly the returned
+/// bounded range before calling parse_smbios_table().
+pub fn parse_smbios_entry_point(bytes: &[u8]) -> Result<SmbiosTableDescriptor, SmbiosError> {
+    if bytes.len() < 5 { return Err(SmbiosError::Truncated); }
+    if bytes.get(..5) == Some(b"_SM3_") {
+        if bytes.len() < 24 { return Err(SmbiosError::Truncated); }
+        let len = bytes[6] as usize;
+        if len < 24 || len > bytes.len() || !checksum_zero(&bytes[..len]) {
+            return Err(SmbiosError::MalformedStructure);
+        }
+        let max_size = u32::from_le_bytes(bytes[12..16].try_into().map_err(|_| SmbiosError::Truncated)?);
+        let address = u64::from_le_bytes(bytes[16..24].try_into().map_err(|_| SmbiosError::Truncated)?);
+        if max_size == 0 || address == 0 || address.checked_add(max_size as u64).is_none() {
+            return Err(SmbiosError::MalformedStructure);
+        }
+        return Ok(SmbiosTableDescriptor { major: bytes[7], minor: bytes[8],
+            table_address: address, table_length: max_size, is_64_bit_entry_point: true });
+    }
+    if bytes.get(..4) == Some(b"_SM_") {
+        if bytes.len() < 31 { return Err(SmbiosError::Truncated); }
+        let len = bytes[5] as usize;
+        if len < 31 || len > bytes.len() || !checksum_zero(&bytes[..len])
+            || bytes.get(16..21) != Some(b"_DMI_") || !checksum_zero(&bytes[16..31]) {
+            return Err(SmbiosError::MalformedStructure);
+        }
+        let table_len = u16::from_le_bytes([bytes[22], bytes[23]]) as u32;
+        let address = u32::from_le_bytes(bytes[24..28].try_into().map_err(|_| SmbiosError::Truncated)?) as u64;
+        if table_len == 0 || address == 0 || address.checked_add(table_len as u64).is_none() {
+            return Err(SmbiosError::MalformedStructure);
+        }
+        return Ok(SmbiosTableDescriptor { major: bytes[6], minor: bytes[7],
+            table_address: address, table_length: table_len, is_64_bit_entry_point: false });
+    }
+    Err(SmbiosError::MalformedStructure)
+}
+
 fn smbios_string(strings: &[u8], index: u8) -> Result<&[u8], SmbiosError> {
     if index == 0 { return Ok(&[]); }
     let mut current = 1u8;
