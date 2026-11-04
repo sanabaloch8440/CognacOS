@@ -225,6 +225,27 @@ mod tests {
         assert_eq!(arena.get(package.elements[0]).unwrap().integer,1);
         assert_eq!(arena.get(package.elements[1]).unwrap().integer,9);
     }
+    #[test] fn decodes_full_128_entry_dynamic_prt_package_with_arena_headroom() {
+        // Outer Package(128), each child is Package(4) { 1, 1, 1, 1 }.
+        // The outer PkgLength is 899 bytes (two length bytes plus 897 body bytes).
+        let mut bytes = std::vec![0x12, 0x43, 0x38, 128];
+        for _ in 0..128 {
+            bytes.extend_from_slice(&[0x12, 0x06, 4, 0x01, 0x01, 0x01, 0x01]);
+        }
+        assert_eq!(bytes.len(), 900);
+        let mut arena = AmlObjectArena::new();
+        let (root, end) = decode_data_object(&bytes, 0, bytes.len(), &mut arena).unwrap();
+        assert_eq!(end, bytes.len());
+        let package = arena.get(root).unwrap();
+        assert_eq!(package.kind, AmlValueKind::Package);
+        assert_eq!(package.element_count, 128);
+        assert_eq!(arena.count, 641);
+        for child in package.elements.iter().take(128) {
+            let route = arena.get(*child).unwrap();
+            assert_eq!(route.kind, AmlValueKind::Package);
+            assert_eq!(route.element_count, 4);
+        }
+    }
     #[test] fn leaves_omitted_package_slots_uninitialized(){
         let mut arena=AmlObjectArena::new();
         let (id,end)=decode_data_object(&[0x12,0x02,2],0,3,&mut arena).unwrap();
