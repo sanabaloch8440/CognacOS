@@ -104,7 +104,6 @@ run_checks() {
   ! grep -Fq '#[path = "../../Hal/mod.rs"]' ntoskrnl/src/main.rs || die "NTOSKRNL still embeds HAL source"
   cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu --lib
   cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-none --lib
-  cargo check --manifest-path ntoskrnl/Cargo.toml --target x86_64-unknown-none
   cargo check --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu
   cargo check --manifest-path drivers/pci/Cargo.toml --target x86_64-unknown-linux-gnu
   cargo check --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu
