@@ -1569,7 +1569,7 @@ mod bus_interrupt_translation_tests {
             query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR),
             Some((0x45, 5, 1))
         );
-        unregister_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR).unwrap();
+        unregister_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR, 0x45, 5, 1).unwrap();
         assert!(query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR).is_none());
     }
 }
