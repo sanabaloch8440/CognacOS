@@ -127,7 +127,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
   unsafe{io_dereference_device_object(resource_owner)};return STATUS_INVALID_PARAMETER
  }
  for i in 0..count {
-  if raw[i].kind!=resources[i].kind || raw[i].interface_type!=resources[i].interface_type || raw[i].bus_number!=resources[i].bus_number{
+  if raw[i].kind!=resources[i].kind || raw[i].interface_type!=resources[i].interface_type || raw[i].bus_number!=resources[i].bus_number || raw[i].flags!=resources[i].flags || raw[i].share!=resources[i].share{
    unsafe{io_dereference_device_object(resource_owner)};return STATUS_INVALID_PARAMETER
   }
   for j in i+1..count {
