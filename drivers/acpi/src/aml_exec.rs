@@ -279,7 +279,7 @@ impl<'a,'b> Machine<'a,'b>{
      let child_id=self.arena.allocate(child).map_err(|_|ExecError::TargetTypeMismatch)?;
      package.elements[index]=child_id;
     }
-    if r.pos>package_end{return Err(ExecError::BadPackage)}
+    if r.pos!=package_end{return Err(ExecError::BadPackage)}
     r.pos=package_end;package.element_count=count as u8;
     Ok(package)
    }
