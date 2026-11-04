@@ -10,7 +10,7 @@ use cognacos_nt_abi::{bus::{
     PCI_WHICHSPACE_CONFIG, PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION,
     PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION,
     PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION,
-    ACPI_FIRMWARE_INTERFACE_V2, ACPI_PCI_INTERRUPT_ROUTE, ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
+    ACPI_FIRMWARE_INTERFACE_V3, ACPI_PCI_INTERRUPT_ROUTE, ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2,
     PCI_INTERRUPT_INTERFACE, PCI_INTERRUPT_INTERFACE_VERSION, PCI_INTERRUPT_ISR,
     PCI_INTERRUPT_DPC,
 }, io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION}, ntstatus::*, types::PVOID};
@@ -518,7 +518,7 @@ pub unsafe extern "win64" fn CognacPciGetIdePorts(
 }
 
 unsafe fn query_acpi_pci_interrupt_route(
-    request: &ACPI_PCI_INTERRUPT_ROUTE_REQUEST,
+    request: &ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2,
     route: &mut ACPI_PCI_INTERRUPT_ROUTE,
 ) -> i32 {
     let mut acpi_bus = core::ptr::null_mut::<DEVICE_OBJECT>();
@@ -532,7 +532,7 @@ unsafe fn query_acpi_pci_interrupt_route(
     if lookup != STATUS_SUCCESS { return lookup; }
     if acpi_bus.is_null() { return STATUS_NOT_FOUND; }
 
-    let mut interface = core::mem::MaybeUninit::<ACPI_FIRMWARE_INTERFACE_V2>::zeroed();
+    let mut interface = core::mem::MaybeUninit::<ACPI_FIRMWARE_INTERFACE_V3>::zeroed();
     let irp = unsafe { IoAllocateIrp((*acpi_bus).stack_size as i8, 0) };
     if irp.is_null() {
         unsafe { IoPnPDereferenceBusFdo(acpi_bus); }
@@ -551,15 +551,15 @@ unsafe fn query_acpi_pci_interrupt_route(
             let parameters = (*next).parameters.as_mut_ptr();
             core::ptr::write_unaligned(
                 parameters.cast::<*const cognacos_nt_abi::bus::GUID>(),
-                &cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE_V2,
+                &cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE_V3,
             );
             core::ptr::write_unaligned(
                 parameters.add(8).cast::<u16>(),
-                core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>() as u16,
+                core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V3>() as u16,
             );
             core::ptr::write_unaligned(
                 parameters.add(10).cast::<u16>(),
-                cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_2 as u16,
+                cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_3 as u16,
             );
             core::ptr::write_unaligned(parameters.add(16).cast::<PVOID>(), interface.as_mut_ptr().cast());
             (*irp).io_status.status.status = STATUS_NOT_SUPPORTED;
@@ -581,16 +581,16 @@ unsafe fn query_acpi_pci_interrupt_route(
         if status != STATUS_SUCCESS { return status; }
 
         let interface = unsafe { interface.assume_init_ref() };
-        if interface.header.version as u32 != cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_2
-            || (interface.header.size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>()
-            || interface.query_pci_interrupt_route.is_none()
+        if interface.header.version as u32 != cognacos_nt_abi::bus::ACPI_FIRMWARE_INTERFACE_VERSION_3
+            || (interface.header.size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V3>()
+            || interface.query_pci_interrupt_route_v2.is_none()
             || interface.header.interface_dereference.is_none() {
             if let Some(deref) = interface.header.interface_dereference {
                 unsafe { deref(interface.header.context); }
             }
             return STATUS_NOT_SUPPORTED;
         }
-        let query = interface.query_pci_interrupt_route.unwrap();
+        let query = interface.query_pci_interrupt_route_v2.unwrap();
         let dereference = interface.header.interface_dereference.unwrap();
         let route_status = unsafe { query(interface.header.context, request, route) };
         unsafe { dereference(interface.header.context); }
@@ -624,14 +624,55 @@ unsafe fn configure_pci_intx_masked(
     if pin == 0 { return STATUS_SUCCESS; }
     if pin > 4 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
 
-    let request = ACPI_PCI_INTERRUPT_ROUTE_REQUEST {
+    let mut request = ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2 {
         segment: function.segment,
         bus: function.bus,
         device: function.device,
         function: function.function,
         pin,
-        reserved: 0,
+        ..Default::default()
     };
+    let mut bridge_ranges = [pci::PciBridgeRange::default(); pci::MAX_PCI_BRIDGES * MAX_WINDOWS];
+    let mut bridge_range_count = 0usize;
+    for window_index in 0..MAX_WINDOWS {
+        let count = unsafe { (*STATE.bridge_counts.get())[window_index] };
+        let entries = unsafe { &(*STATE.bridges.get())[window_index] };
+        for bridge in entries.iter().take(count).flatten() {
+            if bridge.segment == function.segment && bridge_range_count < bridge_ranges.len() {
+                bridge_ranges[bridge_range_count] = *bridge;
+                bridge_range_count += 1;
+            }
+        }
+    }
+    let requester = match pci::resolve_requester_path(
+        function.segment, window.bus_start, function.bus,
+        function.device, function.function, &bridge_ranges[..bridge_range_count],
+    ) {
+        Ok(path) => path,
+        Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+    };
+    request.root_bus = requester.root_bus;
+    request.bridge_count = requester.path_count.saturating_sub(1);
+    let mut current_bus = requester.root_bus;
+    for path_index in 0..request.bridge_count as usize {
+        let path_element = requester.path[path_index];
+        let Some(bridge) = bridge_ranges[..bridge_range_count].iter().find(|bridge|
+            bridge.primary_bus == current_bus
+                && bridge.device == path_element.device
+                && bridge.function == path_element.function
+        ) else { return STATUS_DEVICE_CONFIGURATION_ERROR; };
+        request.bridges[path_index] = cognacos_nt_abi::bus::ACPI_PCI_BRIDGE_PATH_ENTRY {
+            segment: bridge.segment,
+            primary_bus: bridge.primary_bus,
+            secondary_bus: bridge.secondary_bus,
+            subordinate_bus: bridge.subordinate_bus,
+            device: bridge.device,
+            function: bridge.function,
+            reserved: 0,
+        };
+        current_bus = bridge.secondary_bus;
+    }
+    if current_bus != function.bus { return STATUS_DEVICE_CONFIGURATION_ERROR; }
     let mut route = ACPI_PCI_INTERRUPT_ROUTE::default();
     let status = unsafe { query_acpi_pci_interrupt_route(&request, &mut route) };
     if status != STATUS_SUCCESS { return status; }
