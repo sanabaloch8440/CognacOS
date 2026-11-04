@@ -160,6 +160,98 @@ pub type RegisterInterrupt=unsafe extern "C" fn(vector:u32,context:u64,isr:Optio
 pub type UnregisterInterrupt=unsafe extern "C" fn(vector:u32,context:u64)->HalStatus;
 pub type SetInterruptEnabled=unsafe extern "C" fn(vector:u32,enabled:bool)->HalStatus;
 pub type SetBusMaster=unsafe extern "C" fn(device_object:u64,enabled:bool)->HalStatus;
+
+/// Dedicated, versioned PCI interrupt lifecycle. This is a private HAL service
+/// ABI, not a Windows HAL export. The ISR/DPC callback ABI intentionally
+/// matches the existing device-interrupt dispatcher callback convention.
+pub const PCI_INTERRUPT_SERVICES_VERSION: u32 = 1;
+pub type PciInterruptIsr = extern "C" fn(context: u64) -> bool;
+pub type PciInterruptDpc = extern "C" fn(context: u64);
+pub type PciInterruptAllocateVector =
+    unsafe extern "C" fn(vector_out: *mut u8) -> u32;
+pub type PciInterruptConfigureMasked = unsafe extern "C" fn(
+    vector: u8,
+    io_apic_base: u64,
+    gsi_base: u32,
+    gsi: u32,
+    active_low: bool,
+    level_triggered: bool,
+) -> u32;
+pub type PciInterruptRegisterIsr = unsafe extern "C" fn(
+    vector: u8,
+    context: u64,
+    isr: Option<PciInterruptIsr>,
+    dpc: Option<PciInterruptDpc>,
+) -> u32;
+pub type PciInterruptSetEnabled = unsafe extern "C" fn(vector: u8) -> u32;
+pub type PciInterruptUnregister = unsafe extern "C" fn(vector: u8, context: u64) -> u32;
+pub type PciInterruptReleaseVector = unsafe extern "C" fn(vector: u8) -> u32;
+
+/// PCI INTx/MSI routing lifecycle. A route is allocated and configured masked;
+/// the ISR/DPC pair is then registered; only a subsequent enable call may
+/// unmask delivery. Teardown disables, unregisters/drains, then releases the
+/// vector. Each operation is separate so callers can unwind partial startup.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PciInterruptHalServices {
+    pub size: u32,
+    pub version: u32,
+    pub allocate_vector: Option<PciInterruptAllocateVector>,
+    pub configure_masked: Option<PciInterruptConfigureMasked>,
+    pub register_isr: Option<PciInterruptRegisterIsr>,
+    pub enable: Option<PciInterruptSetEnabled>,
+    pub disable: Option<PciInterruptSetEnabled>,
+    pub unregister: Option<PciInterruptUnregister>,
+    pub release_vector: Option<PciInterruptReleaseVector>,
+}
+impl PciInterruptHalServices {
+    pub const fn compatible(&self) -> bool {
+        self.size as usize >= core::mem::size_of::<Self>()
+            && self.version == PCI_INTERRUPT_SERVICES_VERSION
+            && self.allocate_vector.is_some()
+            && self.configure_masked.is_some()
+            && self.register_isr.is_some()
+            && self.enable.is_some()
+            && self.disable.is_some()
+            && self.unregister.is_some()
+            && self.release_vector.is_some()
+    }
+}
+
+#[cfg(test)]
+mod pci_interrupt_contract_tests {
+    use super::*;
+
+    fn empty_table() -> PciInterruptHalServices {
+        PciInterruptHalServices {
+            size: core::mem::size_of::<PciInterruptHalServices>() as u32,
+            version: PCI_INTERRUPT_SERVICES_VERSION,
+            allocate_vector: None,
+            configure_masked: None,
+            register_isr: None,
+            enable: None,
+            disable: None,
+            unregister: None,
+            release_vector: None,
+        }
+    }
+
+    #[test]
+    fn pci_interrupt_contract_rejects_missing_callbacks() {
+        let table = empty_table();
+        assert!(!table.compatible());
+    }
+
+    #[test]
+    fn pci_interrupt_contract_rejects_wrong_version_and_truncated_table() {
+        let mut table = empty_table();
+        table.version = 0;
+        assert!(!table.compatible());
+        table.version = PCI_INTERRUPT_SERVICES_VERSION;
+        table.size = 0;
+        assert!(!table.compatible());
+    }
+}
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub struct DeviceServiceTable{
