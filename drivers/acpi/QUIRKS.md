@@ -81,13 +81,22 @@ ACPI `_PRT` route publication rather than inventing a legacy IRQ or GSI.
 The ASUS/Acer rules leave the AML namespace available but do not publish
 `PNP0A03`/`PNP0A08` root-bridge PDOs from the ACPI bus.
 
-The Lenovo IIL, Acer Spin SP513-54N, and Clevo X170KM-G DMI signatures are
-recognized in the policy model, but their Linux workaround disables E820
-reservation clipping while allocating PCI host-bridge `_CRS` windows. The
-current CognacOS PCI resource path does not yet perform that E820 clipping.
-Consequently, those flags are not treated as an active fix: wiring them into a
-future host-bridge allocator is required before those three cases can be
-reported as ported. Do not add E820 clipping merely to make the quirk active.
+The PCI resource layer now clips E820-reserved memory from decoded host-
+bridge _CRS apertures once, before root-window publication and hierarchy BAR
+planning. The implementation preserves both sides of partial overlaps, removes
+fully reserved apertures, leaves I/O windows unchanged, checks arithmetic, and
+commits output transactionally. It is not applied to generic BAR allocations
+or non-PCI resources.
+
+The Lenovo IIL (Product Version contains IIL), Acer Spin SP513-54N, and Clevo
+X170KM-G DMI rules are active opt-outs: their validated platform policy bypasses
+E820 clipping because the firmware reservation may cover the entire _CRS
+window needed for hot-plug or uninitialized devices. The policy-aware entry
+point is
+`pci::topology_resources::plan_hierarchy_rebalance_with_e820`; its caller
+must pass the immutable boot-selected quirk flag and validated E820 map. The
+legacy planner remains available for callers that already supply vetted host
+apertures.
 
 ## Stage 1 verification requirements
 
