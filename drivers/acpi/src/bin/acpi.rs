@@ -987,15 +987,19 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
             let guid = unsafe { core::ptr::read_unaligned(parameters.as_ptr().cast::<*const cognacos_nt_abi::bus::GUID>()) };
             let size = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(8).cast::<u16>()) };
             let version = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(10).cast::<u16>()) };
-            let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<*mut ACPI_FIRMWARE_INTERFACE>()) };
+            let output = unsafe { core::ptr::read_unaligned(parameters.as_ptr().add(16).cast::<PVOID>()) };
             if guid.is_null() || output.is_null() {
                 STATUS_INVALID_PARAMETER
-            } else if unsafe { *guid } != cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE
-                || version as u32 != ACPI_FIRMWARE_INTERFACE_VERSION
-                || (size as usize) < core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() {
-                STATUS_NOT_SUPPORTED
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE
+                && version as u32 == ACPI_FIRMWARE_INTERFACE_VERSION
+                && (size as usize) >= core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() {
+                unsafe { cognac_acpi_get_firmware_interface(output.cast()) }
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE_V2
+                && version as u32 == ACPI_FIRMWARE_INTERFACE_VERSION_2
+                && (size as usize) >= core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>() {
+                unsafe { cognac_acpi_get_firmware_interface_v2(output.cast()) }
             } else {
-                unsafe { cognac_acpi_get_firmware_interface(output) }
+                STATUS_NOT_SUPPORTED
             }
         },
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
