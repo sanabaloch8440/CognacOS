@@ -253,7 +253,7 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
    }else if has_pending{
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
      released[released_count]=claim.owner;released_count+=1;
-     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
+     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0&&claim.irql<=u8::MAX as u32 {
       removed_translations[removed_count]=*claim;removed_count+=1;
      }
      *claim=ResourceClaim::EMPTY;
