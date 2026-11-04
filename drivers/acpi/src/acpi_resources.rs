@@ -978,7 +978,7 @@ mod host_bridge_crs_window_tests {
         list.count = 3;
         let mut output = [HostBridgeWindow {
             space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
-            length: 0, alignment: 0, memory_kind: 0, writeable: false, cacheable: false,
+            length: 0, alignment: 0, translation_offset: 0, memory_kind: 0, writeable: false, cacheable: false,
         }; 4];
         assert_eq!(collect_host_bridge_windows(&list, &mut output), Ok(2));
         assert_eq!(output[0].space, HostBridgeAddressSpace::Memory);
@@ -997,7 +997,7 @@ mod host_bridge_crs_window_tests {
         list.count = 1;
         let sentinel = HostBridgeWindow {
             space: HostBridgeAddressSpace::Io, minimum: 0xdead, maximum: 0xbeef,
-            length: 1, alignment: 0, memory_kind: 0, writeable: false, cacheable: false,
+            length: 1, alignment: 0, translation_offset: 0, memory_kind: 0, writeable: false, cacheable: false,
         };
         let mut output = [sentinel; 2];
         assert_eq!(collect_host_bridge_windows(&list, &mut output), Err(ResourceError::InvalidDescriptor));
