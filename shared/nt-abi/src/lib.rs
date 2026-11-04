@@ -113,6 +113,10 @@ pub mod bus {
     /// driver-defined-interface versioning guidance. Version 1 and its layout
     /// remain binary compatible and are never enlarged in place.
     pub const ACPI_FIRMWARE_INTERFACE_VERSION_2: u32 = 2;
+    /// Kernel-private PnP bus directory identity. These keys are not
+    /// Windows PE exports or part of the public WDM export table.
+    pub const ACPI_BUS_ENUMERATOR_ID: u32 = u32::from_le_bytes(*b"ACPI");
+    pub const ACPI_BUS_IDENTITY_HASH: u64 = 0x4143_5049_4255_5301;
     pub const PCI_BUS_INTERFACE_VERSION: u32 = 3;
 
     /// Stable interface identifiers used by IRP_MN_QUERY_INTERFACE.
