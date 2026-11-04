@@ -1391,6 +1391,15 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     unsafe { ACPI_BUS_DEVICE=bus_device; }
     let mut pdo_count=0usize;
     for record in records[..identity_count].iter() {
+        // ASUS PR-DLS (BIOS 1010) and Acer TravelMate 360 have broken
+        // ACPI PCI root-bridge enumeration. Keep the ACPI namespace intact,
+        // but do not publish PCI root bridges from this bus instance.
+        let suppress_pci_roots = acpi::aml_osi::platform_quirk_policy().is_some_and(|policy|
+            policy.flags.contains(acpi::quirks::QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION));
+        if suppress_pci_roots && record.identity.has_hid
+            && matches!(record.identity.hid.as_bytes(), b"PNP0A03" | b"PNP0A08") {
+            continue;
+        }
         let status=record.identity.sta;
         if status&(acpi::acpi_device::DEVICE_PRESENT|acpi::acpi_device::DEVICE_ENABLED)
             !=(acpi::acpi_device::DEVICE_PRESENT|acpi::acpi_device::DEVICE_ENABLED) { continue; }
@@ -1814,6 +1823,10 @@ struct AcpiPrtBusProvider<'a> {
 }
 impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
     fn table_for_bus(&self, bus_node: u16) -> Result<acpi::acpi_prt::PrtTable, acpi::acpi_prt::PrtError> {
+        if acpi::aml_osi::platform_quirk_policy().is_some_and(|policy|
+            policy.flags.contains(acpi::quirks::QuirkFlags::DISABLE_ACPI_PCI_IRQ_ROUTING)) {
+            return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
+        }
         if self.gate.enter_method().is_err() {
             return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
         }
