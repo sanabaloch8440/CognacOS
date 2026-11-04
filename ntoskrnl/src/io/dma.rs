@@ -5,6 +5,7 @@
 //! addresses are IOMMU outputs, not physical-address aliases.
 use core::sync::atomic::{fence, Ordering};
 #[path = "dma/iommu.rs"] pub(crate) mod iommu;
+#[path = "dma/vtd.rs"] pub(crate) mod vtd;
 
 pub const PAGE_SIZE: u64 = 4096;
 pub const MAX_COMMON_BUFFERS: usize = 128;
