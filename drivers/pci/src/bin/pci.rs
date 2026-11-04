@@ -885,8 +885,11 @@ unsafe fn configure_pci_intx_masked(
     }
 
     let request_bytes = core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3>();
+    let bridge_capacity = pci::MAX_PCI_BRIDGES.checked_mul(MAX_WINDOWS)
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES);
+    let bridge_capacity = match bridge_capacity { Ok(capacity) => capacity, Err(status) => return status };
     let bridge_bytes = core::mem::size_of::<pci::PciBridgeRange>()
-        .checked_mul(pci::MAX_PCI_BRIDGES).ok_or(STATUS_INSUFFICIENT_RESOURCES);
+        .checked_mul(bridge_capacity).ok_or(STATUS_INSUFFICIENT_RESOURCES);
     let bridge_bytes = match bridge_bytes { Ok(bytes) => bytes, Err(status) => return status };
     // The expanded v4 request and full-segment bridge inventory are pool-backed:
     // neither multi-kilobyte buffer is placed on the kernel stack.
@@ -917,7 +920,7 @@ unsafe fn configure_pci_intx_masked(
         let bridge_ranges = unsafe {
             core::slice::from_raw_parts_mut(
                 bridge_allocation.cast::<pci::PciBridgeRange>(),
-                pci::MAX_PCI_BRIDGES,
+                bridge_capacity,
             )
         };
         let mut bridge_range_count = 0usize;
