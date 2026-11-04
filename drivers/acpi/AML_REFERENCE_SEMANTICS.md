@@ -14,7 +14,7 @@ This document records the first integrated reference-semantics implementation sl
 
 ## Safety and bounds
 
-The executor owns at most 128 temporary reference roots per invocation. It does not recycle retired arena IDs; stale references fail closed. AML execution remains outside interrupt/DPC context and continues to use caller-owned bounded arenas.
+The executor owns at most 128 temporary reference roots per invocation. Retired arena IDs are tombstoned, not recycled, so stale references fail closed rather than aliasing a later object. This is intentionally conservative but leaves an arena-capacity/reclamation issue: the current AML value arena has 768 slots, so repeated reference-producing calls can eventually exhaust it. Generation-tagged arena handles and safe slot reuse are required before production sign-off. AML execution remains outside interrupt/DPC context and continues to use caller-owned bounded arenas.
 
 ## Remaining task-31 work
 
