@@ -1697,7 +1697,7 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
         let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
         if allocation.is_null() { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
         let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
-        unsafe { arena.write(acpi::aml_objects::AmlObjectArena::new()); }
+        unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
         let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(if width == 32 { 1 } else { 2 });
         let result = acpi::acpi_prt::evaluate_prt_object_in_context(
             self.namespace, self.sources, bus_node, width,
