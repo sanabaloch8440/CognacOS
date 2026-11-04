@@ -289,11 +289,11 @@ impl<'a,'b> Machine<'a,'b>{
    } else { self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)? }
   } else { self.arena.allocate(source).map_err(|_|ExecError::TargetTypeMismatch)? };
   let (bit_offset,bit_width)=if op==0x5b {
-   let index=self.operand_integer(&self.term_value(r)?)? as u32;
-   let width=self.operand_integer(&self.term_value(r)?)? as u32;
+   let index_value=self.term_value(r)?;let index=self.operand_integer(&index_value)? as u32;
+   let width_value=self.term_value(r)?;let width=self.operand_integer(&width_value)? as u32;
    (index,width)
   } else {
-   let index=self.operand_integer(&self.term_value(r)?)? as u32;
+   let index_value=self.term_value(r)?;let index=self.operand_integer(&index_value)? as u32;
    let width=match op{0x8d=>1,0x8c=>8,0x8b=>16,0x8a=>32,0x8f=>64,_=>return Err(ExecError::UnsupportedOpcode)};
    if op==0x8d{(index,width)}else{(index.checked_mul(8).ok_or(ExecError::TargetTypeMismatch)?,width)}
   };
@@ -439,6 +439,7 @@ impl<'a,'b> Machine<'a,'b>{
     let result=match extended{
      0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
      0x29=>Self::to_bcd(operand,self.integer_width_bits)?,
+     0x13=>{r.pos-=2;let value=self.term_value(r)?;return self.operand_integer(&value)},
      _=>return Err(ExecError::UnsupportedOpcode),
     };
     let target=self.target(r)?;
@@ -566,7 +567,7 @@ impl<'a,'b> Machine<'a,'b>{
     0xa1=>return Err(ExecError::UnsupportedOpcode),
     0xa5=>return Ok(ExecFlow::Break),
     0x9f=>return Ok(ExecFlow::ContinueLoop),
-    _=>{r.pos-=1;let _=self.term(r)?;}
+    _=>{r.pos-=1;let _=self.term_value(r)?;}
    }
   }
   Ok(ExecFlow::Continue)
@@ -669,7 +670,7 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,&mut arena,&mut bindings,sync,&mut dynamic,0,0)?;
     // The convenience wrapper destroys its local arena on return, so it must
     // not expose Package handles whose elements live in that arena.
-    if value.kind==AmlValueKind::Package{return Err(ExecError::UnsupportedReturnType)}
+    if value.kind==AmlValueKind::Package || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
     Ok(value)
 }
 
