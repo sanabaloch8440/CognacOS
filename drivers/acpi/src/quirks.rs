@@ -295,6 +295,19 @@ impl QuirkPolicy {
             .find(|v| v.name == name)
             .map(|v| v.action == OsiAction::Advertise).unwrap_or(default)
     }
+    /// Namespace hook: remap only the exact _ADR value under the exact
+    /// caller-supplied parent path. A missing match preserves firmware data.
+    pub fn override_adr(&self, parent_path: &str, firmware_adr: u64) -> u64 {
+        self.adr[..self.adr_count].iter().flatten()
+            .find(|v| v.parent_path == parent_path && v.from == firmware_adr)
+            .map(|v| v.to).unwrap_or(firmware_adr)
+    }
+    pub fn override_prt_gsi(&self, segment: u16, bus: u8, device: u8,
+        function: u8, pin: u8) -> Option<PrtOverride> {
+        self.prt[..self.prt_count].iter().flatten()
+            .find(|v| v.segment == segment && v.bus == bus && v.device == device
+                && v.function == function && v.pin == pin).copied()
+    }
 }
 
 pub fn evaluate_registry(
