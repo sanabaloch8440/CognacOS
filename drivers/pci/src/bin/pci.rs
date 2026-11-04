@@ -26,6 +26,7 @@ unsafe extern "win64" {
     fn IoDeleteDevice(device: *mut DEVICE_OBJECT);
     fn ExAllocatePoolWithTag(pool_type: u32, number_of_bytes: usize, tag: u32) -> PVOID;
     fn ExFreePoolWithTag(pointer: PVOID, tag: u32);
+    fn MmGetPhysicalMemoryRanges() -> PVOID;
     fn ObfReferenceObject(object: PVOID);
     fn ObDereferenceObject(object: PVOID);
     fn IoAllocateIrp(stack_size: i8, charge_quota: u8) -> *mut IRP;
@@ -62,6 +63,11 @@ ExAllocatePoolWithTag:
 ExFreePoolWithTag:
     jmp QWORD PTR [rip + __imp_ntoskrnl_ExFreePoolWithTag]
 .size ExFreePoolWithTag, .-ExFreePoolWithTag
+.global MmGetPhysicalMemoryRanges
+.type MmGetPhysicalMemoryRanges,@function
+MmGetPhysicalMemoryRanges:
+    jmp QWORD PTR [rip + __imp_ntoskrnl_MmGetPhysicalMemoryRanges]
+.size MmGetPhysicalMemoryRanges, .-MmGetPhysicalMemoryRanges
 .global ObfReferenceObject
 .type ObfReferenceObject,@function
 ObfReferenceObject:
@@ -91,6 +97,10 @@ __imp_ntoskrnl_ExAllocatePoolWithTag: .quad 0
 .type __imp_ntoskrnl_ExFreePoolWithTag,@object
 __imp_ntoskrnl_ExFreePoolWithTag: .quad 0
 .size __imp_ntoskrnl_ExFreePoolWithTag,8
+.global __imp_ntoskrnl_MmGetPhysicalMemoryRanges
+.type __imp_ntoskrnl_MmGetPhysicalMemoryRanges,@object
+__imp_ntoskrnl_MmGetPhysicalMemoryRanges: .quad 0
+.size __imp_ntoskrnl_MmGetPhysicalMemoryRanges,8
 .global __imp_ntoskrnl_ObfReferenceObject
 .type __imp_ntoskrnl_ObfReferenceObject,@object
 __imp_ntoskrnl_ObfReferenceObject: .quad 0
