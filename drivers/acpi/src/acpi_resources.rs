@@ -865,3 +865,53 @@ mod dependent_requirement_tests {
  }
 
 }
+
+
+#[cfg(test)]
+mod host_bridge_crs_window_tests {
+    use super::*;
+
+    #[test]
+    fn exports_only_checked_io_and_memory_windows() {
+        let mut list = ResourceList::EMPTY;
+        list.entries[0] = Some(Resource::Memory {
+            minimum: 0x8000_0000, maximum: 0x8fff_ffff, alignment: 0x1000,
+            length: 0x1000, writeable: true, cacheable: false, kind: 1,
+        });
+        list.entries[1] = Some(Resource::Io {
+            minimum: 0xc000, maximum: 0xcfff, alignment: 0x100,
+            length: 0x100, decode_16_bit: true,
+        });
+        list.entries[2] = Some(Resource::Irq {
+            mask: 1 << 5, level_triggered: true, active_low: true,
+            shared: true, wake_capable: false,
+        });
+        list.count = 3;
+        let mut output = [HostBridgeWindow {
+            space: HostBridgeAddressSpace::Io, minimum: 0, maximum: 0,
+            length: 0, memory_kind: 0, writeable: false, cacheable: false,
+        }; 4];
+        assert_eq!(collect_host_bridge_windows(&list, &mut output), Ok(2));
+        assert_eq!(output[0].space, HostBridgeAddressSpace::Memory);
+        assert_eq!(output[0].minimum, 0x8000_0000);
+        assert_eq!(output[0].maximum, 0x8fff_ffff);
+        assert_eq!(output[1].space, HostBridgeAddressSpace::Io);
+    }
+
+    #[test]
+    fn rejects_overflow_without_publishing_partial_windows() {
+        let mut list = ResourceList::EMPTY;
+        list.entries[0] = Some(Resource::Memory {
+            minimum: u64::MAX - 1, maximum: u64::MAX - 1, alignment: 1,
+            length: 4, writeable: true, cacheable: false, kind: 2,
+        });
+        list.count = 1;
+        let sentinel = HostBridgeWindow {
+            space: HostBridgeAddressSpace::Io, minimum: 0xdead, maximum: 0xbeef,
+            length: 1, memory_kind: 0, writeable: false, cacheable: false,
+        };
+        let mut output = [sentinel; 2];
+        assert_eq!(collect_host_bridge_windows(&list, &mut output), Err(ResourceError::InvalidDescriptor));
+        assert_eq!(output, [sentinel; 2]);
+    }
+}
