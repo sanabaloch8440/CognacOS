@@ -360,3 +360,64 @@ pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
     }
     Ok(table)
 }
+
+
+#[cfg(test)]
+mod firmware_prt_package_tests {
+    use super::*;
+    use crate::aml::{AmlNode,AmlObjectType,AmlNamespace};
+
+    struct RejectLinks;
+    impl LinkDeviceResolver for RejectLinks {
+        fn resolve_gsi(&self, _: &[u8], _: u32) -> Result<u32, PrtError> {
+            Err(PrtError::LinkResolutionFailed)
+        }
+    }
+
+    #[test]
+    fn evaluates_static_prt_package_with_direct_gsi_entry() {
+        // Package(1) { Package(4) { 0x0005ffff, 0, Zero, 19 } }
+        let aml = [
+            0x12, 15, 1, 0x12, 12, 4,
+            0x0c, 0xff, 0xff, 0x05, 0x00,
+            0x00,
+            0x00,
+            0x0a, 19,
+        ];
+        let mut namespace = AmlNamespace::new();
+        namespace.nodes[1] = AmlNode {
+            parent: 0, name: *b"PCI0", object_type: AmlObjectType::Device,
+            ..AmlNode::ROOT
+        };
+        namespace.nodes[2] = AmlNode {
+            parent: 1, name: *b"_PRT", object_type: AmlObjectType::Name,
+            source_table: 0, body_start: 0, body_length: aml.len() as u32,
+            ..AmlNode::ROOT
+        };
+        namespace.count = 3;
+        let table = evaluate_prt_name_object(&namespace, &[&aml], 1, &RejectLinks).unwrap();
+        assert_eq!(table.count, 1);
+        assert_eq!(table.find(0x0005_0000, 0).unwrap().source,
+            InterruptSource::DirectGsi { gsi: 19 });
+    }
+
+    #[test]
+    fn rejects_malformed_prt_package_without_partial_routes() {
+        let aml = [0x12, 4, 1, 0x12, 1, 4];
+        let mut namespace = AmlNamespace::new();
+        namespace.nodes[1] = AmlNode {
+            parent: 0, name: *b"PCI0", object_type: AmlObjectType::Device,
+            ..AmlNode::ROOT
+        };
+        namespace.nodes[2] = AmlNode {
+            parent: 1, name: *b"_PRT", object_type: AmlObjectType::Name,
+            source_table: 0, body_start: 0, body_length: aml.len() as u32,
+            ..AmlNode::ROOT
+        };
+        namespace.count = 3;
+        assert_eq!(
+            evaluate_prt_name_object(&namespace, &[&aml], 1, &RejectLinks),
+            Err(PrtDecodeError::BadPackage)
+        );
+    }
+}
