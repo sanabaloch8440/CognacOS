@@ -757,7 +757,6 @@ unsafe fn query_acpi_host_bridge_for_window(
 /// PCI root-FDO initialization consumes ACPI root-PDO resource interfaces
 /// before it publishes PCI children. MCFG is only config-space reachability;
 /// the ACPI _CRS resource set is retained separately for aperture arbitration.
-unsafe 
 const MEMORY_RANGES_POOL_TAG: u32 = u32::from_le_bytes(*b"RMMM");
 
 /// Take a bounded, versioned copy of the kernel's authoritative RAM map.
