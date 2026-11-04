@@ -620,7 +620,7 @@ unsafe fn configure_pci_intx_masked(
         Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
     };
     // InterruptLine (offset 0x3c) is intentionally ignored. Firmware routing
-    // comes from the matching ACPI root bridge _PRT, never the legacy byte.
+    // comes from the matching ACPI bridge _PRT hierarchy, never the legacy byte.
     if pin == 0 { return STATUS_SUCCESS; }
     if pin > 4 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
 
