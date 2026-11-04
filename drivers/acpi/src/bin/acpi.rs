@@ -1544,7 +1544,7 @@ fn evaluate_aml_integer_object(
             Ok(value.value)
         }
         acpi::aml::AmlObjectType::Method => {
-            let mut runtime = acpi::acpi_device::IntegerMethodInvoker;
+            let mut runtime = acpi::acpi_device::SynchronizedMethodInvoker { synchronizer: &KERNEL_AML_METHOD_SYNCHRONIZER };
             match manager.evaluate_method_value(handle, bytes, object, gate, &mut runtime)
                 .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)? {
                 acpi::acpi_device::AcpiMethodValue::Integer(value) => Ok(value),
@@ -1600,17 +1600,24 @@ impl acpi::acpi_prt::LinkDeviceResolver for AcpiPrtLinkResolver<'_> {
             .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
         let crs = self.namespace.find_child(link, *b"_CRS")
             .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
-        let mut bytes = [0u8; ACPI_ROUTE_BUFFER_CAPACITY];
-        let length = read_aml_resource_buffer(
-            self.manager, self.gate, self.namespace, crs,
-            self.sources, self.handles, &mut bytes,
-        ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
-        let resources = acpi::acpi_resources::parse_resource_template(&bytes[..length])
-            .map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
-        let resource = resources.entries.get(source_index as usize)
-            .and_then(|entry| *entry)
-            .ok_or(acpi::acpi_prt::PrtError::InvalidSourceIndex)?;
-        let resolved = match resource {
+        let allocation = unsafe {
+            ExAllocatePoolWithTag(PAGED_POOL, ACPI_ROUTE_BUFFER_CAPACITY, ACPI_POOL_TAG)
+        };
+        if allocation.is_null() { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
+        let resolved_result = (|| {
+            let bytes = unsafe {
+                core::slice::from_raw_parts_mut(allocation.cast::<u8>(), ACPI_ROUTE_BUFFER_CAPACITY)
+            };
+            let length = read_aml_resource_buffer(
+                self.manager, self.gate, self.namespace, crs,
+                self.sources, self.handles, bytes,
+            ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let resources = acpi::acpi_resources::parse_resource_template(&bytes[..length])
+                .map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let resource = resources.entries.get(source_index as usize)
+                .and_then(|entry| *entry)
+                .ok_or(acpi::acpi_prt::PrtError::InvalidSourceIndex)?;
+            let resolved = match resource {
             acpi::acpi_resources::Resource::ExtendedIrq { flags, interrupts, count } if count == 1 => {
                 ResolvedLinkRoute {
                     gsi: interrupts[0],
@@ -1631,7 +1638,11 @@ impl acpi::acpi_prt::LinkDeviceResolver for AcpiPrtLinkResolver<'_> {
                 }
             }
             _ => return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed),
-        };
+            };
+            Ok(resolved)
+        })();
+        unsafe { ExFreePoolWithTag(allocation, ACPI_POOL_TAG); }
+        let resolved = resolved_result?;
         self.last.set(Some(resolved));
         Ok(resolved.gsi)
     }
@@ -1684,11 +1695,22 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route(
         if segment != request.segment as u64 || root_bus > u8::MAX as u64 { continue; }
 
         let Some(crs_object) = namespace.find_child(record.node, *b"_CRS") else { continue; };
-        let mut crs_bytes = [0u8; ACPI_ROUTE_BUFFER_CAPACITY];
-        let crs_length = match read_aml_resource_buffer(
-            manager, gate, namespace, crs_object, &sources, &handles, &mut crs_bytes,
-        ) { Ok(length) => length, Err(_) => continue };
-        let root_resources = match acpi::parse_pci_root_resources(&crs_bytes[..crs_length]) {
+        let crs_allocation = unsafe {
+            ExAllocatePoolWithTag(PAGED_POOL, ACPI_ROUTE_BUFFER_CAPACITY, ACPI_POOL_TAG)
+        };
+        if crs_allocation.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+        let root_resources_result = (|| {
+            let crs_bytes = unsafe {
+                core::slice::from_raw_parts_mut(crs_allocation.cast::<u8>(), ACPI_ROUTE_BUFFER_CAPACITY)
+            };
+            let crs_length = read_aml_resource_buffer(
+                manager, gate, namespace, crs_object, &sources, &handles, crs_bytes,
+            )?;
+            acpi::parse_pci_root_resources(&crs_bytes[..crs_length])
+                .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)
+        })();
+        unsafe { ExFreePoolWithTag(crs_allocation, ACPI_POOL_TAG); }
+        let root_resources = match root_resources_result {
             Ok(resources) => resources, Err(_) => continue,
         };
         let bus_match = root_resources.apertures[..root_resources.count].iter().any(|aperture|
