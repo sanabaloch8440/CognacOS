@@ -455,7 +455,7 @@ pub struct PciPathElement { pub device:u8,pub function:u8 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct PciRequesterPath {
     pub segment:u16,pub root_bus:u8,pub endpoint_bus:u8,pub endpoint_device:u8,
-    pub endpoint_function:u8,pub path:[PciPathElement;8],pub path_count:u8,
+    pub endpoint_function:u8,pub path:[PciPathElement;256],pub path_count:u16,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum PciTopologyError { InvalidBdf, InvalidBridgeRange, MissingParentBridge, AmbiguousParentBridge, PathTooDeep, Cycle }
@@ -468,7 +468,7 @@ pub fn resolve_requester_path(segment:u16,root_bus:u8,endpoint_bus:u8,
     endpoint_device:u8,endpoint_function:u8,bridges:&[PciBridgeRange])
     ->Result<PciRequesterPath,PciTopologyError> {
     if endpoint_device>=32||endpoint_function>=8{return Err(PciTopologyError::InvalidBdf)}
-    let mut reverse=[PciPathElement::default();8];
+    let mut reverse=[PciPathElement::default();255];
     let mut count=0usize;
     let mut bus=endpoint_bus;
     let mut visited=[false;256];
@@ -499,12 +499,12 @@ pub fn resolve_requester_path(segment:u16,root_bus:u8,endpoint_bus:u8,
         count+=1;
         bus=bridge.primary_bus;
     }
-    let mut path=[PciPathElement::default();8];
+    let mut path=[PciPathElement::default();256];
     for i in 0..count {path[i]=reverse[count-1-i];}
     if count==path.len(){return Err(PciTopologyError::PathTooDeep)}
     path[count]=PciPathElement{device:endpoint_device,function:endpoint_function};
     Ok(PciRequesterPath{segment,root_bus,endpoint_bus,endpoint_device,endpoint_function,
-        path,path_count:(count+1) as u8})
+        path,path_count:(count+1) as u16})
 }
 
 #[cfg(test)]
