@@ -18,7 +18,7 @@ struct ResourceClaim {
 unsafe impl Send for ResourceClaim {}
 impl ResourceClaim { const EMPTY:Self=Self{
  used:false,owner:ptr::null_mut(),irp:ptr::null_mut(),kind:0,start:0,length:0,committed:false,
- interface_type:0,bus_number:0,bus_level:0,bus_vector:0,system_vector:0,irql:0,affinity:0,flags:0,share:0,
+ interface_type:0,bus_number:0,bus_level:0,bus_group:0,bus_vector:0,system_vector:0,irql:0,affinity:0,flags:0,share:0,
 }; }
 struct ResourceArbiter { claims:[ResourceClaim;MAX_PNP_RESOURCE_CLAIMS] }
 impl ResourceArbiter { const fn new()->Self{Self{claims:[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS]}} }
