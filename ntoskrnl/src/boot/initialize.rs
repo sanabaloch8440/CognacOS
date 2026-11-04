@@ -389,11 +389,10 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
                         ) };
                         match acpi::quirks::parse_smbios_table(table, desc.major, desc.minor) {
                             Ok(identity) => {
-                                let registry = [
-                                    acpi::quirks::FUJITSU_SIEMENS_QUIRK,
-                                    acpi::quirks::DELL_0A3E_QUIRK,
-                                ];
-                                match acpi::quirks::evaluate_registry(&identity, &registry) {
+                                match acpi::quirks::evaluate_registry(
+                                    &identity,
+                                    acpi::quirks::PLATFORM_QUIRK_REGISTRY,
+                                ) {
                                     Ok(policy) => {
                                         serial_write(b"SMBIOS platform identity accepted; ACPI quirks matched: ");
                                         serial_write_decimal(policy.matched_count);
