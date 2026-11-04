@@ -1484,4 +1484,33 @@ mod tests{
         assert_eq!(bindings.value_id(node),Err(RuntimeError::UnboundNode));
     }
 
+    #[test]
+    fn stale_namespace_reference_cannot_alias_reloaded_node() {
+        let first_aml=[0x08,b'T',b'E',b'S',b'T',0x0a,0x2a];
+        let mut namespace=AmlNamespace::new();
+        crate::aml::load_definition_block(&first_aml,&mut namespace).unwrap();
+        let old_node=namespace.find_child(0,*b"TEST").unwrap();
+        let mut arena=test_arena();
+        let mut bindings=AmlBindings::new();
+        let old_reference=bindings.reference_node(&namespace,old_node).unwrap();
+        let old_value=arena.allocate({let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=42;v}).unwrap();
+        bindings.bind_checked(&namespace,old_node,old_value,&arena).unwrap();
+
+        // The table manager calls this while execution is quiesced, before
+        // removing the owner's nodes. A later table may reuse the same index.
+        assert_eq!(bindings.invalidate_table(&namespace,0),1);
+        assert_eq!(crate::aml::unload_definition_block(&mut namespace,0),1);
+
+        let second_aml=[0x08,b'T',b'E',b'S',b'T',0x0a,0x63];
+        crate::aml::load_definition_block(&second_aml,&mut namespace).unwrap();
+        let new_node=namespace.find_child(0,*b"TEST").unwrap();
+        assert_eq!(new_node,old_node);
+        let new_value=arena.allocate({let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=99;v}).unwrap();
+        bindings.bind_checked(&namespace,new_node,new_value,&arena).unwrap();
+
+        assert_eq!(dereference(old_reference,&bindings,&arena),Err(RuntimeError::InvalidReference));
+        let new_reference=bindings.reference_node(&namespace,new_node).unwrap();
+        assert_eq!(dereference(new_reference,&bindings,&arena).unwrap().integer,99);
+    }
+
 }
