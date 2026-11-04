@@ -272,6 +272,12 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Per-CPU TSS/IST setup self-test passed.\r\n");
         let bsp_apic_id = (core::arch::x86_64::__cpuid(1).ebx >> 24) & 0xff;
+        // Publish the permanent executive callbacks before the HAL can request
+        // memory-manager, DMA, or boot-policy services.
+        if !unsafe { crate::hal_services::initialize() } {
+            serial_write(b"FATAL: kernel/HAL service contract initialization failed.\r\n");
+            halt();
+        }
         if hal::initialize_bsp(bsp_apic_id).is_err()
             || unsafe { hal::install_cpu_local(0) }.is_err()
         {
