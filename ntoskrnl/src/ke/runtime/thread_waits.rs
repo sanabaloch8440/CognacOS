@@ -281,6 +281,15 @@ extern "C" fn multiwait_blocking_mutant_waiter(_argument:*mut core::ffi::c_void)
     MULTIWAIT_BLOCKING_TEST_STATUS.store(status,Ordering::Release);
     if status==STATUS_SUCCESS{let _=unsafe{ke_release_mutant(mutant,0,0,0)};}
 }
+static mut AML_METHOD_MUTEX_TEST:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
+static mut AML_METHOD_MUTEX_TEST_STACK:[u8;8192]=[0;8192];
+static AML_METHOD_MUTEX_TEST_STATUS:core::sync::atomic::AtomicI32=core::sync::atomic::AtomicI32::new(STATUS_NOT_IMPLEMENTED);
+extern "C" fn aml_method_mutex_waiter(_argument:*mut core::ffi::c_void){
+    let mutex=unsafe{core::ptr::addr_of_mut!(AML_METHOD_MUTEX_TEST)};
+    let status=unsafe{ke_wait_for_single_object(mutex,0,0,0,core::ptr::null())};
+    AML_METHOD_MUTEX_TEST_STATUS.store(status,Ordering::Release);
+    if status==STATUS_SUCCESS{let _=unsafe{ke_release_mutex(mutex,0)};}
+}
 static mut MULTIWAIT_TEST_MUTANT_B:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
 static mut MULTIWAIT_TEST_MUTANT_C:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
 static mut MULTIWAIT_TEST_QUEUE:core::mem::MaybeUninit<ExecutiveQueue>=core::mem::MaybeUninit::uninit();
@@ -336,6 +345,40 @@ pub(crate) fn dispatcher_extended_self_test()->bool{
     }
     if crate::thread::state(waiter)!=Some(crate::thread::ThreadState::Exited)
         ||MULTIWAIT_BLOCKING_TEST_STATUS.load(Ordering::Acquire)!=STATUS_SUCCESS{return false}
+
+    // Exercise the exact KMUTEX entry points used by ACPI Serialized
+    // methods: recursive same-thread ownership, signal-state transitions,
+    // blocking single-object wait, and direct owner transfer on release.
+    let method_mutex=unsafe{core::ptr::addr_of_mut!(AML_METHOD_MUTEX_TEST)};
+    unsafe{ke_initialize_mutex(method_mutex,0);}
+    if unsafe{ke_wait_for_single_object(method_mutex,0,0,0,core::ptr::null())}!=STATUS_SUCCESS{return false}
+    if unsafe{ke_wait_for_single_object(method_mutex,0,0,0,core::ptr::null())}!=STATUS_SUCCESS{return false}
+    if unsafe{ke_read_state_mutex(method_mutex)}!=-1{return false}
+    if unsafe{ke_release_mutex(method_mutex,0)}!=-1||unsafe{ke_read_state_mutex(method_mutex)}!=0{return false}
+    if unsafe{ke_release_mutex(method_mutex,0)}!=0||unsafe{ke_read_state_mutex(method_mutex)}!=1{return false}
+
+    // Hold the mutex in this thread while a second scheduled thread enters
+    // KeWaitForSingleObject. It must block, then receive ownership before
+    // the releasing thread can observe the waiter as completed.
+    if unsafe{ke_wait_for_single_object(method_mutex,0,0,0,core::ptr::null())}!=STATUS_SUCCESS{return false}
+    AML_METHOD_MUTEX_TEST_STATUS.store(STATUS_NOT_IMPLEMENTED,Ordering::Release);
+    let mutex_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(AML_METHOD_MUTEX_TEST_STACK).cast::<u8>(),8192)};
+    let mutex_waiter=match crate::thread::spawn(mutex_stack,1u64<<cpu,aml_method_mutex_waiter,core::ptr::null_mut()){Ok(id)=>id,Err(_)=>{let _=unsafe{ke_release_mutex(method_mutex,0)};return false}};
+    spins=0;
+    while spins<10000&&crate::thread::state(mutex_waiter)!=Some(crate::thread::ThreadState::Blocked){
+        let _=crate::thread::yield_current();spins+=1;
+    }
+    if crate::thread::state(mutex_waiter)!=Some(crate::thread::ThreadState::Blocked){
+        let _=unsafe{ke_release_mutex(method_mutex,0)};return false
+    }
+    if unsafe{ke_release_mutex(method_mutex,0)}!=0{return false}
+    spins=0;
+    while spins<10000&&crate::thread::state(mutex_waiter)!=Some(crate::thread::ThreadState::Exited){
+        let _=crate::thread::yield_current();spins+=1;
+    }
+    if crate::thread::state(mutex_waiter)!=Some(crate::thread::ThreadState::Exited)
+        ||AML_METHOD_MUTEX_TEST_STATUS.load(Ordering::Acquire)!=STATUS_SUCCESS
+        ||unsafe{ke_read_state_mutex(method_mutex)}!=1{return false}
 
     let queue=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_QUEUE).cast::<ExecutiveQueue>()};
     unsafe{ke_initialize_queue(queue,1);}
