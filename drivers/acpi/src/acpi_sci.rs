@@ -71,7 +71,7 @@ pub fn resolve_sci_route(fadt: &FadtInfo, madt: &MadtInfo) -> Result<SciRoute, S
 
 /// Callback signatures and the size/version-tagged HAL service table live in
 /// the shared HAL contract crate so both sides compile against one ABI definition.
-pub use cognacos_hal_contract::{AcpiSciHalServices, AcpiSciIsr as SciIsr, AcpiSciDpc as SciDpc};
+pub use cognacos_hal_contract::{AcpiSciHalServices, AcpiSciIsr as SciIsr, AcpiSciDpc as SciDpc, AcpiQueuePassiveWorker, AcpiRundownPassiveWorker};
 pub type SciPassiveWorker = extern "C" fn(context: u64);
 
 /// Lifecycle state makes partial startup and teardown retryable. A route is
@@ -159,10 +159,15 @@ impl SciLifecycle {
         let enable = services.set_enabled.ok_or(SciError::BackendUnavailable)?;
         let unregister = services.unregister.ok_or(SciError::BackendUnavailable)?;
         let release = services.release_vector.ok_or(SciError::BackendUnavailable)?;
+        let rundown = services.rundown_passive_worker.ok_or(SciError::BackendUnavailable)?;
         if unsafe { enable(vector, false) } != 0 { return Err(SciError::BackendFailure); }
         if handler_was_registered && unsafe { unregister(vector, context) } != 0 {
             return Err(SciError::BackendFailure);
         }
+        // HAL unregister drains ISR and DPC callbacks. Only then may the kernel
+        // close this driver's passive-work admission and wait for an active AML
+        // callback to return; the context remains valid throughout both drains.
+        if !rundown(context) { return Err(SciError::QueueFailure); }
         if unsafe { release(vector) } != 0 { return Err(SciError::BackendFailure); }
         self.state = SciState::Stopped;
         self.vector = 0;
@@ -182,10 +187,39 @@ pub struct SciCallbackContext {
     /// records to the bounded GPE queue. Must be ISR-safe and nonblocking.
     pub capture_gpes: extern "C" fn(owner_context: u64) -> bool,
     /// Enqueues a kernel work item. Must not execute the worker inline.
-    pub queue_passive_worker: extern "C" fn(owner_context: u64, routine: SciPassiveWorker) -> bool,
+    pub queue_passive_worker: AcpiQueuePassiveWorker,
+    /// Close admission and drain callbacks for this owner context before unload.
+    pub rundown_passive_worker: AcpiRundownPassiveWorker,
     /// Drains the GPE/EC queues and invokes AML at PASSIVE_LEVEL.
     pub run_passive_worker: extern "C" fn(owner_context: u64),
 }
+impl SciCallbackContext {
+    /// Bind the executive queue callbacks from the versioned kernel/HAL table.
+    /// The caller must place this value in stable nonpaged driver storage.
+    pub fn new(
+        owner_context: u64,
+        capture_gpes: extern "C" fn(u64) -> bool,
+        run_passive_worker: extern "C" fn(u64),
+        services: &AcpiSciHalServices,
+    ) -> Result<Self, SciError> {
+        if owner_context == 0 || !services.compatible() {
+            return Err(SciError::BackendUnavailable);
+        }
+        Ok(Self {
+            owner_context,
+            capture_gpes,
+            queue_passive_worker: services.queue_passive_worker.ok_or(SciError::BackendUnavailable)?,
+            rundown_passive_worker: services.rundown_passive_worker.ok_or(SciError::BackendUnavailable)?,
+            run_passive_worker,
+        })
+    }
+
+    /// Called only after SCI is masked and HAL has drained ISR/DPC callbacks.
+    pub fn rundown(&self) -> bool {
+        (self.rundown_passive_worker)(self.owner_context)
+    }
+}
+
 /// HAL ISR callback: capture only. The HAL queues the associated DPC after
 /// interrupt dispatch/EOI; no AML or passive synchronization is permitted here.
 pub extern "C" fn sci_isr_trampoline(context: u64) -> bool {
