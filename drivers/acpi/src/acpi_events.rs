@@ -291,7 +291,7 @@ mod tests{
   f.sleep_control_register=Some(gas(0x100));
   let r=platform_registers(&f).unwrap();
   assert_eq!(r.model,AcpiHardwareModel::FixedHardware);
-  assert_eq!(r.pm1a_control,Some(gas(0x404)));
+  assert_eq!(r.pm1a_control,Some(AcpiGas{address_space_id:1,bit_width:16,bit_offset:0,access_size:1,address:0x404}));
   assert_eq!(r.sleep_control,None);
  }
  #[test]fn fixed_sleep_plan_sets_both_pm1_blocks(){
