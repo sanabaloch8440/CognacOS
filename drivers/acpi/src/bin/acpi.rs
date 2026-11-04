@@ -207,6 +207,42 @@ __imp_ex_ExAllocatePoolWithTag: .quad 0
 __imp_ex_ExFreePoolWithTag: .quad 0
 "#);
 
+/// ACPI's AML allocator is backed by ntoskrnl executive pool, not Rust's
+/// global allocator. AML runs at PASSIVE_LEVEL, but nonpaged storage is used
+/// so nested method execution and deferred callbacks never depend on paging.
+unsafe extern "win64" fn aml_pool_allocate(
+    _context: *mut core::ffi::c_void,
+    size: usize,
+    tag: u32,
+    zeroed: u8,
+) -> *mut core::ffi::c_void {
+    if size == 0 { return core::ptr::null_mut(); }
+    let allocation = unsafe { ExAllocatePoolWithTag(512, size, tag) };
+    if !allocation.is_null() && zeroed != 0 {
+        unsafe { core::ptr::write_bytes(allocation, 0, size); }
+    }
+    allocation.cast()
+}
+
+unsafe extern "win64" fn aml_pool_release(
+    _context: *mut core::ffi::c_void,
+    allocation: *mut core::ffi::c_void,
+    tag: u32,
+) -> u8 {
+    if allocation.is_null() { return 1; }
+    unsafe { ExFreePoolWithTag(allocation.cast::<u8>(), tag); }
+    1
+}
+
+/// Immutable versioned service table. Its callbacks reside in this driver
+/// image and remain valid until DriverUnload has drained AML execution.
+static AML_POOL_SERVICES: acpi::aml_storage::AmlPoolServices =
+    acpi::aml_storage::AmlPoolServices::new(
+        core::ptr::null_mut(),
+        Some(aml_pool_allocate),
+        Some(aml_pool_release),
+    );
+
 #[derive(Clone,Copy)]
 struct AcpiDeviceRecord { table:Option<acpi::aml_tables::TableHandle>,node:u16,aml_bytes:&'static [u8],identity:acpi::acpi_device::AcpiDeviceIdentity }
 impl AcpiDeviceRecord {
@@ -1655,10 +1691,9 @@ impl acpi::acpi_device::AcpiMethodInvoker for PoolBackedAcpiMethodInvoker<'_> {
         args: &[acpi::aml_objects::AmlRuntimeValue],
     ) -> Result<acpi::acpi_device::AcpiMethodValue, acpi::aml_exec::ExecError> {
         let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
-        let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
-        if allocation.is_null() { return Err(acpi::aml_exec::ExecError::TargetTypeMismatch); }
+        let allocation = unsafe { AML_POOL_SERVICES.allocate_zeroed(bytes) }
+            .map_err(|_| acpi::aml_exec::ExecError::TargetTypeMismatch)?;
         let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
-        unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
         let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(
             if self.integer_width_bits == 32 { 1 } else { 2 }
         );
@@ -1719,7 +1754,7 @@ impl acpi::acpi_device::AcpiMethodInvoker for PoolBackedAcpiMethodInvoker<'_> {
         };
         unsafe {
             core::ptr::drop_in_place(arena);
-            ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
+            let _ = AML_POOL_SERVICES.release(allocation);
         }
         mapped
     }
@@ -1847,12 +1882,9 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
                 .map(|revision| if *revision >= 2 { 64 } else { 32 })
                 .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
             let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
-            let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
-            if allocation.is_null() {
-                return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
-            }
+            let allocation = unsafe { AML_POOL_SERVICES.allocate_zeroed(bytes) }
+                .map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
             let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
-            unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
             let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(if width == 32 { 1 } else { 2 });
             let evaluated = acpi::acpi_prt::evaluate_prt_object_in_context(
                 self.namespace, self.sources, bus_node, width,
@@ -1861,7 +1893,7 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
             );
             unsafe {
                 core::ptr::drop_in_place(arena);
-                ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
+                let _ = AML_POOL_SERVICES.release(allocation);
             }
             evaluated.map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)
         })();
