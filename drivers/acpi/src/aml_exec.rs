@@ -520,7 +520,7 @@ impl<'a,'b> Machine<'a,'b>{
      let (event,owner)=self.event_object(r)?;
      let timeout_value=self.term_value(r)?;
      let timeout=u16::try_from(self.operand_integer(&timeout_value)?).map_err(|_|ExecError::TargetTypeMismatch)?;
-     Ok(Self::integer_value((!self.sync.wait_event(event,owner,timeout)?) as u64))
+     Ok(Self::integer_value(if self.sync.wait_event(event,owner,timeout)?{0}else{self.integer_mask()}))
     },
     _=>{r.pos=start;self.term(r).map(Self::integer_value)}
    }},
