@@ -1,5 +1,5 @@
 // WDM interrupt connection and teardown exports.
-//!
+//
 // @partial implementation
 // Windows x64 entry-point ABIs and parameter layouts are implemented. The
 // dispatcher supports bounded shared-vector ISR fanout (eight registrations
