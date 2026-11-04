@@ -2,7 +2,7 @@
 //!
 //! Only SystemMemory and SystemIO are implemented here. AML/ACPI callers pass
 //! descriptors, never raw pointers. Memory apertures are mapped through the
-//! kernel's uncached I/O-space mapper; port accesses use architecture HAL I/O.
+//! kernel-provided MM callback; port accesses use architecture HAL I/O.
 use core::sync::atomic::{AtomicBool,AtomicU64,Ordering};
 
 const PAGE_SIZE:u64=4096;
@@ -19,7 +19,7 @@ pub enum GasError{UnsupportedAddressSpace,InvalidAddress,InvalidWidth,InvalidAcc
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 struct Access{bytes:u8,field_width:u8,bit_offset:u8,mask:u64}
-fn access(gas:crate::acpi::AcpiGas)->Result<Access,GasError>{
+fn access(gas:crate::GenericAddressStructure)->Result<Access,GasError>{
     if !matches!(gas.address_space_id,SPACE_SYSTEM_MEMORY|SPACE_SYSTEM_IO){return Err(GasError::UnsupportedAddressSpace)}
     if gas.address==0{return Err(GasError::InvalidAddress)}
     if gas.bit_width==0||gas.bit_width>64||gas.bit_offset>63
@@ -59,12 +59,12 @@ fn memory_pointer(address:u64,bytes:u8)->Result<*mut u8,GasError>{
     let index=MAPPED_PHYSICAL.iter().position(|p|p.load(Ordering::Relaxed)==0).ok_or(GasError::MappingTableFull)?;
     // map_io_space rejects firmware-described RAM and creates an uncached,
     // supervisor-only mapping. The physical page is retained for HAL lifetime.
-    let base=crate::kernel_vm::map_io_space(page,PAGE_SIZE).map_err(|_|GasError::MappingFailure)?;
+    let base=crate::kernel_services::map_io_space(page,PAGE_SIZE).map_err(|_|GasError::MappingFailure)?;
     MAPPED_VIRTUAL[index].store(base,Ordering::Relaxed);
     MAPPED_PHYSICAL[index].store(page+1,Ordering::Release);
     Ok((base+offset) as *mut u8)
 }
-unsafe fn read_raw(gas:crate::acpi::AcpiGas,a:Access)->Result<u64,GasError>{
+unsafe fn read_raw(gas:crate::GenericAddressStructure,a:Access)->Result<u64,GasError>{
     match gas.address_space_id{
         SPACE_SYSTEM_MEMORY=>{
             let p=memory_pointer(gas.address,a.bytes)?;
@@ -85,7 +85,7 @@ unsafe fn read_raw(gas:crate::acpi::AcpiGas,a:Access)->Result<u64,GasError>{
         _=>Err(GasError::UnsupportedAddressSpace),
     }
 }
-unsafe fn write_raw(gas:crate::acpi::AcpiGas,a:Access,value:u64)->Result<(),GasError>{
+unsafe fn write_raw(gas:crate::GenericAddressStructure,a:Access,value:u64)->Result<(),GasError>{
     match gas.address_space_id{
         SPACE_SYSTEM_MEMORY=>{
             let p=memory_pointer(gas.address,a.bytes)?;
@@ -109,13 +109,13 @@ unsafe fn write_raw(gas:crate::acpi::AcpiGas,a:Access,value:u64)->Result<(),GasE
     }
 }
 /// Read the normalized GAS field value (bit_offset is shifted to bit zero).
-pub unsafe fn read(gas:crate::acpi::AcpiGas)->Result<u64,GasError>{
+pub unsafe fn read(gas:crate::GenericAddressStructure)->Result<u64,GasError>{
     let a=access(gas)?;
     let raw=unsafe{read_raw(gas,a)?};
     Ok((raw&a.mask)>>a.bit_offset)
 }
 /// Write a normalized GAS field value, preserving all bits outside the field.
-pub unsafe fn write(gas:crate::acpi::AcpiGas,value:u64)->Result<(),GasError>{
+pub unsafe fn write(gas:crate::GenericAddressStructure,value:u64)->Result<(),GasError>{
     let a=access(gas)?;
     let field_limit=if a.field_width==64{u64::MAX}else{(1u64<<a.field_width)-1};
     if value&!field_limit!=0{return Err(GasError::InvalidWidth)}
@@ -126,7 +126,7 @@ pub unsafe fn write(gas:crate::acpi::AcpiGas,value:u64)->Result<(),GasError>{
 }
 /// Read and update a GAS field as one serialized operation for callers that
 /// share a register. This lock does not replace device-specific synchronization.
-pub unsafe fn update(gas:crate::acpi::AcpiGas,clear_mask:u64,set_mask:u64)->Result<u64,GasError>{
+pub unsafe fn update(gas:crate::GenericAddressStructure,clear_mask:u64,set_mask:u64)->Result<u64,GasError>{
     let a=access(gas)?;
     let limit=if a.field_width==64{u64::MAX}else{(1u64<<a.field_width)-1};
     if (clear_mask|set_mask)&!limit!=0{return Err(GasError::InvalidWidth)}
@@ -155,8 +155,8 @@ pub fn mapped_page_count()->usize{MAPPED_PHYSICAL.iter().filter(|p|p.load(Orderi
 #[cfg(test)]
 mod tests{
     use super::*;
-    fn gas(space:u8,address:u64,width:u8,offset:u8,size:u8)->crate::acpi::AcpiGas{
-        crate::acpi::AcpiGas{address_space_id:space,bit_width:width,bit_offset:offset,access_size:size,address}
+    fn gas(space:u8,address:u64,width:u8,offset:u8,size:u8)->crate::GenericAddressStructure{
+        crate::GenericAddressStructure{address_space_id:space,bit_width:width,bit_offset:offset,access_size:size,address}
     }
     #[test]fn validates_field_shapes(){
         assert_eq!(access(gas(0,0x1000,8,0,1)).unwrap().bytes,1);
