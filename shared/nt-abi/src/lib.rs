@@ -516,7 +516,9 @@ pub mod bus {
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>(), 0x30);
                 assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>(), 8);
-                assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>(), 8);
+                assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>(), 24);
+                assert_eq!(core::mem::size_of::<PCI_INTERRUPT_INTERFACE>(), 0x40);
+                assert_ne!(GUID_PCI_INTERRUPT_INTERFACE, GUID_PCI_DEVICE_INTERFACE);
                 assert_ne!(GUID_ACPI_FIRMWARE_INTERFACE, GUID_ACPI_FIRMWARE_INTERFACE_V2);
                 assert_eq!(core::mem::size_of::<PCI_BRIDGE_INFORMATION>(), 0x08);
                 assert_eq!(core::mem::size_of::<PCI_BUS_INTERFACE>(), 0x50);
