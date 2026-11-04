@@ -1683,58 +1683,68 @@ struct AcpiPrtBusProvider<'a> {
 }
 impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
     fn table_for_bus(&self, bus_node: u16) -> Result<acpi::acpi_prt::PrtTable, acpi::acpi_prt::PrtError> {
-        let Some(_) = self.namespace.find_child(bus_node, *b"_PRT") else {
-            return Ok(acpi::acpi_prt::PrtTable::EMPTY);
-        };
-        let prt = self.namespace.find_child(bus_node, *b"_PRT").unwrap();
-        let table_index = self.namespace.nodes.get(prt as usize)
-            .filter(|_| (prt as usize) < self.namespace.count)
-            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?.source_table as usize;
-        let width = self.sources.get(table_index).and_then(|table| table.get(8))
-            .map(|revision| if *revision >= 2 { 64 } else { 32 })
-            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
-        let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
-        let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
-        if allocation.is_null() { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
-        let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
-        unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
-        let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(if width == 32 { 1 } else { 2 });
-        // Hold the AML table execution barrier while a method-valued _PRT
-        // executes so DSDT/SSDT namespace storage cannot be unloaded beneath it.
         if self.gate.enter_method().is_err() {
-            unsafe { ExFreePoolWithTag(allocation, ACPI_POOL_TAG); }
             return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
         }
-        let result = acpi::acpi_prt::evaluate_prt_object_in_context(
-            self.namespace, self.sources, bus_node, width,
-            unsafe { &mut *arena }, &mut bindings,
-            &KERNEL_AML_METHOD_SYNCHRONIZER, self.resolver,
-        );
+        let result = (|| {
+            let Some(prt) = self.namespace.find_child(bus_node, *b"_PRT") else {
+                return Ok(acpi::acpi_prt::PrtTable::EMPTY);
+            };
+            let table_index = self.namespace.nodes.get(prt as usize)
+                .filter(|_| (prt as usize) < self.namespace.count)
+                .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?.source_table as usize;
+            let width = self.sources.get(table_index).and_then(|table| table.get(8))
+                .map(|revision| if *revision >= 2 { 64 } else { 32 })
+                .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
+            let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
+            if allocation.is_null() {
+                return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
+            }
+            let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
+            unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
+            let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(if width == 32 { 1 } else { 2 });
+            let evaluated = acpi::acpi_prt::evaluate_prt_object_in_context(
+                self.namespace, self.sources, bus_node, width,
+                unsafe { &mut *arena }, &mut bindings,
+                &KERNEL_AML_METHOD_SYNCHRONIZER, self.resolver,
+            );
+            unsafe {
+                core::ptr::drop_in_place(arena);
+                ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
+            }
+            evaluated.map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)
+        })();
         self.gate.leave_method();
-        unsafe {
-            core::ptr::drop_in_place(arena);
-            ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
-        }
-        result.map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)
+        result
     }
 
     fn bridge_slot_for_downstream_bus(&self, downstream_bus: u16, upstream_bus: u16)
         -> Result<(u8, u8), acpi::acpi_prt::PrtError> {
-        let node = self.namespace.nodes.get(downstream_bus as usize)
-            .filter(|_| (downstream_bus as usize) < self.namespace.count)
-            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
-        if node.parent != upstream_bus { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
-        let adr = self.namespace.find_child(downstream_bus, *b"_ADR")
-            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
-        let value = evaluate_aml_integer_object(
-            self.manager, self.gate, self.namespace, adr, self.sources, self.handles,
-        ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
-        let device = ((value >> 16) & 0xffff) as u16;
-        let function = (value & 0xffff) as u16;
-        if device >= 32 || function >= 8 || value >> 32 != 0 {
-            return Err(acpi::acpi_prt::PrtError::InvalidPin);
+        if self.gate.enter_method().is_err() {
+            return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
         }
-        Ok((device as u8, function as u8))
+        let result = (|| {
+            let node = self.namespace.nodes.get(downstream_bus as usize)
+                .filter(|_| (downstream_bus as usize) < self.namespace.count)
+                .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            if node.parent != upstream_bus {
+                return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
+            }
+            let adr = self.namespace.find_child(downstream_bus, *b"_ADR")
+                .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let value = evaluate_aml_integer_object(
+                self.manager, self.gate, self.namespace, adr, self.sources, self.handles,
+            ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+            let device = ((value >> 16) & 0xffff) as u16;
+            let function = (value & 0xffff) as u16;
+            if device >= 32 || function >= 8 || value >> 32 != 0 {
+                return Err(acpi::acpi_prt::PrtError::InvalidPin);
+            }
+            Ok((device as u8, function as u8))
+        })();
+        self.gate.leave_method();
+        result
     }
 }
 
