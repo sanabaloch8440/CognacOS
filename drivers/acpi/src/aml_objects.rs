@@ -298,6 +298,29 @@ mod tests {
         let mut arena = test_arena();
         assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::MalformedObject));
     }
+    #[test] fn varpackage_fills_declared_runtime_count_with_uninitialized_tail(){
+        // VarPackage(ByteConst(3), { One }) has one explicit initializer and
+        // two implicit Uninitialized elements.
+        let bytes=[0x13,0x04,0x0a,3,0x01];
+        let mut arena=test_arena();
+        let (id,end)=decode_data_object(&bytes,0,bytes.len(),&mut arena).unwrap();
+        assert_eq!(end,bytes.len());
+        let package=arena.get(id).unwrap();
+        assert_eq!(package.kind,AmlValueKind::Package);
+        assert_eq!(package.element_count,3);
+        assert_eq!(arena.get(package.elements[0]).unwrap().integer,1);
+        assert_eq!(arena.get(package.elements[1]).unwrap().kind,AmlValueKind::Uninitialized);
+        assert_eq!(arena.get(package.elements[2]).unwrap().kind,AmlValueKind::Uninitialized);
+    }
+    #[test] fn malformed_nested_package_rolls_back_every_partial_allocation(){
+        // The nested String is unterminated; the outer package and any
+        // successfully decoded children must not remain visible in the arena.
+        let bytes=[0x12,0x04,1,0x0d,b'x'];
+        let mut arena=test_arena();
+        assert_eq!(decode_data_object(&bytes,0,bytes.len(),&mut arena),Err(ObjectError::Truncated));
+        assert_eq!(arena.count,0);
+        assert!(arena.values.iter().all(|value|value.kind==AmlValueKind::Empty));
+    }
     #[test] fn rejects_truncated_strings_and_oversized_packages(){
         let mut arena = test_arena();
         assert_eq!(decode_data_object(&[0x0d,b'x'],0,2,&mut arena),Err(ObjectError::Truncated));
