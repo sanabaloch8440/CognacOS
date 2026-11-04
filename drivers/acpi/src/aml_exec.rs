@@ -777,10 +777,11 @@ pub fn evaluate_term_argument_in_context(
     let mut dynamic = AmlDynamicNamespace::new();
     let checkpoint = arena.count;
     let empty = Machine::uninitialized_value();
+    let mut sync_state=AmlSyncState::new();
     let mut machine = Machine {
         locals: [empty; 8], args: [empty; 7], frame_cells: [u16::MAX; 128], frame_cell_count: 0, arena, bindings,
         integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
-        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, sync_state:&mut AmlSyncState::new(), dynamic: &mut dynamic, owner_table: 0,
+        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, sync_state:&mut sync_state, dynamic: &mut dynamic, owner_table: 0,
     };
     let mut reader = Reader { bytes, pos: 0, end: bytes.len() };
     let result = machine.term(&mut reader).map(|value| (value, reader.pos));
@@ -1769,4 +1770,74 @@ mod tests{
   let value=execute_method_in_dynamic_context(&aml,&ns,id,&[],64,&mut arena,&mut bindings,&mut dynamic,&NO_METHOD_SYNCHRONIZER).unwrap();
   assert_eq!(value.kind,AmlValueKind::Package);let element=arena.get(value.elements[0]).unwrap();assert_eq!(element.kind,AmlValueKind::Integer);assert_eq!(element.integer,42);
  }
+
+#[cfg(test)]
+mod explicit_mutex_tests {
+ use super::*;
+ use core::sync::atomic::{AtomicBool,AtomicUsize,Ordering};
+ struct TestSync { available:AtomicBool, held:AtomicBool, acquisitions:AtomicUsize, releases:AtomicUsize, timeout:AtomicUsize }
+ impl TestSync { fn new(available:bool)->Self{Self{available:AtomicBool::new(available),held:AtomicBool::new(false),acquisitions:AtomicUsize::new(0),releases:AtomicUsize::new(0),timeout:AtomicUsize::new(0)}} }
+ impl AmlMethodSynchronizer for TestSync {
+  fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
+  fn release(&self,_:u16){}
+  fn acquire_mutex(&self,_:u16,_:u8,timeout:u16)->Result<bool,ExecError>{
+   self.timeout.store(timeout as usize,Ordering::SeqCst);
+   self.acquisitions.fetch_add(1,Ordering::SeqCst);
+   if !self.available.load(Ordering::SeqCst){return Ok(false)}
+   if self.held.swap(true,Ordering::SeqCst){return Ok(false)}
+   Ok(true)
+  }
+  fn release_mutex(&self,_:u16)->Result<(),ExecError>{
+   if !self.held.swap(false,Ordering::SeqCst){return Err(ExecError::SyncLevelViolation)}
+   self.releases.fetch_add(1,Ordering::SeqCst);Ok(())
+  }
+ }
+ fn load_mutex_method(flags:u8,body:&[u8])->(std::vec::Vec<u8>,AmlNamespace,u16){
+  let mut aml=std::vec![0x5b,0x01,b'M',b'T',b'X',b'0',3];
+  let package_length=1+4+1+body.len();
+  aml.extend_from_slice(&[0x14,package_length as u8,b'T',b'E',b'S',b'T',flags]);
+  aml.extend_from_slice(body);
+  let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();(aml,namespace,method)
+ }
+ #[test]
+ fn acquire_release_preserve_sync_level_and_pass_infinite_timeout(){
+  // Store(Acquire(MTX0, 0xffff), Local0); Release(MTX0); Return(Local0)
+  let body=[0x70,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff,0x60,
+            0x5b,0x27,b'M',b'T',b'X',b'0',0xa4,0x60];
+  let (aml,ns,method)=load_mutex_method(0,&body);let sync=TestSync::new(true);
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(0)));
+  assert_eq!(sync.acquisitions.load(Ordering::SeqCst),1);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),1);
+  assert_eq!(sync.timeout.load(Ordering::SeqCst),0xffff);
+  assert!(!sync.held.load(Ordering::SeqCst));
+ }
+ #[test]
+ fn acquire_timeout_returns_one_without_release(){
+  let body=[0xa4,0x5b,0x23,b'M',b'T',b'X',b'0',0x34,0x12];
+  let (aml,ns,method)=load_mutex_method(0,&body);let sync=TestSync::new(false);
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
+  assert_eq!(sync.acquisitions.load(Ordering::SeqCst),1);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),0);
+  assert_eq!(sync.timeout.load(Ordering::SeqCst),0x1234);
+ }
+ #[test]
+ fn rejects_acquiring_mutex_below_current_sync_level(){
+  let body=[0xa4,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff];
+  let (aml,ns,method)=load_mutex_method(0x58,&body);let sync=TestSync::new(true);
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::SyncLevelViolation));
+  assert_eq!(sync.acquisitions.load(Ordering::SeqCst),0);
+ }
+ #[test]
+ fn releases_mutex_when_method_faults_after_acquisition(){
+  // Acquire, then execute an unsupported opcode. The invocation cleanup must
+  // release its lock before returning the execution error.
+  let body=[0x70,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff,0x60,0x5b,0x27,b'M',b'T',b'X',b'0',0x5b,0x7f];
+  let (aml,ns,method)=load_mutex_method(0,&body);let sync=TestSync::new(true);
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::UnsupportedOpcode));
+  assert_eq!(sync.releases.load(Ordering::SeqCst),1);
+  assert!(!sync.held.load(Ordering::SeqCst));
+ }
+}
+
 }
