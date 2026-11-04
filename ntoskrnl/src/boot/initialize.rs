@@ -170,7 +170,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic == BOOT_INFO_MAGIC && info.version == 11
+        if info.magic == BOOT_INFO_MAGIC && info.version == 12
             && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() {
             BOOT_SECURITY_FLAGS.store(info.security_flags,core::sync::atomic::Ordering::Release);
             for (index,byte) in info.kernel_digest.iter().copied().enumerate(){
@@ -178,7 +178,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             }
             boot_handoff::install_boot_assets(info);
         }
-        if info.magic != BOOT_INFO_MAGIC || info.version != 11
+        if info.magic != BOOT_INFO_MAGIC || info.version != 12
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -211,7 +211,7 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 11\r\n");
+        serial_write(b"Boot information version: 12\r\n");
         if info.security_flags & (1 << 6) == 0 {
             serial_write(b"FATAL: bootloader did not attest kernel code signature verification.\r\n");
             halt();
@@ -361,6 +361,50 @@ pub(crate) fn initialize(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Page-table inspection passed: low boot data, physical stack backing, APIC windows, and firmware handoff mappings are valid.\r\n");
+
+        // SMBIOS is optional platform identity input. Validate the entry point
+        // and declared structure-table range against the active identity map
+        // before constructing physical slices.
+        if info.smbios_entry_point != 0 {
+            let ep_mapped = unsafe {
+                memory::validate_identity_range(info.pml4_physical, info.smbios_entry_point, 31)
+            }.is_ok();
+            if ep_mapped {
+                let ep = unsafe { core::slice::from_raw_parts(info.smbios_entry_point as *const u8, 31) };
+                match acpi::quirks::parse_smbios_entry_point(ep) {
+                    Ok(desc) if desc.table_length <= 16 * 1024 * 1024
+                        && unsafe { memory::validate_identity_range(
+                            info.pml4_physical, desc.table_address, desc.table_length as u64
+                        ) }.is_ok() => {
+                        let table = unsafe { core::slice::from_raw_parts(
+                            desc.table_address as *const u8, desc.table_length as usize
+                        ) };
+                        match acpi::quirks::parse_smbios_table(table, desc.major, desc.minor) {
+                            Ok(identity) => {
+                                let registry = [
+                                    acpi::quirks::FUJITSU_SIEMENS_QUIRK,
+                                    acpi::quirks::DELL_0A3E_QUIRK,
+                                ];
+                                match acpi::quirks::evaluate_registry(&identity, &registry) {
+                                    Ok(policy) => {
+                                        serial_write(b"SMBIOS platform identity accepted; ACPI quirks matched: ");
+                                        serial_write_decimal(policy.matched_count);
+                                        serial_write(b"\\r\\n");
+                                        boot_handoff::publish_acpi_quirk_policy(policy);
+                                    }
+                                    Err(_) => serial_write(b"WARNING: conflicting ACPI quirk policy; no quirks applied.\\r\\n"),
+                                }
+                            }
+                            Err(_) => serial_write(b"WARNING: malformed SMBIOS structure table; platform quirks disabled.\\r\\n"),
+                        }
+                    }
+                    Ok(_) => serial_write(b"WARNING: SMBIOS structure table is oversized or unmapped; platform quirks disabled.\\r\\n"),
+                    Err(_) => serial_write(b"WARNING: invalid SMBIOS entry point; platform quirks disabled.\\r\\n"),
+                }
+            } else {
+                serial_write(b"WARNING: SMBIOS entry point is not identity mapped; platform quirks disabled.\\r\\n");
+            }
+        }
 
         let stack_end_virtual = info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes);
         let expected_stack_physical = current_rsp.checked_sub(info.kernel_stack_virtual_guard)
