@@ -476,10 +476,15 @@ pub fn resolve_requester_path(segment:u16,root_bus:u8,endpoint_bus:u8,
         if visited[bus as usize]{return Err(PciTopologyError::Cycle)}
         visited[bus as usize]=true;
         let mut best:Option<PciBridgeRange>=None;
-        for b in bridges.iter().filter(|b|b.segment==segment) {
+        for (bridge_index, b) in bridges.iter().enumerate().filter(|(_, b)|b.segment==segment) {
             if b.device>=32||b.function>=8||b.secondary_bus<=b.primary_bus
                 ||b.subordinate_bus<b.secondary_bus {
                 return Err(PciTopologyError::InvalidBridgeRange)
+            }
+            if bridges.iter().skip(bridge_index + 1).any(|other|
+                other.segment == segment && other.secondary_bus == b.secondary_bus
+            ) {
+                return Err(PciTopologyError::AmbiguousParentBridge)
             }
             if b.secondary_bus<=bus&&bus<=b.subordinate_bus {
                 match best {
