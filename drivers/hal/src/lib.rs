@@ -58,7 +58,6 @@ impl PciHostBridgeResourceSet {
             && self.version == PCI_HOST_BRIDGE_RESOURCES_VERSION
             && self.count as usize <= PCI_HOST_BRIDGE_MAX_WINDOWS
             && self.bus_start <= self.bus_end
-            && self.windows[0].reserved == 0
     }
 }
 
