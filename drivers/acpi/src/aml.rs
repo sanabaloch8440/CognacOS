@@ -328,7 +328,13 @@ fn skip_data_object_depth(c:&mut Cursor<'_>,depth:u8)->Result<(),AmlError>{
         0x75|0x76=>skip_target(c),
         0x81|0x82=>{skip_data_object_depth(c,depth+1)?;skip_target(c)},
         0x80=>{skip_data_object_depth(c,depth+1)?;skip_target(c)},
+        0x71=>skip_target(c), // RefOf(SuperName)
         0x83|0x92=>skip_data_object_depth(c,depth+1),
+        0x5b=>{ // CondRefOf(SuperName, Target)
+            let extended=c.byte()?;
+            if extended!=0x12{return Err(AmlError::UnsupportedOpcode)}
+            skip_target(c)?;skip_target(c)
+        },
         0x88=>{ // Index(Source, Index, Target)
             skip_data_object_depth(c,depth+1)?;
             skip_data_object_depth(c,depth+1)?;
