@@ -89,7 +89,7 @@ jobs:
           test -s ntoskrnl/src/io/dma/vtd.rs
           test -s drivers/hal/src/kernel_services.rs
           grep -Fq 'pub mod hal;' drivers/hal/src/lib.rs
-          grep -Fq 'pub(crate) use cognacos_hal_contract::hal as hal;' ntoskrnl/src/main.rs
+          grep -Fq 'pub(crate) use cognacos_hal_impl::hal as hal;' ntoskrnl/src/main.rs
           if grep -Fq '#[path = "../../Hal/mod.rs"]' ntoskrnl/src/main.rs; then
             echo "NTOSKRNL must consume the independently compiled HAL crate." >&2
             exit 1
