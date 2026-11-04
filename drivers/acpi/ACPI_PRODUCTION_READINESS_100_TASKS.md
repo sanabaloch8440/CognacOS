@@ -42,7 +42,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 26. [x] Implement exact AML operand/target typing and conversion rules. Verified by AML runtime, method-executor, parser, and table-lifecycle regression suites; see `AML_OPERAND_TARGET_CONVERSIONS.md`.
 27. [x] Complete arithmetic, logical, bitwise, conversion, and target-store opcode semantics.
 28. [x] Implement If/Else/While/Break/Continue/Return with package-boundary-safe control flow.
-29. [ ] Correct method argument/local lifetime, recursion, and serialization-flag behavior.
+29. [ ] Correct method argument/local lifetime, recursion, and serialization-flag behavior. *(Boot/QEMU verification deferred to final verification queue; implementation work may proceed earlier.)*
 
 Task 29 follow-up (2026-11-04): the ACPI driver now supplies a concrete `AmlMethodSynchronizer` backed by the kernel's `KeInitializeMutex`, `KeWaitForSingleObject`, and `KeReleaseMutex` path. The AML executor validates monotonic SyncLevel across nested serialized and non-serialized calls and releases implicit mutexes on success and execution errors. Commit `878319c64d40228ec261690dfd4a5f1228dbef60` adds a kernel dispatcher self-test for the exact KMUTEX path used by ACPI: recursive ownership/signal-state transitions and a real second-thread blocking wait with ownership transfer. This does not check task 29 yet: the self-test is invoked once by the kernel lock-stress worker (dispatcher_extended_self_test) and must pass the boot smoke path; table-unload/reload and abandoned-owner behavior still need end-to-end verification. On commit d1c276b757811c8fb4651748fd9e7e344d2346c9, ACPI library tests and native ACPI WDM driver type-check both passed; kernel dispatcher type-check then exposed a Rust parsing error in drivers/pci/src/host_bridge.rs (cast followed by <), corrected in fd680ed1176e75d39de50f6bb4bbd54f12d58024. The next ACPI workflow run must confirm the complete kernel dispatcher stage.
 
@@ -76,6 +76,14 @@ Kernel pool integration follow-up (2026-11-04, branch `kernel-pool-aml-storage`)
 
 The current representation is still deliberately bounded: each package stores at most 128 element IDs inline, each AML value stores at most 256 payload bytes, and one execution arena holds at most 768 values. These are fail-closed implementation budgets, not ACPI or Windows limits. Removing these ceilings requires pool-backed package-element/payload ownership plus a per-table/per-execution budget and rundown; that capacity redesign remains an explicit production follow-up and is not implied by the task-32 semantic checkbox.
 33. [ ] Implement mutex acquire/release timeout and synchronization-level rules.
+
+Task 33 implementation progress (PR branch `acpi-task33-explicit-mutex`; not checked):
+- Added AML `AcquireOp` (ExtOp 0x5B23) evaluation and `ReleaseOp` (ExtOp 0x5B27) statement execution for namespace Mutex objects.
+- Passes the encoded 16-bit timeout to the kernel synchronization provider unchanged; `0xFFFF` retains the AML infinite-wait meaning. A timed-out acquire returns AML Integer One and does not push ownership or change SyncLevel.
+- Enforces the AML SyncLevel ordering rule before asking the provider to acquire; successful acquisitions save the previous level and release restores it.
+- Shares mutex ownership state across nested method calls, requires LIFO release, and unwinds locks acquired by a top-level invocation on normal/error return.
+- Added executor regressions for successful acquire/release, infinite and finite timeout propagation, timeout return value, SyncLevel rejection, and failure cleanup.
+- Remaining before completion: implement the production kernel provider callbacks for explicit Mutex objects; validate ownership/reentrancy, contended wait/wakeup, cancellation and teardown; run ACPI library tests and native driver/kernel type-checks. Cross-thread contention and scheduler wakeup remain final QEMU verification gates.
 34. [ ] Implement Event signal/wait semantics and safe kernel wakeup integration.
 35. [ ] Implement FACS-backed AML Global Lock acquisition/release.
 36. [ ] Implement guarded OperationRegion handlers for SystemMemory, SystemIO, PCI_Config, EC, SMBus, CMOS, and supported serial buses.
@@ -141,7 +149,7 @@ The current representation is still deliberately bounded: each package stores at
 87. [ ] Implement _PRW/_PSW wake-device handling and validate wake sources.
 88. [ ] Integrate RTC/timers with sleep transitions and event timeouts.
 89. [ ] Reevaluate power/thermal state on Notify without executing AML at interrupt level.
-90. [ ] Test suspend/resume and power transitions under QEMU and documented hardware.
+90. [ ] Test suspend/resume and power transitions under QEMU and documented hardware. *(Deferred to final QEMU/hardware verification queue.)*
 
 ## CPU, interrupt, NUMA, and architecture
 
@@ -365,3 +373,17 @@ This PR adds allocator-backed building blocks on top of the merged PR #53 pool c
 - Regression coverage grows a vector to 1,000 entries, exercises checkpoint rollback, and verifies budget exhaustion preserves accounting.
 
 **Important integration status:** this is the storage substrate, not the completed runtime representation migration. `AmlRuntimeValue` and `AmlObjectArena` still contain the legacy inline arrays and their existing ceilings until the interpreter/runtime call sites are migrated. The PR intentionally does not claim that >768 values, >128 Package elements, or >256-byte payloads are already accepted by AML execution. Follow-up work must migrate those consumers and tie allocations to namespace/table rundown before removing the old representation.
+
+## Deferred boot/QEMU verification queue — execute after implementation work
+
+These tasks remain unchecked even when their non-boot portions have unit-test evidence. Run them only after the implementation backlog is complete, using the final UEFI/QEMU campaign and recording the exact workflow run, firmware fixture, and observed result:
+
+- [ ] Task 29 — method argument/local lifetime, recursion, serialization and real scheduler-backed mutex behavior.
+- [ ] Task 34 — kernel Event wakeup/wait integration under the real scheduler.
+- [ ] Task 35 — FACS Global Lock arbitration against firmware/QEMU shared-memory behavior.
+- [ ] Task 78 — coordinated S-state sequencing with CPUs, interrupts, devices and timers.
+- [ ] Task 90 — suspend/resume and power transitions on QEMU and documented hardware.
+- [ ] Task 97 — end-to-end GSI routing through the selected kernel interrupt subsystem.
+- [ ] Task 98 — CPU/memory hotplug lifecycle integration with the kernel.
+
+Do not check these entries from library-only CI, type-checks, or mocked unit tests. Preserve their original task numbers so implementation references and prior evidence remain stable.
