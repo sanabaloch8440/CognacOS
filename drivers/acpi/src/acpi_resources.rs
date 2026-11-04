@@ -185,7 +185,7 @@ pub fn parse_cm_resource_list(bytes:&[u8])->Result<ResourceList,ResourceError>{
                 let base=u64le(bytes,offset+4)?;
                 let length=u32le(bytes,offset+12)? as u64;
                 validate_range(base,base,length)?;
-                Resource::Io{minimum:base,maximum:base,alignment:1,length,decode_16_bit:flags&2!=0}
+                Resource::Io{minimum:base,maximum:base,alignment:1,translation_offset:0,length,decode_16_bit:flags&2!=0}
             }
             2=>{
                 let vector=u32le(bytes,offset+8)?;
@@ -198,7 +198,7 @@ pub fn parse_cm_resource_list(bytes:&[u8])->Result<ResourceList,ResourceError>{
                 let base=u64le(bytes,offset+4)?;
                 let length=u32le(bytes,offset+12)? as u64;
                 validate_range(base,base,length)?;
-                Resource::Memory{minimum:base,maximum:base,alignment:1,length,
+                Resource::Memory{minimum:base,maximum:base,alignment:1,translation_offset:0,length,
                     writeable:flags&1==0,cacheable:flags&0x20!=0,kind:2}
             }
             4=>{
@@ -260,7 +260,7 @@ pub fn parse_resource_template(bytes:&[u8])->Result<ResourceList,ResourceError>{
                 0x0a=>address_space(p,8)?,
                 0x0b if len==53=>{ // Extended address-space descriptor; fields follow QWord layout plus type-specific attributes.
                     let space=p[0];let flags=p[1];let type_flags=p[2];let min=u64le(p,11)?;let max=u64le(p,19)?;
-                    let align=u64le(p,27)?;let translation_offset=u64le(p,35)?;let size=u64le(p,43)?;validate_range(min,max,size)?;
+                    let align=u64le(p,3)?;let translation_offset=u64le(p,27)?;let size=u64le(p,35)?;validate_range(min,max,size)?;
                     match space{0=>Resource::Memory{minimum:min,maximum:max,alignment:align,translation_offset,length:size,writeable:type_flags&1!=0,cacheable:(type_flags>>1)&3!=0,kind:8},
                     1=>Resource::Io{minimum:min,maximum:max,alignment:align,translation_offset,length:size,decode_16_bit:flags&1!=0},
                     2=>Resource::BusNumber{minimum:min,maximum:max,length:size},_=>return Err(ResourceError::UnsupportedDescriptor)}},
@@ -373,9 +373,9 @@ pub fn select_assigned_resources(
 fn project_assignment(requirement:Resource,allocated:Resource)->Option<Resource>{
     match (requirement,allocated){
         (Resource::Io{alignment,length,decode_16_bit,..},Resource::Io{minimum:base,length:actual,..}) if length==actual=>
-            Some(Resource::Io{minimum:base,maximum:base,alignment,length,decode_16_bit}),
+            Some(Resource::Io{minimum:base,maximum:base,alignment,translation_offset:0,length,decode_16_bit}),
         (Resource::Memory{alignment,length,writeable,cacheable,kind,..},Resource::Memory{minimum:base,length:actual,..}) if length==actual=>
-            Some(Resource::Memory{minimum:base,maximum:base,alignment,length,writeable,cacheable,kind}),
+            Some(Resource::Memory{minimum:base,maximum:base,alignment,translation_offset:0,length,writeable,cacheable,kind}),
         (Resource::BusNumber{length,..},Resource::BusNumber{minimum:base,length:actual,..}) if length==actual=>
             Some(Resource::BusNumber{minimum:base,maximum:base+length-1,length}),
         (Resource::Irq{level_triggered,active_low,shared,wake_capable,..},Resource::Irq{mask,..}) if mask.count_ones()==1=>
