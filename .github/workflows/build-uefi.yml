@@ -113,6 +113,10 @@ jobs:
           echo "HAL and independent driver source-boundary checks passed."
       - name: Test shared Windows x64 NT ABI layouts
         run: cargo test --manifest-path shared/nt-abi/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check shared HAL ABI contract independently
+        run: cargo check --manifest-path shared/hal-contract/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets
+      - name: Test shared HAL ABI contract layouts and version gates
+        run: cargo test --manifest-path shared/hal-contract/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Verify LLVM PE inspection tools
         run: |
           command -v llvm-readobj
