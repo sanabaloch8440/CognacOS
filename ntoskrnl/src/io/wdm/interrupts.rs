@@ -176,18 +176,22 @@ pub unsafe extern "win64" fn io_disconnect_interrupt(interrupt_object: *mut c_vo
     else {
         return;
     };
-    if slot.signature.load(Ordering::Acquire) != INTERRUPT_SIGNATURE
-        || !slot.active.swap(false, Ordering::AcqRel)
-    {
+    if slot.signature.load(Ordering::Acquire) != INTERRUPT_SIGNATURE {
         return;
     }
 
-    // Mask the bound source before detaching the ISR; the device driver must
-    // not leave an unhandled level-triggered source asserted during teardown.
+    // Mask before closing the callback gate. If rundown times out, retain the
+    // object fields so a later disconnect retry cannot free live ISR context.
     let _ = unsafe { crate::hal::set_device_interrupt_vector_enabled(vector as u8, false) };
-    let _ = crate::hal::unregister_device_interrupt_handler(vector as u8);
-    if slot.owns_vector.swap(false, Ordering::AcqRel) {
-        let _ = crate::hal::release_device_interrupt_vector(vector as u8);
+    slot.active.store(false, Ordering::Release);
+    if crate::hal::unregister_device_interrupt_handler(vector as u8).is_err() {
+        return;
+    }
+    if slot.owns_vector.load(Ordering::Acquire) {
+        if crate::hal::release_device_interrupt_vector(vector as u8).is_err() {
+            return;
+        }
+        slot.owns_vector.store(false, Ordering::Release);
     }
     slot.routine.store(0, Ordering::Release);
     slot.context.store(0, Ordering::Release);
