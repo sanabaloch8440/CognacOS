@@ -198,6 +198,7 @@ pub unsafe extern "win64" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context:
 const IRP_CANCEL_ROUTINE_OFFSET:usize=0x68;
 const IRP_CANCEL_IRQL_OFFSET:usize=0x45;
 /// Atomically replace the IRP cancel callback and return the previous callback.
+/// The WDM contract requires the caller to hold the global cancel spin lock.
 #[unsafe(export_name = "IoSetCancelRoutine")]
 pub unsafe extern "win64" fn io_set_cancel_routine(
  irp:*mut Irp, routine:Option<DriverCancelRoutine>
@@ -208,6 +209,19 @@ pub unsafe extern "win64" fn io_set_cancel_routine(
  let previous=unsafe{&*slot}.swap(replacement,core::sync::atomic::Ordering::AcqRel);
  release_irp_active_op(irp);
  if previous.is_null(){None}else{Some(unsafe{core::mem::transmute::<*mut c_void,DriverCancelRoutine>(previous)})}
+}
+
+/// Internal convenience for kernel-owned call sites that do not already hold
+/// the cancel spin lock. Driver-facing IoSetCancelRoutine retains the WDK
+/// caller-held-lock contract.
+pub(crate) unsafe fn io_set_cancel_routine_synchronized(
+ irp:*mut Irp,routine:Option<DriverCancelRoutine>
+)->Option<DriverCancelRoutine>{
+ let mut old_irql=0u8;
+ unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
+ let previous=unsafe{io_set_cancel_routine(irp,routine)};
+ unsafe{io_release_cancel_spin_lock(old_irql);}
+ previous
 }
 
 /// Cancel all builder-owned synchronous IRPs associated with an exiting thread.
@@ -324,7 +338,7 @@ unsafe extern "win64" fn wdm_cancel_self_test_cancel(_device: *mut DeviceObject,
 }
 unsafe extern "win64" fn wdm_cancel_self_test_dispatch(_device: *mut DeviceObject, irp: *mut Irp) -> i32 {
     unsafe {
-        let _ = io_set_cancel_routine(irp, Some(wdm_cancel_self_test_cancel));
+        let _ = io_set_cancel_routine_synchronized(irp, Some(wdm_cancel_self_test_cancel));
         io_mark_irp_pending(irp);
     }
     STATUS_PENDING
