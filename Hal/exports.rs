@@ -396,7 +396,7 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
     let rsdp = crate::acpi::rsdp_address();
     if rsdp == 0 { return STATUS_NOT_FOUND; }
     let signature = signature.to_le_bytes();
-    let prefer_rsdt = crate::boot_handoff::acpi_quirk_policy().is_some_and(|policy|
+    let prefer_rsdt = crate::acpi_quirk_policy().is_some_and(|policy|
         policy.flags.contains(crate::acpi::quirks::QuirkFlags::PREFER_RSDT));
     // DSDT is referenced by FADT rather than listed in the RSDT/XSDT. Expose
     // it through the same HAL table API after validating its complete SDT.
