@@ -271,7 +271,11 @@ mod hardware_contract_tests {
 
 /// Private, size/version-tagged ACPI SCI backend contract shared by HAL and ACPI.sys.
 /// This is an internal CognacOS interface, not an additional Windows HAL export.
-pub const ACPI_SCI_SERVICES_VERSION: u32 = 1;
+pub const ACPI_SCI_SERVICES_VERSION: u32 = 2;
+pub const ACPI_PLATFORM_QUIRK_POLICY_VERSION: u32 = 1;
+pub type AcpiGetPlatformQuirkPolicy = unsafe extern "C" fn(
+    policy: *mut *const core::ffi::c_void, size: *mut u32, version: *mut u32,
+) -> u32;
 pub type AcpiSciIsr = extern "C" fn(context: u64) -> bool;
 pub type AcpiSciDpc = extern "C" fn(context: u64);
 pub type AcpiSciAllocateVector = unsafe extern "C" fn(vector: *mut u8) -> u32;
@@ -300,6 +304,8 @@ pub struct AcpiSciHalServices {
     pub release_vector: Option<AcpiSciReleaseVector>,
     pub queue_passive_worker: Option<AcpiQueuePassiveWorker>,
     pub rundown_passive_worker: Option<AcpiRundownPassiveWorker>,
+    /// Returns a read-only, immutable boot-selected policy owned by the kernel.
+    pub get_platform_quirk_policy: Option<AcpiGetPlatformQuirkPolicy>,
 }
 impl AcpiSciHalServices {
     pub const fn compatible(&self) -> bool {
@@ -313,5 +319,6 @@ impl AcpiSciHalServices {
             && self.release_vector.is_some()
             && self.queue_passive_worker.is_some()
             && self.rundown_passive_worker.is_some()
+            && self.get_platform_quirk_policy.is_some()
     }
 }
