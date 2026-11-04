@@ -632,7 +632,7 @@ unsafe fn configure_pci_intx_masked(
         pin,
         ..Default::default()
     };
-    let mut bridge_ranges = [pci::PciBridgeRange::default(); pci::MAX_PCI_BRIDGES * MAX_WINDOWS];
+    let mut bridge_ranges = [pci::PciBridgeRange::default(); pci::MAX_PCI_BRIDGES];
     let mut bridge_range_count = 0usize;
     for window_index in 0..MAX_WINDOWS {
         let count = unsafe { (*STATE.bridge_counts.get())[window_index] };
