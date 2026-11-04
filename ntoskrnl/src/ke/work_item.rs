@@ -211,6 +211,18 @@ mod tests {
         assert!(!state.push(WorkRecord { routine: Some(noop), context: 1 }));
     }
     #[test]
+    fn per_context_rundown_rejects_only_the_closing_owner() {
+        let mut state = QueueState::new();
+        state.accepting = true;
+        state.closed_contexts[0] = 0x1000;
+        let noop: WorkRoutine = |_| {};
+        assert!(!state.push(WorkRecord { routine: Some(noop), context: 0x1000 }));
+        assert!(state.push(WorkRecord { routine: Some(noop), context: 0x2000 }));
+        assert_eq!(state.count, 1);
+        assert_eq!(state.pop().map(|item| item.context), Some(0x2000));
+    }
+
+    #[test]
     fn queue_pop_tracks_active_work_and_fifo_order() {
         let mut state = QueueState::new();
         state.accepting = true;
