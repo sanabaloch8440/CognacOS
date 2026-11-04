@@ -1306,13 +1306,13 @@ unsafe extern "C" fn pci_irq_register(
     if context == 0 { return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code; }
     unsafe { service_register_interrupt(vector as u32, context, isr, dpc) }.code
 }
-unsafe extern "C" fn pci_irq_enable(vector: u8, _enabled: bool) -> u32 {
+unsafe extern "C" fn pci_irq_enable(vector: u8) -> u32 {
     match unsafe { set_device_interrupt_vector_enabled(vector, true) } {
         Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
         Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
     }
 }
-unsafe extern "C" fn pci_irq_disable(vector: u8, _enabled: bool) -> u32 {
+unsafe extern "C" fn pci_irq_disable(vector: u8) -> u32 {
     match unsafe { set_device_interrupt_vector_enabled(vector, false) } {
         Ok(()) => cognacos_hal_contract::HalStatus::SUCCESS.code,
         Err(_) => cognacos_hal_contract::HalStatus::DEVICE_ERROR.code,
