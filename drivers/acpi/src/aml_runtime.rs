@@ -241,6 +241,19 @@ impl AmlBindings {
         }
         Ok(())
     }
+    /// Namespace unload compacts numeric node indices. Since a reference can
+    /// outlive the method that created it (for example in a caller-owned Package),
+    /// every surviving numeric namespace reference must be retired before compaction.
+    /// Clearing all bindings also forces surviving Name objects to be decoded again
+    /// at their new indices instead of accidentally inheriting another node's value.
+    pub fn invalidate_namespace_compaction(&mut self)->usize {
+        let mut invalidated=0usize;
+        for index in 0..MAX_NAMESPACE_NODES {
+            self.node_generations[index]=self.node_generations[index].wrapping_add(1).max(1);
+            if self.bound[index] { self.bound[index]=false; self.values[index]=0; invalidated+=1; }
+        }
+        invalidated
+    }
     pub fn value_id(&self,node:u16)->Result<u16,RuntimeError>{
         let i=node as usize;if i>=MAX_NAMESPACE_NODES||!self.bound[i]{return Err(RuntimeError::UnboundNode)}
         Ok(self.values[i])
