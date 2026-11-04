@@ -179,7 +179,7 @@ pub mod bus {
         pub disable: PPCI_SET_INTERRUPT_ENABLED,
         pub unregister: PPCI_UNREGISTER_INTERRUPT,
     }
-    const _: () = assert!(core::mem::size_of::<PCI_INTERRUPT_INTERFACE>() == 0x48);
+    const _: () = assert!(core::mem::size_of::<PCI_INTERRUPT_INTERFACE>() == 0x40);
 
     /// Common prefix for all published bus interfaces.
     #[repr(C)]
