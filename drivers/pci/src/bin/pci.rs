@@ -1136,7 +1136,27 @@ unsafe fn release_pci_interrupt(extension: *mut PciPdoExtension) -> i32 {
 /// programmed from the bus-relative (raw) addresses; translated resources are
 /// retained only for consumers above the bus driver. Unsupported resource
 /// layouts fail closed rather than guessing an address.
-unsafe fn start_pci_device(
+unsafe fn assigned_range_fits_clipped_host_aperture(
+    window_index: usize,
+    kind: pci::resources::BarKind,
+    prefetchable: bool,
+    start: u64,
+    length: u64,
+) -> bool {
+    if length == 0 || start.checked_add(length).is_none() { return false; }
+    let count = STATE.host_bridge_resource_count.load(Ordering::Acquire);
+    if window_index >= count || window_index >= MAX_WINDOWS { return false; }
+    let prepared = unsafe { (*STATE.clipped_host_apertures.get())[window_index] };
+    let end = start + length;
+    prepared.as_slice().iter().any(|aperture| {
+        aperture.kind == kind
+            && (kind == pci::resources::BarKind::Io || aperture.prefetchable == prefetchable)
+            && aperture.start <= start
+            && aperture.start.checked_add(aperture.length).is_some_and(|limit| end <= limit)
+    })
+}
+
+fn start_pci_device(
     device: *mut DEVICE_OBJECT,
     irp: *mut cognacos_nt_abi::io::IRP,
     stack: *mut cognacos_nt_abi::io::IO_STACK_LOCATION,
@@ -1239,7 +1259,10 @@ unsafe fn start_pci_device(
                 let end = match start.checked_add(length) { Some(v) => v, None => return STATUS_DEVICE_CONFIGURATION_ERROR };
                 if length < req.length || req.alignment == 0 || start % req.alignment != 0
                     || (is_io && end > 0x1_0000)
-                    || (req.kind == pci::resources::BarKind::Memory32 && end > (1u64 << 32)) {
+                    || (req.kind == pci::resources::BarKind::Memory32 && end > (1u64 << 32))
+                    || !assigned_range_fits_clipped_host_aperture(
+                        window_index, req.kind, req.prefetchable, start, length,
+                    ) {
                     return STATUS_DEVICE_CONFIGURATION_ERROR;
                 }
                 let translated_p = unsafe { trans_desc.add(descriptor_index * pci::resource_manager::CM_PARTIAL_RESOURCE_DESCRIPTOR_SIZE) };
