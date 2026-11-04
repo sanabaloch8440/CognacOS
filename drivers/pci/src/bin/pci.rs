@@ -638,7 +638,10 @@ unsafe fn configure_pci_intx_masked(
         let count = unsafe { (*STATE.bridge_counts.get())[window_index] };
         let entries = unsafe { &(*STATE.bridges.get())[window_index] };
         for bridge in entries.iter().take(count).flatten() {
-            if bridge.segment == function.segment && bridge_range_count < bridge_ranges.len() {
+            if bridge.segment == function.segment {
+                if bridge_range_count == bridge_ranges.len() {
+                    return STATUS_INSUFFICIENT_RESOURCES;
+                }
                 bridge_ranges[bridge_range_count] = *bridge;
                 bridge_range_count += 1;
             }
