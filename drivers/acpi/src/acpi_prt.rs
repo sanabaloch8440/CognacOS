@@ -737,7 +737,7 @@ mod method_prt_execution_tests {
         let aml = [
             0x14, 22, b'P', b'R', b'T', b'0', 0,
             0xa4, 0x12, 14, 1,
-            0x12, 10, 4, 0x0c, 0xff, 0xff, 0x05, 0x00,
+            0x12, 11, 4, 0x0c, 0xff, 0xff, 0x05, 0x00,
             0x00, 0x00, 0x0a, 19,
         ];
         let mut namespace = AmlNamespace::new();
@@ -803,7 +803,7 @@ mod varpackage_prt_tests {
         let aml = [
             0x14, 23, b'P', b'R', b'T', b'0', 0,
             0xa4, 0x13, 15, 0x0a, 1,
-            0x12, 10, 4, 0x0c, 0xff, 0xff, 0x05, 0,
+            0x12, 11, 4, 0x0c, 0xff, 0xff, 0x05, 0,
             0, 0, 0x0a, 19,
         ];
         let mut ns = AmlNamespace::new();
