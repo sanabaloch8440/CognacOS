@@ -51,15 +51,21 @@ unsafe fn csq_set_cancel_routine(irp:*mut Irp,routine:*mut c_void)->*mut c_void 
 }
 unsafe extern "win64" fn csq_cancel_routine(_device:*mut DeviceObject,irp:*mut Irp) {
  if irp.is_null(){return}
+ // The I/O Manager invokes cancel routines with the global cancel spin lock
+ // held. A CSQ cancel callback must reuse that lock, not recursively acquire it.
+ let cancel_irql=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_IRQL_OFFSET)};
  let csq=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET).cast::<IoCsq>()};
- if csq.is_null(){return}
- let mut old_irql=0u8;unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
+ if csq.is_null(){
+  unsafe{io_release_cancel_spin_lock(cancel_irql);}
+  return
+ }
  let queue_irql=unsafe{csq_lock(csq)};
  let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
  unsafe{remove(csq,irp);}
  write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
  unsafe{csq_unlock(csq,queue_irql);}
- unsafe{io_release_cancel_spin_lock(old_irql);}
+ // Release the cancel lock before invoking the driver's completion callback.
+ unsafe{io_release_cancel_spin_lock(cancel_irql);}
  let complete:CsqCompleteCanceled=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,48))};
  unsafe{complete(csq,irp);}
 }
@@ -190,6 +196,7 @@ pub unsafe extern "win64" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context:
 }
 
 const IRP_CANCEL_ROUTINE_OFFSET:usize=0x68;
+const IRP_CANCEL_IRQL_OFFSET:usize=0x45;
 /// Atomically replace the IRP cancel callback and return the previous callback.
 #[unsafe(export_name = "IoSetCancelRoutine")]
 pub unsafe extern "win64" fn io_set_cancel_routine(
@@ -253,19 +260,25 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
  total
 }
 
-/// Request cancellation using the global cancel-spin-lock protocol. A driver
-/// callback is invoked only after the lock and raised IRQL have been released.
+/// Request cancellation using the Windows cancel-spin-lock contract. The
+/// cancel routine is called at DISPATCH_LEVEL with the global cancel spin lock
+/// held and must release it using Irp->CancelIrql before completing the IRP.
 #[unsafe(export_name = "IoCancelIrp")]
 pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
  if irp.is_null(){return 0}
  if !acquire_irp_active_op(irp){return 0}
  let mut old_irql=0u8;
  unsafe{io_acquire_cancel_spin_lock(&mut old_irql);}
- unsafe{*ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x44)=1;}
+ unsafe{
+  *ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x44)=1;
+  *ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_IRQL_OFFSET)=old_irql;
+ }
  let cancel_slot=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  let callback=unsafe{&*cancel_slot}.swap(ptr::null_mut(),core::sync::atomic::Ordering::AcqRel);
- unsafe{io_release_cancel_spin_lock(old_irql);}
- if callback.is_null(){release_irp_active_op(irp);try_free_completed_sync_ioctl_irp(irp);return 0}
+ if callback.is_null(){
+  unsafe{io_release_cancel_spin_lock(old_irql);}
+  release_irp_active_op(irp);try_free_completed_sync_ioctl_irp(irp);return 0
+ }
  let routine:DriverCancelRoutine=unsafe{core::mem::transmute(callback)};
  let device={
   let state=WDM.lock();
@@ -280,6 +293,8 @@ pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
    } else {ptr::null_mut()}
   } else {ptr::null_mut()}
  };
+ // WDM cancel routines own releasing the cancel spin lock. Do not release it
+ // here: doing so would violate the callback's synchronization contract.
  unsafe{routine(device,irp);}
  // The cancel routine owns stopping the device; once it returns, drop any
  // remaining IRP-bound IOMMU mappings. Completion performs the same idempotent rundown.
@@ -292,10 +307,19 @@ pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
 
 static WDM_CANCEL_SELF_TEST_CALLBACKS: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
+static WDM_CANCEL_SELF_TEST_LOCK_HELD: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 const STATUS_CANCELLED_SELF_TEST: i32 = 0xC000_0120u32 as i32;
 
 unsafe extern "win64" fn wdm_cancel_self_test_cancel(_device: *mut DeviceObject, irp: *mut Irp) {
     WDM_CANCEL_SELF_TEST_CALLBACKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    WDM_CANCEL_SELF_TEST_LOCK_HELD.store(
+        IO_CANCEL_SPIN_LOCK.load(core::sync::atomic::Ordering::Acquire),
+        core::sync::atomic::Ordering::Release,
+    );
+    // Driver cancel routines are entered with the cancel spin lock held.
+    let cancel_irql = unsafe { *ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_IRQL_OFFSET) };
+    unsafe { io_release_cancel_spin_lock(cancel_irql); }
     unsafe { io_complete_irp_status(irp, STATUS_CANCELLED_SELF_TEST, 0, 0); }
 }
 unsafe extern "win64" fn wdm_cancel_self_test_dispatch(_device: *mut DeviceObject, irp: *mut Irp) -> i32 {
@@ -310,6 +334,7 @@ unsafe extern "win64" fn wdm_cancel_self_test_dispatch(_device: *mut DeviceObjec
 /// path after the executive scheduler and SMP processors are online.
 pub fn io_cancel_self_test() -> bool {
     WDM_CANCEL_SELF_TEST_CALLBACKS.store(0, core::sync::atomic::Ordering::Release);
+    WDM_CANCEL_SELF_TEST_LOCK_HELD.store(false, core::sync::atomic::Ordering::Release);
     let mut driver: DriverObject = unsafe { core::mem::zeroed() };
     driver.major_function[IRP_MJ_READ as usize] = Some(wdm_cancel_self_test_dispatch);
     let mut device: *mut DeviceObject = ptr::null_mut();
@@ -336,7 +361,10 @@ pub fn io_cancel_self_test() -> bool {
     let final_status = unsafe { io_get_irp_status(irp) };
     let callbacks = WDM_CANCEL_SELF_TEST_CALLBACKS.load(core::sync::atomic::Ordering::Acquire);
     unsafe { io_free_irp(irp); io_delete_device(device); }
-    cancelled != 0 && final_status == STATUS_CANCELLED_SELF_TEST && callbacks == 1
+    cancelled != 0
+        && final_status == STATUS_CANCELLED_SELF_TEST
+        && callbacks == 1
+        && WDM_CANCEL_SELF_TEST_LOCK_HELD.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Resolve a counted device name to a registered device object. This is the
