@@ -1887,6 +1887,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
 ) -> i32 {
     if request.is_null() { return STATUS_INVALID_PARAMETER; }
     let old = unsafe { *request };
+    if old.bridge_count as usize > old.bridges.len() { return STATUS_INVALID_PARAMETER; }
     let mut extended = ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3::default();
     extended.segment = old.segment;
     extended.bus = old.bus;
@@ -1998,12 +1999,14 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v4(
         let mut reverse_nodes = [0u16; 255];
         let mut parent_node = record.node;
         let mut expected_primary = root_bus as u8;
+        let mut parent_subordinate = u8::MAX;
         for (bridge_index, bridge) in request.bridges.iter().take(request.bridge_count as usize).enumerate() {
             if bridge.reserved != 0 || bridge.segment != request.segment
                 || bridge.primary_bus != expected_primary
                 || bridge.device >= 32 || bridge.function >= 8
                 || bridge.secondary_bus <= bridge.primary_bus
-                || bridge.subordinate_bus < bridge.secondary_bus {
+                || bridge.subordinate_bus < bridge.secondary_bus
+                || bridge.subordinate_bus > parent_subordinate {
                 return STATUS_DEVICE_CONFIGURATION_ERROR;
             }
             let wanted_adr = ((bridge.device as u64) << 16) | bridge.function as u64;
@@ -2021,6 +2024,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v4(
             reverse_nodes[request.bridge_count as usize - 1 - bridge_index] = bridge_node;
             parent_node = bridge_node;
             expected_primary = bridge.secondary_bus;
+            parent_subordinate = bridge.subordinate_bus;
         }
         if request.bridge_count != 0 && expected_primary != request.bus {
             return STATUS_DEVICE_CONFIGURATION_ERROR;
