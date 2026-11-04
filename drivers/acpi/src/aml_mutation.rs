@@ -118,6 +118,9 @@ impl AmlDynamicNamespace {
             || bit_width == 0 {
             return Err(RuntimeError::TypeMismatch);
         }
+        if bit_offset > u16::MAX as u32 || bit_width > u16::MAX as u32 {
+            return Err(RuntimeError::ValueTooLarge);
+        }
         let end = bit_offset.checked_add(bit_width).ok_or(RuntimeError::ValueTooLarge)?;
         let extent = (buffer.byte_length as u32).checked_mul(8).ok_or(RuntimeError::ValueTooLarge)?;
         if end > extent { return Err(RuntimeError::InvalidReference); }
