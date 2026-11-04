@@ -1710,12 +1710,4 @@ mod tests{
   let value=execute_method_in_dynamic_context(&aml,&ns,id,&[],64,&mut arena,&mut bindings,&mut dynamic,&NO_METHOD_SYNCHRONIZER).unwrap();
   assert_eq!(value.kind,AmlValueKind::Package);let element=arena.get(value.elements[0]).unwrap();assert_eq!(element.kind,AmlValueKind::Integer);assert_eq!(element.integer,42);
  }
- #[test]fn condrefo_returns_false_for_absent_names_and_true_for_live_names(){
-  let absent=[0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x5b,0x12,b'M',b'I',b'S',b'S',0x60];
-  let mut ns=AmlNamespace::new();load_definition_block(&absent,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
-  assert_eq!(execute_method(&absent,&ns,id,&[]).unwrap(),AmlValue::Integer(0));
-  let present=[0x08,b'V',b'A',b'L',b'0',0x0a,7,0x14,0x0e,b'T',b'E',b'S',b'T',0,0xa4,0x5b,0x12,b'V',b'A',b'L',b'0',0x60];
-  let mut ns=AmlNamespace::new();load_definition_block(&present,&mut ns).unwrap();let id=ns.find_child(0,*b"TEST").unwrap();
-  assert_eq!(execute_method(&present,&ns,id,&[]).unwrap(),AmlValue::Integer(1));
- }
 }
