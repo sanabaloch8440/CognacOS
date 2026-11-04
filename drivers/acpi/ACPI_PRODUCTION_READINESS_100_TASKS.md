@@ -66,7 +66,8 @@ Task 31 implementation progress (2026-11-04, follow-up branch `acpi-task31-34-ev
 - Each namespace object retains both its source-table slot (for AML table-byte selection and namespace removal) and a unique monotonic source-table generation (for event and dynamic-object lifetime). External placeholders retain both owner components when promoted and restored.
 - Namespace compaction invalidates every generation-tagged namespace reference and clears index-keyed Name bindings before numeric node indices are rewritten, preventing stale references to shifted survivors from aliasing unrelated objects.
 - Added failure-injection coverage proving RefOf frame promotion leaves the arena unchanged when allocation is exhausted, plus a reload regression proving a reused table slot receives a distinct owner generation.
-- Still not complete: dereferencing/storing OperationRegion Field references requires the guarded OperationRegion/Field access providers in tasks 36–37; generation-aware arena reclamation and removal of the bounded 128 frame-root/768-value budgets remain production work. Task 31 stays unchecked until the remaining semantics and focused AML/driver/kernel tests are verified.
+- ACPI CI verification passed in run [41867489271](https://github.com/sanabaloch8440/CognacOS/actions/runs/41867489271): AML executor/runtime/table tests, native ACPI driver type-check, and kernel dispatcher type-check all passed, including the new regressions.
+- Still not complete: dereferencing/storing OperationRegion Field references requires the guarded OperationRegion/Field access providers in tasks 36–37; generation-aware arena reclamation and removal of the bounded 128 frame-root/768-value budgets remain production work. Task 31 stays unchecked until those dependencies and capacity semantics are resolved.
 
 32. [x] Evaluate Package/VarPackage elements including dynamic counts.
 
@@ -91,7 +92,8 @@ Task 34 implementation progress (2026-11-04, follow-up branch `acpi-task31-34-ev
 - Existing Event namespace objects, SignalOp, ResetOp, and native KEVENT dispatch were present, but Wait previously consumed a fixed two-byte literal instead of evaluating the AML TermArg grammar.
 - Wait now evaluates a full TermArg (including Local/Arg values and computed expressions), validates its 16-bit timeout value, maps 0xffff to an infinite kernel wait, and returns AML Zero or width-correct Ones on success/timeout.
 - Event callbacks carry the owning DefinitionBlock's unique generation token. The native ACPI driver reinitializes a kernel synchronization-event object when a namespace node is reused by a later table generation, preventing signal state from leaking across table reload.
-- Added regressions for Arg-sourced timeout values, width-correct timeout results, signal/consume, reset, and infinite timeout. Real scheduler wakeup, contention, table teardown, clean ACPI CI, and QEMU verification remain pending; Task 34 stays unchecked.
+- Added regressions for Arg-sourced and computed timeout values, width-correct timeout results, signal/consume, reset, and infinite timeout. ACPI CI run [41867489271](https://github.com/sanabaloch8440/CognacOS/actions/runs/41867489271) passed the complete library, native driver, firmware/AML, and kernel dispatcher stages.
+- Real scheduler wakeup, contention, and table teardown remain in the deferred QEMU verification queue; Task 34 stays unchecked until those runtime gates pass.
 35. [ ] Implement FACS-backed AML Global Lock acquisition/release.
 36. [ ] Implement guarded OperationRegion handlers for SystemMemory, SystemIO, PCI_Config, EC, SMBus, CMOS, and supported serial buses.
 37. [ ] Implement Field width/alignment, LockRule, UpdateRule, bank selection, and access attributes.
