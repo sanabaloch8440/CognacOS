@@ -852,9 +852,8 @@ fn acquire_acpi_host_bridge_resources() -> i32 {
     STATUS_SUCCESS
 }
 
-/// Read the root-PDO resource set staged by the PCI root-FDO. This remains
-/// descriptor data, not an allocator aperture; protected-RAM clipping is a
-/// mandatory separate step before any BAR/window allocation.
+/// Read the root-PDO resource set staged by the PCI root-FDO. The clipped
+/// aperture cache is published atomically with this descriptor cache.
 fn get_host_bridge_resources(
     index: usize,
 ) -> Result<PciHostBridgeResourceSet, i32> {
@@ -1714,6 +1713,11 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
         }
     }
     STATE.host_bridge_resource_count.store(0, Ordering::Release);
+    unsafe {
+        (*STATE.protected_memory.get()) = MM_PROTECTED_MEMORY_SNAPSHOT::empty();
+        (*STATE.clipped_host_apertures.get()) = [pci::host_bridge::PreparedHostBridgeApertures::EMPTY; MAX_WINDOWS];
+        (*STATE.host_bridge_resources.get()) = [const { PciHostBridgeResourceSet::empty(0, 0, 0) }; MAX_WINDOWS];
+    }
     HANDOFF.store(0, Ordering::Release);
     DRIVER_OBJECT.store(0, Ordering::Release);
 }
