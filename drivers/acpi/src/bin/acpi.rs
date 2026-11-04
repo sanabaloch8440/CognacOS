@@ -36,6 +36,12 @@ static mut ACPI_BUS_DEVICE:*mut cognacos_nt_abi::io::DEVICE_OBJECT=core::ptr::nu
 static mut ACPI_PDOS:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS]=[core::ptr::null_mut();MAX_ACPI_PDOS];
 static mut ACPI_PDO_COUNT:usize=0;
 static mut ACPI_BUS_RELATIONS:AcpiDeviceRelations=AcpiDeviceRelations{count:0,objects:[core::ptr::null_mut();MAX_ACPI_PDOS]};
+
+// Patched AML tables are private, pool-backed copies. Their addresses remain
+// stable for every PDO and AML method invocation until DriverUnload.
+static mut PATCHED_AML_TABLES: [*mut u8; acpi::aml_tables::MAX_AML_TABLES] =
+    [core::ptr::null_mut(); acpi::aml_tables::MAX_AML_TABLES];
+static mut PATCHED_AML_TABLE_COUNT: usize = 0;
 // Windows x64 KMUTEX is an alias of KMUTANT: a 24-byte dispatcher header,
 // two-pointer LIST_ENTRY, owner-thread pointer, mutant flags, and APC-disable
 // byte. The complete 56-byte object must be reserved even though CognacOS
@@ -987,6 +993,7 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
         || STATE.interface_references.load(Ordering::Acquire)!=0 {
         core::hint::spin_loop();
     }
+    release_patched_aml_tables();
 }
 
 fn collect_device_identities(
@@ -1103,6 +1110,63 @@ fn discover_power_and_event_namespace(manager:&acpi::aml_tables::AmlTableManager
 /// Preserve the failure class at the native driver boundary. In particular,
 /// unsupported AML is not a caller-parameter error, and corrupt firmware data
 /// must not be reported as STATUS_INVALID_PARAMETER.
+/// Release all driver-owned AML table copies after the execution and
+/// interface rundown has completed.
+fn release_patched_aml_tables() {
+    unsafe {
+        let count = PATCHED_AML_TABLE_COUNT;
+        for index in 0..count {
+            let allocation = PATCHED_AML_TABLES[index];
+            if !allocation.is_null() {
+                ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
+                PATCHED_AML_TABLES[index] = core::ptr::null_mut();
+            }
+        }
+        PATCHED_AML_TABLE_COUNT = 0;
+    }
+}
+
+struct PatchedTableRollback { committed: bool }
+impl Drop for PatchedTableRollback {
+    fn drop(&mut self) {
+        if !self.committed { release_patched_aml_tables(); }
+    }
+}
+
+/// Copy a validated firmware SDT into driver-owned writable storage, apply the
+/// immutable DMI policy before AML parsing, then validate the resulting header
+/// and checksum again. A stale expected-byte match skips the complete patch
+/// set for that table; malformed patch metadata remains fatal.
+unsafe fn make_private_aml_table(bytes: &'static [u8]) -> Result<&'static [u8], i32> {
+    let header = acpi::validate_sdt(bytes, None).map_err(acpi::error_to_ntstatus)?;
+    let length = header.length as usize;
+    if length < 36 || length > MAX_ACPI_TABLE_LENGTH { return Err(STATUS_INVALID_PARAMETER); }
+    let slot = unsafe { PATCHED_AML_TABLE_COUNT };
+    if slot >= acpi::aml_tables::MAX_AML_TABLES { return Err(STATUS_INSUFFICIENT_RESOURCES); }
+    let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, length, ACPI_POOL_TAG) };
+    if allocation.is_null() { return Err(STATUS_INSUFFICIENT_RESOURCES); }
+    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), allocation, length); }
+    let writable = unsafe { core::slice::from_raw_parts_mut(allocation, length) };
+    if let Some(policy) = acpi::aml_osi::platform_quirk_policy() {
+        match acpi::quirks::apply_table_patches(writable, &policy.patches[..policy.patch_count]) {
+            Ok(_) | Err(acpi::quirks::QuirkError::PatchMismatch) => {},
+            Err(_) => {
+                unsafe { ExFreePoolWithTag(allocation, ACPI_POOL_TAG); }
+                return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
+            }
+        }
+    }
+    if acpi::validate_sdt(writable, Some(header.signature)).is_err() {
+        unsafe { ExFreePoolWithTag(allocation, ACPI_POOL_TAG); }
+        return Err(STATUS_DEVICE_DATA_ERROR);
+    }
+    unsafe {
+        PATCHED_AML_TABLES[slot] = allocation;
+        PATCHED_AML_TABLE_COUNT = slot + 1;
+    }
+    Ok(unsafe { core::slice::from_raw_parts(allocation, length) })
+}
+
 fn table_error_to_status(error:acpi::aml_tables::TableError)->i32{
     use acpi::aml::AmlError;
     use acpi::aml_tables::TableError;
@@ -1131,6 +1195,8 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     STATE.unloading.store(false,Ordering::Release);
     STATE.active_operations.store(0,Ordering::Release);
     STATE.interface_references.store(0,Ordering::Release);
+    let mut patched_table_rollback = PatchedTableRollback { committed: false };
+    release_patched_aml_tables();
     // Resolve the immutable DMI policy before any AML method or table is
     // evaluated. This also validates that the versioned HAL contract is live.
     if let Err(status) = acquire_sci_hal_services() { return status; }
@@ -1190,12 +1256,17 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     }
     // DSDT is obtained through FADT by the HAL; SSDTs are root-table entries.
     // Retain the firmware-owned slices for all future AML method dispatch.
-    let dsdt=match unsafe{query_hal_table(*b"DSDT",0)}{Ok(bytes)=>bytes,Err(status)=>return status};
+    let dsdt_firmware=match unsafe{query_hal_table(*b"DSDT",0)}{Ok(bytes)=>bytes,Err(status)=>return status};
+    let dsdt=match unsafe{make_private_aml_table(dsdt_firmware)}{Ok(bytes)=>bytes,Err(status)=>return status};
     let mut ssdt_tables:[&'static [u8];acpi::aml_tables::MAX_AML_TABLES-1]=[&[];acpi::aml_tables::MAX_AML_TABLES-1];
     let mut ssdt_count=0usize;
     for instance in 0..acpi::aml_tables::MAX_AML_TABLES{
         match unsafe{query_hal_table(*b"SSDT",instance as u32)}{
-            Ok(bytes)=>{if ssdt_count==ssdt_tables.len(){return STATUS_INSUFFICIENT_RESOURCES;}ssdt_tables[ssdt_count]=bytes;ssdt_count+=1;},
+            Ok(firmware_bytes)=>{
+                if ssdt_count==ssdt_tables.len(){return STATUS_INSUFFICIENT_RESOURCES;}
+                let bytes=match unsafe{make_private_aml_table(firmware_bytes)}{Ok(value)=>value,Err(status)=>return status};
+                ssdt_tables[ssdt_count]=bytes;ssdt_count+=1;
+            },
             Err(STATUS_NOT_FOUND)=>break,
             Err(status)=>return status,
         }
@@ -1299,6 +1370,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         STATE.unloading.store(true,Ordering::Release);
         return enumerate;
     }
+    patched_table_rollback.committed = true;
     STATUS_SUCCESS
 }
 
