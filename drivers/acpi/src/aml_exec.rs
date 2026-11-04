@@ -680,15 +680,10 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
 /// returns, and references into nested runtime objects therefore remain valid
 /// for the caller's context lifetime. The caller must not reset either context
 /// while any returned Package or ObjectReference is still in use.
-pub fn execute_method_in_context(
-    aml:&[u8],
-    namespace:&AmlNamespace,
-    method_index:u16,
-    args:&[AmlRuntimeValue],
-    integer_width_bits:u8,
-    arena:&mut AmlObjectArena,
-    bindings:&mut AmlBindings,
-    sync:&dyn AmlMethodSynchronizer,
+pub fn execute_method_in_dynamic_context(
+    aml:&[u8], namespace:&AmlNamespace, method_index:u16, args:&[AmlRuntimeValue],
+    integer_width_bits:u8, arena:&mut AmlObjectArena, bindings:&mut AmlBindings,
+    dynamic:&mut AmlDynamicNamespace, sync:&dyn AmlMethodSynchronizer,
 )->Result<AmlRuntimeValue,ExecError>{
     if args.len()>7{return Err(ExecError::BadArgumentCount)}
     for argument in args {
@@ -696,11 +691,23 @@ pub fn execute_method_in_context(
             .map_err(|_|ExecError::UnsupportedArgumentValue)?;
     }
     if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
+    execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
+        arena,bindings,sync,dynamic,0,0)
+}
+
+/// Compatibility wrapper for methods that do not publish dynamic fields.
+/// Callers using Create*Field must retain an AmlDynamicNamespace and call
+/// execute_method_in_dynamic_context across the AML namespace lifetime.
+pub fn execute_method_in_context(
+    aml:&[u8], namespace:&AmlNamespace, method_index:u16, args:&[AmlRuntimeValue],
+    integer_width_bits:u8, arena:&mut AmlObjectArena, bindings:&mut AmlBindings,
+    sync:&dyn AmlMethodSynchronizer,
+)->Result<AmlRuntimeValue,ExecError>{
     let mut dynamic=AmlDynamicNamespace::new();
-    execute_method_inner(
-        aml,namespace,method_index,args,0,integer_width_bits,
-        arena,bindings,sync,&mut dynamic,0,0,
-    )
+    let value=execute_method_in_dynamic_context(aml,namespace,method_index,args,
+        integer_width_bits,arena,bindings,&mut dynamic,sync)?;
+    if dynamic.field_count()!=0 { return Err(ExecError::UnsupportedReturnType); }
+    Ok(value)
 }
 
 /// Convenience entry point for non-Serialized methods. Serialized methods fail
