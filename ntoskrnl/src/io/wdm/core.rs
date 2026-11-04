@@ -140,8 +140,68 @@ const _: () = assert!(core::mem::size_of::<IoStackLocation>() == IO_STACK_LOCATI
 const _: () = assert!(core::mem::offset_of!(IoStackLocation, parameters) == 0x08);
 const _: () = assert!(core::mem::offset_of!(IoStackLocation, device_object) == 0x28);
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, mount_in_progress: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], vpb: Vpb, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot {
+ next:*mut DeviceSlot,
+ used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32,
+ power_state: u8, power_target: u8, power_transition: bool,
+ pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool,
+ mount_in_progress: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260],
+ vpb: Vpb, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION]
+}
 unsafe impl Send for DeviceSlot {}
+impl DeviceSlot {
+ const fn empty()->Self { Self {
+  next:ptr::null_mut(),used:false,deleting:false,active_dispatches:0,outstanding_irps:0,remove_lock_count:0,
+  power_state:0,power_target:0,power_transition:false,pnp_state:0,pnp_pending:0,pnp_transition_minor:0,
+  pnp_transition:false,mount_in_progress:false,attached_to:ptr::null_mut(),name_len:0,name:[0;260],
+  vpb:Vpb::empty(),
+  object:DeviceObject{
+   object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
+   driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
+   current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
+   device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],
+   alignment_requirement:0,device_queue_padding:[0;4],
+   device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},
+   dpc:[0;0x40],active_thread_count:0,security_descriptor:ptr::null_mut(),device_lock:[0;0x18],
+   sector_size:0,spare1:0,device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
+  },
+  extension:[0;MAX_DEVICE_EXTENSION]
+ }}
+}
+const _:()=assert!(core::mem::size_of::<DeviceSlot>()<=4096);
+struct DeviceIter<'a>{base:core::slice::Iter<'a,DeviceSlot>,next:*const DeviceSlot}
+impl<'a> Iterator for DeviceIter<'a>{
+ type Item=&'a DeviceSlot;
+ fn next(&mut self)->Option<Self::Item>{
+  if let Some(slot)=self.base.next(){return Some(slot)}
+  if self.next.is_null(){return None}
+  let current=self.next;self.next=unsafe{(*current).next};Some(unsafe{&*current})
+ }
+}
+struct DeviceIterMut<'a>{base:core::slice::IterMut<'a,DeviceSlot>,next:*mut DeviceSlot,_marker:core::marker::PhantomData<&'a mut DeviceSlot>}
+impl<'a> Iterator for DeviceIterMut<'a>{
+ type Item=&'a mut DeviceSlot;
+ fn next(&mut self)->Option<Self::Item>{
+  if let Some(slot)=self.base.next(){return Some(slot)}
+  if self.next.is_null(){return None}
+  let current=self.next;self.next=unsafe{(*current).next};Some(unsafe{&mut *current})
+ }
+}
+struct DeviceTable{base:[DeviceSlot;MAX_WDM_DEVICES],overflow:*mut DeviceSlot}
+impl DeviceTable{
+ const fn new()->Self{Self{base:[const{DeviceSlot::empty()};MAX_WDM_DEVICES],overflow:ptr::null_mut()}}
+ fn iter(&self)->DeviceIter<'_>{DeviceIter{base:self.base.iter(),next:self.overflow}}
+ fn iter_mut(&mut self)->DeviceIterMut<'_>{DeviceIterMut{base:self.base.iter_mut(),next:self.overflow,_marker:core::marker::PhantomData}}
+ fn push_overflow(&mut self,slot:*mut DeviceSlot){unsafe{(*slot).next=self.overflow;}self.overflow=slot;}
+}
+unsafe impl Send for DeviceTable {}
+impl Index<usize> for DeviceTable{
+ type Output=DeviceSlot;
+ fn index(&self,index:usize)->&Self::Output{self.iter().nth(index).expect("WDM device index out of range")}
+}
+impl IndexMut<usize> for DeviceTable{
+ fn index_mut(&mut self,index:usize)->&mut Self::Output{self.iter_mut().nth(index).expect("WDM device index out of range")}
+}
 const PAGE_SIZE:usize=4096;
 #[repr(C)]
 struct IrpSlot {
@@ -186,20 +246,12 @@ impl IndexMut<usize> for IrpTable{fn index_mut(&mut self,index:usize)->&mut Self
 struct ThreadIrpQueue { used:bool,thread_id:u64,head:*mut Irp,tail:*mut Irp }
 unsafe impl Send for ThreadIrpQueue {}
 impl ThreadIrpQueue { const EMPTY:Self=Self{used:false,thread_id:0,head:ptr::null_mut(),tail:ptr::null_mut()}; }
-struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: IrpTable, thread_irps:[ThreadIrpQueue;MAX_SYNC_IRP_THREADS] }
+struct WdmState { devices: DeviceTable, irps: IrpTable, thread_irps:[ThreadIrpQueue;MAX_SYNC_IRP_THREADS] }
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, outstanding_irps:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, mount_in_progress:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], vpb:Vpb::empty(), object: DeviceObject {
-    object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
-    driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
-    current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
-    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],alignment_requirement:0,device_queue_padding:[0;4],
-    device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},dpc:[0;0x40],active_thread_count:0,
-    security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
-    device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
-   },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: IrpTable::new(),
+   devices:DeviceTable::new(),
+   irps:IrpTable::new(),
    thread_irps:[const{ThreadIrpQueue::EMPTY};MAX_SYNC_IRP_THREADS],
   }
  }
