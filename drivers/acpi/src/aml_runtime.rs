@@ -1430,4 +1430,22 @@ mod tests{
         assert_eq!(arena.get(package_id).unwrap().elements[0],child_id);
     }
 
+    #[test]
+    fn invalidates_cached_name_values_owned_by_unloaded_table() {
+        let aml=[0x08,b'T',b'E',b'S',b'T',0x0a,0x2a];
+        let mut namespace=AmlNamespace::new();
+        crate::aml::load_definition_block(&aml,&mut namespace).unwrap();
+        let node=namespace.find_child(0,*b"TEST").unwrap();
+        let mut arena=test_arena();
+        let mut value=AmlRuntimeValue::EMPTY;
+        value.kind=AmlValueKind::Integer;
+        value.integer=42;
+        let id=arena.allocate(value).unwrap();
+        let mut bindings=AmlBindings::new();
+        bindings.bind_checked(&namespace,node,id,&arena).unwrap();
+        assert_eq!(bindings.value_id(node),Ok(id));
+        assert_eq!(bindings.invalidate_table(&namespace,0),1);
+        assert_eq!(bindings.value_id(node),Err(RuntimeError::UnboundNode));
+    }
+
 }
