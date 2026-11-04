@@ -212,6 +212,11 @@ impl AmlTableManager {
         self.load_firmware_tables(dsdt,&ssdts[..ssdt_count],gate)
     }
     pub fn namespace(&self)->&AmlNamespace{&self.namespace}
+    /// Borrow static and dynamic namespace state together for one AML runtime.
+    /// The mutable dynamic borrow serializes Create*Field namespace publication.
+    pub fn runtime_namespace(&mut self)->(&AmlNamespace,&mut crate::aml_mutation::AmlDynamicNamespace){
+        (&self.namespace,&mut self.dynamic_namespace)
+    }
     pub fn table_count(&self)->usize{self.count}
     pub fn dsdt_loaded(&self)->bool{self.dsdt_loaded}
     pub fn table_info(&self,handle:TableHandle)->Result<AmlTableInfo,TableError>{
