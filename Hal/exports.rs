@@ -396,11 +396,13 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
     let rsdp = crate::acpi::rsdp_address();
     if rsdp == 0 { return STATUS_NOT_FOUND; }
     let signature = signature.to_le_bytes();
+    let prefer_rsdt = crate::boot_handoff::acpi_quirk_policy().is_some_and(|policy|
+        policy.flags.contains(crate::acpi::quirks::QuirkFlags::PREFER_RSDT));
     // DSDT is referenced by FADT rather than listed in the RSDT/XSDT. Expose
     // it through the same HAL table API after validating its complete SDT.
     let located = if signature == *b"DSDT" {
         if instance != 0 { return STATUS_NOT_FOUND; }
-        let fadt = match unsafe { crate::acpi::find_table(rsdp,*b"FACP",0) } {
+        let fadt = match unsafe { crate::acpi::find_table_with_preference(rsdp,*b"FACP",0,prefer_rsdt) } {
             Ok(bytes)=>bytes,Err(error)=>return match error {
                 crate::acpi::AcpiError::MissingRoot=>STATUS_NOT_FOUND,
                 _=>STATUS_INVALID_PARAMETER,
@@ -435,7 +437,7 @@ pub unsafe extern "win64" fn hal_acpi_get_table_ex(
             Ok(_)=>Ok(bytes),Err(_)=>return STATUS_INVALID_PARAMETER,
         }
     } else {
-        unsafe { crate::acpi::find_table(rsdp, signature, instance as usize) }
+        unsafe { crate::acpi::find_table_with_preference(rsdp, signature, instance as usize, prefer_rsdt) }
     };
     match located {
         Ok(bytes) => {
