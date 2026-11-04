@@ -243,8 +243,6 @@ const MAX_WINDOWS: usize = PCI_DRIVER_HANDOFF_MAX_WINDOWS;
 type PciDriverHandoff = PCI_DRIVER_HANDOFF;
 
 struct PciState {
-    protected_memory: UnsafeCell<MM_PROTECTED_MEMORY_SNAPSHOT>,
-
     ready: AtomicBool,
     inventory_ready: AtomicBool,
     bridge_count: AtomicUsize,
@@ -261,6 +259,8 @@ struct PciState {
     pdo_count: AtomicUsize,
     host_bridge_resources: UnsafeCell<[PciHostBridgeResourceSet; MAX_WINDOWS]>,
     host_bridge_resource_count: AtomicUsize,
+    protected_memory: UnsafeCell<MM_PROTECTED_MEMORY_SNAPSHOT>,
+    clipped_host_apertures: UnsafeCell<[pci::host_bridge::PreparedHostBridgeApertures; MAX_WINDOWS]>,
 }
 unsafe impl Sync for PciState {}
 static HANDOFF: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -282,6 +282,8 @@ static STATE: PciState = PciState {
     pdo_count: AtomicUsize::new(0),
     host_bridge_resources: UnsafeCell::new([const { PciHostBridgeResourceSet::empty(0, 0, 0) }; MAX_WINDOWS]),
     host_bridge_resource_count: AtomicUsize::new(0),
+    protected_memory: UnsafeCell::new(MM_PROTECTED_MEMORY_SNAPSHOT::empty()),
+    clipped_host_apertures: UnsafeCell::new([pci::host_bridge::PreparedHostBridgeApertures::EMPTY; MAX_WINDOWS]),
 };
 static DRIVER_OBJECT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static PDO_BUSY: AtomicBool = AtomicBool::new(false);
@@ -1136,7 +1138,7 @@ unsafe fn release_pci_interrupt(extension: *mut PciPdoExtension) -> i32 {
 /// programmed from the bus-relative (raw) addresses; translated resources are
 /// retained only for consumers above the bus driver. Unsupported resource
 /// layouts fail closed rather than guessing an address.
-unsafe fn assigned_range_fits_clipped_host_aperture(
+fn assigned_range_fits_clipped_host_aperture(
     window_index: usize,
     kind: pci::resources::BarKind,
     prefetchable: bool,
