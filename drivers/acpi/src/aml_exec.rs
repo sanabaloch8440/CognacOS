@@ -232,6 +232,28 @@ impl<'a,'b> Machine<'a,'b>{
   self.sync.release_mutex(node)?;self.sync_state.held_count-=1;self.sync_state.held[self.sync_state.held_count]=HeldAmlMutex::EMPTY;
   self.sync_state.current_sync_level=held.previous_sync_level;Ok(())
  }
+ fn super_name_reference(&mut self,r:&mut Reader<'_>)->Result<AmlReference,ExecError>{
+  let start=r.pos;let opcode=*r.bytes.get(start).ok_or(ExecError::Truncated)?;
+  match opcode{
+   0x60..=0x67=>{r.pos+=1;self.frame_slot_reference(false,(opcode-0x60)as usize)},
+   0x68..=0x6e=>{r.pos+=1;self.frame_slot_reference(true,(opcode-0x68)as usize)},
+   0x00=>Err(ExecError::BadTarget),
+   0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{
+    let (name,next)=parse_name_string(r.bytes,start,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
+    if let Ok(node)=resolve_name_string(self.namespace,self.scope,&name){
+     let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
+     let object=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
+     if object.object_type==AmlObjectType::Name{return self.name_reference(canonical)}
+     // Preserve namespace identity for Field and Method references. Their
+     // dereference/store operations remain owned by the field/method providers.
+     return self.bindings.reference_node(self.namespace,canonical).map_err(|_|ExecError::BadTarget);
+    }
+    let field=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name).map_err(|_|ExecError::BadTarget)?;
+    self.dynamic.field_reference(self.namespace,field).map_err(|_|ExecError::BadTarget)
+   },
+   _=>Err(ExecError::BadTarget),
+  }
+ }
  fn target(&mut self,r:&mut Reader<'_>)->Result<Target,ExecError>{
   let op=r.byte()?;
   match op{
@@ -597,9 +619,7 @@ impl<'a,'b> Machine<'a,'b>{
     }
    }
    0x71=>{
-    let target=self.target(r)?;
-    let reference=match target{Target::Reference(reference)=>reference,Target::Local(i)=>self.frame_slot_reference(false,i)?,
-     Target::Arg(i)=>self.frame_slot_reference(true,i)?,Target::Null=>return Err(ExecError::BadTarget)};
+    let reference=self.super_name_reference(r)?;
     Ok(make_object_reference(reference))
    }
    0x88=>{
