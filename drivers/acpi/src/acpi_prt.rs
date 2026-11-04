@@ -236,7 +236,7 @@ mod platform_prt_policy_tests {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrtDecodeError {
     MissingObject, WrongObjectType, BadTableIndex, Truncated, BadPackage,
-    BadInteger, BadSource, UnresolvedLink, InvalidPath, TooManyEntries, MethodExecutionFailed,
+    BadInteger, BadSource, UnresolvedLink, InvalidPath, TooManyEntries, MethodExecutionFailed(crate::aml_exec::ExecError),
 }
 
 /// Construct the canonical rooted namespace path for a resolved link device.
@@ -607,7 +607,7 @@ pub fn evaluate_prt_method_object_in_context<R: LinkDeviceResolver>(
     let result = execute_method_in_context(
         aml, namespace, method, &[], integer_width_bits,
         arena, bindings, sync,
-    ).map_err(|_: ExecError| PrtDecodeError::MethodExecutionFailed)?;
+    ).map_err(PrtDecodeError::MethodExecutionFailed)?;
 
     if result.kind != AmlValueKind::Package {
         return Err(PrtDecodeError::BadPackage);
