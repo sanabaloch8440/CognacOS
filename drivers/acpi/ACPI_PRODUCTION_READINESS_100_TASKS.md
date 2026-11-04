@@ -1,8 +1,8 @@
 # CognacOS ACPI Driver — 100-Task Production Readiness Plan
 
 **Repository:** `sanabaloch8440/CognacOS`  
-**Branch:** `acpi-production-batch-1-table-validation`  
-**Status:** tasks 1–28 implemented and covered by focused CI regression suites; remaining tasks are not implied complete.
+**Branch:** `main`  
+**Status (2026-11-04):** tasks 1–28, 32, and 67 have implementation evidence recorded below; task 29 remains partial and unchecked; all other unchecked tasks remain open. This is a readiness work log, not a production-readiness certification.
 
 Treat each numbered item as a separately reviewable task with tests. Table parsing, AML execution, Windows-compatible PnP behavior, and hardware power management are distinct capabilities. Avoid diagnostic-print spam; prefer regression tests, structured error context, and CI artifacts.
 
@@ -45,7 +45,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 29. [ ] Correct method argument/local lifetime, recursion, and serialization-flag behavior.
 30. [ ] Implement namespace mutation rules for Store, Alias, Create*Field, and dynamic objects.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
-32. [ ] Evaluate Package/VarPackage elements including dynamic counts.
+32. [x] Evaluate Package/VarPackage elements including dynamic counts.
 33. [ ] Implement mutex acquire/release timeout and synchronization-level rules.
 34. [ ] Implement Event signal/wait semantics and safe kernel wakeup integration.
 35. [ ] Implement FACS-backed AML Global Lock acquisition/release.
@@ -86,7 +86,7 @@ Treat each numbered item as a separately reviewable task with tests. Table parsi
 64. [ ] Implement _SRS only after choosing a valid alternative and confirming safe device state.
 65. [ ] Re-read _CRS after _SRS and verify the programmed assignment.
 66. [ ] Connect host-bridge _CRS apertures to hierarchical PCI resource allocation.
-67. [ ] Implement _PRT routing including link-device resolution, source indices, and direct GSI routes.
+67. [x] Implement _PRT routing including link-device resolution, source indices, direct GSI routes, dynamic method-valued tables, and validated downstream-bridge swizzling.
 68. [ ] Implement link-device _PRS/_CRS/_SRS arbitration and interrupt programming.
 69. [ ] Validate MCFG segments/bus ranges and reject overlapping or out-of-range ECAM windows.
 70. [ ] Implement bridge-window allocation, rebalance, rollback, and preservation of firmware assignments.
@@ -204,3 +204,58 @@ A host-thread concurrency regression now runs six callers through the same seria
 Task 29 remains unchecked: host-thread testing validates the interpreter's synchronization contract, but real kernel scheduler contention, owner handoff, abandoned-owner rundown, and unload races still need QEMU/kernel execution tests. The UEFI/QEMU workflow remains manual-only, so no runtime-kernel validation is claimed. The follow-up [workflow `41604796392`](https://github.com/sanabaloch8440/CognacOS/actions/runs/41604796392) also completed successfully on the documentation head.
 
 Kernel mutant registration is now lazy: `KeInitializeMutex` initializes the caller-owned dispatcher header without permanently registering its address. The first wait creates the kernel ownership record; the final release retires that record when no waiter is queued. Wait-all registers idle mutants consistently with single-object waits. Active ownership and queued waits retain the record until handoff/release, while abandoned ownership remains represented for the next waiter. This removes the normal idle-driver-unload stale-address path without adding a non-Windows cleanup export. ACPI PnP callbacks now acquire an active-operation guard, and `DriverUnload` closes admission and drains active callbacks before the image can be reclaimed. The firmware interface now supplies reference/dereference callbacks; held interface references also prevent unload, and table-query callbacks participate in operation rundown. These lifecycle changes are awaiting target type-check and regression CI; they do not yet prove unload safety under real concurrent scheduler execution or hostile unload races. Task 29 remains unchecked until concurrent multi-thread execution, ownership transfer, abandoned-owner rundown, and recursive nested-method behavior are exercised against the real kernel scheduler. AML mutex acquisition currently uses an indefinite non-alertable wait; timeout semantics remain a separate follow-up (task 33). The UEFI/QEMU workflow remains manual-only during this ACPI hardening phase, so no boot-time runtime claim is made yet.
+
+## Dynamic AML packages and hierarchical PCI interrupt routing (2026-11-04)
+
+Tasks 32 and 67 were advanced on main through commit c78e40661fb9bdbfb4c19f993598cff9abc96ea5.
+
+### Task 32 — dynamic Package/VarPackage evaluation
+
+- AML method execution evaluates PackageOp and VarPackageOp, including runtime TermArg element counts and nested package values.
+- Namespace NameString references can resolve Device objects for dynamic link-device references in method-returned _PRT packages.
+- Caller-owned object arenas and pool-backed execution paths avoid constructing the large AML arena on the kernel stack.
+- AML integer width follows the DefinitionBlock revision.
+- Regression coverage includes nested dynamic packages, runtime package counts, invalid return types, and 128-element packages.
+
+### Task 67 — dynamic _PRT and bridge hierarchy
+
+- Name-valued and method-valued _PRT use the same route-table evaluator.
+- Link-device _PRS/_CRS resolution and direct GSI entries are validated; the route path does not use PCI config-space InterruptLine as a fallback.
+- PCI waits for complete bridge inventory, constructs a root-to-endpoint bridge ancestry, and passes it through the versioned ACPI firmware interface.
+- ACPI validates the bridge chain, resolves bridge namespace nodes under the correct parent, searches downstream _PRT tables and swizzles INTx pins while walking toward the root.
+- Missing, ambiguous, malformed, or incomplete topology fails closed.
+- An AML execution guard protects namespace/table lifetime during the route query.
+
+### Current limits — compatibility analysis, not Windows limits
+
+The current implementation has these explicit resource/ABI ceilings:
+
+| Limit | Current value | Interpretation |
+|---|---:|---|
+| _PRT entries per package | 128 | Internal fixed-capacity AML/route representation; not an ACPI or documented Windows maximum |
+| Bridge hops in the route request | 8 | Version-3 request ABI array capacity; not a PCI or Windows topology maximum |
+| Collected bridge records per segment | 256 | Consistent with the 256 bus-number values available in an 8-bit PCI bus-number space, provided inventory rejects duplicate/overlapping or malformed bridge topology |
+| AML object arena | 768 values | Internal bounded execution budget, not a firmware format limit |
+
+The ACPI _PRT definition specifies a Package containing a variable-length list of route packages; it does not define a 128-entry maximum. ACPI also requires the _PRT function-number field to be 0xFFFF (all functions). See [ACPI 6.4 _PRT](https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html) and [ACPI 6.6 device configuration](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html).
+
+The UEFI PI description defines a PCI segment as containing up to 256 bus numbers. This supports a 256-record bus-topology ceiling when each accepted bridge consumes a unique secondary bus number; it does not justify silently truncating a valid inventory. Inventory overflow, duplicate secondary-bus ownership, loops, and inconsistent primary/secondary/subordinate ranges must remain hard errors. See [UEFI PI PCI segment definition](https://uefi.org/specs/PI/1.9/V5_Introduction.html).
+
+Microsoft's public ACPI documentation describes Windows' use of ACPI tables but publishes no _PRT entry-count limit or maximum PCI bridge depth. Microsoft's ACPI bug-check documentation explicitly treats missing link nodes, missing _PRT mappings, and malformed function-specific entries as routing failures; it does not establish the present fixed caps as Windows requirements. See [Microsoft ACPI system description tables](https://learn.microsoft.com/en-us/windows-hardware/drivers/bringup/acpi-system-description-tables) and [ACPI_BIOS_ERROR routing diagnostics](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/bug-check-0xa5--acpi-bios-error).
+
+**Production direction:** do not describe 128 entries or eight hops as Windows limits. Remove the eight-hop ceiling through a new, separately versioned firmware-interface request (new GUID/version) with a bridge path sized for the architectural bus-number space (up to 255 hops), preserving existing v1/v2/v3 layouts. The current v3 ABI must not be enlarged in place. Ultimately replace the 128-entry _PRT ceiling with checked, pool-backed capacity derived from the validated AML package/table size and an explicit driver memory budget; until then, oversized packages must continue to fail closed. Keep the 256-record segment ceiling only with validation that bridge inventory is one-to-one with allocated secondary bus numbers and never silently truncates. These are engineering choices; no Microsoft-published numeric maxima were found.
+
+### Verification
+
+- ACPI library tests, native ACPI driver type-check, kernel dispatcher type-check, and firmware discovery regression suites passed in [ACPI workflow 41793056109](https://github.com/sanabaloch8440/CognacOS/actions/runs/41793056109) for commit c78e406.
+- PCI PnP/shared-ABI/driver checks passed in [PCI workflow 41792199284](https://github.com/sanabaloch8440/CognacOS/actions/runs/41792199284).
+- UEFI/QEMU workflow 41793056113 was still in progress at the time of the implementation report; no QEMU boot success is claimed here.
+- These checks establish configured build/type-check/regression coverage only. They do not prove all firmware topologies, deep bridge chains, or Windows 11 hardware interoperability.
+
+### Remaining follow-up tasks
+
+1. Add ACPI firmware interface v4 with a new GUID and a 255-hop bridge-path request; retain v1/v2/v3 ABI layouts and callbacks unchanged.
+2. Widen PCI requester-path discovery and ACPI traversal buffers to the same bound, with checked pool allocation or bounded local storage appropriate to IRQL/stack constraints.
+3. Replace fixed 128-entry AML package/object arrays with pool-backed, validated dynamic storage governed by a documented per-method and per-table memory budget.
+4. Add adversarial tests for 255-hop chains, maximum valid bus-number allocation, duplicate secondary buses, cycles, overlapping subordinate ranges, oversized AML packages, allocation failure, and rollback.
+5. Keep task 67 checked for the implemented routing semantics, but do not claim unrestricted-depth or unrestricted-size routing until these follow-ups and their CI/QEMU tests pass.
