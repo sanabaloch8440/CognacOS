@@ -285,6 +285,8 @@ pub type AcpiSciRegister = unsafe extern "C" fn(
 pub type AcpiSciSetEnabled = unsafe extern "C" fn(vector: u8, enabled: bool) -> u32;
 pub type AcpiSciUnregister = unsafe extern "C" fn(vector: u8, context: u64) -> u32;
 pub type AcpiSciReleaseVector = unsafe extern "C" fn(vector: u8) -> u32;
+pub type AcpiQueuePassiveWorker = extern "C" fn(context: u64, routine: AcpiSciDpc) -> bool;
+pub type AcpiRundownPassiveWorker = extern "C" fn(context: u64) -> bool;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AcpiSciHalServices {
@@ -296,6 +298,8 @@ pub struct AcpiSciHalServices {
     pub set_enabled: Option<AcpiSciSetEnabled>,
     pub unregister: Option<AcpiSciUnregister>,
     pub release_vector: Option<AcpiSciReleaseVector>,
+    pub queue_passive_worker: Option<AcpiQueuePassiveWorker>,
+    pub rundown_passive_worker: Option<AcpiRundownPassiveWorker>,
 }
 impl AcpiSciHalServices {
     pub const fn compatible(&self) -> bool {
@@ -307,5 +311,7 @@ impl AcpiSciHalServices {
             && self.set_enabled.is_some()
             && self.unregister.is_some()
             && self.release_vector.is_some()
+            && self.queue_passive_worker.is_some()
+            && self.rundown_passive_worker.is_some()
     }
 }
