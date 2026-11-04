@@ -808,7 +808,7 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     let mut dynamic=AmlDynamicNamespace::new();
     let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
         &mut arena,&mut bindings,sync,&mut dynamic,0,0)?;
-    if value.kind==AmlValueKind::Package || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
+    if matches!(value.kind,AmlValueKind::Package|AmlValueKind::ObjectReference) || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
     Ok(value)
 }
 
