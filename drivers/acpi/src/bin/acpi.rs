@@ -1695,7 +1695,7 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
             .ok_or(acpi::acpi_prt::PrtError::BadTableIndex)?;
         let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
         let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
-        if allocation.is_null() { return Err(acpi::acpi_prt::PrtError::MethodExecutionFailed); }
+        if allocation.is_null() { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
         let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
         unsafe { arena.write(acpi::aml_objects::AmlObjectArena::new()); }
         let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(if width == 32 { 1 } else { 2 });
