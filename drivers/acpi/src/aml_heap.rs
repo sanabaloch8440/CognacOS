@@ -244,3 +244,34 @@ mod tests {
         assert_eq!(budget.allocations_live, 2);
     }
 }
+
+
+/// Variable-length AML String/Buffer payload storage. The byte vector is
+/// independently owned and can grow beyond the former inline 256-byte field.
+pub struct AmlPoolBytes {
+    bytes: AmlPoolVec<u8>,
+}
+impl AmlPoolBytes {
+    pub fn new(services: AmlPoolServices) -> Result<Self, AmlHeapError> {
+        Ok(Self { bytes: AmlPoolVec::new(services)? })
+    }
+    pub fn len(&self) -> usize { self.bytes.len() }
+    pub fn is_empty(&self) -> bool { self.bytes.is_empty() }
+    pub fn as_bytes(&self) -> &[u8] { self.bytes.as_slice() }
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] { self.bytes.as_mut_slice() }
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), AmlHeapError> {
+        self.bytes.try_reserve(additional)
+    }
+    pub fn try_push(&mut self, byte: u8) -> Result<usize, AmlHeapError> {
+        self.bytes.try_push(byte)
+    }
+    pub fn try_extend_from_slice(&mut self, source: &[u8]) -> Result<(), AmlHeapError> {
+        self.bytes.try_reserve(source.len())?;
+        for byte in source { self.bytes.try_push(*byte)?; }
+        Ok(())
+    }
+    pub fn checkpoint(&self) -> usize { self.bytes.checkpoint() }
+    pub fn rollback(&mut self, checkpoint: usize) -> Result<(), AmlHeapError> {
+        self.bytes.rollback(checkpoint)
+    }
+}
