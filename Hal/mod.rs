@@ -1129,8 +1129,8 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
 
 /// Kernel-owned passive-work callbacks are installed before ACPI.sys starts.
 /// HAL publishes them in the SCI service table but never executes the work.
-type AcpiPassiveQueueHook = cognacos_hal_contract::AcpiQueuePassiveWorker;
-type AcpiPassiveRundownHook = cognacos_hal_contract::AcpiRundownPassiveWorker;
+pub type AcpiPassiveQueueHook = cognacos_hal_contract::AcpiQueuePassiveWorker;
+pub type AcpiPassiveRundownHook = cognacos_hal_contract::AcpiRundownPassiveWorker;
 static ACPI_PASSIVE_QUEUE_HOOK: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 static ACPI_PASSIVE_RUNDOWN_HOOK: core::sync::atomic::AtomicUsize =
