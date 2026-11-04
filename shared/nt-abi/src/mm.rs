@@ -3,6 +3,39 @@
 use crate::types::{ULONG, ULONG_PTR, SIZE_T};
 
 pub const PAGE_SIZE: SIZE_T = 4096;
+
+/// Versioned kernel-to-bus-driver snapshot envelope. The entries are physical
+/// RAM ranges from the authoritative Memory Manager map, not allocator free
+/// pages. Bus drivers must reserve every listed byte from BAR placement.
+pub const MM_PROTECTED_MEMORY_SNAPSHOT_VERSION: u32 = 1;
+pub const MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES: usize = 256;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PHYSICAL_MEMORY_RANGE {
+    pub base_address: i64,
+    pub number_of_bytes: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MM_PROTECTED_MEMORY_SNAPSHOT {
+    pub version: u32,
+    pub size: u32,
+    pub count: u32,
+    pub reserved: u32,
+    pub ranges: [PHYSICAL_MEMORY_RANGE; MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES],
+}
+impl MM_PROTECTED_MEMORY_SNAPSHOT {
+    pub const fn empty() -> Self {
+        Self {
+            version: MM_PROTECTED_MEMORY_SNAPSHOT_VERSION,
+            size: core::mem::size_of::<Self>() as u32,
+            count: 0,
+            reserved: 0,
+            ranges: [PHYSICAL_MEMORY_RANGE { base_address: 0, number_of_bytes: 0 }; MM_PROTECTED_MEMORY_SNAPSHOT_MAX_RANGES],
+        }
+    }
+}
+
 pub const PAGE_SHIFT: u32 = 12;
 pub const PAGE_NOACCESS: ULONG = 0x01;
 pub const PAGE_READONLY: ULONG = 0x02;
