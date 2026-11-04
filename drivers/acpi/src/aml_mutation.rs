@@ -49,7 +49,7 @@ impl AmlDynamicNamespace {
 
     /// High-water mark of allocated field slots. IDs are never recycled after
     /// unload, preventing stale ObjectReference values from resolving to a new field.
-    pub const fn field_count(&self) -> usize { self.fields.iter().filter(|field| field.namespace_node != u16::MAX).count() }
+    pub const fn field_count(&self) -> usize { self.field_count }
 
     /// Retire every dynamic field owned by an unloading DefinitionBlock.
     /// Slots become tombstones and are deliberately not reused during this
@@ -228,7 +228,7 @@ impl AmlDynamicNamespace {
     pub fn buffer_field(&self, namespace: &AmlNamespace, node: u16)
         -> Result<AmlDynamicBufferField, RuntimeError> {
         if (node as usize) < MAX_NAMESPACE_NODES && node as usize >= namespace.count { return Err(RuntimeError::InvalidNode); }
-        self.fields[..self.field_count].iter().find(|field| field.namespace_node != u16::MAX && field.namespace_node == node)
+        self.fields[..self.next_slot].iter().find(|field| field.namespace_node != u16::MAX && field.namespace_node == node)
             .copied().ok_or(RuntimeError::InvalidReference)
     }
 
