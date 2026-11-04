@@ -262,7 +262,7 @@ fn eval_optional(ns:&AmlNamespace,aml_tables:&[&[u8]],device:u16,name:[u8;4],inv
 }
 /// Construct the canonical rooted ACPI path of a device's parent. The
 /// fixed buffer and depth cap keep this helper allocation-free in the driver.
-fn parent_namespace_path(ns: &AmlNamespace, device: u16, output: &mut [u8; 128]) -> Option<&str> {
+fn parent_namespace_path<'a>(ns: &AmlNamespace, device: u16, output: &'a mut [u8; 128]) -> Option<&'a str> {
     if device as usize >= ns.count { return None; }
     let mut chain = [0u16; 32];
     let mut count = 0usize;
