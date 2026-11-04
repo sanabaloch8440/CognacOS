@@ -92,6 +92,18 @@ impl<T: Copy> AmlPoolVec<T> {
         Ok(index)
     }
 
+    /// Capture the current logical length before a multi-step AML decode.
+    pub fn checkpoint(&self) -> usize { self.length }
+
+    /// Roll back values appended after a checkpoint. Capacity is retained for
+    /// reuse, while the logical contents become indistinguishable from the
+    /// pre-transaction state.
+    pub fn rollback(&mut self, checkpoint: usize) -> Result<(), AmlHeapError> {
+        if checkpoint > self.length { return Err(AmlHeapError::CapacityOverflow); }
+        self.length = checkpoint;
+        Ok(())
+    }
+
     pub fn truncate(&mut self, new_length: usize) {
         if new_length < self.length { self.length = new_length; }
     }
