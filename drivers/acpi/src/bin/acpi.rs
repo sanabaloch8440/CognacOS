@@ -103,6 +103,8 @@ unsafe extern "win64" {
  fn IoCreateDevice(driver:*mut DRIVER_OBJECT,extension_size:u32,device_name:*mut cognacos_nt_abi::object::UNICODE_STRING,device_type:u32,characteristics:u32,exclusive:u8,output:*mut *mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn IoMarkBusEnumeratedPdo(device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn IoPnPRegisterBusDevice(enumerator_id:u32,identity_hash:u64,device:*mut cognacos_nt_abi::io::DEVICE_OBJECT,output_index:*mut u32)->i32;
+ fn IoPnPRegisterBusFdo(enumerator_id:u32,identity_hash:u64,device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
+ fn IoPnPUnregisterBusFdo(enumerator_id:u32,identity_hash:u64,device:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn IoPnPEnumerateBus(bus:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn ExAllocatePoolWithTag(pool_type:u32,size:usize,tag:u32)->*mut u8;
  fn ExFreePoolWithTag(buffer:*mut u8,tag:u32);
@@ -125,6 +127,16 @@ IoMarkBusEnumeratedPdo:
 IoPnPRegisterBusDevice:
  jmp QWORD PTR [rip + __imp_io_IoPnPRegisterBusDevice]
 .size IoPnPRegisterBusDevice, .-IoPnPRegisterBusDevice
+.global IoPnPRegisterBusFdo
+.type IoPnPRegisterBusFdo,@function
+IoPnPRegisterBusFdo:
+ jmp QWORD PTR [rip + __imp_io_IoPnPRegisterBusFdo]
+.size IoPnPRegisterBusFdo, .-IoPnPRegisterBusFdo
+.global IoPnPUnregisterBusFdo
+.type IoPnPUnregisterBusFdo,@function
+IoPnPUnregisterBusFdo:
+ jmp QWORD PTR [rip + __imp_io_IoPnPUnregisterBusFdo]
+.size IoPnPUnregisterBusFdo, .-IoPnPUnregisterBusFdo
 .global IoPnPEnumerateBus
 .type IoPnPEnumerateBus,@function
 IoPnPEnumerateBus:
@@ -173,6 +185,10 @@ __imp_io_IoCreateDevice: .quad 0
 __imp_io_IoMarkBusEnumeratedPdo: .quad 0
 .global __imp_io_IoPnPRegisterBusDevice
 __imp_io_IoPnPRegisterBusDevice: .quad 0
+.global __imp_io_IoPnPRegisterBusFdo
+__imp_io_IoPnPRegisterBusFdo: .quad 0
+.global __imp_io_IoPnPUnregisterBusFdo
+__imp_io_IoPnPUnregisterBusFdo: .quad 0
 .global __imp_io_IoPnPEnumerateBus
 __imp_io_IoPnPEnumerateBus: .quad 0
 .section .data.imports.ex,"aw",@progbits
@@ -993,6 +1009,14 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
         || STATE.interface_references.load(Ordering::Acquire)!=0 {
         core::hint::spin_loop();
     }
+    let bus = unsafe { ACPI_BUS_DEVICE };
+    if !bus.is_null() {
+        let _ = unsafe { IoPnPUnregisterBusFdo(
+            cognacos_nt_abi::bus::ACPI_BUS_ENUMERATOR_ID,
+            cognacos_nt_abi::bus::ACPI_BUS_IDENTITY_HASH,
+            bus,
+        ) };
+    }
     release_patched_aml_tables();
 }
 
@@ -1362,6 +1386,15 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         ACPI_BUS_RELATIONS.count=pdo_count as u32;
         for i in 0..MAX_ACPI_PDOS { ACPI_BUS_RELATIONS.objects[i]=ACPI_PDOS[i]; }
     }
+    // Publish the bus FDO separately from namespace child PDO registration.
+    // PCI consumers resolve this stable bus identity through the kernel-owned
+    // referenced-object directory, never by guessing a child devnode.
+    let bus_registered = unsafe { IoPnPRegisterBusFdo(
+        cognacos_nt_abi::bus::ACPI_BUS_ENUMERATOR_ID,
+        cognacos_nt_abi::bus::ACPI_BUS_IDENTITY_HASH,
+        bus_device,
+    ) };
+    if bus_registered != STATUS_SUCCESS { return bus_registered; }
     STATE.device_count.store(identity_count,Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
     let enumerate=unsafe{IoPnPEnumerateBus(bus_device)};
