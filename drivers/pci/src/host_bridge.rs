@@ -247,11 +247,12 @@ mod tests {
             assigned: 0,
         });
         let mut plan = HierarchyPlan::empty();
-        let prepared = plan_root_hierarchy(
-            &resources, &protected, &[request], &[], &mut plan,
-        ).unwrap();
-        assert_eq!(prepared.count, 0);
-        assert_eq!(plan.endpoint_count, 0);
+        let before = plan;
+        assert_eq!(
+            plan_root_hierarchy(&resources, &protected, &[request], &[], &mut plan),
+            Err(HostBridgeHandoffError::ProtectedMemory),
+        );
+        assert_eq!(plan, before);
     }
 
     #[test]
