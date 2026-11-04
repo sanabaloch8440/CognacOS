@@ -239,7 +239,7 @@ impl SciCallbackContext {
 
     /// Called only after SCI is masked and HAL has drained ISR/DPC callbacks.
     pub fn rundown(&self) -> bool {
-        (self.rundown_passive_worker)(self.owner_context)
+        (self.rundown_passive_worker)(self as *const Self as u64)
     }
 }
 
@@ -255,7 +255,7 @@ pub extern "C" fn sci_isr_trampoline(context: u64) -> bool {
 pub extern "C" fn sci_dpc_trampoline(context: u64) {
     if context == 0 { return; }
     let callbacks = unsafe { &*(context as *const SciCallbackContext) };
-    let _ = (callbacks.queue_passive_worker)(callbacks.owner_context, sci_passive_worker_trampoline);
+    let _ = (callbacks.queue_passive_worker)(context, sci_passive_worker_trampoline);
 }
 /// Kernel work-item entry point. The caller guarantees PASSIVE_LEVEL and holds
 /// an ACPI operation/rundown reference for the entire worker invocation.
