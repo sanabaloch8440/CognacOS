@@ -406,7 +406,7 @@ impl<T> IrqSpinLock<T> {
             // waiter could deadlock behind the very lock it is waiting to acquire.
             #[cfg(target_os = "none")]
             if let Some(cpu) = current_cpu_local() {
-                crate::kernel_vm::smp_tlb_poll(cpu.logical_id.load(Ordering::Relaxed) as usize);
+                crate::kernel_services::poll_tlb(cpu.logical_id.load(Ordering::Relaxed) as usize);
             }
             core::hint::spin_loop();
         }
@@ -979,7 +979,7 @@ unsafe extern "C" fn service_map_device_io_space(physical:u64,length:u64,flags:u
         || length==0 || physical.checked_add(length).is_none() {
         return driver_hal_invalid();
     }
-    match crate::kernel_vm::map_io_space(physical,length) {
+    match crate::kernel_services::map_io_space(physical,length) {
         Ok(address) if address!=0 => { unsafe { out.write(address); } driver_hal_success() }
         Ok(_) => driver_hal_invalid(),
         Err(_) => driver_hal_unsupported(),
@@ -987,7 +987,7 @@ unsafe extern "C" fn service_map_device_io_space(physical:u64,length:u64,flags:u
 }
 unsafe extern "C" fn service_unmap_device_io_space(address:u64,length:u64)->DriverHalStatus {
     if address==0 || length==0 { return driver_hal_invalid(); }
-    match crate::kernel_vm::unmap_io_space(address,length) {
+    match crate::kernel_services::unmap_io_space(address,length) {
         Ok(())=>driver_hal_success(),
         Err(_)=>driver_hal_invalid(),
     }
@@ -997,7 +997,7 @@ extern "C" fn service_memory_barrier() { device_full_barrier(); }
 /// Extended HAL services used by the PnP resource arbiter. MMIO mapping is
 /// advertised only after the kernel VM has initialized its dedicated aperture.
 pub fn driver_extended_service_table()->cognacos_hal_contract::HalExtendedServiceTable {
-    let ready=crate::kernel_vm::is_initialized();
+    let ready=crate::kernel_services::memory_manager_ready();
     cognacos_hal_contract::HalExtendedServiceTable {
         size:core::mem::size_of::<cognacos_hal_contract::HalExtendedServiceTable>() as u32,
         version:cognacos_hal_contract::HAL_EXTENDED_SERVICES_VERSION,
@@ -1016,15 +1016,15 @@ unsafe extern "C" fn service_allocate_dma(
     cpu_out:*mut u64,device_out:*mut u64,
 )->DriverHalStatus {
     if device_object==0 || size==0 || size>u32::MAX as u64 || alignment==0
-        || !alignment.is_power_of_two() || alignment>crate::dma::PAGE_SIZE || maximum_address==0
+        || !alignment.is_power_of_two() || alignment>4096usize || maximum_address==0
         || flags & 3 != 3 || flags & !7 != 0 || cpu_out.is_null() || device_out.is_null() {
         return driver_hal_invalid();
     }
-    if !crate::dma::iommu::available() { return driver_hal_unsupported(); }
+    if !crate::kernel_services::dma_available() { return driver_hal_unsupported(); }
     let object=device_object as *mut core::ffi::c_void;
-    let adapter=crate::dma::create_device_adapter(object,3,maximum_address);
+    let adapter=crate::kernel_services::create_dma_adapter(object,3,maximum_address);
     if adapter.is_null() { return driver_hal_unsupported(); }
-    match unsafe { crate::dma::iommu_allocate_common(adapter,size as usize,maximum_address) } {
+    match unsafe { crate::kernel_services::allocate_common_buffer(adapter,size as usize,maximum_address) } {
         Ok((cpu,logical)) if !cpu.is_null() && logical!=0
             && (cpu as u64)%alignment==0 && logical%alignment==0
             && logical.checked_add(size-1).is_some_and(|last| last<=maximum_address) => {
@@ -1032,7 +1032,7 @@ unsafe extern "C" fn service_allocate_dma(
             driver_hal_success()
         }
         Ok((cpu,logical)) => {
-            let _=unsafe { crate::dma::free_common_buffer_for_adapter(adapter,cpu,logical,size as usize) };
+            let _=unsafe { crate::kernel_services::free_common_buffer(adapter,cpu,logical,size as usize) };
             driver_hal_invalid()
         }
         Err(_) => driver_hal_unsupported(),
@@ -1042,9 +1042,9 @@ unsafe extern "C" fn service_free_dma(device_object:u64,cpu:u64,device_address:u
     if device_object==0 || cpu==0 || device_address==0 || size==0 || size>usize::MAX as u64 {
         return driver_hal_invalid();
     }
-    let adapter=crate::dma::create_device_adapter(device_object as *mut core::ffi::c_void,3,u64::MAX);
+    let adapter=crate::kernel_services::create_dma_adapter(device_object as *mut core::ffi::c_void,3,u64::MAX);
     if adapter.is_null() { return driver_hal_unsupported(); }
-    match unsafe { crate::dma::free_common_buffer_for_adapter(adapter,cpu as *mut u8,device_address,size as usize) } {
+    match unsafe { crate::kernel_services::free_common_buffer(adapter,cpu as *mut u8,device_address,size as usize) } {
         Ok(())=>driver_hal_success(),
         Err(_)=>driver_hal_unsupported(),
     }
@@ -1054,7 +1054,7 @@ unsafe extern "C" fn service_validate_dma(device_object:u64,cpu:u64,device_addre
     if device_object==0||cpu==0||device_address==0||size==0 {
         return driver_hal_invalid();
     }
-    if crate::dma::iommu::common_dma_mapping_valid(device_object as usize,cpu,device_address,size) {
+    if crate::kernel_services::validate_common_buffer(device_object as usize,cpu,device_address,size) {
         driver_hal_success()
     } else {
         driver_hal_unsupported()
@@ -1238,7 +1238,7 @@ unsafe extern "C" fn service_set_bus_master(device_object:u64,enabled:bool)->Dri
 /// Publish IOMMU-backed DMA and routed interrupt/DPC services. Interrupt
 /// unmasking remains gated until PnP binds a validated ACPI I/O-APIC route.
 pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable {
-    let dma_ready=crate::dma::iommu::available();
+    let dma_ready=crate::kernel_services::dma_available();
     let irq_ready=DEVICE_DPC_QUEUE_HOOK.load(Ordering::Acquire)!=0
         &&DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire)!=0
         &&DEVICE_DPC_INIT_HOOK.load(Ordering::Acquire)!=0;
@@ -1360,13 +1360,9 @@ unsafe extern "C" fn acpi_get_platform_quirk_policy(
     if policy.is_null() || size.is_null() || version.is_null() {
         return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code;
     }
-    let (pointer, bytes) = crate::boot_handoff::acpi_quirk_policy_ptr();
-    unsafe {
-        policy.write(pointer);
-        size.write(bytes);
-        version.write(cognacos_hal_contract::ACPI_PLATFORM_QUIRK_POLICY_VERSION);
-    }
-    cognacos_hal_contract::HalStatus::SUCCESS.code
+    // The immutable policy is owned and published by the executive. HAL
+    // forwards the versioned query without importing boot-handoff internals.
+    unsafe { crate::kernel_services::get_platform_quirk_policy(policy, size, version) }
 }
 
 
