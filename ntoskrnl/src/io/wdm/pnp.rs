@@ -204,16 +204,27 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
  let effective_status=if minor==IRP_MN_START_DEVICE&&device_deleting{STATUS_DELETE_PENDING}else{status};
  let mut released=[ptr::null_mut::<DeviceObject>();MAX_PNP_RESOURCE_CLAIMS];
  let mut released_count=0usize;
+ let mut removed_translations=[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS];
+ let mut removed_count=0usize;
+ let mut added_translations=[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS];
+ let mut added_count=0usize;
  {
   let mut arbiter=RESOURCE_ARBITER.lock();
   if minor==IRP_MN_START_DEVICE {
    let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed);
    if effective_status==STATUS_SUCCESS {
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner&&c.committed){
-     released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+     released[released_count]=claim.owner;released_count+=1;
+     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+      removed_translations[removed_count]=*claim;removed_count+=1;
+     }
+     *claim=ResourceClaim::EMPTY;
     }
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
      claim.committed=true;claim.irp=ptr::null_mut();
+     if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+      added_translations[added_count]=*claim;added_count+=1;
+     }
     }
    }else if has_pending{
     for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){
@@ -222,8 +233,21 @@ pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,mino
    }
   }else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL){
    for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner){
-    released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+    released[released_count]=claim.owner;released_count+=1;
+    if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+     removed_translations[removed_count]=*claim;removed_count+=1;
+    }
+    *claim=ResourceClaim::EMPTY;
    }
+  }
+ }
+ for claim in removed_translations[..removed_count].iter() {
+  let _=crate::hal::unregister_bus_interrupt_translation(claim.interface_type,claim.bus_number,claim.bus_level,claim.bus_vector);
+ }
+ for claim in added_translations[..added_count].iter() {
+  if claim.irql<=u8::MAX as u32 {
+   let _=crate::hal::register_bus_interrupt_translation(claim.interface_type,claim.bus_number,
+    claim.bus_level,claim.bus_vector,claim.system_vector,claim.irql as u8,claim.affinity);
   }
  }
  for held in released[..released_count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
