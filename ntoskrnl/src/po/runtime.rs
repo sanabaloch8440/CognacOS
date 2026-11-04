@@ -243,7 +243,7 @@ pub unsafe extern "win64" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u8
   let Some(slot)=requests.slots.iter_mut().find(|r|!r.used) else{drop(requests);unsafe{io::io_free_irp(irp)};return STATUS_INSUFFICIENT_RESOURCES};
   *slot=PowerRequest{used:true,irp,device,minor,state:target,context,callback,returned:false,completed:false};
  }
- unsafe{let _=io::io_set_cancel_routine(irp,Some(power_request_cancel));}
+ unsafe{let _=io::io_set_cancel_routine_synchronized(irp,Some(power_request_cancel));}
  if !output_irp.is_null(){unsafe{output_irp.write(irp)}}
  let status=unsafe{io::io_call_driver(device,irp)};
  let synth={
@@ -265,7 +265,7 @@ fn finish_power_request(irp:*mut WdmIrp,_status:i32){
   if r.completed{return}
   r.completed=true;let snap=*r;if r.returned{*r=PowerRequest::EMPTY;}snap
  };
- let _=unsafe{io::io_set_cancel_routine(irp,None)};
+ let _=unsafe{io::io_set_cancel_routine_synchronized(irp,None)};
  if let Some(callback)=snapshot.callback{
   let state=if snapshot.minor==IRP_MN_WAIT_WAKE{PowerState{system_state:snapshot.state}}else{PowerState{device_state:snapshot.state}};
   unsafe{callback(snapshot.device,snapshot.minor,state,snapshot.context,irp)}
@@ -279,6 +279,9 @@ pub unsafe extern "win64" fn PoCallDriver(device:*mut DeviceObject,irp:*mut WdmI
 
 unsafe extern "win64" fn power_request_cancel(device:*mut DeviceObject,irp:*mut WdmIrp) {
  if irp.is_null(){return}
+ // IoCancelIrp enters cancel callbacks with the global cancel spin lock held.
+ let cancel_irql=unsafe{(*irp).bytes[0x45]};
+ unsafe{io::io_release_cancel_spin_lock(cancel_irql);}
  unsafe{(&mut (*irp).bytes)[0x30..0x34].copy_from_slice(&STATUS_CANCELLED.to_le_bytes());}
  let _=device;
  unsafe{io::io_complete_request(irp,0);}
