@@ -1592,6 +1592,95 @@ struct ResolvedLinkRoute {
     active_low: bool,
     level_triggered: bool,
 }
+/// Kernel-backed AML method invoker for route/resource evaluation. Its
+/// object arena is allocated from paged pool, never from a kernel thread stack.
+struct PoolBackedAcpiMethodInvoker<'a> {
+    synchronizer: &'a dyn acpi::aml_exec::AmlMethodSynchronizer,
+    integer_width_bits: u8,
+}
+impl acpi::acpi_device::AcpiMethodInvoker for PoolBackedAcpiMethodInvoker<'_> {
+    fn evaluate_value(
+        &mut self, namespace: &acpi::aml::AmlNamespace, aml: &[u8], method: u16,
+    ) -> Result<acpi::acpi_device::AcpiMethodValue, acpi::aml_exec::ExecError> {
+        self.evaluate_value_with_args(namespace, aml, method, &[])
+    }
+
+    fn evaluate_value_with_args(
+        &mut self, namespace: &acpi::aml::AmlNamespace, aml: &[u8], method: u16,
+        args: &[acpi::aml_objects::AmlRuntimeValue],
+    ) -> Result<acpi::acpi_device::AcpiMethodValue, acpi::aml_exec::ExecError> {
+        let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
+        let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
+        if allocation.is_null() { return Err(acpi::aml_exec::ExecError::TargetTypeMismatch); }
+        let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
+        unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
+        let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(
+            if self.integer_width_bits == 32 { 1 } else { 2 }
+        );
+        let result = acpi::aml_exec::execute_method_in_context(
+            aml, namespace, method, args, self.integer_width_bits,
+            unsafe { &mut *arena }, &mut bindings, self.synchronizer,
+        );
+        let mapped = match result {
+            Ok(value) => match value.kind {
+                acpi::aml_objects::AmlValueKind::Empty
+                | acpi::aml_objects::AmlValueKind::Integer =>
+                    Ok(acpi::acpi_device::AcpiMethodValue::Integer(value.integer)),
+                acpi::aml_objects::AmlValueKind::String => {
+                    let length = value.byte_length as usize;
+                    acpi::acpi_device::AcpiId::from_bytes(&value.bytes[..length])
+                        .map(acpi::acpi_device::AcpiMethodValue::String)
+                        .map_err(|_| acpi::aml_exec::ExecError::UnsupportedReturnType)
+                }
+                acpi::aml_objects::AmlValueKind::Buffer => {
+                    let length = value.byte_length as usize;
+                    if length > value.bytes.len() {
+                        Err(acpi::aml_exec::ExecError::UnsupportedReturnType)
+                    } else {
+                        Ok(acpi::acpi_device::AcpiMethodValue::Buffer {
+                            bytes: value.bytes, length: length as u16,
+                        })
+                    }
+                }
+                acpi::aml_objects::AmlValueKind::Package => {
+                    if value.element_count as usize > 8 {
+                        Err(acpi::aml_exec::ExecError::UnsupportedReturnType)
+                    } else {
+                        let mut nodes = [u16::MAX; 8];
+                        let mut valid = true;
+                        for (index, element) in value.elements[..value.element_count as usize].iter().enumerate() {
+                            let Some(item) = (unsafe { &*arena }).get(*element) else { valid = false; break; };
+                            let node = item.reference_id;
+                            if item.kind != acpi::aml_objects::AmlValueKind::ObjectReference
+                                || item.reference_kind != 0
+                                || namespace.nodes.get(node as usize)
+                                    .filter(|_| (node as usize) < namespace.count)
+                                    .is_none_or(|entry| entry.object_type != acpi::aml::AmlObjectType::PowerResource) {
+                                valid = false; break;
+                            }
+                            nodes[index] = node;
+                        }
+                        if valid {
+                            Ok(acpi::acpi_device::AcpiMethodValue::NamespacePackage {
+                                nodes, count: value.element_count,
+                            })
+                        } else {
+                            Err(acpi::aml_exec::ExecError::UnsupportedReturnType)
+                        }
+                    }
+                }
+                _ => Err(acpi::aml_exec::ExecError::UnsupportedReturnType),
+            },
+            Err(error) => Err(error),
+        };
+        unsafe {
+            core::ptr::drop_in_place(arena);
+            ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
+        }
+        mapped
+    }
+}
+
 struct AcpiPrtLinkResolver<'a> {
     namespace: &'a acpi::aml::AmlNamespace,
     manager: &'a acpi::aml_tables::AmlTableManager,
