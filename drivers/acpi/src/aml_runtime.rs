@@ -241,6 +241,17 @@ impl AmlBindings {
         }
         Ok(())
     }
+    /// Namespace unload compacts numeric node indices. Retire every
+    /// generation-tagged namespace reference and clear index-keyed Name bindings
+    /// before compaction so a saved handle cannot alias a shifted survivor.
+    pub fn invalidate_namespace_compaction(&mut self)->usize {
+        let mut invalidated=0usize;
+        for index in 0..MAX_NAMESPACE_NODES {
+            self.node_generations[index]=self.node_generations[index].wrapping_add(1).max(1);
+            if self.bound[index] { self.bound[index]=false; self.values[index]=0; invalidated+=1; }
+        }
+        invalidated
+    }
     pub fn value_id(&self,node:u16)->Result<u16,RuntimeError>{
         let i=node as usize;if i>=MAX_NAMESPACE_NODES||!self.bound[i]{return Err(RuntimeError::UnboundNode)}
         Ok(self.values[i])
@@ -1482,6 +1493,26 @@ mod tests{
         assert_eq!(bindings.value_id(node),Ok(id));
         assert_eq!(bindings.invalidate_table(&namespace,0),1);
         assert_eq!(bindings.value_id(node),Err(RuntimeError::UnboundNode));
+    }
+
+    #[test]
+    fn namespace_compaction_retires_references_and_name_bindings_for_all_nodes() {
+        let aml=[0x08,b'A',b'A',b'A',b'A',0x01,0x08,b'B',b'B',b'B',b'B',0x0a,2];
+        let mut namespace=AmlNamespace::new();
+        crate::aml::load_definition_block(&aml,&mut namespace).unwrap();
+        let first=namespace.find_child(0,*b"AAAA").unwrap();
+        let second=namespace.find_child(0,*b"BBBB").unwrap();
+        let mut arena=test_arena();
+        let mut bindings=AmlBindings::new();
+        let a=arena.allocate({let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=1;v}).unwrap();
+        let b=arena.allocate({let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=2;v}).unwrap();
+        bindings.bind_checked(&namespace,first,a,&arena).unwrap();
+        bindings.bind_checked(&namespace,second,b,&arena).unwrap();
+        let stale=bindings.reference_node(&namespace,second).unwrap();
+        assert_eq!(bindings.invalidate_namespace_compaction(),2);
+        assert_eq!(bindings.value_id(first),Err(RuntimeError::UnboundNode));
+        assert_eq!(bindings.value_id(second),Err(RuntimeError::UnboundNode));
+        assert_eq!(dereference(stale,&bindings,&arena),Err(RuntimeError::InvalidReference));
     }
 
     #[test]
