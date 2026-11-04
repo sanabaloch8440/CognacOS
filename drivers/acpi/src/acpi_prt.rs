@@ -348,12 +348,17 @@ pub fn evaluate_prt_name_object<R: LinkDeviceResolver>(
         cursor = sub_end;
     }
     if cursor != package_end { return Err(PrtDecodeError::BadPackage); }
-    // Materialize link paths in a second pass so the table's borrowed path
-    // slices are created only after every backing buffer has been written.
+    // First write every backing path buffer. Only after all mutable borrows
+    // have ended do we create the immutable slices stored in the elements.
+    let mut path_lengths = [0usize; MAX_PRT_ENTRIES];
     for index in 0..count {
         if link_nodes[index] != u16::MAX {
-            let length = canonical_namespace_path(namespace, link_nodes[index], &mut paths[index])?;
-            elements[index].source_path = Some(&paths[index][..length]);
+            path_lengths[index] = canonical_namespace_path(namespace, link_nodes[index], &mut paths[index])?;
+        }
+    }
+    for index in 0..count {
+        if link_nodes[index] != u16::MAX {
+            elements[index].source_path = Some(&paths[index][..path_lengths[index]]);
         }
     }
     let table = build_prt_table(&elements[..count]).map_err(|_| PrtDecodeError::BadPackage)?;
