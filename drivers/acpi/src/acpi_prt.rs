@@ -515,3 +515,45 @@ mod bridge_swizzle_tests {
         assert_eq!(swizzle_intx_pin(0, 32), Err(PrtError::InvalidPin));
     }
 }
+
+#[cfg(test)]
+mod hierarchical_prt_tests {
+    use super::*;
+    struct Provider { endpoint: PrtTable, root: PrtTable }
+    impl PrtBusTableProvider for Provider {
+        fn table_for_bus(&self, node: u16) -> Result<PrtTable, PrtError> {
+            match node { 10 => Ok(self.endpoint), 20 => Ok(self.root), _ => Err(PrtError::MissingRoute) }
+        }
+        fn bridge_slot_for_downstream_bus(&self, downstream: u16, upstream: u16) -> Result<u8, PrtError> {
+            if downstream == 10 && upstream == 20 { Ok(3) } else { Err(PrtError::MissingRoute) }
+        }
+    }
+    struct NoLinks;
+    impl LinkDeviceResolver for NoLinks {
+        fn resolve_gsi(&self, _: &[u8], _: u32) -> Result<u32, PrtError> {
+            Err(PrtError::LinkResolutionFailed)
+        }
+    }
+    #[test]
+    fn walks_to_parent_prt_and_uses_swizzled_bridge_pin() {
+        let endpoint = PrtTable::EMPTY;
+        let root_entries = [EvaluatedPrtElement {
+            address: (3u64 << 16) | 0xffff, pin: 3,
+            source_path: None, source_index: 41,
+        }];
+        let root = build_prt_table(&root_entries).unwrap();
+        let provider = Provider { endpoint, root };
+        assert_eq!(
+            resolve_hierarchical_prt_route(&provider, &NoLinks, &[10, 20], 5, 0, 0),
+            Ok(41)
+        );
+    }
+    #[test]
+    fn hierarchy_does_not_fall_back_when_parent_route_is_missing() {
+        let provider = Provider { endpoint: PrtTable::EMPTY, root: PrtTable::EMPTY };
+        assert_eq!(
+            resolve_hierarchical_prt_route(&provider, &NoLinks, &[10, 20], 5, 0, 0),
+            Err(PrtError::MissingRoute)
+        );
+    }
+}
