@@ -12,6 +12,7 @@ pub mod aml_exec;
 pub mod aml_osi;
 pub mod aml_objects;
 pub mod aml_storage;
+pub mod aml_heap;
 pub mod aml_buffer;
 pub mod aml_runtime;
 pub mod aml_mutation;
