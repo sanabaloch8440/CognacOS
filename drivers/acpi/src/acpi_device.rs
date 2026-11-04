@@ -260,6 +260,54 @@ fn evaluate_object(ns:&AmlNamespace,aml_tables:&[&[u8]],node:u16,invoker:&mut im
 fn eval_optional(ns:&AmlNamespace,aml_tables:&[&[u8]],device:u16,name:[u8;4],invoker:&mut impl AcpiMethodInvoker)->Result<Option<IdentityValue>,IdentityError>{
     match find_object(ns,device,name)?{Some(id)=>Ok(Some(evaluate_object(ns,aml_tables,id,invoker)?)),None=>Ok(None)}
 }
+/// Construct the canonical rooted ACPI path of a device's parent. The
+/// fixed buffer and depth cap keep this helper allocation-free in the driver.
+fn parent_namespace_path(ns: &AmlNamespace, device: u16, output: &mut [u8; 128]) -> Option<&str> {
+    if device as usize >= ns.count { return None; }
+    let mut chain = [0u16; 32];
+    let mut count = 0usize;
+    let mut current = ns.nodes[device as usize].parent;
+    while current != 0 {
+        if count == chain.len() || current as usize >= ns.count { return None; }
+        chain[count] = current;
+        count += 1;
+        current = ns.nodes[current as usize].parent;
+    }
+    let mut used = 0usize;
+    output[used] = b'\\';
+    used += 1;
+    for index in (0..count).rev() {
+        if index != count - 1 {
+            if used == output.len() { return None; }
+            output[used] = b'.';
+            used += 1;
+        }
+        if used + 4 > output.len() { return None; }
+        output[used..used + 4].copy_from_slice(&ns.nodes[chain[index] as usize].name);
+        used += 4;
+    }
+    core::str::from_utf8(&output[..used]).ok()
+}
+
+/// Evaluate device identity and apply only a parent-path-scoped _ADR remap.
+/// The firmware value is preserved when no exact quirk matches.
+pub fn evaluate_device_identity_with_policy(
+    ns: &AmlNamespace,
+    aml_tables: &[&[u8]],
+    device: u16,
+    invoker: &mut impl AcpiMethodInvoker,
+    policy: Option<&crate::quirks::QuirkPolicy>,
+) -> Result<AcpiDeviceIdentity, IdentityError> {
+    let mut identity = evaluate_device_identity(ns, aml_tables, device, invoker)?;
+    if let (Some(policy), Some(adr)) = (policy, identity.adr) {
+        let mut path = [0u8; 128];
+        if let Some(parent) = parent_namespace_path(ns, device, &mut path) {
+            identity.adr = Some(policy.override_adr(parent, adr));
+        }
+    }
+    Ok(identity)
+}
+
 /// Evaluate _HID, _CID, _UID, _STA and _ADR for one namespace device.
 ///
 /// _HID identifies non-addressed devices; _ADR alone is sufficient for a
