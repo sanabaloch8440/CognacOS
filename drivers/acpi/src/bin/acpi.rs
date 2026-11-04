@@ -1691,10 +1691,9 @@ impl acpi::acpi_device::AcpiMethodInvoker for PoolBackedAcpiMethodInvoker<'_> {
         args: &[acpi::aml_objects::AmlRuntimeValue],
     ) -> Result<acpi::acpi_device::AcpiMethodValue, acpi::aml_exec::ExecError> {
         let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
-        let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
-        if allocation.is_null() { return Err(acpi::aml_exec::ExecError::TargetTypeMismatch); }
+        let allocation = unsafe { AML_POOL_SERVICES.allocate_zeroed(bytes) }
+            .map_err(|_| acpi::aml_exec::ExecError::TargetTypeMismatch)?;
         let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
-        unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
         let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(
             if self.integer_width_bits == 32 { 1 } else { 2 }
         );
@@ -1755,7 +1754,7 @@ impl acpi::acpi_device::AcpiMethodInvoker for PoolBackedAcpiMethodInvoker<'_> {
         };
         unsafe {
             core::ptr::drop_in_place(arena);
-            ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
+            let _ = AML_POOL_SERVICES.release(allocation);
         }
         mapped
     }
@@ -1883,12 +1882,9 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
                 .map(|revision| if *revision >= 2 { 64 } else { 32 })
                 .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
             let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
-            let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
-            if allocation.is_null() {
-                return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
-            }
+            let allocation = unsafe { AML_POOL_SERVICES.allocate_zeroed(bytes) }
+                .map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
             let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
-            unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
             let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(if width == 32 { 1 } else { 2 });
             let evaluated = acpi::acpi_prt::evaluate_prt_object_in_context(
                 self.namespace, self.sources, bus_node, width,
@@ -1897,7 +1893,7 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
             );
             unsafe {
                 core::ptr::drop_in_place(arena);
-                ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
+                let _ = AML_POOL_SERVICES.release(allocation);
             }
             evaluated.map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)
         })();
