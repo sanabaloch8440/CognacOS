@@ -1498,6 +1498,26 @@ mod tests{
     }
 
     #[test]
+    fn namespace_compaction_retires_references_and_name_bindings_for_all_nodes() {
+        let aml=[0x08,b'A',b'A',b'A',b'A',0x01,0x08,b'B',b'B',b'B',b'B',0x02];
+        let mut namespace=AmlNamespace::new();
+        crate::aml::load_definition_block(&aml,&mut namespace).unwrap();
+        let first=namespace.find_child(0,*b"AAAA").unwrap();
+        let second=namespace.find_child(0,*b"BBBB").unwrap();
+        let mut arena=test_arena();
+        let mut bindings=AmlBindings::new();
+        let a=arena.allocate({let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=1;v}).unwrap();
+        let b=arena.allocate({let mut v=AmlRuntimeValue::EMPTY;v.kind=AmlValueKind::Integer;v.integer=2;v}).unwrap();
+        bindings.bind_checked(&namespace,first,a,&arena).unwrap();
+        bindings.bind_checked(&namespace,second,b,&arena).unwrap();
+        let stale=bindings.reference_node(&namespace,second).unwrap();
+        assert_eq!(bindings.invalidate_namespace_compaction(),2);
+        assert_eq!(bindings.value_id(first),Err(RuntimeError::UnboundNode));
+        assert_eq!(bindings.value_id(second),Err(RuntimeError::UnboundNode));
+        assert_eq!(dereference(stale,&bindings,&arena),Err(RuntimeError::InvalidReference));
+    }
+
+    #[test]
     fn stale_namespace_reference_cannot_alias_reloaded_node() {
         let first_aml=[0x08,b'T',b'E',b'S',b'T',0x0a,0x2a];
         let mut namespace=AmlNamespace::new();
