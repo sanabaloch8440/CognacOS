@@ -237,11 +237,13 @@ pub fn physical_memory_ranges(output: &mut [(u64, u64)]) -> usize {
         if !matches!(descriptor.kind, 1..=7 | 9 | 10 | 14) || descriptor.number_of_pages == 0 {
             continue;
         }
-        let Some(length) = descriptor.number_of_pages.checked_mul(PAGE_SIZE) else { continue; };
+        let Some(length) = descriptor.number_of_pages.checked_mul(PAGE_SIZE) else { return 0; };
         let start = descriptor.physical_start & !(PAGE_SIZE - 1);
-        let Some(end) = descriptor.physical_start.checked_add(length) else { continue; };
-        if end <= start { continue; }
-        if count == output.len() { break; }
+        let Some(end) = descriptor.physical_start.checked_add(length) else { return 0; };
+        if end <= start { return 0; }
+        // A truncated RAM map is unsafe for resource arbitration: returning
+        // a prefix could permit a BAR to overlap an omitted physical range.
+        if count == output.len() { return 0; }
         output[count] = (start, end - start);
         count += 1;
     }
