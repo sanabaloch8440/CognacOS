@@ -1551,7 +1551,12 @@ fn evaluate_aml_integer_object(
             Ok(value.value)
         }
         acpi::aml::AmlObjectType::Method => {
-            let mut runtime = acpi::acpi_device::SynchronizedMethodInvoker { synchronizer: &KERNEL_AML_METHOD_SYNCHRONIZER };
+            let width = bytes.get(8).map(|revision| if *revision >= 2 { 64 } else { 32 })
+                .ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+            let mut runtime = PoolBackedAcpiMethodInvoker {
+                synchronizer: &KERNEL_AML_METHOD_SYNCHRONIZER,
+                integer_width_bits: width,
+            };
             match manager.evaluate_method_value(handle, bytes, object, gate, &mut runtime)
                 .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)? {
                 acpi::acpi_device::AcpiMethodValue::Integer(value) => Ok(value),
@@ -1578,7 +1583,12 @@ fn read_aml_resource_buffer(
             .read_named_buffer(handle, bytes, object, gate, output)
             .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR),
         acpi::aml::AmlObjectType::Method => {
-            let mut runtime = acpi::acpi_device::IntegerMethodInvoker;
+            let width = bytes.get(8).map(|revision| if *revision >= 2 { 64 } else { 32 })
+                .ok_or(STATUS_DEVICE_CONFIGURATION_ERROR)?;
+            let mut runtime = PoolBackedAcpiMethodInvoker {
+                synchronizer: &KERNEL_AML_METHOD_SYNCHRONIZER,
+                integer_width_bits: width,
+            };
             manager.read_method_buffer(handle, bytes, object, gate, &mut runtime, output)
                 .map_err(|_| STATUS_DEVICE_CONFIGURATION_ERROR)
         }
