@@ -752,7 +752,7 @@ pub fn register_pci_information(
 pub unsafe fn import_pci_inventory(
     interface: &crate::nt_abi::bus::PCI_BUS_INTERFACE,
 ) -> Result<usize, PnpError> {
-    use crate::nt_abi::ntstatus::{STATUS_SUCCESS, STATUS_NOT_FOUND};
+    use crate::nt_abi::ntstatus::{STATUS_SUCCESS, STATUS_NOT_FOUND, STATUS_INVALID_PARAMETER};
     use crate::nt_abi::bus::{PCI_BRIDGE_INFORMATION, PCI_DEVICE_INFORMATION};
     let header = &interface.header;
     if (header.size as usize) < core::mem::size_of::<crate::nt_abi::bus::PCI_BUS_INTERFACE>()
