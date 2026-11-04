@@ -912,6 +912,30 @@ mod host_bridge_crs_window_tests {
     use super::*;
 
     #[test]
+    fn builds_versioned_pci_host_bridge_handoff_from_crs() {
+        let mut list = ResourceList::EMPTY;
+        list.entries[0] = Some(Resource::Memory {
+            minimum: 0x8000_0000, maximum: 0x8fff_ffff, alignment: 0x0fff,
+            length: 0x1000, writeable: true, cacheable: false, kind: 1,
+        });
+        list.entries[1] = Some(Resource::Io {
+            minimum: 0xc000, maximum: 0xcfff, alignment: 0xff,
+            length: 0x100, decode_16_bit: true,
+        });
+        list.count = 2;
+        let set = build_pci_host_bridge_resource_set(&list, 3, 0, 0xff).unwrap();
+        assert!(set.compatible());
+        assert_eq!(set.segment, 3);
+        assert_eq!(set.bus_start, 0);
+        assert_eq!(set.bus_end, 0xff);
+        assert_eq!(set.count, 2);
+        assert_eq!(set.windows[0].space, cognacos_hal_contract::PCI_HOST_BRIDGE_WINDOW_MEMORY);
+        assert_eq!(set.windows[0].minimum, 0x8000_0000);
+        assert_eq!(set.windows[0].maximum, 0x8fff_ffff);
+        assert_eq!(set.windows[1].space, cognacos_hal_contract::PCI_HOST_BRIDGE_WINDOW_IO);
+    }
+
+    #[test]
     fn exports_only_checked_io_and_memory_windows() {
         let mut list = ResourceList::EMPTY;
         list.entries[0] = Some(Resource::Memory {
