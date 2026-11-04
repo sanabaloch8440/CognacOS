@@ -327,7 +327,7 @@ pub(crate) fn io_release_pnp_resources(device:*mut DeviceObject){
   let mut arbiter=RESOURCE_ARBITER.lock();
   for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner){
    released[released_count]=claim.owner;released_count+=1;
-   if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+   if claim.kind==CM_RESOURCE_INTERRUPT&&claim.flags&0x0002==0&&claim.bus_group==0&&claim.group==0 {
     removed_translations[removed_count]=*claim;removed_count+=1;
    }
    *claim=ResourceClaim::EMPTY;
