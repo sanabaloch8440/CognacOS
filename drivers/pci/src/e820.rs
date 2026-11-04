@@ -113,22 +113,15 @@ pub fn clip_host_apertures(
     Ok(count)
 }
 
-/// Policy-aware root-window preparation. The opt-out must come only from the
-/// immutable, DMI-validated platform policy. Even on opt-out, malformed or
-/// overflowing firmware apertures are rejected; the quirk disables clipping,
-/// not input validation.
+/// Compatibility entry point for existing callers. The legacy opt-out
+/// parameter is intentionally ignored: no DMI quirk may disable protected-RAM
+/// clipping. All callers now receive the same mandatory memory-safety policy.
 pub fn prepare_host_apertures(
     input: &[Aperture],
     protected_ram: &[E820Range],
-    ignore_e820: bool,
+    _legacy_ignore_e820: bool,
     output: &mut [Aperture],
 ) -> Result<usize, ClipError> {
-    validate_apertures(input)?;
-    if ignore_e820 {
-        if output.len() < input.len() { return Err(ClipError::Capacity); }
-        output[..input.len()].copy_from_slice(input);
-        return Ok(input.len());
-    }
     clip_host_apertures(input, protected_ram, output)
 }
 
@@ -150,13 +143,12 @@ mod tests {
     }
 
     #[test]
-    fn fully_reserved_window_is_removed_and_exact_quirk_bypasses_only_clipping() {
+    fn legacy_quirk_opt_out_cannot_bypass_protected_ram_clipping() {
         let input = [ap(0x8000, 0x4000)];
         let ram = [E820Range { start: 0x7000, length: 0x6000 }];
-        let mut out = [ap(0, 0); 2];
+        let mut out = [ap(0xdead, 0xbeef); 2];
         assert_eq!(clip_host_apertures(&input, &ram, &mut out), Ok(0));
-        assert_eq!(prepare_host_apertures(&input, &ram, true, &mut out), Ok(1));
-        assert_eq!(out[0], input[0]);
+        assert_eq!(prepare_host_apertures(&input, &ram, true, &mut out), Ok(0));
     }
 
     #[test]
