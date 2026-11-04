@@ -192,6 +192,7 @@ impl AmlDynamicNamespace {
         name: &AmlName, arena: &AmlObjectArena, buffer_value: u16,
         bit_offset: u32, bit_width: u32, owner_table: u32) -> Result<u16, RuntimeError> {
         let (parent, leaf) = Self::resolve_field_parent(namespace, current, name)?;
+        Self::validate_parent(namespace, parent).map_err(|_| RuntimeError::InvalidNode)?;
         if namespace.find_child(parent, leaf).is_some()
             || self.fields[..self.next_slot].iter().any(|field| field.parent == parent && field.name == leaf) {
             return Err(RuntimeError::InvalidNode);
