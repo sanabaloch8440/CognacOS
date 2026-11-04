@@ -160,7 +160,7 @@ pub mod bus {
         data1: 0x7b7a_2a05, data2: 0x5d31, data3: 0x4f18,
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
     };
-    pub type PCI_INTERRUPT_ISR = extern "C" fn(context: u64) -> u8;
+    pub type PCI_INTERRUPT_ISR = extern "C" fn(context: u64) -> bool;
     pub type PCI_INTERRUPT_DPC = extern "C" fn(context: u64);
     pub type PPCI_REGISTER_INTERRUPT = Option<unsafe extern "win64" fn(
         context: PVOID,
@@ -179,6 +179,7 @@ pub mod bus {
         pub disable: PPCI_SET_INTERRUPT_ENABLED,
         pub unregister: PPCI_UNREGISTER_INTERRUPT,
     }
+    const _: () = assert!(core::mem::size_of::<PCI_INTERRUPT_INTERFACE>() == 0x48);
 
     /// Common prefix for all published bus interfaces.
     #[repr(C)]
