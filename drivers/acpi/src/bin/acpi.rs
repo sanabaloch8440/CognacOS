@@ -37,13 +37,11 @@ const DEVICE_RELATIONS_BUS:u32=0;
 struct AcpiPdoExtension { signature:u64, node:u16, devnode_index:u32, table:Option<acpi::aml_tables::TableHandle>, aml_bytes:*const u8, aml_length:usize, identity:acpi::acpi_device::AcpiDeviceIdentity, power_state:UnsafeCell<acpi::acpi_power::DevicePowerState> }
 const ACPI_PDO_SIGNATURE:u64=0x4143504950444f31;
 #[repr(C)]
-struct AcpiDeviceRelations { count:u32, objects:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS] }
-unsafe impl Sync for AcpiDeviceRelations {}
+struct AcpiDeviceRelations { count:u32, objects:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;0] }
 static PDO_RELATIONS_LOCK:AtomicBool=AtomicBool::new(false);
 static mut ACPI_BUS_DEVICE:*mut cognacos_nt_abi::io::DEVICE_OBJECT=core::ptr::null_mut();
 static mut ACPI_PDOS:[*mut cognacos_nt_abi::io::DEVICE_OBJECT;MAX_ACPI_PDOS]=[core::ptr::null_mut();MAX_ACPI_PDOS];
 static mut ACPI_PDO_COUNT:usize=0;
-static mut ACPI_BUS_RELATIONS:AcpiDeviceRelations=AcpiDeviceRelations{count:0,objects:[core::ptr::null_mut();MAX_ACPI_PDOS]};
 
 // Patched AML tables are private, pool-backed copies. Their addresses remain
 // stable for every PDO and AML method invocation until DriverUnload.
@@ -198,6 +196,7 @@ unsafe extern "win64" {
  fn IoPnPEnumerateBus(bus:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn ExAllocatePoolWithTag(pool_type:u32,size:usize,tag:u32)->*mut u8;
  fn ExFreePoolWithTag(buffer:*mut u8,tag:u32);
+ fn ObReferenceObject(object:PVOID);
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -241,7 +240,12 @@ ExAllocatePoolWithTag:
 .type ExFreePoolWithTag,@function
 ExFreePoolWithTag:
  jmp QWORD PTR [rip + __imp_ex_ExFreePoolWithTag]
-.size ExFreePoolWithTag, .-ExFreePoolWithTag
+ .size ExFreePoolWithTag, .-ExFreePoolWithTag
+.global ObReferenceObject
+.type ObReferenceObject,@function
+ObReferenceObject:
+ jmp QWORD PTR [rip + __imp_ob_ObReferenceObject]
+.size ObReferenceObject, .-ObReferenceObject
 .section .data.imports.ke,"aw",@progbits
 .p2align 3
 .global __imp_ke_KeInitializeMutex
@@ -306,8 +310,12 @@ __imp_io_IoPnPEnumerateBus: .quad 0
 .p2align 3
 .global __imp_ex_ExAllocatePoolWithTag
 __imp_ex_ExAllocatePoolWithTag: .quad 0
-.global __imp_ex_ExFreePoolWithTag
+ .global __imp_ex_ExFreePoolWithTag
 __imp_ex_ExFreePoolWithTag: .quad 0
+.section .data.imports.ob,"aw",@progbits
+.p2align 3
+.global __imp_ob_ObReferenceObject
+__imp_ob_ObReferenceObject: .quad 0
 "#);
 
 /// ACPI's AML allocator is backed by ntoskrnl executive pool, not Rust's
@@ -1023,13 +1031,27 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
             if relation_type!=DEVICE_RELATIONS_BUS || device!=unsafe{ACPI_BUS_DEVICE} {
                 STATUS_NOT_SUPPORTED
             } else {
+                // DEVICE_RELATIONS is caller-owned pool memory. Return a
+                // bounded allocation rather than exposing mutable driver-global
+                // storage whose lifetime ends during bus removal or unload.
+                let header=core::mem::offset_of!(AcpiDeviceRelations,objects);
+                let Some(bytes)=MAX_ACPI_PDOS.checked_mul(core::mem::size_of::<*mut cognacos_nt_abi::io::DEVICE_OBJECT>())
+                    .and_then(|tail|header.checked_add(tail)) else { return STATUS_INSUFFICIENT_RESOURCES };
+                let allocation=unsafe{ExAllocatePoolWithTag(512,bytes,ACPI_POOL_TAG)};
+                if allocation.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
+                let relations=allocation.cast::<AcpiDeviceRelations>();
                 while PDO_RELATIONS_LOCK.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err() {
                     core::hint::spin_loop();
                 }
-                let relations=core::ptr::addr_of_mut!(ACPI_BUS_RELATIONS);
                 unsafe {
                     (*relations).count=ACPI_PDO_COUNT as u32;
-                    for i in 0..MAX_ACPI_PDOS { (*relations).objects[i]=ACPI_PDOS[i]; }
+                    let objects=core::ptr::addr_of_mut!((*relations).objects).cast::<*mut cognacos_nt_abi::io::DEVICE_OBJECT>();
+                    for i in 0..ACPI_PDO_COUNT {
+                        let pdo=ACPI_PDOS[i];
+                        if pdo.is_null(){continue}
+                        ObReferenceObject(pdo.cast());
+                        objects.add(i).write(pdo);
+                    }
                     information=relations as usize;
                 }
                 PDO_RELATIONS_LOCK.store(false,Ordering::Release);
@@ -1504,8 +1526,6 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     }
     unsafe {
         ACPI_PDO_COUNT=pdo_count;
-        ACPI_BUS_RELATIONS.count=pdo_count as u32;
-        for i in 0..MAX_ACPI_PDOS { ACPI_BUS_RELATIONS.objects[i]=ACPI_PDOS[i]; }
     }
     // Publish the bus FDO separately from namespace child PDO registration.
     // PCI consumers resolve this stable bus identity through the kernel-owned
