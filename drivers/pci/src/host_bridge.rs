@@ -74,7 +74,7 @@ pub fn prepare_host_bridge_apertures(
         if span == 0 || window.minimum.checked_add(span).is_none() {
             return Err(HostBridgeHandoffError::Overflow);
         }
-        if window.alignment != 0 && !window.alignment.is_power_of_two() {
+        if window.alignment != 0 && !window.alignment.checked_add(1).is_some_and(u64::is_power_of_two) {
             return Err(HostBridgeHandoffError::InvalidDescriptor);
         }
 
@@ -145,7 +145,7 @@ mod tests {
             space: PCI_HOST_BRIDGE_WINDOW_MEMORY, attributes: 0,
             address_width: 1, reserved: 0,
             minimum: 0x8000_0000, maximum: 0x8fff_ffff,
-            alignment: 0x1000, length: 0x1000,
+            alignment: 0x0fff, length: 0x1000,
         };
         set.count = 1;
         set
