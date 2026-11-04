@@ -1050,34 +1050,58 @@ unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Optio
     DEVICE_ACTIVE[i].store(true,Ordering::Release);
     driver_hal_success()
 }
-unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->DriverHalStatus{
-    if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
-    let i=vector as usize;if DEVICE_CONTEXT[i].load(Ordering::Acquire)!=context||DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
+unsafe fn service_unregister_interrupt_impl(
+    vector: u32, context: u64, release_vector: bool,
+) -> DriverHalStatus {
+    if !(0x20..=0xdf).contains(&vector) { return driver_hal_invalid(); }
+    let i = vector as usize;
+    if DEVICE_CONTEXT[i].load(Ordering::Acquire) != context
+        || DEVICE_ISR[i].load(Ordering::Acquire) == 0 {
+        return driver_hal_invalid();
+    }
     // Close the callback gate before masking hardware so a concurrent
     // enable request cannot reopen the route during teardown.
-    DEVICE_ACTIVE[i].store(false,Ordering::Release);
-    let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
-    if io!=0&&unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),false)}.is_err(){
-        return driver_hal_unsupported()
+    DEVICE_ACTIVE[i].store(false, Ordering::Release);
+    let io = DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
+    if io != 0 && unsafe {
+        set_device_interrupt_route_enabled(
+            io, DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),
+            DEVICE_ROUTE_GSI[i].load(Ordering::Acquire), false,
+        )
+    }.is_err() {
+        return driver_hal_unsupported();
     }
-    // Remove a pending DPC, then wait for any ISR or already-running DPC to
-    // leave before releasing driver-owned context.
-    let dpc=core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
-    let remove=DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire);
-    if remove==0{return driver_hal_unsupported()}
-    let remove_fn:DeviceDpcRemoveHook=unsafe{core::mem::transmute(remove)};
-    let _=remove_fn(dpc);
-    let mut spins=0usize;
-    while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0&&spins<1_000_000{core::hint::spin_loop();spins+=1;}
-    if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0{return driver_hal_unsupported()}
-    // APIC detaches the handler and waits for in-flight ISR dispatch before
-    // callback storage is cleared. A timeout leaves the inactive record intact
-    // so teardown can be retried without reusing the vector prematurely.
-    if release_device_interrupt_vector(vector as u8).is_err(){return driver_hal_unsupported()}
-    DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);DEVICE_CONTEXT[i].store(0,Ordering::Release);
-    DEVICE_ROUTE_IO_BASE[i].store(0,Ordering::Release);
+    // Remove and drain the queued DPC before detaching the ISR. A failed
+    // remove leaves the inactive record intact so teardown can be retried.
+    let dpc = core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
+    let remove = DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire);
+    if remove == 0 { return driver_hal_unsupported(); }
+    let remove_fn: DeviceDpcRemoveHook = unsafe { core::mem::transmute(remove) };
+    if !remove_fn(dpc) { return driver_hal_unsupported(); }
+    let mut spins = 0usize;
+    while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire) != 0 && spins < 1_000_000 {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire) != 0 { return driver_hal_unsupported(); }
+    // The SCI path retains the allocated vector until the passive AML worker
+    // has rundown; ordinary device unregister preserves its legacy release.
+    let detached = if release_vector {
+        release_device_interrupt_vector(vector as u8).is_ok()
+    } else {
+        apic::unregister_interrupt_handler(vector as u8).is_ok()
+    };
+    if !detached { return driver_hal_unsupported(); }
+    DEVICE_ISR[i].store(0, Ordering::Release);
+    DEVICE_DPC[i].store(0, Ordering::Release);
+    DEVICE_CONTEXT[i].store(0, Ordering::Release);
+    DEVICE_ROUTE_IO_BASE[i].store(0, Ordering::Release);
     driver_hal_success()
 }
+unsafe extern "C" fn service_unregister_interrupt(vector: u32, context: u64) -> DriverHalStatus {
+    unsafe { service_unregister_interrupt_impl(vector, context, true) }
+}
+
 unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->DriverHalStatus{
     if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
     let i=vector as usize;
@@ -1186,7 +1210,7 @@ unsafe extern "C" fn acpi_sci_set_enabled(vector: u8, enabled: bool) -> u32 {
     }
 }
 unsafe extern "C" fn acpi_sci_unregister(vector: u8, context: u64) -> u32 {
-    unsafe { service_unregister_interrupt(vector as u32, context) }.code
+    unsafe { service_unregister_interrupt_impl(vector as u32, context, false) }.code
 }
 unsafe extern "C" fn acpi_sci_release_vector(vector: u8) -> u32 {
     if !apic::interrupt_vector_allocated(vector) {
