@@ -1106,6 +1106,42 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                         STATUS_SUCCESS
                     }
                 }
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_INTERRUPT_INTERFACE {
+                if version as u32 != PCI_INTERRUPT_INTERFACE_VERSION
+                    || (size as usize) < core::mem::size_of::<PCI_INTERRUPT_INTERFACE>()
+                    || device.is_null() {
+                    STATUS_NOT_SUPPORTED
+                } else {
+                    let extension = unsafe { (*device).device_extension.cast::<PciPdoExtension>() };
+                    if extension.is_null()
+                        || unsafe {
+                            (*extension).magic != PCI_PDO_EXTENSION_MAGIC
+                                || (*extension).version != 1
+                                || (*extension).started == 0
+                                || (*extension).interrupt_allocated == 0
+                        } {
+                        STATUS_DEVICE_NOT_READY
+                    } else {
+                        let interface = PCI_INTERRUPT_INTERFACE {
+                            header: INTERFACE_HEADER {
+                                size: core::mem::size_of::<PCI_INTERRUPT_INTERFACE>() as u16,
+                                version: PCI_INTERRUPT_INTERFACE_VERSION as u16,
+                                context: device.cast(),
+                                interface_reference: Some(pci_bus_interface_reference),
+                                interface_dereference: Some(pci_bus_interface_dereference),
+                            },
+                            register: Some(pci_pdo_interrupt_register),
+                            enable: Some(pci_pdo_interrupt_enable),
+                            disable: Some(pci_pdo_interrupt_disable),
+                            unregister: Some(pci_pdo_interrupt_unregister),
+                        };
+                        unsafe {
+                            pci_bus_interface_reference(device.cast());
+                            core::ptr::write_unaligned(output.cast::<PCI_INTERRUPT_INTERFACE>(), interface);
+                        }
+                        STATUS_SUCCESS
+                    }
+                }
             } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_PCI_DEVICE_INTERFACE {
                 if version as u32 != cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE_VERSION
                     || (size as usize) < core::mem::size_of::<cognacos_nt_abi::bus::PCI_DEVICE_INTERFACE>()
