@@ -4,10 +4,10 @@
 
 | File | Responsibility |
 |---|---|
-| `core.rs` | ABI types, constants, global state and IRP tracking primitives |
+| `core.rs` | ABI types, constants, stable demand-grown nonpaged device registry, and IRP tracking primitives |
 | `device_lifecycle.rs` | Device references, remove rundown, power and PnP state transitions |
 | `pnp.rs` | Resource arbitration, device relations, bus enumeration and PnP manager |
-| `device_objects.rs` | Device queues, device creation/deletion and driver unload |
+| `device_objects.rs` | Per-device StartIo queues, nonpaged device creation/deletion, and complete driver-device unload draining |
 | `irp_management.rs` | IRP allocation, dispatch, IOCTL builders and completion |
 | `device_stack.rs` | Device attachment, stack-location helpers and IRP reuse |
 | `filesystem.rs` | Filesystem registration, VPB mount/verify/dismount |
@@ -18,7 +18,9 @@
 | `tests.rs` | WDM ABI and behavior unit tests |
 | `requestor_session.rs` | Requestor session ID query export |
 
-These are `include!` fragments, not independent Rust modules. Moving to true submodules would require a separate visibility/API refactor and is deliberately not mixed into this source-organization change. WDM behavior is otherwise unchanged.
+These are `include!` fragments, not independent Rust modules. Moving to true submodules would require a separate visibility/API refactor and is deliberately not mixed into this source-organization change.
+
+Device records keep the first 32 slots embedded for early boot, then allocate one page-backed nonpaged record at a time at PASSIVE_LEVEL. Overflow records are linked without moving existing DEVICE_OBJECT addresses, participate in the same reference/remove-lock/IRP/power/Ob rundown checks, and are reclaimed only after final deletion. StartIo queue state lives in the device record, so it does not impose a separate 32-device ceiling. Driver unload walks all owned records instead of truncating at the bootstrap capacity.
 
 The file-service layer is not modified here. Its migration to FILE_OBJECT and IRP-based Windows-style create/read/cleanup/close flows is the next step.
 
