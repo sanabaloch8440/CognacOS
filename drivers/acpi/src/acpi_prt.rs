@@ -485,7 +485,7 @@ pub fn resolve_hierarchical_prt_route<P: PrtBusTableProvider, R: LinkDeviceResol
     let mut device = endpoint_device;
     for index in 0..bus_nodes.len() {
         let table = provider.table_for_bus(bus_nodes[index])?;
-        let address = ((device as u32) << 16) | 0xffff;
+        let address = ((device as u32) << 16) | endpoint_function as u32;
         if let Some(route) = table.find(address, pin) {
             return match route.source {
                 InterruptSource::DirectGsi { gsi } => Ok(gsi),
@@ -547,6 +547,21 @@ mod hierarchical_prt_tests {
             resolve_hierarchical_prt_route(&provider, &NoLinks, &[10, 20], 5, 0, 0),
             Ok(41)
         );
+    }
+    #[test]
+    fn hierarchical_lookup_prefers_exact_function_then_wildcard() {
+        let exact_entries = [EvaluatedPrtElement {
+            address: (5u64 << 16) | 2, pin: 0, source_path: None, source_index: 23,
+        }];
+        let exact = build_prt_table(&exact_entries).unwrap();
+        let provider = Provider { endpoint: exact, root: PrtTable::EMPTY };
+        assert_eq!(resolve_hierarchical_prt_route(&provider, &NoLinks, &[10], 5, 2, 0), Ok(23));
+        let wildcard_entries = [EvaluatedPrtElement {
+            address: (5u64 << 16) | 0xffff, pin: 0, source_path: None, source_index: 24,
+        }];
+        let wildcard = build_prt_table(&wildcard_entries).unwrap();
+        let provider = Provider { endpoint: wildcard, root: PrtTable::EMPTY };
+        assert_eq!(resolve_hierarchical_prt_route(&provider, &NoLinks, &[10], 5, 2, 0), Ok(24));
     }
     #[test]
     fn hierarchy_does_not_fall_back_when_parent_route_is_missing() {
