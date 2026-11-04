@@ -352,7 +352,11 @@ mod wdm_tests {
  }
  static CANCEL_CALLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
  unsafe extern "win64" fn test_cancel(device:*mut DeviceObject,irp:*mut Irp) {
-  if !irp.is_null() { CANCEL_CALLED.store(true,core::sync::atomic::Ordering::Release); }
+  if !irp.is_null() {
+   CANCEL_CALLED.store(true,core::sync::atomic::Ordering::Release);
+   let cancel_irql=unsafe{(*irp).bytes[0x45]};
+   unsafe{io_release_cancel_spin_lock(cancel_irql);}
+  }
   let _=device;
  }
  #[test]
@@ -547,11 +551,11 @@ mod wdm_tests {
   CANCEL_CALLED.store(false,core::sync::atomic::Ordering::Release);
   let irp=unsafe{io_allocate_irp(2,0)};
   assert!(!irp.is_null());
-  assert!(unsafe{io_set_cancel_routine(irp,Some(test_cancel))}.is_none());
+  assert!(unsafe{io_set_cancel_routine_synchronized(irp,Some(test_cancel))}.is_none());
   assert_eq!(unsafe{io_cancel_irp(irp)},1);
   assert!(CANCEL_CALLED.load(core::sync::atomic::Ordering::Acquire));
   assert_eq!(unsafe{io_cancel_irp(irp)},0);
-  assert!(unsafe{io_set_cancel_routine(irp,None)}.is_none());
+  assert!(unsafe{io_set_cancel_routine_synchronized(irp,None)}.is_none());
   unsafe{io_free_irp(irp);}
  }
 
