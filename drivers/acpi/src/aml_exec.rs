@@ -268,6 +268,7 @@ impl<'a,'b> Machine<'a,'b>{
    // nested Package/Buffer/String objects in the caller-owned AML arena.
    0x12=>{
     let package_end=r.pkg_end()?;
+    let package_length_bytes=1+((r.bytes[r.pos]>>6) as usize);r.pos+=package_length_bytes;
     let count=r.byte()? as usize;
     if count>crate::aml_objects::MAX_PACKAGE_ELEMENTS{return Err(ExecError::BadPackage)}
     let mut package=AmlRuntimeValue::EMPTY;package.kind=AmlValueKind::Package;
@@ -285,6 +286,7 @@ impl<'a,'b> Machine<'a,'b>{
    // VarPackageOp: the element count is itself an evaluated TermArg.
    0x13=>{
     let package_end=r.pkg_end()?;
+    let package_length_bytes=1+((r.bytes[r.pos]>>6) as usize);r.pos+=package_length_bytes;
     let count=self.term_value(r)?;
     let count=self.operand_integer(&count)? as usize;
     if count>crate::aml_objects::MAX_PACKAGE_ELEMENTS{return Err(ExecError::BadPackage)}
@@ -340,6 +342,10 @@ impl<'a,'b> Machine<'a,'b>{
       execute_method_inner(self.aml,self.namespace,canonical,
           &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.current_sync_level)
      }
+     // Device objects used as _PRT Source values are namespace references,
+     // not scalar Names. Preserve the reference so the PRT decoder can resolve
+     // aliases and canonical paths after method evaluation.
+     AmlObjectType::Device=>Ok(make_object_reference(AmlReference::NamespaceNode(canonical))),
      _=>Err(ExecError::NonIntegerName),
     }
    }
