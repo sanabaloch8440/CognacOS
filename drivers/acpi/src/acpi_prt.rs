@@ -528,7 +528,7 @@ mod hierarchical_prt_tests {
             match node { 10 => Ok(self.endpoint), 20 => Ok(self.root), _ => Err(PrtError::MissingRoute) }
         }
         fn bridge_slot_for_downstream_bus(&self, downstream: u16, upstream: u16) -> Result<(u8, u8), PrtError> {
-            if downstream == 10 && upstream == 20 { Ok((3, 0)) } else { Err(PrtError::MissingRoute) }
+            if downstream == 10 && upstream == 20 { Ok((3, 2)) } else { Err(PrtError::MissingRoute) }
         }
     }
     struct NoLinks;
@@ -541,7 +541,7 @@ mod hierarchical_prt_tests {
     fn walks_to_parent_prt_and_uses_swizzled_bridge_pin() {
         let endpoint = PrtTable::EMPTY;
         let root_entries = [EvaluatedPrtElement {
-            address: (3u64 << 16) | 0xffff, pin: 3,
+            address: (3u64 << 16) | 2, pin: 3,
             source_path: None, source_index: 41,
         }];
         let root = build_prt_table(&root_entries).unwrap();
