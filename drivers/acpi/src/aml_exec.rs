@@ -1835,10 +1835,25 @@ mod explicit_mutex_tests {
   assert_eq!(sync.acquisitions.load(Ordering::SeqCst),0);
  }
  #[test]
+ fn explicit_mutex_can_be_acquired_in_nested_method_and_released_by_caller(){
+  let mut aml=std::vec![0x5b,0x01,b'M',b'T',b'X',b'0',3];
+  // CHLD returns Acquire(MTX0, 0xffff) while retaining thread ownership.
+  aml.extend_from_slice(&[0x14,0x0f,b'C',b'H',b'L',b'D',0,0xa4,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff]);
+  // PARN stores CHLD(), releases MTX0, and returns the acquire result.
+  aml.extend_from_slice(&[0x14,0x14,b'P',b'A',b'R',b'N',0,0x70,b'C',b'H',b'L',b'D',0x60,0x5b,0x27,b'M',b'T',b'X',b'0',0xa4,0x60]);
+  let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
+  let parent=ns.find_child(0,*b"PARN").unwrap();let sync=TestSync::new(true);
+  assert_eq!(execute_method_with_sync(&aml,&ns,parent,&[],64,&sync),Ok(AmlValue::Integer(0)));
+  assert_eq!(sync.acquisitions.load(Ordering::SeqCst),1);
+  assert_eq!(sync.releases.load(Ordering::SeqCst),1);
+  assert!(!sync.held.load(Ordering::SeqCst));
+ }
+
+ #[test]
  fn releases_mutex_when_method_faults_after_acquisition(){
   // Acquire, then execute an unsupported opcode. The invocation cleanup must
   // release its lock before returning the execution error.
-  let body=[0x70,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff,0x60,0x5b,0x27,b'M',b'T',b'X',b'0',0x5b,0x7f];
+  let body=[0x70,0x5b,0x23,b'M',b'T',b'X',b'0',0xff,0xff,0x60,0x5b,0x7f];
   let (aml,ns,method)=load_mutex_method(0,&body);let sync=TestSync::new(true);
   assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Err(ExecError::UnsupportedOpcode));
   assert_eq!(sync.releases.load(Ordering::SeqCst),1);
