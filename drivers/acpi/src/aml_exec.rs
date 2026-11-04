@@ -70,7 +70,7 @@ impl AmlMethodSynchronizer for NoMethodSynchronizer{
 // While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
-struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],frame_cells:[u16;128],frame_cell_count:usize,arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,dynamic:&'b mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32,frame_reference_ids:[u16;15],frame_reference_count:usize}
+struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],frame_cells:[u16;128],frame_cell_count:usize,arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,dynamic:&'b mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32}
 impl<'a,'b> Machine<'a,'b>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn frame_slot_reference(&mut self,argument:bool,index:usize)->Result<AmlReference,ExecError>{
@@ -91,6 +91,39 @@ impl<'a,'b> Machine<'a,'b>{
   self.frame_cells[self.frame_cell_count]=id;self.frame_cell_count+=1;Ok(id)
  }
  fn retire_frame_cells(&mut self){for id in self.frame_cells[..self.frame_cell_count].iter().copied(){if let Some(value)=self.arena.get_mut(id){*value=AmlRuntimeValue::EMPTY;}}self.frame_cell_count=0;}
+ fn result_contains_frame_reference(&self,value:&AmlRuntimeValue,depth:u8)->Result<bool,ExecError>{
+  if depth>32{return Err(ExecError::NestingLimit)}
+  if value.kind==AmlValueKind::ObjectReference{
+   let reference=reference_from_value(value).map_err(|_|ExecError::BadTarget)?;
+   match reference{
+    AmlReference::ArenaValue(id)=>{
+     if self.frame_cells[..self.frame_cell_count].contains(&id){return Ok(true)}
+     let nested=self.arena.get(id).ok_or(ExecError::BadTarget)?;
+     return self.result_contains_frame_reference(nested,depth+1)
+    }
+    AmlReference::PackageElement{package,index}=>{
+     if self.frame_cells[..self.frame_cell_count].contains(&package){return Ok(true)}
+     let parent=self.arena.get(package).ok_or(ExecError::BadTarget)?;
+     if parent.kind!=AmlValueKind::Package||index as usize>=parent.element_count as usize{return Err(ExecError::BadTarget)}
+     let nested=self.arena.get(parent.elements[index as usize]).ok_or(ExecError::BadTarget)?;
+     return self.result_contains_frame_reference(nested,depth+1)
+    }
+    AmlReference::BufferByte{buffer,..}|AmlReference::BufferField{buffer,..}=>return Ok(self.frame_cells[..self.frame_cell_count].contains(&buffer)),
+    AmlReference::NamespaceNode(node)=>{
+     if let Ok(id)=self.bindings.value_id(node){let nested=self.arena.get(id).ok_or(ExecError::BadTarget)?;return self.result_contains_frame_reference(nested,depth+1)}
+     return Ok(false)
+    }
+   }
+  }
+  if value.kind==AmlValueKind::Package{
+   if value.element_count as usize>crate::aml_objects::MAX_PACKAGE_ELEMENTS{return Err(ExecError::BadTarget)}
+   for id in value.elements.iter().take(value.element_count as usize){
+    let nested=self.arena.get(*id).ok_or(ExecError::BadTarget)?;
+    if self.result_contains_frame_reference(nested,depth+1)?{return Ok(true)}
+   }
+  }
+  Ok(false)
+ }
  fn reference_object_id(&self,reference:AmlReference)->Result<u16,ExecError>{
   match reference{
    AmlReference::NamespaceNode(node)=>self.bindings.value_id(node).map_err(|_|ExecError::BadTarget),
@@ -138,55 +171,6 @@ impl<'a,'b> Machine<'a,'b>{
    }
    Err(_)=>Err(ExecError::NonIntegerName),
   }
- }
- fn track_frame_reference(&mut self,id:u16)->Result<(),ExecError>{if self.frame_reference_count>=self.frame_reference_ids.len(){return Err(ExecError::TargetTypeMismatch)}self.frame_reference_ids[self.frame_reference_count]=id;self.frame_reference_count+=1;Ok(())}
- fn reference_target(&mut self,target:Target)->Result<AmlReference,ExecError>{match target{
-  Target::Reference(reference)=>Ok(reference),
-  Target::Local(index)=>{let value=self.locals[index];if value.kind==AmlValueKind::ObjectReference{return Err(ExecError::BadTarget)}let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;self.track_frame_reference(id)?;self.locals[index]=make_object_reference(AmlReference::ArenaValue(id));Ok(AmlReference::ArenaValue(id))},
-  Target::Arg(index)=>{let value=self.args[index];if value.kind==AmlValueKind::ObjectReference{return Err(ExecError::BadTarget)}let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;self.track_frame_reference(id)?;self.args[index]=make_object_reference(AmlReference::ArenaValue(id));Ok(AmlReference::ArenaValue(id))},
-  Target::Null=>Err(ExecError::BadTarget),
- }}
- fn index_source_reference(&mut self,r:&mut Reader<'_>)->Result<AmlReference,ExecError>{
-  let start=r.pos;let op=r.byte()?;
-  match op{
-   0x60..=0x67=>self.reference_target(Target::Local((op-0x60)as usize)),
-   0x68..=0x6e=>self.reference_target(Target::Arg((op-0x68)as usize)),
-   0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{r.pos=start;let(name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
-    if let Ok(node)=resolve_name_string(self.namespace,self.scope,&name){let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::NameNotFound)?;if entry.object_type==AmlObjectType::Name{return self.name_reference(canonical)}}
-    let node=self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;self.dynamic.field_reference(self.namespace,node).map_err(|_|ExecError::BadTarget)
-   }
-   _=>{r.pos=start;let value=self.term_value(r)?;let id=self.arena.allocate(value).map_err(|_|ExecError::TargetTypeMismatch)?;self.track_frame_reference(id)?;Ok(AmlReference::ArenaValue(id))}
-  }
- }
- fn index_term(&mut self,r:&mut Reader<'_>)->Result<AmlRuntimeValue,ExecError>{
-  let source=self.index_source_reference(r)?;
-  let source_id=match source{
-   AmlReference::NamespaceNode(node)=>self.bindings.value_id(node).map_err(|_|ExecError::NonIntegerName)?,
-   AmlReference::ArenaValue(id)=>id,
-   AmlReference::PackageElement{package,index}=>{let p=self.arena.get(package).ok_or(ExecError::BadTarget)?;if p.kind!=AmlValueKind::Package||index as usize>=p.element_count as usize{return Err(ExecError::BadTarget)}p.elements[index as usize]},
-   _=>return Err(ExecError::BadTarget),
-  };
-  let index_value=self.term_value(r)?;let index=u16::try_from(self.operand_integer(&index_value)?).map_err(|_|ExecError::BadTarget)?;
-  let reference=index_reference(self.arena,source_id,index).map_err(|_|ExecError::BadTarget)?;
-  let result=make_object_reference(reference);let target=self.target(r)?;self.store_value(target,result,StoreMode::CopyObject)?;Ok(result)
- }
- fn conditional_reference(&mut self,r:&mut Reader<'_>)->Result<AmlRuntimeValue,ExecError>{
-  let source_start=r.pos;let op=r.byte()?;
-  let source=match op{
-   0x60..=0x67=>Some(self.reference_target(Target::Local((op-0x60)as usize))?),
-   0x68..=0x6e=>Some(self.reference_target(Target::Arg((op-0x68)as usize))?),
-   0x5c|0x5e|0x2e|0x2f|b'_'|b'A'..=b'Z'=>{r.pos=source_start;let(name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
-    match resolve_name_string(self.namespace,self.scope,&name){
-     Ok(node)=>{let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::NameNotFound)?;let entry=self.namespace.nodes.get(canonical as usize).filter(|_|canonical as usize<self.namespace.count).ok_or(ExecError::NameNotFound)?;
-      match entry.object_type{AmlObjectType::Name=>Some(self.name_reference(canonical)?),AmlObjectType::Device|AmlObjectType::Scope=>Some(AmlReference::NamespaceNode(canonical)),AmlObjectType::Field=>match self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name){Ok(n)=>Some(self.dynamic.field_reference(self.namespace,n).map_err(|_|ExecError::BadTarget)?),Err(_)=>None},_=>None}
-     }
-     Err(_)=>match self.dynamic.resolve_buffer_field(self.namespace,self.scope,&name){Ok(n)=>Some(self.dynamic.field_reference(self.namespace,n).map_err(|_|ExecError::BadTarget)?),Err(_)=>None}
-    }
-   }
-   _=>return Err(ExecError::BadTarget),
-  };
-  let target=self.target(r)?;
-  if let Some(reference)=source{self.store_value(target,make_object_reference(reference),StoreMode::CopyObject)?;Ok(Self::integer_value(1))}else{Ok(Self::integer_value(0))}
  }
  fn target(&mut self,r:&mut Reader<'_>)->Result<Target,ExecError>{
   let op=r.byte()?;
@@ -771,21 +755,30 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  // Each invocation owns its own LocalX/ArgX frame and execution budget.
  // Namespace objects and the method synchronizer are shared with nested calls.
  let result=(||{
-  let start=node.body_start as usize;let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
+  let start=node.body_start as usize;
+  let end=start.checked_add(node.body_length as usize).ok_or(ExecError::InvalidMethod)?;
   if end>aml.len(){return Err(ExecError::InvalidMethod)}
   let empty=Machine::uninitialized_value();
-  let mut m=Machine{locals:[empty;8],args:[empty;7],frame_cells:[u16::MAX;128],frame_cell_count:0,arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,dynamic,current_sync_level:active_sync_level,owner_table:node.source_table,frame_reference_ids:[u16::MAX;15],frame_reference_count:0};
+  let mut m=Machine{locals:[empty;8],args:[empty;7],frame_cells:[u16::MAX;128],frame_cell_count:0,
+   arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,dynamic,
+   current_sync_level:active_sync_level,owner_table:node.source_table};
   for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
   let mut r=Reader{bytes:aml,pos:start,end};
   let execution=(||{
-   let flow_result=m.execute(&mut r,0);let frame_ids=m.frame_reference_ids;let frame_count=m.frame_reference_count;
-  let value_result=flow_result.map(|flow|match flow{ExecFlow::Continue=>Machine::integer_value(0),ExecFlow::Return(v)=>v,ExecFlow::Break|ExecFlow::ContinueLoop=>Machine::uninitialized_value()});
-  let value=value_result.as_ref().ok().copied();
-  let escaped=value.map(|returned|returned.kind==AmlValueKind::ObjectReference&&matches!(reference_from_value(&returned),Ok(AmlReference::ArenaValue(id)) if frame_ids[..frame_count].contains(&id))).unwrap_or(false);
-  for id in frame_ids.iter().take(frame_count){if let Some(slot)=m.arena.get_mut(*id){*slot=Machine::uninitialized_value();}}
-  let value=value_result?;if escaped{return Err(ExecError::UnsupportedReturnType)}if value.kind==AmlValueKind::Uninitialized{return Err(ExecError::LoopControl)}Ok(value)
+   let value=match m.execute(&mut r,0)?{
+    ExecFlow::Continue=>Machine::integer_value(0),
+    ExecFlow::Return(value)=>value,
+    ExecFlow::Break|ExecFlow::ContinueLoop=>return Err(ExecError::LoopControl),
+   };
+   if m.result_contains_frame_reference(&value,0)?{return Err(ExecError::UnsupportedReturnType)}
+   Ok(value)
+  })();
+  m.retire_frame_cells();
+  execution
+ })();
+ if serialized{sync.release(method_index);}
+ result
 }
-
 /// Execute a method in a caller-owned AML object context.
 ///
 /// Unlike the convenience wrappers, this API keeps the value arena and
