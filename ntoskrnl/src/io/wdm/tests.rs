@@ -7,11 +7,11 @@ mod wdm_tests {
   let mut overflow=DeviceSlot::empty();
   let overflow_ptr=&mut overflow as *mut DeviceSlot;
   table.push_overflow(overflow_ptr);
-  assert_eq!(table.iter().count(),MAX_WDM_DEVICES+1);
-  table.iter_mut().nth(MAX_WDM_DEVICES).unwrap().used=true;
-  assert!(table[MAX_WDM_DEVICES].used);
+  assert_eq!(table.iter().count(),INITIAL_WDM_DEVICE_SLOTS+1);
+  table.iter_mut().nth(INITIAL_WDM_DEVICE_SLOTS).unwrap().used=true;
+  assert!(table[INITIAL_WDM_DEVICE_SLOTS].used);
   assert!(table.remove_overflow(overflow_ptr));
-  assert_eq!(table.iter().count(),MAX_WDM_DEVICES);
+  assert_eq!(table.iter().count(),INITIAL_WDM_DEVICE_SLOTS);
   assert!(overflow.next.is_null());
   assert!(!table.remove_overflow(overflow_ptr));
  }
