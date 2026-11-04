@@ -711,9 +711,9 @@ pub fn evaluate_term_argument_in_context(
     let checkpoint = arena.count;
     let empty = Machine::uninitialized_value();
     let mut machine = Machine {
-        locals: [empty; 8], args: [empty; 7], arena, bindings,
+        locals: [empty; 8], args: [empty; 7], frame_cells: [u16::MAX; 128], frame_cell_count: 0, arena, bindings,
         integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
-        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, dynamic: &mut dynamic, current_sync_level: 0, owner_table: 0,frame_reference_ids:[u16::MAX;15],frame_reference_count:0,
+        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, dynamic: &mut dynamic, current_sync_level: 0, owner_table: 0,
     };
     let mut reader = Reader { bytes, pos: 0, end: bytes.len() };
     let result = machine.term(&mut reader).map(|value| (value, reader.pos));
