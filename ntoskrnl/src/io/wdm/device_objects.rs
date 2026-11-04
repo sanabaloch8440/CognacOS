@@ -113,7 +113,7 @@ pub unsafe extern "win64" fn io_create_device(
   state.devices.push_overflow(extra);
  }
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.mount_in_progress=false;slot.attached_to=ptr::null_mut();slot.start_io=StartIoQueue::EMPTY;
+ slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.power_capabilities=0x09;slot.wake_supported=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.mount_in_progress=false;slot.attached_to=ptr::null_mut();slot.start_io=StartIoQueue::EMPTY;
  slot.vpb=Vpb::empty();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.extension.fill(0);
