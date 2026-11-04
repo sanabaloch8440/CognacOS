@@ -1699,11 +1699,18 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
         let arena = allocation.cast::<acpi::aml_objects::AmlObjectArena>();
         unsafe { acpi::aml_objects::AmlObjectArena::initialize_in_place(arena); }
         let mut bindings = acpi::aml_runtime::AmlBindings::with_aml_revision(if width == 32 { 1 } else { 2 });
+        // Hold the AML table execution barrier while a method-valued _PRT
+        // executes so DSDT/SSDT namespace storage cannot be unloaded beneath it.
+        if self.gate.enter_method().is_err() {
+            unsafe { ExFreePoolWithTag(allocation, ACPI_POOL_TAG); }
+            return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed);
+        }
         let result = acpi::acpi_prt::evaluate_prt_object_in_context(
             self.namespace, self.sources, bus_node, width,
             unsafe { &mut *arena }, &mut bindings,
             &KERNEL_AML_METHOD_SYNCHRONIZER, self.resolver,
         );
+        self.gate.leave_method();
         unsafe {
             core::ptr::drop_in_place(arena);
             ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
