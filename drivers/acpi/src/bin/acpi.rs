@@ -15,7 +15,7 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicBool, Ordering}};
+use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU8, Ordering}};
 use cognacos_acpi as acpi;
 use cognacos_hal_contract::AcpiSciHalServices;
 use cognacos_nt_abi::{bus::{ACPI_FIRMWARE_INTERFACE, INTERFACE_HEADER, ACPI_FIRMWARE_INTERFACE_VERSION}, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
@@ -286,23 +286,38 @@ struct SciServicesStorage(core::cell::UnsafeCell<MaybeUninit<AcpiSciHalServices>
 unsafe impl Sync for SciServicesStorage {}
 static ACPI_SCI_SERVICES: SciServicesStorage =
     SciServicesStorage(core::cell::UnsafeCell::new(MaybeUninit::uninit()));
-static ACPI_SCI_SERVICES_READY: AtomicBool = AtomicBool::new(false);
+static ACPI_SCI_SERVICES_STATE: AtomicU8 = AtomicU8::new(0);
 
 /// Obtain the private versioned HAL SCI interface only after the kernel has
 /// published its PASSIVE_LEVEL work queue. Retry is allowed while boot stages
 /// are still installing executive services.
 fn acquire_sci_hal_services() -> Result<&'static AcpiSciHalServices, i32> {
-    if ACPI_SCI_SERVICES_READY.load(Ordering::Acquire) {
-        return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() });
+    loop {
+        match ACPI_SCI_SERVICES_STATE.load(Ordering::Acquire) {
+            2 => return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() }),
+            1 => core::hint::spin_loop(),
+            0 => {
+                if ACPI_SCI_SERVICES_STATE.compare_exchange(
+                    0, 1, Ordering::AcqRel, Ordering::Acquire,
+                ).is_err() { continue; }
+                let mut table = core::mem::MaybeUninit::<AcpiSciHalServices>::uninit();
+                let status = unsafe { HalAcpiGetSciServices(table.as_mut_ptr()) };
+                if status != STATUS_SUCCESS {
+                    ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
+                    return Err(status);
+                }
+                let table = unsafe { table.assume_init() };
+                if !table.compatible() {
+                    ACPI_SCI_SERVICES_STATE.store(0, Ordering::Release);
+                    return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
+                }
+                unsafe { (*ACPI_SCI_SERVICES.0.get()).write(table); }
+                ACPI_SCI_SERVICES_STATE.store(2, Ordering::Release);
+                return Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() });
+            }
+            _ => return Err(STATUS_DEVICE_CONFIGURATION_ERROR),
+        }
     }
-    let mut table = core::mem::MaybeUninit::<AcpiSciHalServices>::uninit();
-    let status = unsafe { HalAcpiGetSciServices(table.as_mut_ptr()) };
-    if status != STATUS_SUCCESS { return Err(status); }
-    let table = unsafe { table.assume_init() };
-    if !table.compatible() { return Err(STATUS_DEVICE_CONFIGURATION_ERROR); }
-    unsafe { (*ACPI_SCI_SERVICES.0.get()).write(table); }
-    ACPI_SCI_SERVICES_READY.store(true, Ordering::Release);
-    Ok(unsafe { (&*ACPI_SCI_SERVICES.0.get()).assume_init_ref() })
 }
 
 const MAX_ACPI_TABLE_LENGTH: u32 = 1024 * 1024;
