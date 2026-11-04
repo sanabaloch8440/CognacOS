@@ -113,6 +113,7 @@ pub mod bus {
     /// driver-defined-interface versioning guidance. Version 1 and its layout
     /// remain binary compatible and are never enlarged in place.
     pub const ACPI_FIRMWARE_INTERFACE_VERSION_2: u32 = 2;
+    pub const ACPI_FIRMWARE_INTERFACE_VERSION_3: u32 = 3;
     /// Kernel-private PnP bus directory identity. These keys are not
     /// Windows PE exports or part of the public WDM export table.
     pub const ACPI_BUS_ENUMERATOR_ID: u32 = u32::from_le_bytes(*b"ACPI");
@@ -136,6 +137,10 @@ pub mod bus {
     /// the size/version contract behind GUID_ACPI_FIRMWARE_INTERFACE.
     pub const GUID_ACPI_FIRMWARE_INTERFACE_V2: GUID = GUID {
         data1: 0x7b7a_2a04, data2: 0x5d31, data3: 0x4f18,
+        data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
+    };
+    pub const GUID_ACPI_FIRMWARE_INTERFACE_V3: GUID = GUID {
+        data1: 0x7b7a_2a06, data2: 0x5d31, data3: 0x4f18,
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
     };
     pub const GUID_PCI_BUS_INTERFACE: GUID = GUID {
@@ -277,6 +282,42 @@ pub mod bus {
         pub reserved: u16,
     }
 
+    /// One validated Type-1 bridge on the endpoint's root-to-leaf PCI path.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct ACPI_PCI_BRIDGE_PATH_ENTRY {
+        pub segment: u16,
+        pub primary_bus: u8,
+        pub secondary_bus: u8,
+        pub subordinate_bus: u8,
+        pub device: u8,
+        pub function: u8,
+        pub reserved: u8,
+    }
+
+    /// Extended route request. The original v2 request remains unchanged.
+    /// Bridges are ordered from the root bus toward the endpoint bus.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2 {
+        pub segment: u16,
+        pub bus: u8,
+        pub device: u8,
+        pub function: u8,
+        pub pin: u8,
+        pub bridge_count: u8,
+        pub root_bus: u8,
+        pub reserved: u8,
+        pub bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY; 8],
+    }
+    impl Default for ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2 {
+        fn default() -> Self {
+            Self { segment: 0, bus: 0, device: 0, function: 0, pin: 0,
+                bridge_count: 0, root_bus: 0, reserved: 0,
+                bridges: [ACPI_PCI_BRIDGE_PATH_ENTRY::default(); 8] }
+        }
+    }
+
     /// Resolved electrical route. Boolean values are UCHAR-sized for a stable
     /// C ABI; reserved bytes must be zero on output.
     #[repr(C)]
@@ -314,9 +355,30 @@ pub mod bus {
 
     const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>() == 0x28);
     const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>() == 0x30);
+    pub type PACPI_QUERY_PCI_INTERRUPT_ROUTE_V2 = Option<
+        unsafe extern "win64" fn(
+            context: PVOID,
+            request: *const ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2,
+            route: *mut ACPI_PCI_INTERRUPT_ROUTE,
+        ) -> NTSTATUS,
+    >;
+
+    /// Version 3 adds a bridge-path-aware route query without changing v1/v2 layouts.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct ACPI_FIRMWARE_INTERFACE_V3 {
+        pub header: INTERFACE_HEADER,
+        pub query_table: PACPI_QUERY_TABLE,
+        pub query_pci_interrupt_route: PACPI_QUERY_PCI_INTERRUPT_ROUTE,
+        pub query_pci_interrupt_route_v2: PACPI_QUERY_PCI_INTERRUPT_ROUTE_V2,
+    }
+
     const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V2, query_table) == 0x20);
     const _: () = assert!(core::mem::offset_of!(ACPI_FIRMWARE_INTERFACE_V2, query_pci_interrupt_route) == 0x28);
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>() == 8);
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_BRIDGE_PATH_ENTRY>() == 8);
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2>() == 72);
+    const _: () = assert!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V3>() == 0x38);
     const _: () = assert!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>() == 24);
 
     /// PCI configuration-space access provided by pci.sys. Device and
@@ -515,6 +577,8 @@ pub mod bus {
                 assert_eq!(core::mem::offset_of!(INTERFACE_HEADER, context), 0x08);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE>(), 0x28);
                 assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V2>(), 0x30);
+                assert_eq!(core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V3>(), 0x38);
+                assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2>(), 72);
                 assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE_REQUEST>(), 8);
                 assert_eq!(core::mem::size_of::<ACPI_PCI_INTERRUPT_ROUTE>(), 24);
                 assert_eq!(core::mem::size_of::<PCI_INTERRUPT_INTERFACE>(), 0x40);
