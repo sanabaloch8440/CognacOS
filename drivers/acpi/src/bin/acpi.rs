@@ -1689,10 +1689,10 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
         let prt = self.namespace.find_child(bus_node, *b"_PRT").unwrap();
         let table_index = self.namespace.nodes.get(prt as usize)
             .filter(|_| (prt as usize) < self.namespace.count)
-            .ok_or(acpi::acpi_prt::PrtError::MissingObject)?.source_table as usize;
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?.source_table as usize;
         let width = self.sources.get(table_index).and_then(|table| table.get(8))
             .map(|revision| if *revision >= 2 { 64 } else { 32 })
-            .ok_or(acpi::acpi_prt::PrtError::BadTableIndex)?;
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
         let bytes = core::mem::size_of::<acpi::aml_objects::AmlObjectArena>();
         let allocation = unsafe { ExAllocatePoolWithTag(PAGED_POOL, bytes, ACPI_POOL_TAG) };
         if allocation.is_null() { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
@@ -1708,17 +1708,17 @@ impl acpi::acpi_prt::PrtBusTableProvider for AcpiPrtBusProvider<'_> {
             core::ptr::drop_in_place(arena);
             ExFreePoolWithTag(allocation, ACPI_POOL_TAG);
         }
-        result
+        result.map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)
     }
 
     fn bridge_slot_for_downstream_bus(&self, downstream_bus: u16, upstream_bus: u16)
         -> Result<u8, acpi::acpi_prt::PrtError> {
         let node = self.namespace.nodes.get(downstream_bus as usize)
             .filter(|_| (downstream_bus as usize) < self.namespace.count)
-            .ok_or(acpi::acpi_prt::PrtError::MissingObject)?;
-        if node.parent != upstream_bus { return Err(acpi::acpi_prt::PrtError::MissingObject); }
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
+        if node.parent != upstream_bus { return Err(acpi::acpi_prt::PrtError::LinkResolutionFailed); }
         let adr = self.namespace.find_child(downstream_bus, *b"_ADR")
-            .ok_or(acpi::acpi_prt::PrtError::MissingObject)?;
+            .ok_or(acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
         let value = evaluate_aml_integer_object(
             self.manager, self.gate, self.namespace, adr, self.sources, self.handles,
         ).map_err(|_| acpi::acpi_prt::PrtError::LinkResolutionFailed)?;
