@@ -170,3 +170,77 @@ impl AmlPoolBudget {
         self.allocations_live = 0;
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::{ffi::c_void, sync::atomic::{AtomicUsize, Ordering}};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    static mut HEAP: [u128; 8192] = [0; 8192];
+
+    unsafe extern "win64" fn test_allocate(_: *mut c_void, size: usize, tag: u32, zeroed: u8) -> *mut c_void {
+        if tag != crate::aml_storage::AML_POOL_TAG || size == 0 { return ptr::null_mut(); }
+        let aligned = match size.checked_add(15) { Some(v) => v & !15, None => return ptr::null_mut() };
+        let start = match NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| old.checked_add(aligned).filter(|end| *end <= 65536)) {
+            Ok(v) => v, Err(_) => return ptr::null_mut(),
+        };
+        let base = ptr::addr_of_mut!(HEAP).cast::<u8>();
+        let allocation = unsafe { base.add(start) };
+        if zeroed != 0 { unsafe { ptr::write_bytes(allocation, 0, size); } }
+        allocation.cast()
+    }
+    unsafe extern "win64" fn test_release(_: *mut c_void, allocation: *mut c_void, tag: u32) -> u8 {
+        if allocation.is_null() || tag != crate::aml_storage::AML_POOL_TAG { 0 } else { 1 }
+    }
+    fn services() -> AmlPoolServices {
+        NEXT.store(0, Ordering::Relaxed);
+        AmlPoolServices::new(ptr::null_mut(), Some(test_allocate), Some(test_release))
+    }
+
+    #[test]
+    fn vector_grows_past_old_arena_value_ceiling() {
+        let mut values = AmlPoolVec::<u64>::new(services()).unwrap();
+        for value in 0..1000u64 { values.try_push(value).unwrap(); }
+        assert_eq!(values.len(), 1000);
+        assert!(values.capacity() >= 1000);
+        assert_eq!(values[0], 0);
+        assert_eq!(values[767], 767);
+        assert_eq!(values[999], 999);
+    }
+
+    #[test]
+    fn vector_checkpoint_rolls_back_nested_decode_appends() {
+        let mut values = AmlPoolVec::<u16>::new(services()).unwrap();
+        values.try_push(10).unwrap();
+        let checkpoint = values.checkpoint();
+        values.try_push(20).unwrap();
+        values.try_push(30).unwrap();
+        values.rollback(checkpoint).unwrap();
+        assert_eq!(values.as_slice(), &[10]);
+        assert_eq!(values.rollback(2), Err(AmlHeapError::CapacityOverflow));
+    }
+
+    #[test]
+    fn budget_tracks_live_and_peak_usage_without_language_limits() {
+        let mut budget = AmlPoolBudget::new(1 << 20, 4096);
+        for _ in 0..1000 { budget.charge(64).unwrap(); }
+        assert_eq!(budget.allocations_live, 1000);
+        assert_eq!(budget.bytes_live, 64000);
+        assert_eq!(budget.peak_allocations, 1000);
+        budget.release(64).unwrap();
+        assert_eq!(budget.allocations_live, 999);
+        assert_eq!(budget.bytes_live, 63936);
+    }
+
+    #[test]
+    fn budget_exhaustion_is_checked_and_does_not_mutate_accounting() {
+        let mut budget = AmlPoolBudget::new(128, 2);
+        budget.charge(64).unwrap();
+        budget.charge(64).unwrap();
+        assert!(budget.charge(1).is_err());
+        assert_eq!(budget.bytes_live, 128);
+        assert_eq!(budget.allocations_live, 2);
+    }
+}
