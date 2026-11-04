@@ -8,6 +8,60 @@ extern crate std;
 
 pub const HAL_CONTRACT_VERSION: u32 = 1;
 
+/// ACPI-to-PCI host-bridge resource handoff. Versioned independently from
+/// the HAL service table so ACPI and PCI can evolve this payload explicitly.
+pub const PCI_HOST_BRIDGE_RESOURCES_VERSION: u32 = 1;
+pub const PCI_HOST_BRIDGE_MAX_WINDOWS: usize = 32;
+pub const PCI_HOST_BRIDGE_WINDOW_IO: u8 = 1;
+pub const PCI_HOST_BRIDGE_WINDOW_MEMORY: u8 = 2;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PciHostBridgeResourceWindow {
+    pub space: u8,
+    /// Bit 0: writable; bit 1: cacheable. Reserved bits must be zero.
+    pub attributes: u8,
+    /// ACPI address descriptor width: 0=word, 1=dword, 2=qword.
+    pub address_width: u8,
+    pub reserved: u8,
+    /// Lowest/highest permitted base address, inclusive.
+    pub minimum: u64,
+    pub maximum: u64,
+    pub alignment: u64,
+    /// Size of the resource window at each permitted base.
+    pub length: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PciHostBridgeResourceSet {
+    pub size: u32,
+    pub version: u32,
+    pub segment: u16,
+    pub bus_start: u8,
+    pub bus_end: u8,
+    pub count: u32,
+    pub windows: [PciHostBridgeResourceWindow; PCI_HOST_BRIDGE_MAX_WINDOWS],
+}
+impl PciHostBridgeResourceSet {
+    pub const fn empty(segment: u16, bus_start: u8, bus_end: u8) -> Self {
+        Self {
+            size: core::mem::size_of::<Self>() as u32,
+            version: PCI_HOST_BRIDGE_RESOURCES_VERSION,
+            segment, bus_start, bus_end, count: 0,
+            windows: [PciHostBridgeResourceWindow {
+                space: 0, attributes: 0, address_width: 0, reserved: 0,
+                minimum: 0, maximum: 0, alignment: 0, length: 0,
+            }; PCI_HOST_BRIDGE_MAX_WINDOWS],
+        }
+    }
+    pub const fn compatible(&self) -> bool {
+        self.size as usize >= core::mem::size_of::<Self>()
+            && self.version == PCI_HOST_BRIDGE_RESOURCES_VERSION
+            && self.count as usize <= PCI_HOST_BRIDGE_MAX_WINDOWS
+            && self.bus_start <= self.bus_end
+            && self.windows[0].reserved == 0
+    }
+}
+
 /// Small NT I/O-manager service surface passed to native WDM drivers. Keeping
 /// completion in a versioned kernel table avoids static imports from a driver
 /// image while preserving the IoCompleteRequest calling convention.
