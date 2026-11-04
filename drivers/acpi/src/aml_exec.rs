@@ -13,7 +13,7 @@ use crate::aml_mutation::AmlDynamicNamespace;
 use crate::aml_runtime::{to_integer_implicit,to_integer_with_width,to_buffer,integer_to_string,AmlBindings,AmlReference,RuntimeError,StoreMode,dereference,store_reference_with_mode,make_object_reference,reference_from_value,validate_runtime_value,index_reference};
 pub const MAX_AML_STEPS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType,SynchronizationUnavailable,SyncLevelViolation,UnsupportedArgumentValue}
+pub enum ExecError{InvalidMethod,BadArgumentCount,Truncated,UnsupportedOpcode,StepLimit,BadTarget,BadPackage,LoopControl,ExecutionBusy,DivideByZero,NestingLimit,InvalidName,NameNotFound,NonIntegerName,CallDepthLimit,TargetTypeMismatch,UnsupportedReturnType,SynchronizationUnavailable,SyncLevelViolation,UnsupportedArgumentValue,MutexStackFull}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum AmlValue{Integer(u64)}
 impl AmlValue{pub const fn integer(self)->u64{match self{Self::Integer(v)=>v}}}
@@ -36,7 +36,23 @@ enum Target{Null,Local(usize),Arg(usize),Reference(AmlReference)}
 pub trait AmlMethodSynchronizer:Sync{
  fn acquire(&self,method_index:u16,sync_level:u8)->Result<(),ExecError>;
  fn release(&self,method_index:u16);
+ fn acquire_mutex(&self,_mutex_index:u16,_sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn release_mutex(&self,_mutex_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
 }
+
+#[derive(Clone,Copy)]
+struct HeldAmlMutex{node:u16,previous_sync_level:u8}
+impl HeldAmlMutex{const EMPTY:Self=Self{node:u16::MAX,previous_sync_level:0};}
+pub struct AmlSyncState{current_sync_level:u8,held:[HeldAmlMutex;128],held_count:usize}
+impl AmlSyncState{
+ pub const fn new()->Self{Self{current_sync_level:0,held:[HeldAmlMutex::EMPTY;128],held_count:0}}
+ pub const fn current_sync_level(&self)->u8{self.current_sync_level}
+ fn release_since(&mut self,checkpoint:usize,sync:&dyn AmlMethodSynchronizer)->Result<(),ExecError>{
+  while self.held_count>checkpoint{let held=self.held[self.held_count-1];sync.release_mutex(held.node)?;self.held_count-=1;self.held[self.held_count]=HeldAmlMutex::EMPTY;self.current_sync_level=held.previous_sync_level;}
+  Ok(())
+ }
+}
+impl Default for AmlSyncState{fn default()->Self{Self::new()}}
 /// Run a non-interpreter method-result decoder under the method's implicit mutex.
 /// This is used only by bounded fast paths that decode a direct Return(String,
 /// Buffer, or Package) without entering the AML execution machine. The closure
@@ -70,7 +86,7 @@ impl AmlMethodSynchronizer for NoMethodSynchronizer{
 // While consumes Break/ContinueLoop; Return escapes every enclosing construct.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ExecFlow{Continue,Return(AmlRuntimeValue),Break,ContinueLoop}
-struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],frame_cells:[u16;128],frame_cell_count:usize,arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,dynamic:&'b mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32}
+struct Machine<'a,'b>{locals:[AmlRuntimeValue;8],args:[AmlRuntimeValue;7],frame_cells:[u16;128],frame_cell_count:usize,arena:&'b mut AmlObjectArena,bindings:&'b mut AmlBindings,integer_width_bits:u8,steps:usize,aml:&'a [u8],namespace:&'a AmlNamespace,scope:u16,call_depth:u8,sync:&'a dyn AmlMethodSynchronizer,sync_state:&'b mut AmlSyncState,dynamic:&'b mut AmlDynamicNamespace,owner_table:u32}
 impl<'a,'b> Machine<'a,'b>{
  fn step(&mut self)->Result<(),ExecError>{self.steps+=1;if self.steps>MAX_AML_STEPS{Err(ExecError::StepLimit)}else{Ok(())}}
  fn frame_slot_reference(&mut self,argument:bool,index:usize)->Result<AmlReference,ExecError>{
@@ -180,6 +196,28 @@ impl<'a,'b> Machine<'a,'b>{
    }
    Err(_)=>Err(ExecError::NonIntegerName),
   }
+ }
+ fn mutex_object(&self,r:&mut Reader<'_>)->Result<(u16,u8),ExecError>{
+  let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
+  let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
+  let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
+  let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
+  if entry.object_type!=AmlObjectType::Mutex{return Err(ExecError::BadTarget)}
+  Ok((canonical,entry.method_flags&0x0f))
+ }
+ fn acquire_mutex(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
+  let (node,level)=self.mutex_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
+  if self.sync_state.current_sync_level>level{return Err(ExecError::SyncLevelViolation)}
+  if self.sync_state.held_count==self.sync_state.held.len(){return Err(ExecError::MutexStackFull)}
+  if !self.sync.acquire_mutex(node,level,timeout)?{return Ok(1)}
+  let i=self.sync_state.held_count;self.sync_state.held[i]=HeldAmlMutex{node,previous_sync_level:self.sync_state.current_sync_level};
+  self.sync_state.held_count+=1;self.sync_state.current_sync_level=level;Ok(0)
+ }
+ fn release_mutex(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{
+  let (node,_)=self.mutex_object(r)?;if self.sync_state.held_count==0{return Err(ExecError::SyncLevelViolation)}
+  let held=self.sync_state.held[self.sync_state.held_count-1];if held.node!=node{return Err(ExecError::SyncLevelViolation)}
+  self.sync.release_mutex(node)?;self.sync_state.held_count-=1;self.sync_state.held[self.sync_state.held_count]=HeldAmlMutex::EMPTY;
+  self.sync_state.current_sync_level=held.previous_sync_level;Ok(())
  }
  fn target(&mut self,r:&mut Reader<'_>)->Result<Target,ExecError>{
   let op=r.byte()?;
@@ -442,6 +480,7 @@ impl<'a,'b> Machine<'a,'b>{
     0x12=>{let source=self.optional_source_reference(r)?;let target=self.target(r)?;
      if let Some(reference)=source{self.store_reference_target(target,reference)?;Ok(Self::integer_value(1))}
      else{Ok(Self::integer_value(0))}},
+    0x23=>Ok(Self::integer_value(self.acquire_mutex(r)?)),
     _=>{r.pos=start;self.term(r).map(Self::integer_value)}
    }},
    0xff=>Ok(Self::integer_value(self.integer_mask())),
@@ -529,7 +568,7 @@ impl<'a,'b> Machine<'a,'b>{
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
       execute_method_inner(self.aml,self.namespace,canonical,
-          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.current_sync_level,entry.source_table)
+          &call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table)
      }
      // Device objects used as _PRT Source values are namespace references,
      // not scalar Names. Preserve the reference so the PRT decoder can resolve
@@ -659,7 +698,7 @@ impl<'a,'b> Machine<'a,'b>{
       let count=(entry.method_flags&7) as usize;
       let mut call_args=[Self::integer_value(0);7];
       for slot in call_args.iter_mut().take(count){*slot=self.term_value(r)?;}
-      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.current_sync_level,entry.source_table)?;self.operand_integer(&value)}
+      {let value=execute_method_inner(self.aml,self.namespace,canonical,&call_args[..count],self.call_depth+1,self.integer_width_bits,self.arena,self.bindings,self.sync,self.dynamic,self.sync_state,entry.source_table)?;self.operand_integer(&value)}
      }
      AmlObjectType::Name=>{
       let start=entry.body_start as usize;
@@ -682,6 +721,7 @@ impl<'a,'b> Machine<'a,'b>{
    self.step()?;let op=r.byte()?;
    match op{
     0xa3=>{},
+    0x5b=>{let extended=r.byte()?;if extended==0x27{self.release_mutex(r)?;}else{return Err(ExecError::UnsupportedOpcode)}},
     0xa4=>return Ok(ExecFlow::Return(self.term_value(r)?)),
     0x70=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::Store)?;},
     0x9d=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::CopyObject)?;},
@@ -740,7 +780,7 @@ pub fn evaluate_term_argument_in_context(
     let mut machine = Machine {
         locals: [empty; 8], args: [empty; 7], frame_cells: [u16::MAX; 128], frame_cell_count: 0, arena, bindings,
         integer_width_bits: 64, steps: 0, aml: &[], namespace: &namespace,
-        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, dynamic: &mut dynamic, current_sync_level: 0, owner_table: 0,
+        scope: 0, call_depth: 0, sync: &NO_METHOD_SYNCHRONIZER, sync_state:&mut AmlSyncState::new(), dynamic: &mut dynamic, owner_table: 0,
     };
     let mut reader = Reader { bytes, pos: 0, end: bytes.len() };
     let result = machine.term(&mut reader).map(|value| (value, reader.pos));
@@ -765,7 +805,7 @@ pub fn evaluate_term_argument(bytes: &[u8]) -> Result<(u64, usize), ExecError> {
 /// Execute a method using bounded AML runtime objects and an explicit context.
 const MAX_METHOD_CALL_DEPTH:u8=16;
 
-fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,dynamic:&mut AmlDynamicNamespace,current_sync_level:u8,owner_table:u32)->Result<AmlRuntimeValue,ExecError>{
+fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:&[AmlRuntimeValue],call_depth:u8,integer_width_bits:u8,arena:&mut AmlObjectArena,bindings:&mut AmlBindings,sync:&dyn AmlMethodSynchronizer,dynamic:&mut AmlDynamicNamespace,sync_state:&mut AmlSyncState,owner_table:u32)->Result<AmlRuntimeValue,ExecError>{
  if call_depth>MAX_METHOD_CALL_DEPTH{return Err(ExecError::CallDepthLimit)}
  let index=method_index as usize;
  if index>=namespace.count{return Err(ExecError::InvalidMethod)}
@@ -776,9 +816,9 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
  if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
  let serialized=(node.method_flags&0x08)!=0;
  let sync_level=(node.method_flags>>4)&0x0f;
- if serialized&&sync_level<current_sync_level{return Err(ExecError::SyncLevelViolation)}
- if serialized{sync.acquire(method_index,sync_level)?;}
- let active_sync_level=if serialized{sync_level}else{current_sync_level};
+ if serialized&&sync_level<sync_state.current_sync_level{return Err(ExecError::SyncLevelViolation)}
+ let mutex_checkpoint=sync_state.held_count;let previous_sync_level=sync_state.current_sync_level;
+ if serialized{sync.acquire(method_index,sync_level)?;sync_state.current_sync_level=sync_level;}
  // Each invocation owns its own LocalX/ArgX frame and execution budget.
  // Namespace objects and the method synchronizer are shared with nested calls.
  let result=(||{
@@ -787,8 +827,8 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
   if end>aml.len(){return Err(ExecError::InvalidMethod)}
   let empty=Machine::uninitialized_value();
   let mut m=Machine{locals:[empty;8],args:[empty;7],frame_cells:[u16::MAX;128],frame_cell_count:0,
-   arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,dynamic,
-   current_sync_level:active_sync_level,owner_table:node.source_table};
+   arena,bindings,integer_width_bits,steps:0,aml,namespace,scope:node.parent,call_depth,sync,sync_state,dynamic,
+   owner_table:node.source_table};
   for (slot,value) in m.args.iter_mut().zip(args.iter().copied()){*slot=value;}
   let mut r=Reader{bytes:aml,pos:start,end};
   let execution=(||{
@@ -803,7 +843,9 @@ fn execute_method_inner(aml:&[u8],namespace:&AmlNamespace,method_index:u16,args:
   m.retire_frame_cells();
   execution
  })();
- if serialized{sync.release(method_index);}
+ let cleanup=sync_state.release_since(mutex_checkpoint,sync);
+ if serialized{sync_state.current_sync_level=previous_sync_level;sync.release(method_index);}
+ cleanup?;
  result
 }
 /// Execute a method and preserve Integer, String, or Buffer return objects.
@@ -824,7 +866,7 @@ pub fn execute_method_typed_with_sync(aml:&[u8],namespace:&AmlNamespace,
     let mut bindings=AmlBindings::with_aml_revision(if integer_width_bits==32{1}else{2});
     let mut dynamic=AmlDynamicNamespace::new();
     let value=execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
-        &mut arena,&mut bindings,sync,&mut dynamic,0,0)?;
+        &mut arena,&mut bindings,sync,&mut dynamic,&mut AmlSyncState::new(),0)?;
     if matches!(value.kind,AmlValueKind::Package|AmlValueKind::ObjectReference) || dynamic.field_count()!=0{return Err(ExecError::UnsupportedReturnType)}
     Ok(value)
 }
@@ -848,7 +890,7 @@ pub fn execute_method_in_dynamic_context(
     }
     if !matches!(integer_width_bits,32|64){return Err(ExecError::UnsupportedOpcode)}
     execute_method_inner(aml,namespace,method_index,args,0,integer_width_bits,
-        arena,bindings,sync,dynamic,0,0)
+        arena,bindings,sync,dynamic,&mut AmlSyncState::new(),0)
 }
 
 /// Compatibility wrapper for methods that do not publish dynamic fields.
