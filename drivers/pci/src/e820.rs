@@ -42,6 +42,8 @@ pub fn clip_host_apertures(
 ) -> Result<usize, ClipError> {
     validate_apertures(input)?;
     if protected_ram.len() > MAX_E820_RANGES { return Err(ClipError::Capacity); }
+    // A missing protected-memory snapshot is not evidence that an aperture is free.
+    if protected_ram.is_empty() { return Err(ClipError::InvalidRange); }
     for range in protected_ram { end(range.start, range.length)?; }
 
     let empty = Aperture { start: 0, length: 0, kind: BarKind::Io, prefetchable: false };
@@ -190,6 +192,15 @@ mod tests {
         let mut out = [ap(0xdead, 0xbeef); 1];
         let before = out;
         assert_eq!(prepare_host_apertures(&input, &[], true, &mut out), Err(ClipError::Overflow));
+        assert_eq!(out, before);
+    }
+
+    #[test]
+    fn missing_protected_memory_map_fails_closed() {
+        let input = [ap(0x8000, 0x1000)];
+        let mut out = [ap(0xdead, 0xbeef); 1];
+        let before = out;
+        assert_eq!(clip_host_apertures(&input, &[], &mut out), Err(ClipError::InvalidRange));
         assert_eq!(out, before);
     }
 
