@@ -38,6 +38,9 @@ pub trait AmlMethodSynchronizer:Sync{
  fn release(&self,method_index:u16);
  fn acquire_mutex(&self,_mutex_index:u16,_sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
  fn release_mutex(&self,_mutex_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn signal_event(&self,_event_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn wait_event(&self,_event_index:u16,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn reset_event(&self,_event_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
 }
 
 #[derive(Clone,Copy)]
@@ -205,6 +208,20 @@ impl<'a,'b> Machine<'a,'b>{
   if entry.object_type!=AmlObjectType::Mutex{return Err(ExecError::BadTarget)}
   Ok((canonical,entry.method_flags&0x0f))
  }
+ fn event_object(&self,r:&mut Reader<'_>)->Result<u16,ExecError>{
+  let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
+  let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
+  let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
+  let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
+  if entry.object_type!=AmlObjectType::Event{return Err(ExecError::BadTarget)}
+  Ok(canonical)
+ }
+ fn wait_event(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
+  let event=self.event_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
+  Ok(if self.sync.wait_event(event,timeout)?{0}else{1})
+ }
+ fn signal_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let event=self.event_object(r)?;self.sync.signal_event(event)}
+ fn reset_event(&mut self,r:&mut Reader<'_>)->Result<(),ExecError>{let event=self.event_object(r)?;self.sync.reset_event(event)}
  fn acquire_mutex(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
   let (node,level)=self.mutex_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
   if self.sync_state.current_sync_level>level{return Err(ExecError::SyncLevelViolation)}
@@ -481,6 +498,7 @@ impl<'a,'b> Machine<'a,'b>{
      if let Some(reference)=source{self.store_reference_target(target,reference)?;Ok(Self::integer_value(1))}
      else{Ok(Self::integer_value(0))}},
     0x23=>Ok(Self::integer_value(self.acquire_mutex(r)?)),
+    0x25=>Ok(Self::integer_value(self.wait_event(r)?)),
     _=>{r.pos=start;self.term(r).map(Self::integer_value)}
    }},
    0xff=>Ok(Self::integer_value(self.integer_mask())),
@@ -721,7 +739,7 @@ impl<'a,'b> Machine<'a,'b>{
    self.step()?;let op=r.byte()?;
    match op{
     0xa3=>{},
-    0x5b=>{let extended=r.byte()?;if extended==0x27{self.release_mutex(r)?;}else{r.pos-=2;let _=self.term_value(r)?;}},
+    0x5b=>{let extended=r.byte()?;match extended{0x24=>self.signal_event(r)?,0x26=>self.reset_event(r)?,0x27=>self.release_mutex(r)?,_=>{r.pos-=2;let _=self.term_value(r)?;}}},
     0xa4=>return Ok(ExecFlow::Return(self.term_value(r)?)),
     0x70=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::Store)?;},
     0x9d=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::CopyObject)?;},
@@ -1847,6 +1865,45 @@ mod explicit_mutex_tests {
   assert_eq!(sync.acquisitions.load(Ordering::SeqCst),1);
   assert_eq!(sync.releases.load(Ordering::SeqCst),1);
   assert!(!sync.held.load(Ordering::SeqCst));
+ }
+
+ #[derive(Default)]
+ struct TestEventSync{signaled:AtomicBool,waits:AtomicUsize,last_timeout:AtomicUsize,signals:AtomicUsize,resets:AtomicUsize}
+ impl AmlMethodSynchronizer for TestEventSync{
+  fn acquire(&self,_:u16,_:u8)->Result<(),ExecError>{Ok(())}
+  fn release(&self,_:u16){}
+  fn signal_event(&self,_:u16)->Result<(),ExecError>{self.signals.fetch_add(1,Ordering::SeqCst);self.signaled.store(true,Ordering::SeqCst);Ok(())}
+  fn wait_event(&self,_:u16,timeout:u16)->Result<bool,ExecError>{self.waits.fetch_add(1,Ordering::SeqCst);self.last_timeout.store(timeout as usize,Ordering::SeqCst);Ok(self.signaled.swap(false,Ordering::SeqCst))}
+  fn reset_event(&self,_:u16)->Result<(),ExecError>{self.resets.fetch_add(1,Ordering::SeqCst);self.signaled.store(false,Ordering::SeqCst);Ok(())}
+ }
+ fn load_event_method(body:&[u8])->(std::vec::Vec<u8>,AmlNamespace,u16){
+  let mut aml=std::vec![0x5b,0x02,b'E',b'V',b'T',b'0'];
+  let package_length=1+4+1+body.len();aml.extend_from_slice(&[0x14,package_length as u8,b'T',b'E',b'S',b'T',0]);
+  aml.extend_from_slice(body);let mut namespace=AmlNamespace::new();load_definition_block(&aml,&mut namespace).unwrap();
+  let method=namespace.find_child(0,*b"TEST").unwrap();(aml,namespace,method)
+ }
+ #[test]
+ fn signal_event_wakes_wait_and_consumes_synchronization_signal(){
+  let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0xff,0xff];
+  let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(0)));
+  assert_eq!(sync.signals.load(Ordering::SeqCst),1);assert_eq!(sync.waits.load(Ordering::SeqCst),1);
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0xffff);assert!(!sync.signaled.load(Ordering::SeqCst));
+ }
+ #[test]
+ fn event_wait_returns_one_when_timeout_expires(){
+  let body=[0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0x34,0x12];
+  let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
+  assert_eq!(sync.last_timeout.load(Ordering::SeqCst),0x1234);
+ }
+ #[test]
+ fn reset_event_clears_a_previously_signaled_event(){
+  let body=[0x5b,0x24,b'E',b'V',b'T',b'0',0x5b,0x26,b'E',b'V',b'T',b'0',0xa4,0x5b,0x25,b'E',b'V',b'T',b'0',0xff,0xff];
+  let (aml,ns,method)=load_event_method(&body);let sync=TestEventSync::default();
+  assert_eq!(execute_method_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlValue::Integer(1)));
+  assert_eq!(sync.signals.load(Ordering::SeqCst),1);assert_eq!(sync.resets.load(Ordering::SeqCst),1);
+  assert!(!sync.signaled.load(Ordering::SeqCst));
  }
 
  #[test]
