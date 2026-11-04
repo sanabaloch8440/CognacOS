@@ -139,13 +139,22 @@ pub struct IoStackLocation {
 const _: () = assert!(core::mem::size_of::<IoStackLocation>() == IO_STACK_LOCATION_SIZE_X64);
 const _: () = assert!(core::mem::offset_of!(IoStackLocation, parameters) == 0x08);
 const _: () = assert!(core::mem::offset_of!(IoStackLocation, device_object) == 0x28);
+const START_IO_DEPTH:usize=64;
+#[derive(Clone,Copy)]
+struct StartIoQueue{
+ entries:[*mut Irp;START_IO_DEPTH],keys:[u32;START_IO_DEPTH],count:usize,keyed:bool,boosted:bool
+}
+unsafe impl Send for StartIoQueue {}
+impl StartIoQueue{
+ const EMPTY:Self=Self{entries:[ptr::null_mut();START_IO_DEPTH],keys:[0;START_IO_DEPTH],count:0,keyed:false,boosted:false};
+}
 #[repr(C)]
 struct DeviceSlot {
  next:*mut DeviceSlot,
  used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32,
  power_state: u8, power_target: u8, power_transition: bool,
  pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool,
- mount_in_progress: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260],
+ mount_in_progress: bool, attached_to: *mut DeviceObject, start_io:StartIoQueue, name_len: usize, name: [u16; 260],
  vpb: Vpb, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION]
 }
 unsafe impl Send for DeviceSlot {}
@@ -153,7 +162,7 @@ impl DeviceSlot {
  const fn empty()->Self { Self {
   next:ptr::null_mut(),used:false,deleting:false,active_dispatches:0,outstanding_irps:0,remove_lock_count:0,
   power_state:0,power_target:0,power_transition:false,pnp_state:0,pnp_pending:0,pnp_transition_minor:0,
-  pnp_transition:false,mount_in_progress:false,attached_to:ptr::null_mut(),name_len:0,name:[0;260],
+  pnp_transition:false,mount_in_progress:false,attached_to:ptr::null_mut(),start_io:StartIoQueue::EMPTY,name_len:0,name:[0;260],
   vpb:Vpb::empty(),
   object:DeviceObject{
    object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
