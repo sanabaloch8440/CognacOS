@@ -685,7 +685,8 @@ mod tests {
         identity.system_vendor.set(b"LENOVO");
         identity.product_version.set(b"Yoga IIL platform");
         let policy = evaluate_registry(&identity, PLATFORM_QUIRK_REGISTRY).unwrap();
-        assert!(policy.flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
+        // Keep this inactive until the PCI host-bridge allocator actually clips E820 ranges.
+        assert!(!policy.flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
         identity.product_version.set(b"Yoga platform");
         let policy = evaluate_registry(&identity, PLATFORM_QUIRK_REGISTRY).unwrap();
         assert!(!policy.flags.contains(QuirkFlags::IGNORE_E820_FOR_PCI_CRS));
