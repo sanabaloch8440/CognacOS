@@ -707,3 +707,26 @@ pub struct GenericAddressStructure {
     pub access_size: u8,
     pub address: u64,
 }
+
+
+/// Private early-boot handoff consumed by the standalone HAL image. This is
+/// deliberately not DriverEntry: the Windows HAL is not an ordinary WDM
+/// driver. The loader/kernel supplies a permanent executive-service table.
+pub const HAL_BOOTSTRAP_INFO_VERSION: u32 = 1;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HalBootstrapInfo {
+    pub size: u32,
+    pub version: u32,
+    pub bsp_apic_id: u32,
+    pub reserved: u32,
+    pub kernel_services: *const HalKernelServices,
+}
+impl HalBootstrapInfo {
+    pub const fn compatible(&self) -> bool {
+        self.size as usize >= core::mem::size_of::<Self>()
+            && self.version == HAL_BOOTSTRAP_INFO_VERSION
+            && self.reserved == 0
+            && !self.kernel_services.is_null()
+    }
+}
