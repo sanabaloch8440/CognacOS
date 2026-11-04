@@ -9,6 +9,7 @@ pub mod resources;
 pub mod resource_manager;
 pub mod bridge_resources;
 pub mod topology_resources;
+pub mod e820;
 pub mod ide;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
