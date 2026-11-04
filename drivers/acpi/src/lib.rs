@@ -71,7 +71,7 @@ pub fn validate_sdt(bytes:&[u8],expected_signature:Option<[u8;4]>)->Result<AcpiT
 /// Optional extended pointers are zero when the firmware table predates them.
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct FadtInfo {
-    pub revision:u8,pub preferred_pm_profile:u8,pub sci_interrupt:u16,pub firmware_ctrl:u32,pub dsdt:u32,
+    pub revision:u8,pub preferred_pm_profile:u8,pub sci_interrupt:u16,pub smi_command_port:u32,pub acpi_enable:u8,pub acpi_disable:u8,pub firmware_ctrl:u32,pub dsdt:u32,
     pub boot_arch_flags:u16,pub flags:u32,pub minor_version:u8,
     pub x_firmware_ctrl:u64,pub x_dsdt:u64,pub pm1a_control_legacy:u32,
     pub pm1a_event_legacy:u32,pub pm1b_event_legacy:u32,pub pm1b_control_legacy:u32,
@@ -83,6 +83,8 @@ pub struct FadtInfo {
     pub x_pm1b_control_block:Option<AcpiGas>, pub x_pm2_control_block:Option<AcpiGas>,
     pub x_pm_timer_block:Option<AcpiGas>, pub x_gpe0_block:Option<AcpiGas>, pub x_gpe1_block:Option<AcpiGas>,
     pub sleep_control_register:Option<AcpiGas>,pub sleep_status_register:Option<AcpiGas>,
+    /// Number of malformed optional extended register descriptors ignored.
+    pub malformed_optional_register_count:u8,
 }
 impl FadtInfo {
     pub const HARDWARE_REDUCED_ACPI:u32=1<<20;
@@ -126,6 +128,7 @@ pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
     let mut out=FadtInfo{revision:h.revision,..FadtInfo::default()};
     if n>=46{out.preferred_pm_profile=bytes[45];}
     if n>=48{out.sci_interrupt=u16::from_le_bytes([bytes[46],bytes[47]]);}
+    if n>=54{out.smi_command_port=u32le(bytes,48)?;out.acpi_enable=bytes[52];out.acpi_disable=bytes[53];}
     if n>=44{out.firmware_ctrl=u32le(bytes,36)?;out.dsdt=u32le(bytes,40)?;}
     if n>=111{out.boot_arch_flags=u16::from_le_bytes([bytes[109],bytes[110]]);}
     if n>=116{out.flags=u32le(bytes,112)?;}
@@ -133,20 +136,20 @@ pub fn parse_fadt(bytes:&[u8])->Result<FadtInfo,AcpiError>{
     if n>=84{out.pm1a_event_legacy=u32le(bytes,56)?;out.pm1b_event_legacy=u32le(bytes,60)?;out.pm1a_control_legacy=u32le(bytes,64)?;out.pm1b_control_legacy=u32le(bytes,68)?;out.pm2_control_legacy=u32le(bytes,72)?;out.pm_timer_legacy=u32le(bytes,76)?;out.gpe0_legacy=u32le(bytes,80)?;}
     if n>=88{out.gpe1_legacy=u32le(bytes,84)?;}
     if n>=95{out.pm1_event_length=bytes[88];out.pm1_control_length=bytes[89];out.pm2_control_length=bytes[90];out.pm_timer_length=bytes[91];out.gpe0_length=bytes[92];out.gpe1_length=bytes[93];out.gpe1_base=bytes[94];}
-    if n>=128{out.reset_register=parse_optional_gas(bytes,116)?;}
-    if n>=160{out.x_pm1a_event_block=parse_optional_gas(bytes,148)?;}
-    if n>=172{out.x_pm1b_event_block=parse_optional_gas(bytes,160)?;}
-    if n>=184{out.x_pm1a_control_block=parse_optional_gas(bytes,172)?;}
-    if n>=196{out.x_pm1b_control_block=parse_optional_gas(bytes,184)?;}
-    if n>=208{out.x_pm2_control_block=parse_optional_gas(bytes,196)?;}
-    if n>=220{out.x_pm_timer_block=parse_optional_gas(bytes,208)?;}
-    if n>=232{out.x_gpe0_block=parse_optional_gas(bytes,220)?;}
-    if n>=244{out.x_gpe1_block=parse_optional_gas(bytes,232)?;}
+    if n>=128{out.reset_register=parse_optional_gas(bytes,116,&mut out.malformed_optional_register_count)?;}
+    if n>=160{out.x_pm1a_event_block=parse_optional_gas(bytes,148,&mut out.malformed_optional_register_count)?;}
+    if n>=172{out.x_pm1b_event_block=parse_optional_gas(bytes,160,&mut out.malformed_optional_register_count)?;}
+    if n>=184{out.x_pm1a_control_block=parse_optional_gas(bytes,172,&mut out.malformed_optional_register_count)?;}
+    if n>=196{out.x_pm1b_control_block=parse_optional_gas(bytes,184,&mut out.malformed_optional_register_count)?;}
+    if n>=208{out.x_pm2_control_block=parse_optional_gas(bytes,196,&mut out.malformed_optional_register_count)?;}
+    if n>=220{out.x_pm_timer_block=parse_optional_gas(bytes,208,&mut out.malformed_optional_register_count)?;}
+    if n>=232{out.x_gpe0_block=parse_optional_gas(bytes,220,&mut out.malformed_optional_register_count)?;}
+    if n>=244{out.x_gpe1_block=parse_optional_gas(bytes,232,&mut out.malformed_optional_register_count)?;}
     // SLEEP_CONTROL_REG and SLEEP_STATUS_REG are ACPI 5.0 additions.
     // Some legacy firmware over-allocates/reserves the tail of FADT; table
     // length alone must not make those bytes active on a pre-v5 FADT.
-    if h.revision>=5 && n>=256{out.sleep_control_register=parse_optional_gas(bytes,244)?;}
-    if h.revision>=5 && n>=268{out.sleep_status_register=parse_optional_gas(bytes,256)?;}
+    if h.revision>=5 && n>=256{out.sleep_control_register=parse_optional_gas(bytes,244,&mut out.malformed_optional_register_count)?;}
+    if h.revision>=5 && n>=268{out.sleep_status_register=parse_optional_gas(bytes,256,&mut out.malformed_optional_register_count)?;}
     if n>=148{
         out.x_firmware_ctrl=u64::from_le_bytes(bytes[132..140].try_into().map_err(|_|AcpiError::Truncated)?);
         out.x_dsdt=u64::from_le_bytes(bytes[140..148].try_into().map_err(|_|AcpiError::Truncated)?);
@@ -180,7 +183,7 @@ pub const fn error_to_ntstatus(error: AcpiError) -> nt_abi::ntstatus::NTSTATUS {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CpuEntry { pub apic_id: u32, pub processor_uid: u32, pub enabled: bool, pub x2apic: bool }
+pub struct CpuEntry { pub apic_id: u32, pub processor_uid: u32, pub enabled: bool, pub online_capable: bool, pub x2apic: bool }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IoApicEntry { pub id: u8, pub address: u32, pub gsi_base: u32 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -194,11 +197,17 @@ pub struct X2ApicNmi { pub processor_uid:u32,pub flags:u16,pub lint:u8 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MadtInfo {
     pub revision: u8,
+    /// Number of processor records skipped after the 256-entry parser capacity.
+    pub cpu_overflow_count: usize,
+    /// Number of I/O APIC records skipped after the 32-entry parser capacity.
+    pub io_apic_overflow_count: usize,
+    /// Invalid or unsupported optional wake-mailbox records ignored.
+    pub ignored_wakeup_mailbox_count: usize,
     pub local_apic_address: u64,
     pub flags: u32,
-    pub cpus: [CpuEntry; 64],
+    pub cpus: [CpuEntry; 256],
     pub cpu_count: usize,
-    pub io_apics: [IoApicEntry; 8],
+    pub io_apics: [IoApicEntry; 32],
     pub io_apic_count: usize,
     pub irq_overrides: [IrqOverride; 16],
     pub irq_override_count: usize,
@@ -207,7 +216,7 @@ pub struct MadtInfo {
     pub wakeup_mailbox:Option<MadtWakeupMailbox>,
 }
 impl MadtInfo {
-    pub const EMPTY: Self = Self { revision: 0, local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0,wakeup_mailbox:None };
+    pub const EMPTY: Self = Self { revision: 0, cpu_overflow_count:0, io_apic_overflow_count:0, ignored_wakeup_mailbox_count:0, local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, online_capable:false, x2apic: false }; 256], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 32], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0, local_apic_nmis:[LocalApicNmi{processor_uid:0,flags:0,lint:0};16],local_apic_nmi_count:0, x2apic_nmis:[X2ApicNmi{processor_uid:0,flags:0,lint:0};16],x2apic_nmi_count:0,wakeup_mailbox:None };
 }
 fn u32le(b: &[u8], o: usize) -> Result<u32, AcpiError> {
     let s = b.get(o..o + 4).ok_or(AcpiError::Truncated)?;
@@ -235,15 +244,17 @@ pub fn parse_madt(bytes: &[u8]) -> Result<MadtInfo, AcpiError> {
         let e = &bytes[offset..offset + size];
         match kind {
             0 if size >= 8 => {
-                if out.cpu_count == out.cpus.len() { return Err(AcpiError::TooManyEntries); }
                 let flags = u32le(e, 4)?;
-                out.cpus[out.cpu_count] = CpuEntry { processor_uid: e[2] as u32, apic_id: e[3] as u32, enabled: flags & 3 != 0, x2apic: false };
-                out.cpu_count += 1;
+                if out.cpu_count == out.cpus.len() { out.cpu_overflow_count += 1; } else {
+                    out.cpus[out.cpu_count] = CpuEntry { processor_uid: e[2] as u32, apic_id: e[3] as u32, enabled: flags & 1 != 0, online_capable: flags & 2 != 0, x2apic: false };
+                    out.cpu_count += 1;
+                }
             }
             1 if size >= 12 => {
-                if out.io_apic_count == out.io_apics.len() { return Err(AcpiError::TooManyEntries); }
-                out.io_apics[out.io_apic_count] = IoApicEntry { id: e[2], address: u32le(e, 4)?, gsi_base: u32le(e, 8)? };
-                out.io_apic_count += 1;
+                if out.io_apic_count == out.io_apics.len() { out.io_apic_overflow_count += 1; } else {
+                    out.io_apics[out.io_apic_count] = IoApicEntry { id: e[2], address: u32le(e, 4)?, gsi_base: u32le(e, 8)? };
+                    out.io_apic_count += 1;
+                }
             }
             2 if size >= 10 => {
                 if out.irq_override_count == out.irq_overrides.len() { return Err(AcpiError::TooManyEntries); }
@@ -266,32 +277,28 @@ pub fn parse_madt(bytes: &[u8]) -> Result<MadtInfo, AcpiError> {
             }
             5 if size >= 12 => out.local_apic_address = u64::from_le_bytes([e[4],e[5],e[6],e[7],e[8],e[9],e[10],e[11]]),
             9 if size >= 16 => {
-                if out.cpu_count == out.cpus.len() { return Err(AcpiError::TooManyEntries); }
                 let flags = u32le(e, 8)?;
-                out.cpus[out.cpu_count] = CpuEntry { processor_uid: u32le(e, 12)?, apic_id: u32le(e, 4)?, enabled: flags & 3 != 0, x2apic: true };
-                out.cpu_count += 1;
+                if out.cpu_count == out.cpus.len() { out.cpu_overflow_count += 1; } else {
+                    out.cpus[out.cpu_count] = CpuEntry { processor_uid: u32le(e, 12)?, apic_id: u32le(e, 4)?, enabled: flags & 1 != 0, online_capable: flags & 2 != 0, x2apic: true };
+                    out.cpu_count += 1;
+                }
             }
             // The Multiprocessor Wakeup MADT entry is a revision-6
             // extension (ACPI 6.4+). ACPI 5.x firmware may use the same
             // numeric type for an OEM/reserved purpose, so leave it opaque.
             16 if out.revision >= 6 => {
-                if size != 16 { return Err(AcpiError::MalformedEntry); }
-                let version = u16::from_le_bytes([e[2], e[3]]);
-                if e[4..8].iter().any(|byte| *byte != 0) {
-                    return Err(AcpiError::MalformedEntry);
-                }
-                // Version zero is the mailbox layout defined by ACPI 6.4.
-                // Unknown future mailbox versions are safely ignored rather
-                // than misinterpreted using the version-zero layout.
-                if version == 0 {
-                    let address = u64::from_le_bytes(
-                        e[8..16].try_into().map_err(|_| AcpiError::Truncated)?
-                    );
-                    // The mailbox is a firmware-reserved 4 KiB ACPI NVS page.
-                    if address == 0 || address & 0xfff != 0 || out.wakeup_mailbox.is_some() {
-                        return Err(AcpiError::MalformedEntry);
-                    }
-                    out.wakeup_mailbox = Some(MadtWakeupMailbox { version, address });
+                // This optional extension must never make an otherwise usable
+                // MADT unusable. Ignore malformed/unsupported mailbox records.
+                if size != 16 { out.ignored_wakeup_mailbox_count += 1; } else {
+                    let version = u16::from_le_bytes([e[2], e[3]]);
+                    let reserved_zero = e[4..8].iter().all(|byte| *byte == 0);
+                    if version == 0 && reserved_zero {
+                        let address = u64::from_le_bytes(e[8..16].try_into().map_err(|_| AcpiError::Truncated)?);
+                        // ACPI requires a nonzero, 4 KiB-aligned NVS mailbox.
+                        if address != 0 && address & 0xfff == 0 && out.wakeup_mailbox.is_none() {
+                            out.wakeup_mailbox = Some(MadtWakeupMailbox { version, address });
+                        } else { out.ignored_wakeup_mailbox_count += 1; }
+                    } else { out.ignored_wakeup_mailbox_count += 1; }
                 }
             }
             10 if size >= 12 => {
@@ -730,12 +737,17 @@ pub fn parse_facs(bytes:&[u8])->Result<FacsInfo,AcpiError>{
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct AcpiGas { pub address_space_id:u8,pub bit_width:u8,pub bit_offset:u8,pub access_size:u8,pub address:u64 }
-fn parse_optional_gas(bytes:&[u8],offset:usize)->Result<Option<AcpiGas>,AcpiError>{
+fn parse_optional_gas(bytes:&[u8],offset:usize,malformed_count:&mut u8)->Result<Option<AcpiGas>,AcpiError>{
     let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;
-    // ACPI defines a zero GAS address as an absent optional register. Firmware
-    // may leave the other descriptor bytes populated, so testing all 12 bytes
-    // for zero incorrectly rejects otherwise valid FADTs.
-    if s[4..12].iter().all(|byte|*byte==0){Ok(None)}else{Ok(Some(parse_gas(bytes,offset)?))}
+    // A zero address denotes an absent optional register even when firmware
+    // leaves descriptor metadata populated. A malformed optional GAS must not
+    // invalidate the mandatory FADT/DSDT path; count it and leave it absent.
+    if s[4..12].iter().all(|byte|*byte==0){return Ok(None)}
+    match parse_gas(bytes,offset){
+        Ok(gas)=>Ok(Some(gas)),
+        Err(AcpiError::MalformedEntry)=>{*malformed_count=malformed_count.saturating_add(1);Ok(None)},
+        Err(error)=>Err(error),
+    }
 }
 fn parse_gas(bytes:&[u8],offset:usize)->Result<AcpiGas,AcpiError>{
     let s=bytes.get(offset..offset.checked_add(12).ok_or(AcpiError::BadLength)?).ok_or(AcpiError::Truncated)?;
@@ -747,10 +759,11 @@ fn parse_gas(bytes:&[u8],offset:usize)->Result<AcpiGas,AcpiError>{
     Ok(gas)
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub struct HpetInfo { pub event_timer_block_id:u32,pub base:AcpiGas,pub sequence_number:u8,pub minimum_tick:u16,pub page_protection:u8 }
+pub struct HpetInfo { pub event_timer_block_id:u32,pub oem_attributes:u16,pub base:AcpiGas,pub sequence_number:u8,pub minimum_tick:u16,pub page_protection:u8 }
 pub fn parse_hpet(bytes:&[u8])->Result<HpetInfo,AcpiError>{
     let h=validate_sdt(bytes,Some(*b"HPET"))?;if h.length<56{return Err(AcpiError::BadLength)} let base=parse_gas(bytes,40)?;let page_protection=bytes[55];if page_protection>2{return Err(AcpiError::MalformedEntry)}
-    Ok(HpetInfo{event_timer_block_id:u32le(bytes,36)?,base,sequence_number:bytes[52],minimum_tick:u16::from_le_bytes([bytes[53],bytes[54]]),page_protection})
+    let block_id=u32le(bytes,36)?;
+    Ok(HpetInfo{event_timer_block_id:block_id&0x0000_ffff,oem_attributes:(block_id>>16) as u16,base,sequence_number:bytes[52],minimum_tick:u16::from_le_bytes([bytes[53],bytes[54]]),page_protection})
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct BgrtInfo { pub version:u16,pub status:u8,pub image_type:u8,pub image_address:u64,pub offset_x:u32,pub offset_y:u32 }
@@ -1483,9 +1496,13 @@ mod acpi_5_6_revision_tests {
         assert_eq!(parse_madt(&table).unwrap().wakeup_mailbox,Some(MadtWakeupMailbox{version:0,address:0x1000}));
 
         table[48]=1;checksum(&mut table);
-        assert_eq!(parse_madt(&table),Err(AcpiError::MalformedEntry));
+        let reserved_bad=parse_madt(&table).unwrap();
+        assert_eq!(reserved_bad.wakeup_mailbox,None);
+        assert_eq!(reserved_bad.ignored_wakeup_mailbox_count,1);
         table[48]=0;table[52]=1;checksum(&mut table);
-        assert_eq!(parse_madt(&table),Err(AcpiError::MalformedEntry));
+        let alignment_bad=parse_madt(&table).unwrap();
+        assert_eq!(alignment_bad.wakeup_mailbox,None);
+        assert_eq!(alignment_bad.ignored_wakeup_mailbox_count,1);
     }
 
     #[test]
@@ -1497,6 +1514,61 @@ mod acpi_5_6_revision_tests {
         madt[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
         madt[44..50].copy_from_slice(&[4,6,0,0x02,0,1]);checksum(&mut madt);
         assert_eq!(parse_madt(&madt),Err(AcpiError::MalformedEntry));
+    }
+
+    #[test]
+    fn online_capable_processors_are_not_marked_enabled(){
+        let mut table=header(*b"APIC",68,6);
+        table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
+        table[44..52].copy_from_slice(&[0,8,7,1,2,0,0,0]);
+        table[52..68].copy_from_slice(&[9,16,0,0,0,0,0,0,2,0,0,0,9,0,0,0]);
+        checksum(&mut table);
+        let parsed=parse_madt(&table).unwrap();
+        assert_eq!(parsed.cpu_count,2);
+        assert!(!parsed.cpus[0].enabled);
+        assert!(parsed.cpus[0].online_capable);
+        assert!(!parsed.cpus[1].enabled);
+        assert!(parsed.cpus[1].online_capable);
+    }
+
+    #[test]
+    fn madt_capacity_overflow_is_counted_without_failing(){
+        let length=44+257*8+33*12;
+        let mut table=header(*b"APIC",length,6);
+        table[36..40].copy_from_slice(&0xfee00000u32.to_le_bytes());
+        let mut offset=44;
+        for cpu in 0..257u32{
+            table[offset..offset+8].copy_from_slice(&[0,8,(cpu&0xff) as u8,0,1,0,0,0]);
+            offset+=8;
+        }
+        for apic in 0..33u32{
+            table[offset..offset+12].copy_from_slice(&[1,12,apic as u8,0,0,0,0,0,0,0,0,0]);
+            offset+=12;
+        }
+        checksum(&mut table);
+        let parsed=parse_madt(&table).unwrap();
+        assert_eq!(parsed.cpu_count,256);
+        assert_eq!(parsed.cpu_overflow_count,1);
+        assert_eq!(parsed.io_apic_count,32);
+        assert_eq!(parsed.io_apic_overflow_count,1);
+    }
+
+    #[test]
+    fn malformed_optional_fadt_gas_is_counted_and_ignored(){
+        let mut table=header(*b"FACP",148,6);
+        table[40..44].copy_from_slice(&0x1234u32.to_le_bytes());
+        table[48..52].copy_from_slice(&0xb2u32.to_le_bytes());
+        table[52]=0xa1;table[53]=0xa0;
+        table[116]=0xff;table[117]=8;table[119]=1;
+        table[120..128].copy_from_slice(&0x1234u64.to_le_bytes());
+        checksum(&mut table);
+        let parsed=parse_fadt(&table).unwrap();
+        assert_eq!(parsed.smi_command_port,0xb2);
+        assert_eq!(parsed.acpi_enable,0xa1);
+        assert_eq!(parsed.acpi_disable,0xa0);
+        assert_eq!(parsed.reset_register,None);
+        assert_eq!(parsed.malformed_optional_register_count,1);
+        assert_eq!(parsed.effective_dsdt(),0x1234);
     }
 }
 
@@ -1821,7 +1893,7 @@ mod remaining_firmware_table_tests {
  fn finish(b:&mut [u8]){b[9]=0;b[9]=0u8.wrapping_sub(b.iter().fold(0u8,|a,v|a.wrapping_add(*v)));}
  fn sdt(sig:[u8;4],n:usize)->std::vec::Vec<u8>{let mut b=std::vec![0u8;n];b[..4].copy_from_slice(&sig);b[4..8].copy_from_slice(&(n as u32).to_le_bytes());b[8]=1;b}
  #[test] fn validates_facs_without_applying_sdt_checksum(){let mut b=[0u8;64];b[..4].copy_from_slice(b"FACS");b[4..8].copy_from_slice(&64u32.to_le_bytes());b[32]=2;let f=parse_facs(&b).unwrap();assert_eq!(f.length,64);assert_eq!(f.version,2);assert_eq!(parse_facs(&b[..40]),Err(AcpiError::BadLength));}
- #[test] fn validates_hpet_gas_and_page_protection(){let mut b=sdt(*b"HPET",56);b[41]=64;b[44..52].copy_from_slice(&0xfed0_0000u64.to_le_bytes());finish(&mut b);let h=parse_hpet(&b).unwrap();assert_eq!(h.base.address,0xfed0_0000);b[55]=3;finish(&mut b);assert_eq!(parse_hpet(&b),Err(AcpiError::MalformedEntry));}
+ #[test] fn validates_hpet_gas_and_page_protection(){let mut b=sdt(*b"HPET",56);b[36..40].copy_from_slice(&0xabcd_1234u32.to_le_bytes());b[41]=64;b[44..52].copy_from_slice(&0xfed0_0000u64.to_le_bytes());finish(&mut b);let h=parse_hpet(&b).unwrap();assert_eq!(h.base.address,0xfed0_0000);assert_eq!(h.event_timer_block_id,0x1234);assert_eq!(h.oem_attributes,0xabcd);b[55]=3;finish(&mut b);assert_eq!(parse_hpet(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_bgrt_version_status_and_image_address(){let mut b=sdt(*b"BGRT",56);b[36..38].copy_from_slice(&1u16.to_le_bytes());b[38]=1;b[40..48].copy_from_slice(&0x1000u64.to_le_bytes());finish(&mut b);assert_eq!(parse_bgrt(&b).unwrap().image_address,0x1000);b[40..48].fill(0);finish(&mut b);assert_eq!(parse_bgrt(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_gtdt_fixed_fields_and_timer_offset(){let mut b=sdt(*b"GTDT",100);b[88..92].copy_from_slice(&1u32.to_le_bytes());b[92..96].copy_from_slice(&96u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b).unwrap().platform_timer_count,1);b[92..96].copy_from_slice(&95u32.to_le_bytes());finish(&mut b);assert_eq!(parse_gtdt(&b),Err(AcpiError::MalformedEntry));}
  #[test] fn validates_pptt_variable_node_bounds(){let mut b=sdt(*b"PPTT",40);b[36]=0;b[37]=4;finish(&mut b);assert!(validate_pptt(&b).is_ok());b[37]=8;finish(&mut b);assert_eq!(validate_pptt(&b),Err(AcpiError::MalformedEntry));}
