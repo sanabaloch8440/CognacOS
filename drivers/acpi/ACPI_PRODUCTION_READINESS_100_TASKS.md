@@ -60,13 +60,12 @@ passed the library, native WDM driver type-check, kernel dispatcher type-check,
 and firmware/AML regression stages. UEFI/QEMU boot remains a separate gate.
 31. [ ] Implement Reference, DerefOf, RefOf, Index, CondRefOf, and reference lifetime semantics.
 
-Task 31 implementation progress (2026-11-04, PR branch `acpi-task-31-reference-semantics`; not yet checked):
-- Added explicit RefOf(Local/Arg) support by promoting the referenced frame slot into bounded arena storage. The method executor invalidates those frame-owned cells on every normal or error exit; runtime validation and dereference reject the retired cells rather than resolving stale handles.
-- DerefOf now reads a raw Local/Arg reference before dereferencing, rather than prematurely resolving it as an ordinary TermArg.
-- Added zero-based Index execution for Package elements and Buffer bytes. The target receives a typed reference and subsequent Store/DerefOf operations use the existing reference-store path.
-- Added CondRefOf handling for existing Name/Device objects and dynamic BufferFields, returning false for an absent namespace path.
-- Extended parser term validation for RefOf and CondRefOf and added executor regressions for Local references, expired-frame rejection, Package Index, and present/missing CondRefOf.
-- Additional regressions now cover Buffer-byte Index and a nested method receiving a reference to its caller's Local slot. Remaining before task 31 can be checked: owner-tagged namespace-reference invalidation across DefinitionBlock unload/reload; complete SuperName/namespace-object coverage (including OperationRegion Fields and method references); failure-injection coverage; run the focused AML, driver type-check, kernel dispatcher, and QEMU gates. Frame-temporary reference roots are bounded to 128 per invocation and fail closed when exhausted. Retired IDs are tombstoned rather than reused to prevent ABA/stale-handle aliasing; because the shared arena has 768 slots, generation-tagged safe reclamation remains a production blocker.
+Task 31 implementation progress (2026-11-04, follow-up branch `acpi-task31-34-reference-events`; not checked):
+- Existing RefOf(Local/Arg), DerefOf, Package/Buffer Index, and CondRefOf behavior remains in place, including frame-owned temporary retirement and nested caller-frame references.
+- RefOf now preserves generation-tagged namespace identity for OperationRegion Field and Method objects, rather than rejecting those SuperName targets. New regressions cover both object classes.
+- Namespace compaction now invalidates every generation-tagged namespace reference and clears all index-keyed Name bindings before node indices are rewritten. This closes the stale-reference-to-shifted-survivor alias case and forces surviving Name objects to be rebound at their new indices.
+- Added failure-injection coverage proving RefOf frame promotion fails without changing arena count when the arena is exhausted.
+- Still not complete: dereferencing/storing an OperationRegion Field reference requires the guarded OperationRegion/Field access providers in tasks 36–37; generation-aware arena reclamation and removal of the bounded 128 frame-root/768-value budgets remain production work. Task 31 remains unchecked until the remaining semantics, focused AML/driver/kernel tests, and final runtime gates are verified.
 
 32. [x] Evaluate Package/VarPackage elements including dynamic counts.
 
@@ -86,6 +85,12 @@ Task 33 implementation progress (PR branch `acpi-task33-explicit-mutex`; not che
 - The native ACPI driver now implements the explicit-mutex provider using the existing per-namespace-node KMUTEX table and kernel dispatcher waits. Finite AML milliseconds are converted to negative 100-ns relative intervals; `0xFFFF` is passed as an infinite wait; `STATUS_TIMEOUT` maps to Acquire Ones, and successful/abandoned acquisition maps to Zero. The existing per-method serialized mutex path remains separate but shares the same provider/table.
 - Remaining before completion: verify this driver integration with the actual ACPI library tests and native driver/kernel type-checks; add/confirm failure-path ownership and recursive acquisition behavior against the kernel mutant implementation. Cross-thread contention, scheduler wakeup, and teardown remain final QEMU verification gates.
 34. [ ] Implement Event signal/wait semantics and safe kernel wakeup integration.
+
+Task 34 implementation progress (2026-11-04, follow-up branch `acpi-task31-34-reference-events`; not checked):
+- AML Event objects are already represented in the namespace; parser term validation now accepts SignalOp (0x5B24), WaitOp (0x5B25), and ResetOp (0x5B26) with bounded operands.
+- The interpreter executes Signal/Reset statements and Wait as a TermArg, returning Zero when signalled and Ones on timeout. The AML 0xFFFF timeout is preserved as infinite; finite values are passed in milliseconds.
+- Extended the method-synchronizer contract with event signal/reset/wait operations. The native ACPI driver backs namespace Event objects with real x64 KEVENT headers, initializes them as synchronization events, and calls the existing Windows-compatible KeSetEvent/KeResetEvent/KeWaitForSingleObject kernel routines. No event wait or AML execution is performed in the SCI interrupt path.
+- Added a mocked executor regression for signal → successful wait, reset → timeout, and infinite-timeout propagation. These tests are evidence only after the ACPI workflow passes; Task 34's real scheduler wakeup, contention, table teardown, and QEMU verification remain deferred to the final boot campaign.
 35. [ ] Implement FACS-backed AML Global Lock acquisition/release.
 36. [ ] Implement guarded OperationRegion handlers for SystemMemory, SystemIO, PCI_Config, EC, SMBus, CMOS, and supported serial buses.
 37. [ ] Implement Field width/alignment, LockRule, UpdateRule, bank selection, and access attributes.
