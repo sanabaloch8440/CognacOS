@@ -47,35 +47,30 @@ pub(crate) unsafe extern "win64" fn IoPnPRegisterBusFdo(
     // Acquire the object reference before entering the registry spin lock.
     let referenced = unsafe { crate::io::io_reference_device_object(device) };
     if referenced.is_null() { return BUS_REGISTRY_STATUS_DEVICE_BUSY; }
-    let result = {
+    let (result, retained) = {
         let mut buses = PNP_BUS_OBJECTS.lock();
         if let Some(existing) = buses.iter().find(|entry|
             entry.device != 0 && entry.enumerator_id == enumerator_id
                 && entry.identity_hash == identity_hash)
         {
-            if existing.device == device as usize { BUS_REGISTRY_STATUS_SUCCESS }
-            else { BUS_REGISTRY_STATUS_DEVICE_BUSY }
+            if existing.device == device as usize {
+                (BUS_REGISTRY_STATUS_SUCCESS, false)
+            } else {
+                (BUS_REGISTRY_STATUS_DEVICE_BUSY, false)
+            }
         } else if let Some(slot) = buses.iter_mut().find(|entry| entry.device == 0) {
             *slot = RegisteredBusObject { enumerator_id, identity_hash, device: device as usize };
-            BUS_REGISTRY_STATUS_SUCCESS
+            (BUS_REGISTRY_STATUS_SUCCESS, true)
         } else {
-            BUS_REGISTRY_STATUS_INSUFFICIENT_RESOURCES
+            (BUS_REGISTRY_STATUS_INSUFFICIENT_RESOURCES, false)
         }
     };
-    // Duplicate idempotent registration already has its own retained
-    // reference; all other failed registrations must release this candidate.
-    if result != BUS_REGISTRY_STATUS_SUCCESS
-        || bus_registration_is_duplicate(enumerator_id, identity_hash, device)
-    {
+    // The newly published entry owns this reference. Idempotent registration
+    // and every failure release only the candidate reference acquired above.
+    if !retained {
         unsafe { crate::io::io_dereference_device_object(referenced); }
     }
     result
-}
-
-fn bus_registration_is_duplicate(enumerator_id: u32, identity_hash: u64, device: *mut crate::io::DeviceObject) -> bool {
-    let buses = PNP_BUS_OBJECTS.lock();
-    buses.iter().any(|entry| entry.enumerator_id == enumerator_id
-        && entry.identity_hash == identity_hash && entry.device == device as usize)
 }
 
 /// Return a separately referenced bus FDO. The caller must release the
