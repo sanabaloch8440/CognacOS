@@ -508,6 +508,30 @@ pub fn resolve_requester_path(segment:u16,root_bus:u8,endpoint_bus:u8,
 }
 
 #[cfg(test)]
+mod full_depth_path_tests {
+    use super::*;
+    #[test]
+    fn resolves_maximum_255_bridge_chain() {
+        let mut bridges = [PciBridgeRange::default(); 255];
+        for (index, bridge) in bridges.iter_mut().enumerate() {
+            let bus = index as u8;
+            *bridge = PciBridgeRange {
+                segment: 0,
+                primary_bus: bus,
+                secondary_bus: bus.wrapping_add(1),
+                subordinate_bus: u8::MAX,
+                device: 1,
+                function: 0,
+            };
+        }
+        let path = resolve_requester_path(0, 0, 255, 2, 0, &bridges).unwrap();
+        assert_eq!(path.path_count, 256);
+        assert_eq!(path.path[0], PciPathElement { device: 1, function: 0 });
+        assert_eq!(path.path[255], PciPathElement { device: 2, function: 0 });
+    }
+}
+
+#[cfg(test)]
 mod requester_topology_tests {
     use super::*;
     #[test]
