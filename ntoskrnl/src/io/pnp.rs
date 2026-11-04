@@ -279,7 +279,7 @@ pub fn xhci_resources()->Option<XhciPciResources> {
                 // The kernel stores at most eight bridge hops. Keep the remaining
                 // ABI slots zeroed and reject corrupted counts rather than reading past storage.
                 for i in 0..8 {let v=d.path_devfn[i].load(Ordering::Relaxed);p[i]=cognacos_pci::PciPathElement{device:(v>>3) as u8,function:(v&7) as u8};}p},
-            path_count:d.path_count.load(Ordering::Relaxed).min(8),
+            path_count:d.path_count.load(Ordering::Relaxed).min(8) as u16,
         }})
 }
 
