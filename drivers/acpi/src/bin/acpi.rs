@@ -1397,7 +1397,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         let suppress_pci_roots = acpi::aml_osi::platform_quirk_policy().is_some_and(|policy|
             policy.flags.contains(acpi::quirks::QuirkFlags::DISABLE_ACPI_PCI_ENUMERATION));
         if suppress_pci_roots && record.identity.has_hid
-            && matches!(record.identity.hid.as_bytes(), b"PNP0A03" | b"PNP0A08") {
+            && (record.identity.hid.as_bytes() == b"PNP0A03" || record.identity.hid.as_bytes() == b"PNP0A08") {
             continue;
         }
         let status=record.identity.sta;
