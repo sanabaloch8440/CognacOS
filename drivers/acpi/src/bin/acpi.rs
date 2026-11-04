@@ -1759,7 +1759,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
         return STATUS_INVALID_PARAMETER;
     }
     let request = unsafe { *request };
-    if request.reserved != 0 || request.device >= 32 || request.function >= 8
+    if request.device >= 32 || request.function >= 8
         || !(1..=4).contains(&request.pin) || request.bridge_count as usize > request.bridges.len() {
         return STATUS_INVALID_PARAMETER;
     }
