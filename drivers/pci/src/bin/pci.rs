@@ -4,13 +4,14 @@
 use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_pci::EcamWindowExt;
-use cognacos_hal_contract::PciInterruptHalServices;
+use cognacos_hal_contract::{PciInterruptHalServices, PciHostBridgeResourceSet};
 use cognacos_nt_abi::{bus::{
     BUS_INTERFACE_STANDARD, BUS_INTERFACE_STANDARD_VERSION, GUID_BUS_INTERFACE_STANDARD,
     PCI_WHICHSPACE_CONFIG, PCI_BUS_INTERFACE, INTERFACE_HEADER, PCI_BUS_INTERFACE_VERSION,
     PCI_DRIVER_HANDOFF, PCI_DRIVER_HANDOFF_MAGIC, PCI_DRIVER_HANDOFF_VERSION,
     PCI_DRIVER_HANDOFF_MAX_WINDOWS, PCI_DEVICE_INFORMATION, PCI_XHCI_INFORMATION,
     ACPI_FIRMWARE_INTERFACE_V4, ACPI_PCI_INTERRUPT_ROUTE, ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3,
+    ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE,
     PCI_INTERRUPT_INTERFACE, PCI_INTERRUPT_INTERFACE_VERSION, PCI_INTERRUPT_ISR,
     PCI_INTERRUPT_DPC,
 }, io::{DEVICE_OBJECT, DRIVER_OBJECT, IRP, IO_STACK_LOCATION}, ntstatus::*, types::PVOID};
@@ -245,6 +246,8 @@ struct PciState {
     xhci_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
     pdos: UnsafeCell<[*mut DEVICE_OBJECT; MAX_PCI_PDOS]>,
     pdo_count: AtomicUsize,
+    host_bridge_resources: UnsafeCell<[PciHostBridgeResourceSet; MAX_WINDOWS]>,
+    host_bridge_resource_count: AtomicUsize,
 }
 unsafe impl Sync for PciState {}
 static HANDOFF: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -264,6 +267,8 @@ static STATE: PciState = PciState {
     xhci_counts: UnsafeCell::new([0; MAX_WINDOWS]),
     pdos: UnsafeCell::new([core::ptr::null_mut(); MAX_PCI_PDOS]),
     pdo_count: AtomicUsize::new(0),
+    host_bridge_resources: UnsafeCell::new([const { PciHostBridgeResourceSet::empty(0, 0, 0) }; MAX_WINDOWS]),
+    host_bridge_resource_count: AtomicUsize::new(0),
 };
 static DRIVER_OBJECT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static PDO_BUSY: AtomicBool = AtomicBool::new(false);
@@ -602,6 +607,166 @@ unsafe fn query_acpi_pci_interrupt_route(
         IoPnPDereferenceBusFdo(acpi_bus);
     }
     status
+}
+
+#[repr(C)]
+struct AcpiDeviceRelations { count: u32, objects: [*mut DEVICE_OBJECT; 64] }
+
+/// Query one ACPI root PDO through its WDM IRP_MN_QUERY_INTERFACE contract.
+/// The root PDO, not the ACPI bus FDO, is the provider for _CRS windows.
+unsafe fn query_acpi_root_pdo_resources(
+    pdo: *mut DEVICE_OBJECT,
+    output: &mut PciHostBridgeResourceSet,
+) -> i32 {
+    if pdo.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut interface = core::mem::MaybeUninit::<ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE>::zeroed();
+    let irp = unsafe { IoAllocateIrp((*pdo).stack_size as i8, 0) };
+    if irp.is_null() { return STATUS_INSUFFICIENT_RESOURCES; }
+    let status = (|| {
+        let current = unsafe { (*irp).tail[8] as *mut IO_STACK_LOCATION };
+        if current.is_null() { return STATUS_INVALID_PARAMETER; }
+        let next = unsafe { current.sub(1) };
+        unsafe {
+            (*next).major_function = IRP_MJ_PNP as u8;
+            (*next).minor_function = IRP_MN_QUERY_INTERFACE;
+            let parameters = (*next).parameters.as_mut_ptr();
+            core::ptr::write_unaligned(parameters.cast::<*const cognacos_nt_abi::bus::GUID>(),
+                &cognacos_nt_abi::bus::GUID_ACPI_PCI_HOST_BRIDGE_RESOURCES);
+            core::ptr::write_unaligned(parameters.add(8).cast::<u16>(),
+                core::mem::size_of::<ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE>() as u16);
+            core::ptr::write_unaligned(parameters.add(10).cast::<u16>(),
+                cognacos_nt_abi::bus::ACPI_PCI_HOST_BRIDGE_RESOURCES_VERSION as u16);
+            core::ptr::write_unaligned(parameters.add(16).cast::<PVOID>(), interface.as_mut_ptr().cast());
+            (*irp).io_status.status.status = STATUS_NOT_SUPPORTED;
+            (*irp).io_status.information = 0;
+        }
+        let call_status = unsafe { IoCallDriver(pdo, irp) };
+        let io_status = unsafe { (*irp).io_status.status.status };
+        let result = if call_status == STATUS_SUCCESS { io_status }
+            else if call_status == STATUS_PENDING { STATUS_INVALID_DEVICE_STATE }
+            else { call_status };
+        unsafe { IoCompleteRequest(irp, 0); }
+        if result != STATUS_SUCCESS { return result; }
+
+        let table = unsafe { interface.assume_init_ref() };
+        if table.header.version as u32 != cognacos_nt_abi::bus::ACPI_PCI_HOST_BRIDGE_RESOURCES_VERSION
+            || (table.header.size as usize) < core::mem::size_of::<ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE>()
+            || table.query_resources.is_none()
+            || table.header.interface_dereference.is_none() {
+            if let Some(deref) = table.header.interface_dereference {
+                unsafe { deref(table.header.context); }
+            }
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+        let query = table.query_resources.unwrap();
+        let dereference = table.header.interface_dereference.unwrap();
+        let query_status = unsafe { query(table.header.context, pdo.cast(), (output as *mut PciHostBridgeResourceSet).cast()) };
+        unsafe { dereference(table.header.context); }
+        query_status
+    })();
+    unsafe { IoFreeIrp(irp); }
+    status
+}
+
+/// Resolve exactly one ACPI root PDO whose _SEG/_BBN/_CRS covers this MCFG
+/// bus window. Ambiguous roots or incomplete resource publication are fatal.
+unsafe fn query_acpi_host_bridge_for_window(
+    window: &pci::EcamWindow,
+    output: &mut PciHostBridgeResourceSet,
+) -> i32 {
+    let mut acpi_bus = core::ptr::null_mut::<DEVICE_OBJECT>();
+    let lookup = unsafe { IoPnPReferenceBusFdo(
+        cognacos_nt_abi::bus::ACPI_BUS_ENUMERATOR_ID,
+        cognacos_nt_abi::bus::ACPI_BUS_IDENTITY_HASH,
+        &mut acpi_bus,
+    ) };
+    if lookup != STATUS_SUCCESS { return lookup; }
+    if acpi_bus.is_null() { return STATUS_NOT_FOUND; }
+
+    let irp = unsafe { IoAllocateIrp((*acpi_bus).stack_size as i8, 0) };
+    if irp.is_null() {
+        unsafe { IoPnPDereferenceBusFdo(acpi_bus); }
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    let relations_status = (|| {
+        let current = unsafe { (*irp).tail[8] as *mut IO_STACK_LOCATION };
+        if current.is_null() { return STATUS_INVALID_PARAMETER; }
+        let next = unsafe { current.sub(1) };
+        unsafe {
+            (*next).major_function = IRP_MJ_PNP as u8;
+            (*next).minor_function = IRP_MN_QUERY_DEVICE_RELATIONS;
+            core::ptr::write_unaligned((*next).parameters.as_mut_ptr().cast::<u32>(), BUS_RELATIONS);
+            (*irp).io_status.status.status = STATUS_NOT_SUPPORTED;
+            (*irp).io_status.information = 0;
+        }
+        let call_status = unsafe { IoCallDriver(acpi_bus, irp) };
+        let io_status = unsafe { (*irp).io_status.status.status };
+        let status = if call_status == STATUS_SUCCESS { io_status }
+            else if call_status == STATUS_PENDING { STATUS_INVALID_DEVICE_STATE }
+            else { call_status };
+        if status != STATUS_SUCCESS { return status; }
+        let relations = unsafe { (*irp).io_status.information as *const AcpiDeviceRelations };
+        if relations.is_null() { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+        let count = unsafe { (*relations).count as usize };
+        if count > 64 { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+        let mut matches = 0usize;
+        let mut selected = PciHostBridgeResourceSet::empty(window.segment, window.bus_start, window.bus_end);
+        for index in 0..count {
+            let pdo = unsafe { (*relations).objects[index] };
+            if pdo.is_null() { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+            let mut candidate = PciHostBridgeResourceSet::empty(window.segment, window.bus_start, window.bus_end);
+            let query = unsafe { query_acpi_root_pdo_resources(pdo, &mut candidate) };
+            if query == STATUS_NOT_SUPPORTED || query == STATUS_INVALID_PARAMETER { continue; }
+            if query != STATUS_SUCCESS { return query; }
+            if !candidate.compatible() { return STATUS_DEVICE_CONFIGURATION_ERROR; }
+            if candidate.segment == window.segment
+                && candidate.bus_start <= window.bus_start
+                && candidate.bus_end >= window.bus_end {
+                matches += 1;
+                selected = candidate;
+            }
+        }
+        if matches != 1 { return if matches == 0 { STATUS_NOT_FOUND } else { STATUS_DEVICE_CONFIGURATION_ERROR }; }
+        *output = selected;
+        STATUS_SUCCESS
+    })();
+    unsafe {
+        IoCompleteRequest(irp, 0);
+        IoFreeIrp(irp);
+        IoPnPDereferenceBusFdo(acpi_bus);
+    }
+    relations_status
+}
+
+/// PCI root-FDO initialization consumes ACPI root-PDO resource interfaces
+/// before it publishes PCI children. MCFG is only config-space reachability;
+/// the ACPI _CRS resource set is retained separately for aperture arbitration.
+unsafe fn acquire_acpi_host_bridge_resources() -> i32 {
+    let address = HANDOFF.load(Ordering::Acquire);
+    if address == 0 { return STATUS_DEVICE_NOT_READY; }
+    let handoff = unsafe { &*(address as *const PciDriverHandoff) };
+    let mut staged = [const { PciHostBridgeResourceSet::empty(0, 0, 0) }; MAX_WINDOWS];
+    for index in 0..handoff.window_count as usize {
+        let status = unsafe { query_acpi_host_bridge_for_window(&handoff.windows[index], &mut staged[index]) };
+        if status != STATUS_SUCCESS { return status; }
+    }
+    unsafe { (*STATE.host_bridge_resources.get()) = staged; }
+    STATE.host_bridge_resource_count.store(handoff.window_count as usize, Ordering::Release);
+    STATUS_SUCCESS
+}
+
+/// Stable read-only accessor used by PCI's host-window allocator. The caller
+/// receives a complete copy and must still apply protected-RAM clipping.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciGetHostBridgeResources(
+    index: u32,
+    output: *mut PciHostBridgeResourceSet,
+) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    let count = STATE.host_bridge_resource_count.load(Ordering::Acquire);
+    if index as usize >= count { return STATUS_NOT_FOUND; }
+    unsafe { output.write((*STATE.host_bridge_resources.get())[index as usize]); }
+    STATUS_SUCCESS
 }
 
 fn hal_status_to_ntstatus(status: u32) -> i32 {
@@ -1296,6 +1461,10 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
 /// A failed creation rolls back only PDOs created by this invocation.
 unsafe fn query_bus_relations() -> Result<*const PciDeviceRelations, i32> {
     if !STATE.ready.load(Ordering::Acquire) { return Err(STATUS_DEVICE_NOT_READY); }
+    if STATE.host_bridge_resource_count.load(Ordering::Acquire) == 0 {
+        let status = unsafe { acquire_acpi_host_bridge_resources() };
+        if status != STATUS_SUCCESS { return Err(status); }
+    }
     if unsafe { CognacPciEnumerateInventory() } != STATUS_SUCCESS {
         return Err(STATUS_DEVICE_CONFIGURATION_ERROR);
     }
