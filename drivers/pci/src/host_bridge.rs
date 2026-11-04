@@ -176,7 +176,7 @@ mod tests {
             space: PCI_HOST_BRIDGE_WINDOW_MEMORY, attributes: 0,
             address_width: 1, reserved: 0,
             translation_offset: 0,
-            minimum: 0x8000_0000, maximum: 0x8fff_ffff,
+            minimum: 0x8000_0000, maximum: 0x8fff_f000,
             alignment: 0x0fff, length: 0x1000,
         };
         set.count = 1;
@@ -262,7 +262,7 @@ mod tests {
 
         let mut resources = set();
         resources.windows[0].minimum = 0x8000_0000;
-        resources.windows[0].maximum = 0x80ff_ffff;
+        resources.windows[0].maximum = 0x8000_0000;
         resources.windows[0].length = 0x0100_0000;
         let protected = [E820Range { start: 0x8000_0000, length: 0x0080_0000 }];
         let mut request = EndpointRequest::EMPTY;
