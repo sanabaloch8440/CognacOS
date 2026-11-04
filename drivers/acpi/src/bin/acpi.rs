@@ -17,6 +17,7 @@
 
 use core::{cell::{Cell, UnsafeCell}, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU8, Ordering}};
 use cognacos_acpi as acpi;
+use acpi::aml_tables::AmlExecutionGate;
 use cognacos_hal_contract::AcpiSciHalServices;
 use cognacos_nt_abi::{bus::{
     ACPI_FIRMWARE_INTERFACE, ACPI_FIRMWARE_INTERFACE_V2, ACPI_FIRMWARE_INTERFACE_V3,
