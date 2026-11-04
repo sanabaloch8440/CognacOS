@@ -147,6 +147,9 @@ pub mod bus {
         pub query_resources: PACPI_QUERY_HOST_BRIDGE_RESOURCES,
     }
 
+    const _: () = assert!(core::mem::size_of::<ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE>() == 0x28);
+    const _: () = assert!(core::mem::offset_of!(ACPI_PCI_HOST_BRIDGE_RESOURCES_INTERFACE, query_resources) == 0x20);
+
     pub const GUID_ACPI_FIRMWARE_INTERFACE: GUID = GUID {
         data1: 0x7b7a_2a01, data2: 0x5d31, data3: 0x4f18,
         data4: [0x91, 0x62, 0x43, 0x4f, 0x47, 0x4e, 0x41, 0x43],
