@@ -188,6 +188,12 @@ unsafe fn delete_pdo(pdo: *mut DEVICE_OBJECT) {
     if pdo.is_null() { return; }
     let extension = unsafe { (*pdo).device_extension.cast::<PciPdoExtension>() };
     if !extension.is_null() && unsafe { (*extension).magic == PCI_PDO_EXTENSION_MAGIC } {
+        if unsafe { release_pci_interrupt(extension) } != STATUS_SUCCESS {
+            // Never free a PDO extension while a registered ISR/DPC can still
+            // reference it. PnP STOP/REMOVE reports the failure to the manager;
+            // this fallback keeps unload from creating a use-after-free.
+            return;
+        }
         unsafe {
             if !(*extension).raw_resources.is_null() { ExFreePoolWithTag((*extension).raw_resources, PCI_REQUIREMENTS_POOL_TAG); }
             if !(*extension).translated_resources.is_null() { ExFreePoolWithTag((*extension).translated_resources, PCI_REQUIREMENTS_POOL_TAG); }
@@ -195,7 +201,6 @@ unsafe fn delete_pdo(pdo: *mut DEVICE_OBJECT) {
             (*extension).translated_resources = core::ptr::null_mut();
             (*extension).raw_resources_size = 0;
             (*extension).translated_resources_size = 0;
-            let _ = release_pci_interrupt(extension);
             (*extension).magic = 0;
         }
     }
@@ -579,7 +584,6 @@ fn hal_status_to_ntstatus(status: u32) -> i32 {
 }
 
 unsafe fn configure_pci_intx_masked(
-    device: *mut DEVICE_OBJECT,
     extension: *mut PciPdoExtension,
     function: pci::PciFunction,
     window: &pci::EcamWindow,
@@ -639,7 +643,6 @@ unsafe fn configure_pci_intx_masked(
         (*extension).interrupt_context = 0;
         (*extension).interrupt_hal = hal;
     }
-    let _ = device;
     STATUS_SUCCESS
 }
 
@@ -946,7 +949,7 @@ unsafe fn start_pci_device(
         }
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    let interrupt_status = unsafe { configure_pci_intx_masked(device, extension, function, window) };
+    let interrupt_status = unsafe { configure_pci_intx_masked(extension, function, window) };
     if interrupt_status != STATUS_SUCCESS {
         let _ = unsafe { release_pci_interrupt(extension) };
         unsafe {
