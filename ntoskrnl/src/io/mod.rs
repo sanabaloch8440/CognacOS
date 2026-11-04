@@ -1,5 +1,9 @@
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
-//! Entries describe export names/ordinals only; they are not all implemented APIs.
+//! Entries describe Windows 11 x64 export names/ordinals; they are not all implemented APIs.
+//! Source status tags: @implemented, @unimplemented, and @partial implementation.
+//! @implemented means the reviewed DDI contract is implemented; @unimplemented
+//! means no callable implementation exists; @partial implementation means the
+//! ABI entry exists but documented behavior is still incomplete.
 #[path = "resource_arbiter.rs"]
 pub(crate) mod resource_arbiter;
 #[path = "wdm_requirements.rs"]
@@ -144,8 +148,8 @@ pub const EXPORTS: &[(&str, u16)] = &[
     ("IoCompleteRequest", 864),
     ("IoCompletionObjectType", 865),
     ("IoComputeRedirectionTrustLevel", 866),
-    ("IoConnectInterrupt", 867),
-    ("IoConnectInterruptEx", 868),
+    ("IoConnectInterrupt", 867), // @partial implementation
+    ("IoConnectInterruptEx", 868), // @partial implementation
     ("IoConvertFileHandleToKernelHandle", 869),
     ("IoCopyDeviceObjectHint", 870),
     ("IoCreateArcName", 871),
@@ -183,8 +187,8 @@ pub const EXPORTS: &[(&str, u16)] = &[
     ("IoDeviceHandlerObjectSize", 903),
     ("IoDeviceHandlerObjectType", 904),
     ("IoDeviceObjectType", 905),
-    ("IoDisconnectInterrupt", 906),
-    ("IoDisconnectInterruptEx", 907),
+    ("IoDisconnectInterrupt", 906), // @partial implementation
+    ("IoDisconnectInterruptEx", 907), // @partial implementation
     ("IoDriverObjectType", 908),
     ("IoDriverProxyCreateHotSwappableWorkerThread", 909),
     ("IoDuplicateDependency", 910),
