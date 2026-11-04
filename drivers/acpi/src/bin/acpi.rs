@@ -250,6 +250,7 @@ impl Drop for AcpiOperationGuard {
 // HalAcpiGetTableEx export. It never dereferences a bootloader-supplied physical
 // address or calls a Rust-private kernel/HAL function.
 unsafe extern "win64" {
+    fn HalAcpiGetSciServices(output: *mut AcpiSciHalServices) -> i32;
     fn HalAcpiGetTableEx(signature: u32, instance: u32, table: *mut *mut core::ffi::c_void, table_size: *mut u32) -> i32;
 }
 core::arch::global_asm!(r#"
