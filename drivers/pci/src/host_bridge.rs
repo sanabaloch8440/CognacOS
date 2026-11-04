@@ -230,6 +230,61 @@ mod tests {
     }
 
     #[test]
+    fn root_hierarchy_allocator_only_receives_ram_clipped_host_windows() {
+        use crate::resources::BarRequirement;
+        use crate::topology_resources::{EndpointRequest, HierarchyPlan};
+
+        let resources = set();
+        let protected = [E820Range { start: 0x8000_0000, length: 0x1000_0000 }];
+        let mut request = EndpointRequest::EMPTY;
+        request.requirement_count = 1;
+        request.requirements[0] = Some(BarRequirement {
+            index: 0,
+            kind: BarKind::Memory32,
+            length: 0x1000,
+            alignment: 0x1000,
+            prefetchable: false,
+            assigned: 0,
+        });
+        let mut plan = HierarchyPlan::empty();
+        let prepared = plan_root_hierarchy(
+            &resources, &protected, &[request], &[], &mut plan,
+        ).unwrap();
+        assert_eq!(prepared.count, 0);
+        assert_eq!(plan.endpoint_count, 0);
+    }
+
+    #[test]
+    fn root_hierarchy_allocator_places_bars_only_in_unreserved_fragment() {
+        use crate::resources::BarRequirement;
+        use crate::topology_resources::{EndpointRequest, HierarchyPlan};
+
+        let mut resources = set();
+        resources.windows[0].minimum = 0x8000_0000;
+        resources.windows[0].maximum = 0x80ff_ffff;
+        resources.windows[0].length = 0x0100_0000;
+        let protected = [E820Range { start: 0x8000_0000, length: 0x0080_0000 }];
+        let mut request = EndpointRequest::EMPTY;
+        request.requirement_count = 1;
+        request.requirements[0] = Some(BarRequirement {
+            index: 0,
+            kind: BarKind::Memory32,
+            length: 0x1000,
+            alignment: 0x1000,
+            prefetchable: false,
+            assigned: 0,
+        });
+        let mut plan = HierarchyPlan::empty();
+        let prepared = plan_root_hierarchy(
+            &resources, &protected, &[request], &[], &mut plan,
+        ).unwrap();
+        assert_eq!(prepared.count, 2);
+        let assignment = plan.endpoints[0].unwrap().plan.assignments[0].unwrap();
+        assert!(assignment.base >= 0x8080_0000);
+        assert!(assignment.base + assignment.length <= 0x8100_0000);
+    }
+
+    #[test]
     fn fully_ram_backed_window_is_not_published() {
         let ram = [E820Range { start: 0x8000_0000, length: 0x1000_0000 }];
         let prepared = prepare_host_bridge_apertures(&set(), &ram).unwrap();
