@@ -196,7 +196,7 @@ unsafe extern "win64" {
  fn IoPnPEnumerateBus(bus:*mut cognacos_nt_abi::io::DEVICE_OBJECT)->i32;
  fn ExAllocatePoolWithTag(pool_type:u32,size:usize,tag:u32)->*mut u8;
  fn ExFreePoolWithTag(buffer:*mut u8,tag:u32);
- fn ObReferenceObject(object:PVOID);
+ fn ObfReferenceObject(object:PVOID);
 }
 core::arch::global_asm!(r#"
 .intel_syntax noprefix
@@ -241,11 +241,11 @@ ExAllocatePoolWithTag:
 ExFreePoolWithTag:
  jmp QWORD PTR [rip + __imp_ex_ExFreePoolWithTag]
  .size ExFreePoolWithTag, .-ExFreePoolWithTag
-.global ObReferenceObject
-.type ObReferenceObject,@function
-ObReferenceObject:
- jmp QWORD PTR [rip + __imp_ob_ObReferenceObject]
-.size ObReferenceObject, .-ObReferenceObject
+.global ObfReferenceObject
+.type ObfReferenceObject,@function
+ObfReferenceObject:
+ jmp QWORD PTR [rip + __imp_ob_ObfReferenceObject]
+.size ObfReferenceObject, .-ObfReferenceObject
 .section .data.imports.ke,"aw",@progbits
 .p2align 3
 .global __imp_ke_KeInitializeMutex
@@ -314,8 +314,8 @@ __imp_ex_ExAllocatePoolWithTag: .quad 0
 __imp_ex_ExFreePoolWithTag: .quad 0
 .section .data.imports.ob,"aw",@progbits
 .p2align 3
-.global __imp_ob_ObReferenceObject
-__imp_ob_ObReferenceObject: .quad 0
+.global __imp_ob_ObfReferenceObject
+__imp_ob_ObfReferenceObject: .quad 0
 "#);
 
 /// ACPI's AML allocator is backed by ntoskrnl executive pool, not Rust's
@@ -1044,14 +1044,16 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                     core::hint::spin_loop();
                 }
                 unsafe {
-                    (*relations).count=ACPI_PDO_COUNT as u32;
                     let objects=core::ptr::addr_of_mut!((*relations).objects).cast::<*mut cognacos_nt_abi::io::DEVICE_OBJECT>();
+                    let mut relation_count=0u32;
                     for i in 0..ACPI_PDO_COUNT {
                         let pdo=ACPI_PDOS[i];
                         if pdo.is_null(){continue}
-                        ObReferenceObject(pdo.cast());
-                        objects.add(i).write(pdo);
+                        ObfReferenceObject(pdo.cast());
+                        objects.add(relation_count as usize).write(pdo);
+                        relation_count+=1;
                     }
+                    (*relations).count=relation_count;
                     information=relations as usize;
                 }
                 PDO_RELATIONS_LOCK.store(false,Ordering::Release);
