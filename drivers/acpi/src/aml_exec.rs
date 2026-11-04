@@ -2017,7 +2017,8 @@ mod explicit_mutex_tests {
   let mut ns=AmlNamespace::new();load_definition_block(&aml,&mut ns).unwrap();
   let method=ns.find_child(0,*b"TEST").unwrap();let sync=DeadlineClockSync::new(true);
   LAST_BOUNDED_TIMEOUT.store(0,Ordering::SeqCst);
-  assert_eq!(execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync),Ok(AmlRuntimeValue{kind:AmlValueKind::Integer,integer:1,bytes:[0;MAX_AML_BYTES],byte_length:0,elements:[0;MAX_PACKAGE_ELEMENTS],element_count:0,reference_kind:0,reference_id:0,reference_index:0,reference_bit_width:0}));
+  let result=execute_method_typed_with_sync(&aml,&ns,method,&[],64,&sync).unwrap();
+  assert_eq!(result.kind,AmlValueKind::Integer);assert_eq!(result.integer,1);
   assert_eq!(LAST_BOUNDED_TIMEOUT.load(Ordering::SeqCst),30_000);
  }
 
