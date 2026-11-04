@@ -1245,7 +1245,25 @@ pub fn acpi_sci_service_table() -> cognacos_hal_contract::AcpiSciHalServices {
         rundown_passive_worker: if rundown == 0 { None } else {
             Some(unsafe { core::mem::transmute::<usize, AcpiPassiveRundownHook>(rundown) })
         },
+        get_platform_quirk_policy: Some(acpi_get_platform_quirk_policy),
     }
+}
+
+unsafe extern "C" fn acpi_get_platform_quirk_policy(
+    policy: *mut *const core::ffi::c_void,
+    size: *mut u32,
+    version: *mut u32,
+) -> u32 {
+    if policy.is_null() || size.is_null() || version.is_null() {
+        return cognacos_hal_contract::HalStatus::INVALID_PARAMETER.code;
+    }
+    let (pointer, bytes) = crate::boot_handoff::acpi_quirk_policy_ptr();
+    unsafe {
+        policy.write(pointer);
+        size.write(bytes);
+        version.write(cognacos_hal_contract::ACPI_PLATFORM_QUIRK_POLICY_VERSION);
+    }
+    cognacos_hal_contract::HalStatus::SUCCESS.code
 }
 
 /// Private kernel/HAL interface entry used by ACPI.sys to obtain the versioned
