@@ -3,6 +3,9 @@
 
 // Canonical Windows NT-style ABI types are shared with NTDLL and driver crates.
 pub(crate) use cognacos_nt_abi as nt_abi;
+// Transitional static HAL implementation binding. The stable ABI is now
+// owned by shared/hal-contract; Phase 2 still must replace this binding with
+// the bootloader-supplied runtime dispatch table before removing the impl dep.
 pub(crate) use cognacos_hal_impl::hal as hal;
 #[path = "hal_services.rs"]
 mod hal_services;
@@ -27,8 +30,8 @@ mod pe_dependencies;
 mod usermode;
 use cognacos_acpi as acpi;
 use cognacos_pci as pci;
-// Consume HAL through its independent crate and stable kernel/HAL boundary.
-// Do not compile HAL implementation sources into the NTOSKRNL image.
+// The HAL ABI is independent; implementation binding remains transitional
+// until the runtime dispatch table and loader handoff are installed.
 #[path = "ke/smp.rs"]
 mod smp;
 #[path = "../../drivers/platform/platform_drivers.rs"]
