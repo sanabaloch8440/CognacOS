@@ -1,11 +1,11 @@
 // Partial Windows x64 WDM object/IRP ABI foundation.
 //
 // Layouts and dispatch conventions here follow the public x64 WDK ABI for the
-// fields used by this implementation. This is not a claim of complete WDM
-// compatibility: dynamic IRP records/system buffers and the WDM cancel-safe
-// queue API are implemented, but cancel-spin-lock parity, all driver-created IRP
-// ownership variants, security descriptors, and many IRP variants remain
-// incomplete. VPB storage and mount arbitration are implemented below. Driver images must not be treated as generally loadable.
+// fields used by this implementation. Device-object records and StartIo state
+// use stable, demand-grown nonpaged storage; IRP records are also slab-grown.
+// This remains a compatibility subset: several driver-created IRP ownership
+// variants, security descriptors, and less-common IRP/DDI variants remain
+// incomplete. VPB storage and mount arbitration are implemented below.
 use core::{ffi::c_void, ptr, ops::{Index, IndexMut}};
 use crate::hal::IrqSpinLock;
 
@@ -202,6 +202,22 @@ impl DeviceTable{
  fn iter(&self)->DeviceIter<'_>{DeviceIter{base:self.base.iter(),next:self.overflow}}
  fn iter_mut(&mut self)->DeviceIterMut<'_>{DeviceIterMut{base:self.base.iter_mut(),next:self.overflow,_marker:core::marker::PhantomData}}
  fn push_overflow(&mut self,slot:*mut DeviceSlot){unsafe{(*slot).next=self.overflow;}self.overflow=slot;}
+ fn remove_overflow(&mut self,slot:*mut DeviceSlot)->bool{
+  if slot.is_null(){return false}
+  let mut link=core::ptr::addr_of_mut!(self.overflow);
+  unsafe{
+   while !(*link).is_null(){
+    let current=*link;
+    if current==slot{
+     *link=(*current).next;
+     (*current).next=ptr::null_mut();
+     return true
+    }
+    link=ptr::addr_of_mut!((*current).next);
+   }
+  }
+  false
+ }
 }
 unsafe impl Send for DeviceTable {}
 impl Index<usize> for DeviceTable{
