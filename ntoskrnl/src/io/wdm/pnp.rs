@@ -74,7 +74,7 @@ unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_
      let length=unsafe{read_u32_at(base,off+12)} as u64;
      if length==0||start.checked_add(length).is_none(){return Err(STATUS_INVALID_PARAMETER)}
      if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
-     out[count]=ParsedResource{kind,start,length,interface_type,bus_number,level:0,vector:0,affinity:0,flags,share};count+=1;
+     out[count]=ParsedResource{kind,start,length,interface_type,bus_number,level:0,group:0,vector:0,affinity:0,flags,share};count+=1;
     }
     CM_RESOURCE_INTERRUPT=>{
      let level=unsafe{read_u16_at(base,off+4)} as u32;
