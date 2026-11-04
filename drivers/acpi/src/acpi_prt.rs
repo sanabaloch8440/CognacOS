@@ -236,7 +236,7 @@ mod platform_prt_policy_tests {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrtDecodeError {
     MissingObject, WrongObjectType, BadTableIndex, Truncated, BadPackage,
-    BadInteger, BadSource, UnresolvedLink, InvalidPath, TooManyEntries,
+    BadInteger, BadSource, UnresolvedLink, InvalidPath, TooManyEntries, MethodExecutionFailed,
 }
 
 /// Construct the canonical rooted namespace path for a resolved link device.
@@ -555,5 +555,143 @@ mod hierarchical_prt_tests {
             resolve_hierarchical_prt_route(&provider, &NoLinks, &[10, 20], 5, 0, 0),
             Err(PrtError::MissingRoute)
         );
+    }
+}
+
+/// Evaluate a method-valued _PRT into a bounded, typed Package tree. The
+/// caller supplies the serialized-method synchronizer and a persistent AML
+/// execution context; this function never runs at interrupt/DPC level.
+pub fn evaluate_prt_method_object<R: LinkDeviceResolver>(
+    namespace: &crate::aml::AmlNamespace,
+    aml_tables: &[&[u8]],
+    bridge_node: u16,
+    integer_width_bits: u8,
+    sync: &dyn crate::aml_exec::AmlMethodSynchronizer,
+    resolver: &R,
+) -> Result<PrtTable, PrtDecodeError> {
+    use crate::aml::{AmlObjectType};
+    use crate::aml_exec::{execute_method_in_context, ExecError};
+    use crate::aml_objects::{AmlObjectArena, AmlRuntimeValue, AmlValueKind};
+    use crate::aml_runtime::{AmlBindings, AmlReference, reference_from_value};
+
+    let method = namespace.find_child(bridge_node, *b"_PRT")
+        .ok_or(PrtDecodeError::MissingObject)?;
+    let node = namespace.nodes.get(method as usize)
+        .filter(|_| (method as usize) < namespace.count)
+        .ok_or(PrtDecodeError::MissingObject)?;
+    if node.object_type != AmlObjectType::Method || node.method_flags & 7 != 0 {
+        return Err(PrtDecodeError::WrongObjectType);
+    }
+    let aml = *aml_tables.get(node.source_table as usize)
+        .ok_or(PrtDecodeError::BadTableIndex)?;
+    let mut arena = AmlObjectArena::new();
+    let mut bindings = AmlBindings::with_aml_revision(if integer_width_bits == 32 { 1 } else { 2 });
+    let result = execute_method_in_context(
+        aml, namespace, method, &[], integer_width_bits,
+        &mut arena, &mut bindings, sync,
+    ).map_err(|_: ExecError| PrtDecodeError::MethodExecutionFailed)?;
+
+    if result.kind != AmlValueKind::Package {
+        return Err(PrtDecodeError::BadPackage);
+    }
+    let count = result.element_count as usize;
+    if count > MAX_PRT_ENTRIES || count > crate::aml_objects::MAX_PACKAGE_ELEMENTS {
+        return Err(PrtDecodeError::TooManyEntries);
+    }
+
+    let mut elements = [EvaluatedPrtElement {
+        address: 0, pin: 0, source_path: None, source_index: 0,
+    }; MAX_PRT_ENTRIES];
+    let mut paths = [[0u8; MAX_SOURCE_PATH]; MAX_PRT_ENTRIES];
+    let mut link_nodes = [u16::MAX; MAX_PRT_ENTRIES];
+
+    for index in 0..count {
+        let route_id = result.elements[index];
+        let route = arena.get(route_id).ok_or(PrtDecodeError::BadPackage)?;
+        if route.kind != AmlValueKind::Package || route.element_count != 4 {
+            return Err(PrtDecodeError::BadPackage);
+        }
+        let field = |slot: usize| -> Result<AmlRuntimeValue, PrtDecodeError> {
+            let id = *route.elements.get(slot).ok_or(PrtDecodeError::BadPackage)?;
+            arena.get(id).copied().ok_or(PrtDecodeError::BadPackage)
+        };
+        let address = field(0)?;
+        let pin = field(1)?;
+        let source = field(2)?;
+        let source_index = field(3)?;
+        if address.kind != AmlValueKind::Integer
+            || pin.kind != AmlValueKind::Integer
+            || source_index.kind != AmlValueKind::Integer {
+            return Err(PrtDecodeError::BadInteger);
+        }
+        let source_path = match source.kind {
+            AmlValueKind::Integer if source.integer == 0 => None,
+            AmlValueKind::ObjectReference => {
+                match reference_from_value(&source)
+                    .map_err(|_| PrtDecodeError::BadSource)? {
+                    AmlReference::NamespaceNode(link) => {
+                        let canonical = namespace.resolve_alias(link)
+                            .map_err(|_| PrtDecodeError::UnresolvedLink)?;
+                        if canonical as usize >= namespace.count
+                            || namespace.nodes[canonical as usize].object_type != AmlObjectType::Device {
+                            return Err(PrtDecodeError::UnresolvedLink);
+                        }
+                        link_nodes[index] = canonical;
+                        None
+                    }
+                    _ => return Err(PrtDecodeError::BadSource),
+                }
+            }
+            _ => return Err(PrtDecodeError::BadSource),
+        };
+        elements[index] = EvaluatedPrtElement {
+            address: address.integer, pin: pin.integer,
+            source_path, source_index: source_index.integer,
+        };
+    }
+
+    let mut lengths = [0usize; MAX_PRT_ENTRIES];
+    for index in 0..count {
+        if link_nodes[index] != u16::MAX {
+            lengths[index] = canonical_namespace_path(namespace, link_nodes[index], &mut paths[index])?;
+        }
+    }
+    for index in 0..count {
+        if link_nodes[index] != u16::MAX {
+            elements[index].source_path = Some(&paths[index][..lengths[index]]);
+        }
+    }
+    let table = build_prt_table(&elements[..count]).map_err(|_| PrtDecodeError::BadPackage)?;
+    for route in table.entries[..table.count].iter().flatten() {
+        if let InterruptSource::LinkDevice { path, length, source_index } = route.source {
+            resolver.resolve_gsi(&path[..length as usize], source_index)
+                .map_err(|_| PrtDecodeError::UnresolvedLink)?;
+        }
+    }
+    Ok(table)
+}
+
+/// Unified _PRT evaluator. Static Name(Package(...)) and method-valued _PRT
+/// share the same validated route-table representation. Method evaluation is
+/// explicit so callers cannot accidentally execute AML at elevated IRQL.
+pub fn evaluate_prt_object<R: LinkDeviceResolver>(
+    namespace: &crate::aml::AmlNamespace,
+    aml_tables: &[&[u8]],
+    bridge_node: u16,
+    integer_width_bits: u8,
+    sync: &dyn crate::aml_exec::AmlMethodSynchronizer,
+    resolver: &R,
+) -> Result<PrtTable, PrtDecodeError> {
+    let object = namespace.find_child(bridge_node, *b"_PRT")
+        .ok_or(PrtDecodeError::MissingObject)?;
+    match namespace.nodes.get(object as usize)
+        .filter(|_| (object as usize) < namespace.count)
+        .ok_or(PrtDecodeError::MissingObject)?.object_type {
+        crate::aml::AmlObjectType::Name =>
+            evaluate_prt_name_object(namespace, aml_tables, bridge_node, resolver),
+        crate::aml::AmlObjectType::Method =>
+            evaluate_prt_method_object(namespace, aml_tables, bridge_node,
+                integer_width_bits, sync, resolver),
+        _ => Err(PrtDecodeError::WrongObjectType),
     }
 }
