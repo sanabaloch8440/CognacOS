@@ -77,12 +77,21 @@ jobs:
           fi
           test ! -e third_party/Ext3Fsd
           test ! -e third_party/README.md
-      - name: Reject HAL dependencies on NTOSKRNL and ACPI
+      - name: Enforce independent HAL and I/O DMA source boundaries
         shell: bash
         run: |
           set -euo pipefail
-          if grep -nF -e 'crate::ntoskrnl' -e 'crate::acpi::' Hal/mod.rs Hal/apic.rs; then
-            echo "HAL implementation must not depend on ntoskrnl or ACPI parsing types." >&2
+          if grep -RInE 'crate::(ntoskrnl|acpi::|pci::|kernel_vm|dma|boot_handoff)|cognacos_(acpi|pci)::' Hal --include='*.rs'; then
+            echo "HAL implementation must not depend on NTOSKRNL internals, ACPI/PCI parser types, DMA policy, or boot handoff." >&2
+            exit 1
+          fi
+          test ! -e Hal/vtd.rs
+          test -s ntoskrnl/src/io/dma/vtd.rs
+          test -s drivers/hal/src/kernel_services.rs
+          grep -Fq 'pub mod hal;' drivers/hal/src/lib.rs
+          grep -Fq 'pub(crate) use cognacos_hal_contract::hal as hal;' ntoskrnl/src/main.rs
+          if grep -Fq '#[path = "../../Hal/mod.rs"]' ntoskrnl/src/main.rs; then
+            echo "NTOSKRNL must consume the independently compiled HAL crate." >&2
             exit 1
           fi
       - name: Reject obsolete root APIC references
@@ -135,9 +144,13 @@ jobs:
           test "$export_count" -eq 60
           grep -Eq "Magic: 0x20B" build/bcrypt/exports.txt
           echo "Built bcrypt.dll; verified PE32+ and all 60 named exports."
-      - name: Check HAL contract library
-        run: cargo check --manifest-path drivers/hal/Cargo.toml --lib
-      - name: Test HAL versioned device service contracts
+      - name: Check independent HAL implementation and contracts
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+          cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-none --lib
+          cargo check --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-none --bin hal
+      - name: Test HAL implementation, ABI and service contracts
         run: cargo test --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check ACPI driver library
         run: cargo check --manifest-path drivers/acpi/Cargo.toml --lib
