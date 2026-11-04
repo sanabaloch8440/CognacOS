@@ -4,17 +4,17 @@ pub type InterruptServiceRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void
 #[repr(C)]
 pub struct InterruptObject{
     signature:core::sync::atomic::AtomicU64,vector:core::sync::atomic::AtomicU32,
-    irql:core::sync::atomic::AtomicU8,_reserved:[u8;3],active:core::sync::atomic::AtomicBool,
+    irql:core::sync::atomic::AtomicU8,_reserved:[u8;3],active:core::sync::atomic::AtomicBool,owns_vector:core::sync::atomic::AtomicBool,
     routine:core::sync::atomic::AtomicUsize,context:core::sync::atomic::AtomicUsize,
 }
 unsafe impl Sync for InterruptObject{}
 impl InterruptObject{
  const EMPTY:Self=Self{signature:core::sync::atomic::AtomicU64::new(0),vector:core::sync::atomic::AtomicU32::new(0),
-  irql:core::sync::atomic::AtomicU8::new(0),_reserved:[0;3],active:core::sync::atomic::AtomicBool::new(false),
+  irql:core::sync::atomic::AtomicU8::new(0),_reserved:[0;3],active:core::sync::atomic::AtomicBool::new(false),owns_vector:core::sync::atomic::AtomicBool::new(false),
   routine:core::sync::atomic::AtomicUsize::new(0),context:core::sync::atomic::AtomicUsize::new(0)};
 }
 static INTERRUPT_OBJECTS:[InterruptObject;256]=[const{InterruptObject::EMPTY};256];
-unsafe extern "win64" fn io_interrupt_dispatch(_vector:u8,_frame:*mut core::ffi::c_void,context:*mut core::ffi::c_void)->bool{
+/// @partial implementation\n/// ABI matches KSERVICE_ROUTINE; ISR synchronization and shared-vector fanout remain pending.\nunsafe extern "win64" fn io_interrupt_dispatch(_vector:u8,_frame:*mut core::ffi::c_void,context:*mut core::ffi::c_void)->bool{
  if context.is_null(){return false}
  let object=unsafe{&*(context.cast::<InterruptObject>())};
  if object.signature.load(core::sync::atomic::Ordering::Acquire)!=INTERRUPT_SIGNATURE||!object.active.load(core::sync::atomic::Ordering::Acquire){return false}
@@ -23,7 +23,7 @@ unsafe extern "win64" fn io_interrupt_dispatch(_vector:u8,_frame:*mut core::ffi:
  let device_context=object.context.load(core::sync::atomic::Ordering::Acquire) as *mut core::ffi::c_void;
  unsafe{routine(context,device_context)!=0}
 }
-#[unsafe(export_name="IoConnectInterrupt")]
+/// @partial implementation\n/// Windows 11 x64 ABI is present. Shared-vector fanout, supplied spin-lock\n/// synchronization, and passive-level ISR scheduling are not yet implemented.\n#[unsafe(export_name="IoConnectInterrupt")]
 pub unsafe extern "win64" fn io_connect_interrupt(
  interrupt_object_out:*mut *mut core::ffi::c_void,service_routine:Option<InterruptServiceRoutine>,
  service_context:*mut core::ffi::c_void,_spin_lock:*mut core::ffi::c_void,vector:u32,irql:u8,
@@ -38,18 +38,18 @@ pub unsafe extern "win64" fn io_connect_interrupt(
  if share_vector!=0||floating_save!=0{return STATUS_NOT_SUPPORTED}
  let slot=&INTERRUPT_OBJECTS[vector as usize];
  if slot.active.compare_exchange(false,true,core::sync::atomic::Ordering::AcqRel,core::sync::atomic::Ordering::Acquire).is_err(){return STATUS_INSUFFICIENT_RESOURCES}
- slot.signature.store(INTERRUPT_SIGNATURE,core::sync::atomic::Ordering::Release);
+ slot.signature.store(INTERRUPT_SIGNATURE,core::sync::atomic::Ordering::Release);\n slot.owns_vector.store(owns_vector,core::sync::atomic::Ordering::Relaxed);
  slot.vector.store(vector,core::sync::atomic::Ordering::Relaxed);slot.irql.store(irql,core::sync::atomic::Ordering::Relaxed);
  slot.context.store(service_context as usize,core::sync::atomic::Ordering::Relaxed);
  slot.routine.store(service_routine.unwrap() as usize,core::sync::atomic::Ordering::Release);
  let object=slot as *const InterruptObject as *mut core::ffi::c_void;
  if crate::hal::register_device_interrupt_handler(vector as u8,io_interrupt_dispatch,object.cast()).is_err(){
-  slot.active.store(false,core::sync::atomic::Ordering::Release);slot.routine.store(0,core::sync::atomic::Ordering::Release);
-  slot.context.store(0,core::sync::atomic::Ordering::Release);return STATUS_NOT_SUPPORTED;
+  slot.active.store(false,core::sync::atomic::Ordering::Release);slot.owns_vector.store(false,core::sync::atomic::Ordering::Release);slot.routine.store(0,core::sync::atomic::Ordering::Release);
+  slot.context.store(0,core::sync::atomic::Ordering::Release);if owns_vector{let _=crate::hal::release_device_interrupt_vector(vector as u8);}return STATUS_NOT_SUPPORTED;
  }
  unsafe{interrupt_object_out.write(object)};0
 }
-#[unsafe(export_name="IoDisconnectInterrupt")]
+/// @partial implementation\n/// Windows 11 x64 ABI; teardown drains the HAL vector dispatcher, but full\n/// KINTERRUPT spin-lock and shared-vector semantics are not yet present.\n#[unsafe(export_name="IoDisconnectInterrupt")]
 pub unsafe extern "win64" fn io_disconnect_interrupt(interrupt_object:*mut core::ffi::c_void){
  if interrupt_object.is_null(){return}
  let object=interrupt_object.cast::<InterruptObject>();
@@ -65,7 +65,7 @@ pub unsafe extern "win64" fn io_disconnect_interrupt(interrupt_object:*mut core:
 // WDK IO_CONNECT_INTERRUPT_PARAMETERS (x64) version values.
 const CONNECT_FULLY_SPECIFIED: u32 = 0;
 const CONNECT_LINE_BASED: u32 = 1;
-const CONNECT_MESSAGE_BASED: u32 = 2;
+const CONNECT_MESSAGE_BASED: u32 = 2;\nconst CONNECT_FULLY_SPECIFIED_GROUP: u32 = 3;
 
 /// WDK layout: IO_CONNECT_INTERRUPT_FULLY_SPECIFIED_PARAMETERS.
 /// Keep field order and natural x64 alignment identical to wdm.h.
@@ -96,7 +96,7 @@ struct IoConnectInterruptParameters {
     fully_specified: IoConnectInterruptFullySpecified,
 }
 
-/// Implements the WDM CONNECT_FULLY_SPECIFIED form. The PnP manager must
+/// @partial implementation\n/// Implements the WDM CONNECT_FULLY_SPECIFIED form. The PnP manager must
 /// supply a translated interrupt resource; this routine never derives a
 /// vector from a bus IRQ or allocates a replacement vector.
 #[unsafe(export_name = "IoConnectInterruptEx")]
@@ -143,7 +143,7 @@ pub unsafe extern "win64" fn io_connect_interrupt_ex(
     status
 }
 
-/// WDK disconnect parameters use a version followed by a pointer-sized
+/// @partial implementation\n/// WDK disconnect parameters use a version followed by a pointer-sized
 /// connection context. Version zero carries the KINTERRUPT returned by the
 /// fully-specified connect operation.
 #[repr(C)]
