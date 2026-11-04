@@ -756,8 +756,9 @@ unsafe fn acquire_acpi_host_bridge_resources() -> i32 {
     STATUS_SUCCESS
 }
 
-/// Stable read-only accessor used by PCI's host-window allocator. The caller
-/// receives a complete copy and must still apply protected-RAM clipping.
+/// Read the root-PDO resource set staged by the PCI root-FDO. This remains
+/// descriptor data, not an allocator aperture; protected-RAM clipping is a
+/// mandatory separate step before any BAR/window allocation.
 fn get_host_bridge_resources(
     index: usize,
 ) -> Result<PciHostBridgeResourceSet, i32> {
@@ -1593,6 +1594,7 @@ unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
             unsafe { (*STATE.pdos.get())[index] = core::ptr::null_mut(); }
         }
     }
+    STATE.host_bridge_resource_count.store(0, Ordering::Release);
     HANDOFF.store(0, Ordering::Release);
     DRIVER_OBJECT.store(0, Ordering::Release);
 }
