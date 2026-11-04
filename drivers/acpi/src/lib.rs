@@ -594,6 +594,20 @@ pub fn discover_madt_with_mapper<M:AcpiPhysicalMapper>(mapper:&M,rsdp_address:u6
 /// that limit are skipped rather than dereferenced. The returned slice borrows
 /// firmware-owned physical memory and is valid only while that mapping remains.
 pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize) -> Result<&'static [u8], AcpiError> {
+    let prefer_rsdt = crate::aml_osi::platform_quirk_policy().is_some_and(|policy|
+        policy.flags.contains(crate::quirks::QuirkFlags::PREFER_RSDT));
+    unsafe { find_table_with_preference(rsdp_address, signature, instance, prefer_rsdt) }
+}
+
+/// Kernel/HAL entry point: the caller supplies the already boot-selected
+/// platform preference so table discovery does not depend on a driver-local
+/// copy of the AML policy singleton.
+pub unsafe fn find_table_with_preference(
+    rsdp_address: u64,
+    signature: [u8; 4],
+    instance: usize,
+    prefer_rsdt: bool,
+) -> Result<&'static [u8], AcpiError> {
     if rsdp_address == 0 || rsdp_address.checked_add(20).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
@@ -613,8 +627,6 @@ pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize)
     }
     let rsdp = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, rsdp_len) };
     let roots = parse_rsdp(rsdp)?;
-    let prefer_rsdt = crate::aml_osi::platform_quirk_policy().is_some_and(|policy|
-        policy.flags.contains(crate::quirks::QuirkFlags::PREFER_RSDT));
     let (root_address, is_xsdt) = if !prefer_rsdt && revision >= 2 && roots.xsdt_address != 0
         && roots.xsdt_address < LOW_IDENTITY_LIMIT {
         (roots.xsdt_address, true)
