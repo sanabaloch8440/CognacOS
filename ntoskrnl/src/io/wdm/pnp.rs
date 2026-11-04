@@ -305,11 +305,20 @@ pub(crate) fn io_release_pnp_resources(device:*mut DeviceObject){
  if owner.is_null(){return}
  let mut released=[ptr::null_mut::<DeviceObject>();MAX_PNP_RESOURCE_CLAIMS];
  let mut released_count=0usize;
+ let mut removed_translations=[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS];
+ let mut removed_count=0usize;
  {
   let mut arbiter=RESOURCE_ARBITER.lock();
   for claim in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner){
-   released[released_count]=claim.owner;released_count+=1;*claim=ResourceClaim::EMPTY;
+   released[released_count]=claim.owner;released_count+=1;
+   if claim.kind==CM_RESOURCE_INTERRUPT&&claim.bus_group==0&&claim.group==0 {
+    removed_translations[removed_count]=*claim;removed_count+=1;
+   }
+   *claim=ResourceClaim::EMPTY;
   }
+ }
+ for claim in removed_translations[..removed_count].iter() {
+  let _=crate::hal::unregister_bus_interrupt_translation(claim.interface_type,claim.bus_number,claim.bus_level,claim.bus_vector);
  }
  for held in released[..released_count].iter().copied(){if !held.is_null(){unsafe{io_dereference_device_object(held)}}}
  unsafe{io_dereference_device_object(owner)};
