@@ -20,10 +20,10 @@ use cognacos_acpi as acpi;
 use acpi::aml_tables::AmlExecutionGate;
 use cognacos_hal_contract::AcpiSciHalServices;
 use cognacos_nt_abi::{bus::{
-    ACPI_FIRMWARE_INTERFACE, ACPI_FIRMWARE_INTERFACE_V2, ACPI_FIRMWARE_INTERFACE_V3,
+    ACPI_FIRMWARE_INTERFACE, ACPI_FIRMWARE_INTERFACE_V2, ACPI_FIRMWARE_INTERFACE_V3, ACPI_FIRMWARE_INTERFACE_V4,
     ACPI_FIRMWARE_INTERFACE_VERSION, ACPI_FIRMWARE_INTERFACE_VERSION_2,
-    ACPI_FIRMWARE_INTERFACE_VERSION_3, ACPI_PCI_INTERRUPT_ROUTE,
-    ACPI_PCI_INTERRUPT_ROUTE_REQUEST, ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2,
+    ACPI_FIRMWARE_INTERFACE_VERSION_3, ACPI_FIRMWARE_INTERFACE_VERSION_4, ACPI_PCI_INTERRUPT_ROUTE,
+    ACPI_PCI_INTERRUPT_ROUTE_REQUEST, ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2, ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3,
     INTERFACE_HEADER,
 }, io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
@@ -1005,6 +1005,10 @@ unsafe extern "win64" fn pnp_dispatch(device: *mut cognacos_nt_abi::io::DEVICE_O
                 && version as u32 == ACPI_FIRMWARE_INTERFACE_VERSION_3
                 && (size as usize) >= core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V3>() {
                 unsafe { cognac_acpi_get_firmware_interface_v3(output.cast()) }
+            } else if unsafe { *guid } == cognacos_nt_abi::bus::GUID_ACPI_FIRMWARE_INTERFACE_V4
+                && version as u32 == ACPI_FIRMWARE_INTERFACE_VERSION_4
+                && (size as usize) >= core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V4>() {
+                unsafe { cognac_acpi_get_firmware_interface_v4(output.cast()) }
             } else {
                 STATUS_NOT_SUPPORTED
             }
@@ -1881,6 +1885,25 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
     request: *const ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V2,
     output: *mut ACPI_PCI_INTERRUPT_ROUTE,
 ) -> i32 {
+    if request.is_null() { return STATUS_INVALID_PARAMETER; }
+    let old = unsafe { *request };
+    let mut extended = ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3::default();
+    extended.segment = old.segment;
+    extended.bus = old.bus;
+    extended.device = old.device;
+    extended.function = old.function;
+    extended.pin = old.pin;
+    extended.bridge_count = old.bridge_count;
+    extended.root_bus = old.root_bus;
+    extended.bridges[..old.bridges.len()].copy_from_slice(&old.bridges);
+    unsafe { acpi_query_pci_interrupt_route_v4(context, &extended, output) }
+}
+
+unsafe extern "win64" fn acpi_query_pci_interrupt_route_v4(
+    context: PVOID,
+    request: *const ACPI_PCI_INTERRUPT_ROUTE_REQUEST_V3,
+    output: *mut ACPI_PCI_INTERRUPT_ROUTE,
+) -> i32 {
     let Some(_operation) = AcpiOperationGuard::enter() else { return STATUS_DEVICE_NOT_READY; };
     if context != core::ptr::addr_of!(STATE).cast_mut().cast()
         || request.is_null() || output.is_null() || !STATE.ready.load(Ordering::Acquire) {
@@ -1972,7 +1995,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
             namespace, manager, gate, sources: &sources, handles: &handles,
             madt, last: Cell::new(None),
         };
-        let mut reverse_nodes = [0u16; 8];
+        let mut reverse_nodes = [0u16; 255];
         let mut parent_node = record.node;
         let mut expected_primary = root_bus as u8;
         for (bridge_index, bridge) in request.bridges.iter().take(request.bridge_count as usize).enumerate() {
@@ -2002,7 +2025,7 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
         if request.bridge_count != 0 && expected_primary != request.bus {
             return STATUS_DEVICE_CONFIGURATION_ERROR;
         }
-        let mut bus_nodes = [0u16; 9];
+        let mut bus_nodes = [0u16; 256];
         for index in 0..request.bridge_count as usize { bus_nodes[index] = reverse_nodes[index]; }
         bus_nodes[request.bridge_count as usize] = record.node;
         let provider = AcpiPrtBusProvider {
@@ -2051,6 +2074,31 @@ unsafe extern "win64" fn acpi_query_pci_interrupt_route_v3(
             reserved2: 0,
         });
     }
+    STATUS_SUCCESS
+}
+
+unsafe extern "win64" fn cognac_acpi_get_firmware_interface_v4(
+    output: *mut ACPI_FIRMWARE_INTERFACE_V4,
+) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    let context = core::ptr::addr_of!(STATE).cast_mut().cast::<core::ffi::c_void>();
+    unsafe {
+        output.write(ACPI_FIRMWARE_INTERFACE_V4 {
+            header: INTERFACE_HEADER {
+                size: core::mem::size_of::<ACPI_FIRMWARE_INTERFACE_V4>() as u16,
+                version: ACPI_FIRMWARE_INTERFACE_VERSION_4 as u16,
+                context,
+                interface_reference: Some(acpi_interface_reference),
+                interface_dereference: Some(acpi_interface_dereference),
+            },
+            query_table: Some(query_firmware_table),
+            query_pci_interrupt_route: Some(acpi_query_pci_interrupt_route),
+            query_pci_interrupt_route_v2: Some(acpi_query_pci_interrupt_route_v3),
+            query_pci_interrupt_route_v3: Some(acpi_query_pci_interrupt_route_v4),
+        });
+    }
+    unsafe { acpi_interface_reference(context); }
     STATUS_SUCCESS
 }
 
