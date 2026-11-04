@@ -23,12 +23,13 @@ struct QueueState {
     active: usize,
     active_context: u64,
     closed_contexts: [u64; 16],
+    rundown_waiters: [u64; 16],
     accepting: bool,
 }
 impl QueueState {
     const fn new() -> Self {
         Self { entries: [WorkRecord::EMPTY; MAX_WORK_ITEMS], head: 0, tail: 0,
-            count: 0, active: 0, active_context: 0, closed_contexts: [0; 16], accepting: false }
+            count: 0, active: 0, active_context: 0, closed_contexts: [0; 16], rundown_waiters: [0; 16], accepting: false }
     }
     fn push(&mut self, item: WorkRecord) -> bool {
         if !self.accepting
@@ -79,9 +80,23 @@ extern "C" fn worker_entry(_argument: *mut c_void) {
         };
         if let Some(item) = item {
             if let Some(routine) = item.routine { routine(item.context); }
-            let mut state = QUEUE.lock();
-            state.active = state.active.saturating_sub(1);
-            if state.active == 0 { state.active_context = 0; }
+            let waiters = {
+                let mut state = QUEUE.lock();
+                state.active = state.active.saturating_sub(1);
+                if state.active == 0 {
+                    state.active_context = 0;
+                    let waiters = state.rundown_waiters;
+                    state.rundown_waiters = [0; 16];
+                    waiters
+                } else {
+                    [0; 16]
+                }
+            };
+            // Wake passive teardown threads only after the active callback has
+            // dropped its context reference and the queue lock is released.
+            for waiter in waiters {
+                if waiter != 0 { let _ = crate::thread::wake(waiter); }
+            }
             continue;
         }
         // The queue insertion and thread wake are ordered so a producer racing
@@ -187,9 +202,8 @@ pub extern "C" fn queue_from_dpc(context: u64, routine: WorkRoutine) -> bool {
 /// and wait until its currently executing callback returns. The callback context
 /// may be reclaimed only after this function succeeds.
 pub extern "C" fn rundown_context(context: u64) -> bool {
-    if context == 0 || crate::thread::current_thread_id() == Some(WORKER_ID.load(Ordering::Acquire)) {
-        return false;
-    }
+    if context == 0 { return false; }
+    let Some(waiter) = crate::thread::current_thread_id() else { return false; };
     {
         let mut state = QUEUE.lock();
         if !state.closed_contexts.contains(&context) {
@@ -213,22 +227,32 @@ pub extern "C" fn rundown_context(context: u64) -> bool {
     }
     let id = WORKER_ID.load(Ordering::Acquire);
     if id != 0 { let _ = crate::thread::wake(id); }
-    let mut spins = 0usize;
-    while QUEUE.lock().active_context == context && spins < 10_000_000 {
-        let _ = crate::thread::yield_current();
-        spins += 1;
+
+    loop {
+        let should_wait = {
+            let mut state = QUEUE.lock();
+            if state.active_context != context {
+                false
+            } else {
+                let Some(slot) = state.rundown_waiters.iter_mut()
+                    .find(|slot| **slot == 0 || **slot == waiter) else { return false; };
+                *slot = waiter;
+                true
+            }
+        };
+        if !should_wait { break; }
+        // Block instead of spinning: the worker may be lower priority and must
+        // be allowed to run to release the active callback reference.
+        if crate::thread::block_current().is_err() { return false; }
     }
-    let drained = QUEUE.lock().active_context != context;
-    if drained {
-        // HAL has already unregistered and drained this owner's ISR/DPC
-        // producers. Reclaim the closed-context slot so a later driver restart
-        // may safely reuse the same nonpaged callback-context address.
-        let mut state = QUEUE.lock();
-        if let Some(slot) = state.closed_contexts.iter_mut().find(|slot| **slot == context) {
-            *slot = 0;
-        }
+
+    // HAL has already unregistered and drained this owner's ISR/DPC producers.
+    // Reclaim the closed-context slot so a later restart may reuse its address.
+    let mut state = QUEUE.lock();
+    if let Some(slot) = state.closed_contexts.iter_mut().find(|slot| **slot == context) {
+        *slot = 0;
     }
-    drained
+    true
 }
 
 #[cfg(test)]
