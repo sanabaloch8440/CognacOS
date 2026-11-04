@@ -106,8 +106,8 @@ impl GpeRegisterBlock{
 pub struct GpeEvent{pub number:u16,pub method_node:u16,pub trigger:u8,pub wake_capable:bool,pub enabled:bool}
 impl GpeEvent{pub const EMPTY:Self=Self{number:u16::MAX,method_node:u16::MAX,trigger:ACPI_GPE_EDGE,wake_capable:false,enabled:false};}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct DeferredGpe{pub number:u16,pub method_node:u16,pub trigger:u8}
-impl DeferredGpe{pub const EMPTY:Self=Self{number:u16::MAX,method_node:u16::MAX,trigger:0};}
+pub struct DeferredGpe{pub number:u16,pub method_node:u16,pub trigger:u8,executed:bool}
+impl DeferredGpe{pub const EMPTY:Self=Self{number:u16::MAX,method_node:u16::MAX,trigger:0,executed:false};}
 pub trait GpeIo:GasIo{
  /// Write-one-to-clear a GPE status bit. Implementations must issue a byte write.
  fn clear_status_w1c(&mut self,gas:AcpiGas,mask:u8)->Result<(),EventError>{self.write(gas,1,mask as u64)}
@@ -119,10 +119,19 @@ pub trait GpeMethodExecutor{
 pub struct GpeController{
  blocks:[Option<GpeRegisterBlock>;2],events:[GpeEvent;MAX_GPE_EVENTS],event_count:usize,
  queue:[DeferredGpe;MAX_DEFERRED_EVENTS],head:usize,tail:usize,queued:usize,
+ overflow:[DeferredGpe;MAX_GPE_EVENTS],overflow_head:usize,overflow_tail:usize,overflow_count:usize,
 }
 impl GpeController{
  pub const fn new()->Self{Self{blocks:[None,None],events:[GpeEvent::EMPTY;MAX_GPE_EVENTS],event_count:0,
-  queue:[DeferredGpe::EMPTY;MAX_DEFERRED_EVENTS],head:0,tail:0,queued:0}}
+  queue:[DeferredGpe::EMPTY;MAX_DEFERRED_EVENTS],head:0,tail:0,queued:0,
+  overflow:[DeferredGpe::EMPTY;MAX_GPE_EVENTS],overflow_head:0,overflow_tail:0,overflow_count:0}}
+ fn promote_overflow(&mut self){
+  while self.queued<MAX_DEFERRED_EVENTS&&self.overflow_count!=0{
+   let event=self.overflow[self.overflow_head];self.overflow[self.overflow_head]=DeferredGpe::EMPTY;
+   self.overflow_head=(self.overflow_head+1)%MAX_GPE_EVENTS;self.overflow_count-=1;
+   self.queue[self.tail]=event;self.tail=(self.tail+1)%MAX_DEFERRED_EVENTS;self.queued+=1;
+  }
+ }
  pub fn configure_block(&mut self,slot:usize,block:GpeRegisterBlock)->Result<(),EventError>{
   if slot>=2||block.event_count()?==0{return Err(EventError::InvalidGas)}self.blocks[slot]=Some(block);Ok(())
  }
@@ -176,11 +185,18 @@ impl GpeController{
      enable_value&=!mask;
      io.write(enable_gas,1,enable_value as u64)?;
      io.clear_status_w1c(block.register_gas(false,index),mask)?;
-     if self.queued==MAX_DEFERRED_EVENTS {
+     let deferred=DeferredGpe{number:event,method_node:registration.method_node,trigger:registration.trigger,executed:false};
+     if self.queued==MAX_DEFERRED_EVENTS{
+      // Keep the source masked and retain work in a second bounded FIFO.
+      // Each registered source is masked after capture, so no source can
+      // occupy more than one queue slot at a time.
+      if self.overflow_count==MAX_GPE_EVENTS{return Err(EventError::QueueFull)}
+      self.overflow[self.overflow_tail]=deferred;
+      self.overflow_tail=(self.overflow_tail+1)%MAX_GPE_EVENTS;self.overflow_count+=1;
       if let Some(entry)=self.events[..self.event_count].iter_mut().find(|e|e.number==event){entry.enabled=false;}
       return Err(EventError::QueueFull)
      }
-     self.queue[self.tail]=DeferredGpe{number:event,method_node:registration.method_node,trigger:registration.trigger};
+     self.queue[self.tail]=deferred;
      self.tail=(self.tail+1)%MAX_DEFERRED_EVENTS;self.queued+=1;captured+=1;
      if let Some(entry)=self.events[..self.event_count].iter_mut().find(|e|e.number==event){entry.enabled=false;}
     }
@@ -191,17 +207,20 @@ impl GpeController{
  /// Drain at PASSIVE_LEVEL. Level-triggered events are re-enabled only after
  /// successful AML completion; edge events are likewise re-enabled afterwards.
  pub fn dispatch_deferred(&mut self,io:&mut impl GpeIo,executor:&mut impl GpeMethodExecutor,budget:usize)->Result<usize,EventError>{
-  let mut completed=0usize;
+  let mut completed=0usize;self.promote_overflow();
   while completed<budget&&self.queued!=0{
-   let event=self.queue[self.head];self.queue[self.head]=DeferredGpe::EMPTY;
-   self.head=(self.head+1)%MAX_DEFERRED_EVENTS;self.queued-=1;
-   executor.execute_gpe_method(event.method_node)?;
+   let event=self.queue[self.head];
+   if !event.executed{
+    executor.execute_gpe_method(event.method_node)?;
+    self.queue[self.head].executed=true;
+   }
    self.set_enabled(io,event.number,true)?;
-   completed+=1;
+   self.queue[self.head]=DeferredGpe::EMPTY;self.head=(self.head+1)%MAX_DEFERRED_EVENTS;self.queued-=1;
+   completed+=1;self.promote_overflow();
   }
   Ok(completed)
  }
- pub fn pending(&self)->usize{self.queued}
+ pub fn pending(&self)->usize{self.queued+self.overflow_count}
 }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -325,6 +344,45 @@ mod tests{
   let mut exec=Exec{calls:0};assert_eq!(g.dispatch_deferred(&mut io,&mut exec,4).unwrap(),1);
   assert_eq!(exec.calls,1);assert_eq!(io.regs[6],2);
  }
+ struct FailOnceExec{calls:usize,fail:bool}
+ impl GpeMethodExecutor for FailOnceExec{fn execute_gpe_method(&mut self,_:u16)->Result<(),EventError>{self.calls+=1;if self.fail{self.fail=false;Err(EventError::MethodFailure)}else{Ok(())}}}
+ struct FailEnableIo{regs:[u8;32],fail_enable:bool}
+ impl GasIo for FailEnableIo{
+  fn read(&mut self,g:AcpiGas,_:u8)->Result<u64,EventError>{Ok(self.regs[g.address as usize] as u64)}
+  fn write(&mut self,g:AcpiGas,_:u8,v:u64)->Result<(),EventError>{if self.fail_enable&&g.address==7{self.fail_enable=false;return Err(EventError::IoFailure)}self.regs[g.address as usize]=v as u8;Ok(())}
+ }
+ impl GpeIo for FailEnableIo{fn clear_status_w1c(&mut self,g:AcpiGas,mask:u8)->Result<(),EventError>{self.regs[g.address as usize]&=!mask;Ok(())}}
+ #[test]fn failed_gpe_method_remains_queued_and_masked_for_retry(){
+  let mut g=GpeController::new();g.configure_block(0,GpeRegisterBlock{gas:gas(4),length:4,event_base:0}).unwrap();
+  g.register_event(GpeEvent{number:1,method_node:77,trigger:ACPI_GPE_LEVEL,wake_capable:false,enabled:true}).unwrap();
+  let mut io=Io{regs:[0;32],writes:0};io.regs[5]=2;io.regs[7]=2;g.capture_sci(&mut io).unwrap();
+  let mut exec=FailOnceExec{calls:0,fail:true};
+  assert_eq!(g.dispatch_deferred(&mut io,&mut exec,1),Err(EventError::MethodFailure));
+  assert_eq!(g.pending(),1);assert_eq!(io.regs[7]&2,0);
+  assert_eq!(g.dispatch_deferred(&mut io,&mut exec,1).unwrap(),1);
+  assert_eq!(exec.calls,2);assert_eq!(g.pending(),0);assert_eq!(io.regs[7]&2,2);
+ }
+ #[test]fn enable_io_retry_does_not_repeat_successful_aml_callback(){
+  let mut g=GpeController::new();g.configure_block(0,GpeRegisterBlock{gas:gas(4),length:4,event_base:0}).unwrap();
+  g.register_event(GpeEvent{number:1,method_node:77,trigger:ACPI_GPE_LEVEL,wake_capable:false,enabled:true}).unwrap();
+  let mut io=FailEnableIo{regs:[0;32],fail_enable:false};io.regs[5]=2;io.regs[7]=2;g.capture_sci(&mut io).unwrap();io.fail_enable=true;
+  let mut exec=Exec{calls:0};assert_eq!(g.dispatch_deferred(&mut io,&mut exec,1),Err(EventError::IoFailure));
+  assert_eq!(g.pending(),1);assert_eq!(exec.calls,1);
+  assert_eq!(g.dispatch_deferred(&mut io,&mut exec,1).unwrap(),1);
+  assert_eq!(exec.calls,1);assert_eq!(g.pending(),0);assert_eq!(io.regs[7]&2,2);
+ }
+ #[test]fn gpe_overflow_retains_masked_event_and_promotes_it_after_queue_drain(){
+  let mut g=GpeController::new();g.configure_block(0,GpeRegisterBlock{gas:gas(4),length:34,event_base:0}).unwrap();
+  for number in 0..129u16{g.register_event(GpeEvent{number,method_node:1000+number,trigger:ACPI_GPE_EDGE,wake_capable:false,enabled:true}).unwrap();}
+  let mut io=Io{regs:[0;32],writes:0};
+  for i in 0..17usize{io.regs[4+i]=0xff;io.regs[21+i]=0xff;}
+  assert_eq!(g.capture_sci(&mut io),Err(EventError::QueueFull));
+  assert_eq!(g.pending(),129);assert_eq!(io.regs[21+16]&1,0);
+  let mut exec=Exec{calls:0};assert_eq!(g.dispatch_deferred(&mut io,&mut exec,128).unwrap(),128);
+  assert_eq!(g.pending(),1);assert_eq!(g.dispatch_deferred(&mut io,&mut exec,1).unwrap(),1);
+  assert_eq!(g.pending(),0);assert_eq!(exec.calls,129);
+ }
+
  struct Ec{query:u8,called:u8}impl EmbeddedControllerBackend for Ec{fn read_query_value(&mut self)->Result<u8,EventError>{Ok(self.query)}fn execute_query_method(&mut self,_:u16,q:u8)->Result<(),EventError>{self.called=q;Ok(())}}
  #[test]fn ec_queries_are_deferred(){let mut ec=Ec{query:0x42,called:0};let mut q=EmbeddedControllerEvents::new();q.capture_query(&mut ec).unwrap();let mut map=[u16::MAX;256];map[0x42]=12;q.dispatch_deferred(&mut ec,&map,1).unwrap();assert_eq!(ec.called,0x42);}
  struct Thermal{passive:bool,active:bool,critical:bool}impl ThermalPolicyBackend for Thermal{fn set_passive_cooling(&mut self,_:u16,a:bool)->Result<(),EventError>{self.passive=a;Ok(())}fn set_active_cooling(&mut self,_:u16,_:u8,a:bool)->Result<(),EventError>{self.active=a;Ok(())}fn notify_critical_temperature(&mut self,_:u16)->Result<(),EventError>{self.critical=true;Ok(())}fn notify_hot_temperature(&mut self,_:u16)->Result<(),EventError>{Ok(())}}
