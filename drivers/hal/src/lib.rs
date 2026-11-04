@@ -1,8 +1,18 @@
 //! Versioned platform-neutral service contract between the NT executive and HAL.
 #![no_std]
 
-/// HAL implementation consumes executive callbacks through this module.
+// The HAL implementation is compiled as this crate, never as an NTOSKRNL
+// source module. The self-alias preserves the stable contract-qualified names
+// used by the HAL implementation while keeping one canonical ABI crate.
+extern crate self as cognacos_hal_contract;
+
+/// Kernel-owned callbacks are the only route from HAL into executive services.
 pub mod kernel_services;
+
+/// Independent x64 HAL implementation. Its source has no NTOSKRNL, ACPI
+/// parser, or PCI enumerator dependencies.
+#[path = "../../../Hal/mod.rs"]
+pub mod hal;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
