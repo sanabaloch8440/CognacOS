@@ -4,6 +4,61 @@ const DRIVER_UNLOADED_FLAG:u32=1<<30;
 
 pub const DEVICE_POWER_D0:u8=0; pub const DEVICE_POWER_D1:u8=1; pub const DEVICE_POWER_D2:u8=2; pub const DEVICE_POWER_D3:u8=3;
 
+/// Store WDM DEVICE_POWER_STATE capabilities in the owning nonpaged device
+/// record. This keeps capability lookup and device removal under one lifetime
+/// and removes the former independent 64-device registry.
+pub(crate) fn io_set_device_power_capabilities(device:*mut DeviceObject,states:u8,wake:bool)->i32{
+ if device.is_null()||states&0x01==0||states&!0x0f!=0||(wake&&states&0x08!=0&&states&0x06==0){return STATUS_INVALID_PARAMETER}
+ let mut state=WDM.lock();
+ let Some(slot)=state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return STATUS_DELETE_PENDING};
+ slot.power_capabilities=states;slot.wake_supported=wake;STATUS_SUCCESS
+}
+pub(crate) fn io_clear_device_power_capabilities(device:*mut DeviceObject){
+ if device.is_null(){return}
+ let mut state=WDM.lock();
+ if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)){
+  slot.power_capabilities=0x09;slot.wake_supported=false;
+ }
+}
+pub(crate) fn io_device_supports_power_state(device:*mut DeviceObject,target:u32)->bool{
+ if device.is_null()||!(1..=4).contains(&target){return false}
+ let state=WDM.lock();
+ state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device))
+  .is_some_and(|slot|slot.power_capabilities&(1u8<<(target-1))!=0)
+}
+pub(crate) fn io_device_supports_power_state_stack(device:*mut DeviceObject,target:u32)->bool{
+ if device.is_null()||!(1..=4).contains(&target){return false}
+ let state=WDM.lock();let bit=1u8<<(target-1);
+ let Some(mut index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return false};
+ for _ in 0..MAX_WDM_STACK_LOCATIONS{
+  if state.devices[index].power_capabilities&bit==0{return false}
+  let next=state.devices[index].object.attached_device;
+  if next.is_null(){return true}
+  if next==device{return false}
+  let Some(next_index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,next)) else{return false};
+  index=next_index;
+ }
+ false
+}
+pub(crate) fn io_device_supports_wake(device:*mut DeviceObject)->bool{
+ if device.is_null(){return false}
+ let state=WDM.lock();
+ state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)).is_some_and(|s|s.wake_supported)
+}
+pub(crate) fn io_device_supports_wake_stack(device:*mut DeviceObject)->bool{
+ if device.is_null(){return false}
+ let state=WDM.lock();let Some(mut index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return false};
+ for _ in 0..MAX_WDM_STACK_LOCATIONS{
+  if !state.devices[index].wake_supported{return false}
+  let next=state.devices[index].object.attached_device;
+  if next.is_null(){return true}
+  if next==device{return false}
+  let Some(next_index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,next)) else{return false};
+  index=next_index;
+ }
+ false
+}
+
 
 
 
