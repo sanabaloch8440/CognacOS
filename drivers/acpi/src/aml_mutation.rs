@@ -6,7 +6,7 @@
 //! I/O and never allocates from the global heap.
 #![no_std]
 
-use crate::aml::{AmlNamespace, AmlNode, AmlObjectType, AmlError, MAX_NAMESPACE_NODES};
+use crate::aml::{AmlNamespace, AmlNode, AmlObjectType, AmlError, AmlName, MAX_NAMESPACE_NODES};
 use crate::aml_objects::{AmlObjectArena, AmlValueKind};
 use crate::aml_runtime::{AmlBindings, AmlReference, RuntimeError, StoreMode,
     make_object_reference, store_reference_with_mode, validate_runtime_value};
@@ -23,12 +23,14 @@ pub struct AmlDynamicBufferField {
     pub bit_offset: u32,
     pub bit_width: u32,
     pub owner_table: u32,
+    pub parent: u16,
+    pub name: [u8; 4],
 }
 
 impl AmlDynamicBufferField {
     const EMPTY: Self = Self {
         namespace_node: u16::MAX, buffer_value: u16::MAX,
-        bit_offset: 0, bit_width: 0, owner_table: 0,
+        bit_offset: 0, bit_width: 0, owner_table: 0, parent: 0, name: [0; 4],
     };
 }
 
@@ -128,15 +130,84 @@ impl AmlDynamicNamespace {
         let node = Self::insert(namespace, parent, name, AmlObjectType::Field, owner_table)
             .map_err(|_| RuntimeError::InvalidNode)?;
         self.fields[self.field_count] = AmlDynamicBufferField {
-            namespace_node: node, buffer_value, bit_offset, bit_width, owner_table,
+            namespace_node: node, buffer_value, bit_offset, bit_width, owner_table, parent, name,
         };
         self.field_count += 1;
         Ok(node)
     }
 
+    /// Resolve the containing scope for a Create*Field NameString. The last
+    /// NameSeg is the field name; all preceding segments identify its parent.
+    fn resolve_field_parent(namespace: &AmlNamespace, current: u16, name: &AmlName)
+        -> Result<(u16, [u8; 4]), RuntimeError> {
+        if name.count == 0 { return Err(RuntimeError::InvalidNode); }
+        let mut candidate = if name.rooted { 0 } else { current };
+        for _ in 0..name.parents {
+            if candidate == 0 || candidate as usize >= namespace.count {
+                return Err(RuntimeError::InvalidNode);
+            }
+            candidate = namespace.nodes[candidate as usize].parent;
+        }
+        let explicit = name.rooted || name.parents != 0;
+        loop {
+            let first = namespace.find_child(candidate, name.segments[0]);
+            if name.count == 1 {
+                if first.is_some() { return Err(RuntimeError::InvalidNode); }
+                return Ok((candidate, name.segments[0]));
+            }
+            if let Some(mut parent) = first {
+                for segment in name.segments.iter().take(name.count as usize - 1).skip(1) {
+                    parent = namespace.find_child(parent, *segment).ok_or(RuntimeError::InvalidNode)?;
+                }
+                return Ok((parent, name.segments[name.count as usize - 1]));
+            }
+            if explicit || candidate == 0 { return Ok((candidate, name.segments[name.count as usize - 1])); }
+            candidate = namespace.nodes.get(candidate as usize).ok_or(RuntimeError::InvalidNode)?.parent;
+        }
+    }
+
+    /// Runtime Create*Field path: keep dynamically-created names in the
+    /// bounded side table so static firmware namespace storage remains stable.
+    /// Synthetic node IDs occupy a disjoint range above MAX_NAMESPACE_NODES.
+    pub fn create_buffer_field_at(&mut self, namespace: &AmlNamespace, current: u16,
+        name: &AmlName, arena: &AmlObjectArena, buffer_value: u16,
+        bit_offset: u32, bit_width: u32, owner_table: u32) -> Result<u16, RuntimeError> {
+        let (parent, leaf) = Self::resolve_field_parent(namespace, current, name)?;
+        if namespace.find_child(parent, leaf).is_some()
+            || self.fields[..self.field_count].iter().any(|field| field.parent == parent && field.name == leaf) {
+            return Err(RuntimeError::InvalidNode);
+        }
+        let buffer = arena.get(buffer_value).ok_or(RuntimeError::InvalidReference)?;
+        if buffer.kind != AmlValueKind::Buffer || buffer.byte_length as usize > buffer.bytes.len()
+            || bit_width == 0 { return Err(RuntimeError::TypeMismatch); }
+        if bit_offset > u16::MAX as u32 || bit_width > u16::MAX as u32 {
+            return Err(RuntimeError::ValueTooLarge);
+        }
+        let end = bit_offset.checked_add(bit_width).ok_or(RuntimeError::ValueTooLarge)?;
+        let extent = (buffer.byte_length as u32).checked_mul(8).ok_or(RuntimeError::ValueTooLarge)?;
+        if end > extent { return Err(RuntimeError::InvalidReference); }
+        if self.field_count >= self.fields.len() { return Err(RuntimeError::ValueTooLarge); }
+        let synthetic = MAX_NAMESPACE_NODES.checked_add(self.field_count)
+            .filter(|id| *id <= u16::MAX as usize).ok_or(RuntimeError::ValueTooLarge)? as u16;
+        self.fields[self.field_count] = AmlDynamicBufferField {
+            namespace_node: synthetic, buffer_value, bit_offset, bit_width, owner_table, parent, name: leaf,
+        };
+        self.field_count += 1;
+        Ok(synthetic)
+    }
+
+    /// Find a dynamic BufferField by its AML NameString and lexical scope.
+    pub fn resolve_buffer_field(&self, namespace: &AmlNamespace, current: u16,
+        name: &AmlName) -> Result<u16, RuntimeError> {
+        let (parent, leaf) = Self::resolve_field_parent(namespace, current, name)?;
+        self.fields[..self.field_count].iter()
+            .find(|field| field.parent == parent && field.name == leaf)
+            .map(|field| field.namespace_node).ok_or(RuntimeError::InvalidNode)
+    }
+
     pub fn buffer_field(&self, namespace: &AmlNamespace, node: u16)
         -> Result<AmlDynamicBufferField, RuntimeError> {
-        if node as usize >= namespace.count { return Err(RuntimeError::InvalidNode); }
+        if (node as usize) < MAX_NAMESPACE_NODES && node as usize >= namespace.count { return Err(RuntimeError::InvalidNode); }
         self.fields[..self.field_count].iter().find(|field| field.namespace_node == node)
             .copied().ok_or(RuntimeError::InvalidReference)
     }
