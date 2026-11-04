@@ -43,6 +43,8 @@ pub struct AmlNode {
     pub parent:u16, pub name:[u8;4], pub object_type:AmlObjectType,
     /// AML definition block slot that supplied this namespace object.
     pub source_table:u32,
+    /// Unique table incarnation token; unlike source_table, this is never a reusable slot.
+    pub source_table_generation:u32,
     pub method_flags:u8, pub body_start:u32, pub body_length:u32,
     /// Canonical target for Alias objects; u16::MAX for non-alias nodes.
     pub alias_target:u16,
@@ -59,14 +61,14 @@ pub struct AmlNode {
     pub field_connection_start:u32, pub field_connection_length:u32,
     pub processor_id:u8, pub processor_pblk_address:u32, pub processor_pblk_length:u8,
     pub power_resource_system_level:u8, pub power_resource_order:u16,
-    pub external_placeholder:bool, pub external_owner:u32, pub external_object_type:u8, pub external_method_flags:u8,
+    pub external_placeholder:bool, pub external_owner:u32, pub external_owner_generation:u32, pub external_object_type:u8, pub external_method_flags:u8,
 }
 impl AmlNode {
-    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,field_index_register:u16::MAX,field_data_register:u16::MAX,field_bank_register:u16::MAX,field_bank_value_start:0,field_bank_value_length:0,field_connection_start:0,field_connection_length:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
+    pub const ROOT:Self=Self{parent:0,name:*b"____",object_type:AmlObjectType::Root,source_table:0,source_table_generation:0,method_flags:0,body_start:0,body_length:0,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,field_index_register:u16::MAX,field_data_register:u16::MAX,field_bank_register:u16::MAX,field_bank_value_start:0,field_bank_value_length:0,field_connection_start:0,field_connection_length:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_owner_generation:0,external_object_type:0,external_method_flags:0};
 }
-pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u32 }
+pub struct AmlNamespace { pub nodes:[AmlNode;MAX_NAMESPACE_NODES], pub count:usize, loading_table:u32, loading_table_generation:u32 }
 impl AmlNamespace {
-    pub const fn new()->Self { Self{nodes:[AmlNode::ROOT;MAX_NAMESPACE_NODES],count:1,loading_table:0} }
+    pub const fn new()->Self { Self{nodes:[AmlNode::ROOT;MAX_NAMESPACE_NODES],count:1,loading_table:0,loading_table_generation:0} }
 /// Find a direct namespace child by its four-byte AML NameSeg without resolving aliases.
     pub fn find_child(&self,parent:u16,name:[u8;4])->Option<u16>{
         self.nodes.iter().take(self.count).enumerate().skip(1)
@@ -88,7 +90,7 @@ impl AmlNamespace {
         if parent as usize>=self.count{return Err(AmlError::InvalidParent)}
         if self.find_child(parent,name).is_some(){return Err(AmlError::DuplicateName)}
         if self.count==MAX_NAMESPACE_NODES{return Err(AmlError::NamespaceCapacity{capacity:MAX_NAMESPACE_NODES,requested:self.count+1})}
-        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,field_index_register:u16::MAX,field_data_register:u16::MAX,field_bank_register:u16::MAX,field_bank_value_start:0,field_bank_value_length:0,field_connection_start:0,field_connection_length:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_object_type:0,external_method_flags:0};
+        let i=self.count;self.nodes[i]=AmlNode{parent,name,object_type:kind,source_table:self.loading_table,source_table_generation:self.loading_table_generation,method_flags:flags,body_start:u32::try_from(start).map_err(|_|AmlError::BadDefinitionBlock)?,body_length:u32::try_from(len).map_err(|_|AmlError::BadDefinitionBlock)?,alias_target:u16::MAX,field_region:u16::MAX,field_mode:0,field_connection:false,field_access_type:0,field_access_attribute:0,field_access_length:0,field_lock_rule:0,field_update_rule:0,field_index_register:u16::MAX,field_data_register:u16::MAX,field_bank_register:u16::MAX,field_bank_value_start:0,field_bank_value_length:0,field_connection_start:0,field_connection_length:0,processor_id:0,processor_pblk_address:0,processor_pblk_length:0,power_resource_system_level:0,power_resource_order:0,external_placeholder:false,external_owner:0,external_owner_generation:0,external_object_type:0,external_method_flags:0};
         self.count+=1;Ok(i as u16)
     }
 }
@@ -462,7 +464,7 @@ fn parse_terms(c:&mut Cursor<'_>,ns:&mut AmlNamespace,parent:u16,depth:u8,contex
                 let alias_index=resolve_path(ns,parent,&alias,true,AmlObjectType::Alias,0,0,0)?;
                 ns.nodes[alias_index as usize].alias_target=target;
             }
-            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};let id=resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;let node=&mut ns.nodes[id as usize];if node.external_placeholder{if node.external_object_type!=object_type||node.external_method_flags!=flags{return Err(AmlError::DuplicateName)}}else{node.external_placeholder=true;node.external_owner=ns.loading_table;node.external_object_type=object_type;node.external_method_flags=flags;}}
+            0x15=>{let name=parse_name(c)?;let object_type=c.byte()?;let flags=if object_type==8{c.byte()?}else{0};let id=resolve_path(ns,parent,&name,true,AmlObjectType::External,0,0,flags)?;let node=&mut ns.nodes[id as usize];if node.external_placeholder{if node.external_object_type!=object_type||node.external_method_flags!=flags{return Err(AmlError::DuplicateName)}}else{node.external_placeholder=true;node.external_owner=ns.loading_table;node.external_owner_generation=ns.loading_table_generation;node.external_object_type=object_type;node.external_method_flags=flags;}}
             0x5b=>{
                 let ext=c.byte()?;
                 match ext{
@@ -560,7 +562,11 @@ pub fn load_definition_block(aml:&[u8],namespace:&mut AmlNamespace)->Result<(),A
 /// Load one DSDT/SSDT with a stable table-owner ID. All namespace objects
 /// introduced by this block carry the ID and can be removed independently.
 pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32)->Result<(),AmlError>{
-    load_definition_block_diagnostic(aml,namespace,table_id).map_err(|diagnostic|diagnostic.error)
+    load_definition_block_owned_with_generation(aml,namespace,table_id,table_id)
+}
+/// Load a table while retaining both its reusable slot and unique incarnation.
+pub fn load_definition_block_owned_with_generation(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32,table_generation:u32)->Result<(),AmlError>{
+    load_definition_block_diagnostic_with_generation(aml,namespace,table_id,table_generation).map_err(|diagnostic|diagnostic.error)
 }
 
 /// Load a DefinitionBlock and retain structured context when parsing fails.
@@ -571,19 +577,25 @@ pub fn load_definition_block_owned(aml:&[u8],namespace:&mut AmlNamespace,table_i
 /// the enclosing namespace at that term boundary and is truncated only when
 /// it exceeds `MAX_DIAGNOSTIC_PATH`.
 pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32)->Result<(),AmlDiagnostic>{
+    load_definition_block_diagnostic_with_generation(aml,namespace,table_id,table_id)
+}
+pub fn load_definition_block_diagnostic_with_generation(aml:&[u8],namespace:&mut AmlNamespace,table_id:u32,table_generation:u32)->Result<(),AmlDiagnostic>{
     let original_count=namespace.count;
     let original_owner=namespace.loading_table;
+    let original_owner_generation=namespace.loading_table_generation;
     namespace.loading_table=table_id;
+    namespace.loading_table_generation=table_generation;
     let mut c=Cursor{bytes:aml,pos:0,end:aml.len()};
     let mut context=ParseContext{term_offset:0,opcode:None,namespace_parent:0};
     match parse_terms(&mut c,namespace,0,0,&mut context){
-        Ok(())=>{namespace.loading_table=original_owner;Ok(())},
+        Ok(())=>{namespace.loading_table=original_owner;namespace.loading_table_generation=original_owner_generation;Ok(())},
         Err(error)=>{
             for index in 1..original_count {
                 let node=&mut namespace.nodes[index];
                 if node.source_table==table_id && node.external_placeholder && node.external_owner!=table_id {
                     node.object_type=AmlObjectType::External;
                     node.source_table=node.external_owner;
+                    node.source_table_generation=node.external_owner_generation;
                     node.method_flags=node.external_method_flags;
                     node.body_start=0;
                     node.body_length=0;
@@ -603,6 +615,7 @@ pub fn load_definition_block_diagnostic(aml:&[u8],namespace:&mut AmlNamespace,ta
             namespace_path[..namespace_depth].reverse();
             namespace.count=original_count;
             namespace.loading_table=original_owner;
+            namespace.loading_table_generation=original_owner_generation;
             Err(AmlDiagnostic{
                 table_id,
                 term_offset:context.term_offset.min(aml.len()),
@@ -629,6 +642,7 @@ pub fn unload_definition_block(namespace:&mut AmlNamespace,table_id:u32)->usize{
         if node.source_table==table_id && node.external_placeholder && node.external_owner!=table_id {
             node.object_type=AmlObjectType::External;
             node.source_table=node.external_owner;
+            node.source_table_generation=node.external_owner_generation;
             node.method_flags=node.external_method_flags;
             node.body_start=0;
             node.body_length=0;
