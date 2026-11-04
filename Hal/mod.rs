@@ -1541,3 +1541,31 @@ pub unsafe fn set_device_interrupt_vector_enabled(vector:u8,enabled:bool)->Resul
     if io_base==0{return Err(HalError::InvalidTransition);}
     unsafe{set_device_interrupt_route_enabled(io_base,gsi_base,gsi,enabled)}
 }
+
+
+#[cfg(test)]
+mod bus_interrupt_translation_tests {
+    use super::*;
+
+    #[test]
+    fn bus_translation_is_reference_counted_and_never_falls_back_to_bus_irq() {
+        const INTERFACE: u32 = 0xffff_ff00;
+        const BUS: u32 = 0x1234;
+        const LEVEL: u32 = 9;
+        const BUS_VECTOR: u32 = 9;
+        assert!(query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR).is_none());
+        register_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR, 0x45, 5, 1).unwrap();
+        register_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR, 0x45, 5, 1).unwrap();
+        assert_eq!(
+            query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR),
+            Some((0x45, 5, 1))
+        );
+        unregister_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR).unwrap();
+        assert_eq!(
+            query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR),
+            Some((0x45, 5, 1))
+        );
+        unregister_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR).unwrap();
+        assert!(query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR).is_none());
+    }
+}
