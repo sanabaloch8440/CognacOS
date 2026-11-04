@@ -69,45 +69,10 @@ pub fn resolve_sci_route(fadt: &FadtInfo, madt: &MadtInfo) -> Result<SciRoute, S
     })
 }
 
-/// Function-pointer callbacks have the same lifetime as the ACPI driver image.
-/// The ISR callback may only inspect/acknowledge hardware and capture bounded
-/// event records. The DPC callback may only enqueue passive work.
-pub type SciIsr = extern "C" fn(context: u64) -> bool;
-pub type SciDpc = extern "C" fn(context: u64);
+/// Callback signatures and the size/version-tagged HAL service table live in
+/// the shared HAL contract crate so both sides compile against one ABI definition.
+pub use cognacos_hal_contract::{AcpiSciHalServices, AcpiSciIsr as SciIsr, AcpiSciDpc as SciDpc};
 pub type SciPassiveWorker = extern "C" fn(context: u64);
-
-/// Versioned, size-tagged service ABI consumed by ACPI.sys. The HAL must
-/// install its IDT gate and callback before the I/O-APIC route is unmasked.
-/// configure_masked also binds the route to the vector for later enable/disable.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AcpiSciHalServices {
-    pub size: u32,
-    pub version: u32,
-    pub allocate_vector: Option<unsafe extern "C" fn(vector: *mut u8) -> u32>,
-    pub configure_masked: Option<unsafe extern "C" fn(
-        vector: u8, io_apic: u64, gsi_base: u32, gsi: u32,
-        active_low: bool, level_triggered: bool,
-    ) -> u32>,
-    pub register: Option<unsafe extern "C" fn(
-        vector: u8, context: u64, isr: Option<SciIsr>, dpc: Option<SciDpc>,
-    ) -> u32>,
-    pub set_enabled: Option<unsafe extern "C" fn(vector: u8, enabled: bool) -> u32>,
-    pub unregister: Option<unsafe extern "C" fn(vector: u8, context: u64) -> u32>,
-    pub release_vector: Option<unsafe extern "C" fn(vector: u8) -> u32>,
-}
-impl AcpiSciHalServices {
-    pub const fn compatible(&self) -> bool {
-        self.size as usize >= core::mem::size_of::<Self>()
-            && self.version == SCI_ABI_VERSION
-            && self.allocate_vector.is_some()
-            && self.configure_masked.is_some()
-            && self.register.is_some()
-            && self.set_enabled.is_some()
-            && self.unregister.is_some()
-            && self.release_vector.is_some()
-    }
-}
 
 /// Lifecycle state makes partial startup and teardown retryable. A route is
 /// never enabled until vector allocation, masked route setup, IDT/ISR/DPC
