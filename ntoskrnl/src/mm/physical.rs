@@ -231,8 +231,8 @@ pub fn physical_memory_ranges(output: &mut [(u64, u64)]) -> usize {
     }
     let mut count = 0usize;
     for i in 0..entries {
-        let Some(offset) = i.checked_mul(stride) else { break; };
-        let Some(pointer) = (base as usize).checked_add(offset) else { break; };
+        let Some(offset) = i.checked_mul(stride) else { return 0; };
+        let Some(pointer) = (base as usize).checked_add(offset) else { return 0; };
         let descriptor = unsafe { ptr::read_unaligned(pointer as *const MemoryDescriptor) };
         if !matches!(descriptor.kind, 1..=7 | 9 | 10 | 14) || descriptor.number_of_pages == 0 {
             continue;
