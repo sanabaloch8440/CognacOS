@@ -38,6 +38,11 @@ pub trait AmlMethodSynchronizer:Sync{
  fn release(&self,method_index:u16);
  fn acquire_mutex(&self,_mutex_index:u16,_sync_level:u8,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
  fn release_mutex(&self,_mutex_index:u16)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ /// AML Event objects use the kernel's synchronization-event dispatcher state.
+ fn signal_event(&self,_event_index:u16,_owner_table:u32)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ fn reset_event(&self,_event_index:u16,_owner_table:u32)->Result<(),ExecError>{Err(ExecError::SynchronizationUnavailable)}
+ /// True means signalled; false means the AML timeout expired.
+ fn wait_event(&self,_event_index:u16,_owner_table:u32,_timeout_ms:u16)->Result<bool,ExecError>{Err(ExecError::SynchronizationUnavailable)}
 }
 
 #[derive(Clone,Copy)]
@@ -204,6 +209,14 @@ impl<'a,'b> Machine<'a,'b>{
   let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
   if entry.object_type!=AmlObjectType::Mutex{return Err(ExecError::BadTarget)}
   Ok((canonical,entry.method_flags&0x0f))
+ }
+ fn event_object(&self,r:&mut Reader<'_>)->Result<(u16,u32),ExecError>{
+  let (name,next)=parse_name_string(r.bytes,r.pos,r.end).map_err(|_|ExecError::InvalidName)?;r.pos=next;
+  let node=resolve_name_string(self.namespace,self.scope,&name).map_err(|_|ExecError::NameNotFound)?;
+  let canonical=self.namespace.resolve_alias(node).map_err(|_|ExecError::BadTarget)?;
+  let entry=self.namespace.nodes.get(canonical as usize).filter(|_|(canonical as usize)<self.namespace.count).ok_or(ExecError::BadTarget)?;
+  if entry.object_type!=AmlObjectType::Event{return Err(ExecError::BadTarget)}
+  Ok((canonical,entry.source_table))
  }
  fn acquire_mutex(&mut self,r:&mut Reader<'_>)->Result<u64,ExecError>{
   let (node,level)=self.mutex_object(r)?;let timeout=u16::from_le_bytes(r.take(2)?.try_into().map_err(|_|ExecError::Truncated)?);
@@ -481,6 +494,12 @@ impl<'a,'b> Machine<'a,'b>{
      if let Some(reference)=source{self.store_reference_target(target,reference)?;Ok(Self::integer_value(1))}
      else{Ok(Self::integer_value(0))}},
     0x23=>Ok(Self::integer_value(self.acquire_mutex(r)?)),
+    0x25=>{
+     let (event,owner)=self.event_object(r)?;
+     let timeout_value=self.term_value(r)?;
+     let timeout=u16::try_from(self.operand_integer(&timeout_value)?).map_err(|_|ExecError::TargetTypeMismatch)?;
+     Ok(Self::integer_value((!self.sync.wait_event(event,owner,timeout)?) as u64))
+    },
     _=>{r.pos=start;self.term(r).map(Self::integer_value)}
    }},
    0xff=>Ok(Self::integer_value(self.integer_mask())),
@@ -628,7 +647,7 @@ impl<'a,'b> Machine<'a,'b>{
    0x00=>Ok(0),0x01=>Ok(1),0xff=>Ok(self.integer_mask()),
    0x5b=>{
     let extended=r.byte()?;
-    if extended==0x12||extended==0x13 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
+    if extended==0x12||extended==0x13||extended==0x25 { r.pos-=2; let value=self.term_value(r)?; return self.operand_integer(&value); }
     let operand=self.term_depth(r,depth+1)?;
     let result=match extended{
      0x28=>Self::from_bcd(operand,self.integer_width_bits)?,
@@ -721,7 +740,16 @@ impl<'a,'b> Machine<'a,'b>{
    self.step()?;let op=r.byte()?;
    match op{
     0xa3=>{},
-    0x5b=>{let extended=r.byte()?;if extended==0x27{self.release_mutex(r)?;}else{return Err(ExecError::UnsupportedOpcode)}},
+    0x5b=>{
+     let extended=r.byte()?;
+     match extended{
+      0x27=>self.release_mutex(r)?,
+      0x24=>{let (event,owner)=self.event_object(r)?;self.sync.signal_event(event,owner)?;},
+      0x26=>{let (event,owner)=self.event_object(r)?;self.sync.reset_event(event,owner)?;},
+      0x25=>{r.pos-=2;let _=self.term_value(r)?;},
+      _=>return Err(ExecError::UnsupportedOpcode),
+     }
+    },
     0xa4=>return Ok(ExecFlow::Return(self.term_value(r)?)),
     0x70=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::Store)?;},
     0x9d=>{let v=self.term_value(r)?;let t=self.target(r)?;self.store_value(t,v,StoreMode::CopyObject)?;},
