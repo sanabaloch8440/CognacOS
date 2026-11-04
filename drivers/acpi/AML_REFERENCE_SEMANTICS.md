@@ -20,7 +20,7 @@ The executor owns at most 128 temporary reference roots per invocation. It does 
 
 - Add owner/generation identity to namespace-node references so DefinitionBlock unload/reload cannot make a stale reference resolve to a different compacted namespace node.
 - Complete reference handling for all SuperName forms, including OperationRegion Fields and method/other namespace objects.
-- Add dedicated Buffer Index, nested/cross-method aliasing, table-unload/reload, and failure-injection regressions.
+- Added dedicated Buffer-byte Index and nested cross-method caller-frame aliasing regressions. Still required: table-unload/reload and failure-injection regressions.
 - Run the focused ACPI executor/parser/runtime suites, native WDM ACPI driver type-check, kernel dispatcher type-check, and QEMU boot gates.
 
 Task 31 remains unchecked in `ACPI_PRODUCTION_READINESS_100_TASKS.md` until those remaining behaviors and acceptance gates are verified. No overall ACPI production-readiness claim is made.
