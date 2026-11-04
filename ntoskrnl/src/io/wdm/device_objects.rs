@@ -29,26 +29,40 @@ pub unsafe extern "win64" fn io_set_start_io_attributes(device: *mut DeviceObjec
 /// VOID IoStartPacket(PDEVICE_OBJECT, PIRP, PULONG Key, PDRIVER_CANCEL CancelFunction).
 pub unsafe extern "win64" fn io_start_packet(device: *mut DeviceObject, irp: *mut Irp, key: *const u32, cancel_function: Option<DriverCancelRoutine>) {
     if device.is_null() || irp.is_null() { return; }
-    if let Some(cancel) = cancel_function {
-        let _ = unsafe { io_set_cancel_routine_synchronized(irp, Some(cancel)); };
+    // IoStartPacket must publish the cancel routine and queue membership as
+    // one cancel-spin-lock transaction. Otherwise cancellation can run between
+    // routine installation and insertion, leaving a canceled IRP queued later.
+    let mut cancel_old_irql=0u8;
+    let cancel_locked=cancel_function.is_some();
+    if let Some(cancel)=cancel_function {
+        unsafe{io_acquire_cancel_spin_lock(&mut cancel_old_irql);}
+        let _=unsafe{io_set_cancel_routine(irp,Some(cancel));};
     }
-    let key_value = if key.is_null() { 0 } else { unsafe { key.read_unaligned() } };
-    let start_now = {
+    let key_value=if key.is_null(){0}else{unsafe{key.read_unaligned()}};
+    let queued={
         let mut state=WDM.lock();
-        let Some(slot)=state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return};
-        if unsafe{(*device).current_irp.is_null()} {
-            unsafe{(*device).current_irp=irp;}
-            true
-        }else{
-            let q=&mut slot.start_io;
-            if q.count>=START_IO_DEPTH{return}
-            let at=if q.keyed{q.keys[..q.count].iter().position(|k|*k>key_value).unwrap_or(q.count)}else{q.count};
-            for n in (at..q.count).rev(){q.entries[n+1]=q.entries[n];q.keys[n+1]=q.keys[n];}
-            q.entries[at]=irp;q.keys[at]=key_value;q.count+=1;
-            false
-        }
+        if let Some(slot)=state.devices.iter_mut().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)){
+            if unsafe{(*device).current_irp.is_null()} {
+                unsafe{(*device).current_irp=irp;}
+                Some(true)
+            }else{
+                let q=&mut slot.start_io;
+                if q.count>=START_IO_DEPTH{None}else{
+                    let at=if q.keyed{q.keys[..q.count].iter().position(|k|*k>key_value).unwrap_or(q.count)}else{q.count};
+                    for n in (at..q.count).rev(){q.entries[n+1]=q.entries[n];q.keys[n+1]=q.keys[n];}
+                    q.entries[at]=irp;q.keys[at]=key_value;q.count+=1;
+                    Some(false)
+                }
+            }
+        }else{None}
     };
-    if start_now { unsafe { invoke_start_io(device, irp); } }
+    if queued.is_none()&&cancel_locked {
+        // Still holding the cancel lock: prevent a failed enqueue from leaving
+        // a callback installed for an IRP that this queue does not own.
+        let _=unsafe{io_set_cancel_routine(irp,None);};
+    }
+    if cancel_locked{unsafe{io_release_cancel_spin_lock(cancel_old_irql);}}
+    if let Some(true)=queued{unsafe{invoke_start_io(device,irp);}}
 }
 
 /// VOID IoStartNextPacket(PDEVICE_OBJECT, BOOLEAN Cancelable).
