@@ -560,7 +560,7 @@ mod wdm_tests {
  #[test]
  fn named_device_accepts_full_counted_name_capacity() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
-  let mut path=std::string::String::from("\\\\Device\\\\");
+  let mut path=std::string::String::from("\\Device\\");
   path.push_str(&"N".repeat(100));
   let mut utf16=path.encode_utf16().collect::<std::vec::Vec<u16>>();
   let byte_len=(utf16.len()*2) as u16;
