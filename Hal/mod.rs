@@ -671,6 +671,7 @@ pub fn register_bus_interrupt_translation(
 /// Release one PnP resource owner's reference to a bus interrupt translation.
 pub fn unregister_bus_interrupt_translation(
     interface_type: u32, bus_number: u32, bus_level: u32, bus_vector: u32,
+    system_vector: u32, irql: u8, affinity: u64,
 ) -> Result<(), HalError> {
     let mut table = BUS_INTERRUPT_TRANSLATIONS.lock();
     let Some(entry) = table.iter_mut().find(|entry|
@@ -679,6 +680,9 @@ pub fn unregister_bus_interrupt_translation(
     else {
         return Err(HalError::InvalidTransition);
     };
+    if entry.system_vector != system_vector || entry.irql != irql || entry.affinity != affinity {
+        return Err(HalError::InvalidTransition);
+    }
     if entry.references > 1 {
         entry.references -= 1;
     } else {
@@ -1560,7 +1564,7 @@ mod bus_interrupt_translation_tests {
             query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR),
             Some((0x45, 5, 1))
         );
-        unregister_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR).unwrap();
+        unregister_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR, 0x45, 5, 1).unwrap();
         assert_eq!(
             query_bus_interrupt_translation(INTERFACE, BUS, LEVEL, BUS_VECTOR),
             Some((0x45, 5, 1))
