@@ -561,18 +561,20 @@ mod hierarchical_prt_tests {
 /// Evaluate a method-valued _PRT into a bounded, typed Package tree. The
 /// caller supplies the serialized-method synchronizer and a persistent AML
 /// execution context; this function never runs at interrupt/DPC level.
-pub fn evaluate_prt_method_object<R: LinkDeviceResolver>(
+pub fn evaluate_prt_method_object_in_context<R: LinkDeviceResolver>(
     namespace: &crate::aml::AmlNamespace,
     aml_tables: &[&[u8]],
     bridge_node: u16,
     integer_width_bits: u8,
+    arena: &mut crate::aml_objects::AmlObjectArena,
+    bindings: &mut crate::aml_runtime::AmlBindings,
     sync: &dyn crate::aml_exec::AmlMethodSynchronizer,
     resolver: &R,
 ) -> Result<PrtTable, PrtDecodeError> {
     use crate::aml::{AmlObjectType};
     use crate::aml_exec::{execute_method_in_context, ExecError};
-    use crate::aml_objects::{AmlObjectArena, AmlRuntimeValue, AmlValueKind};
-    use crate::aml_runtime::{AmlBindings, AmlReference, reference_from_value};
+    use crate::aml_objects::{AmlRuntimeValue, AmlValueKind};
+    use crate::aml_runtime::{AmlReference, reference_from_value};
 
     let method = namespace.find_child(bridge_node, *b"_PRT")
         .ok_or(PrtDecodeError::MissingObject)?;
@@ -584,11 +586,9 @@ pub fn evaluate_prt_method_object<R: LinkDeviceResolver>(
     }
     let aml = *aml_tables.get(node.source_table as usize)
         .ok_or(PrtDecodeError::BadTableIndex)?;
-    let mut arena = AmlObjectArena::new();
-    let mut bindings = AmlBindings::with_aml_revision(if integer_width_bits == 32 { 1 } else { 2 });
     let result = execute_method_in_context(
         aml, namespace, method, &[], integer_width_bits,
-        &mut arena, &mut bindings, sync,
+        arena, bindings, sync,
     ).map_err(|_: ExecError| PrtDecodeError::MethodExecutionFailed)?;
 
     if result.kind != AmlValueKind::Package {
@@ -795,5 +795,51 @@ mod varpackage_prt_tests {
         ns.count = 3;
         let table = evaluate_prt_method_object(&ns, &[&aml], 1, 64, &NoSync, &NoLinks).unwrap();
         assert_eq!(table.find(0x0005_0000, 0).unwrap().source, InterruptSource::DirectGsi { gsi: 19 });
+    }
+}
+
+/// Convenience/test wrapper. Kernel callers should use the context-taking
+/// variant with a pool-backed arena rather than placing the large fixed arena
+/// on a kernel thread stack.
+pub fn evaluate_prt_method_object<R: LinkDeviceResolver>(
+    namespace: &crate::aml::AmlNamespace,
+    aml_tables: &[&[u8]],
+    bridge_node: u16,
+    integer_width_bits: u8,
+    sync: &dyn crate::aml_exec::AmlMethodSynchronizer,
+    resolver: &R,
+) -> Result<PrtTable, PrtDecodeError> {
+    let mut arena = crate::aml_objects::AmlObjectArena::new();
+    let mut bindings = crate::aml_runtime::AmlBindings::with_aml_revision(
+        if integer_width_bits == 32 { 1 } else { 2 }
+    );
+    evaluate_prt_method_object_in_context(
+        namespace, aml_tables, bridge_node, integer_width_bits,
+        &mut arena, &mut bindings, sync, resolver,
+    )
+}
+
+/// Unified _PRT evaluator with caller-owned AML runtime storage.
+pub fn evaluate_prt_object_in_context<R: LinkDeviceResolver>(
+    namespace: &crate::aml::AmlNamespace,
+    aml_tables: &[&[u8]],
+    bridge_node: u16,
+    integer_width_bits: u8,
+    arena: &mut crate::aml_objects::AmlObjectArena,
+    bindings: &mut crate::aml_runtime::AmlBindings,
+    sync: &dyn crate::aml_exec::AmlMethodSynchronizer,
+    resolver: &R,
+) -> Result<PrtTable, PrtDecodeError> {
+    let object = namespace.find_child(bridge_node, *b"_PRT")
+        .ok_or(PrtDecodeError::MissingObject)?;
+    match namespace.nodes.get(object as usize)
+        .filter(|_| (object as usize) < namespace.count)
+        .ok_or(PrtDecodeError::MissingObject)?.object_type {
+        crate::aml::AmlObjectType::Name =>
+            evaluate_prt_name_object(namespace, aml_tables, bridge_node, resolver),
+        crate::aml::AmlObjectType::Method =>
+            evaluate_prt_method_object_in_context(namespace, aml_tables, bridge_node,
+                integer_width_bits, arena, bindings, sync, resolver),
+        _ => Err(PrtDecodeError::WrongObjectType),
     }
 }
